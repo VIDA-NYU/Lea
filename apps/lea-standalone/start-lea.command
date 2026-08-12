@@ -30,8 +30,9 @@ fi
 ) &
 
 # 3. Pull the prebuilt image from GitHub's container registry (GHCR) and start it.
-#    (First run downloads several GB of Lean + Mathlib; later runs are instant.)
+#    (First run downloads 3.7 GB; keep 20 GB free during extraction.)
 echo "Starting Lea (first run downloads the image and can take a while)..."
+echo "Keep at least 20 GB free in Docker Desktop during the first download."
 echo "When the app opens, add your API key in Settings to run proofs."
 docker compose pull
 docker compose up

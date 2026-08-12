@@ -23,7 +23,10 @@ docker compose up
 
 This anonymously pulls `ghcr.io/vida-nyu/leaui:main`, which contains the UI,
 adapter, prover, Overleaf companion, Lean, and Mathlib for both AMD64 and ARM64.
-Open `http://localhost:8001`; the companion is exposed on `:31245`.
+The download is about 3.7 GB and the extracted image about 10.7 GB; keep at
+least 20 GB free in Docker during extraction. Open `http://localhost:8001`;
+the companion is exposed on `:31245`. Runtime data and proofs persist in the
+host directories declared by `docker-compose.yml`.
 
 To build the same image from the checkout instead, use:
 

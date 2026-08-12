@@ -8,6 +8,7 @@ import {
   LEA_MODEL_OPTIONS,
   buildOverleafDocumentUrl,
   buildSettingsResponse,
+  companionListenHost,
   createServer,
   ensureStartupLeaRuntime,
   handleChatInterrupt,
@@ -47,6 +48,12 @@ import {
   slugProjectId
 } from "../shared/leanStub.mjs";
 import { hashFormalizationInput, hashTargetText } from "../shared/theoremParser.mjs";
+
+test("companion listen host stays loopback-local unless a container overrides it", () => {
+  assert.equal(companionListenHost({}), "127.0.0.1");
+  assert.equal(companionListenHost({ LEA_COMPANION_HOST: "0.0.0.0" }), "0.0.0.0");
+  assert.equal(companionListenHost({ LEA_COMPANION_HOST: "  " }), "127.0.0.1");
+});
 
 test("buildOverleafDocumentUrl builds the canonical public-Overleaf URL", () => {
   assert.equal(

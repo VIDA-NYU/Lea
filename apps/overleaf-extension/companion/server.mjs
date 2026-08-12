@@ -130,6 +130,10 @@ const SHARED_SETTING_ENV_FIELDS = {
   leaMaxSpendUsd: "LEA_MAX_SPEND_USD",
   leaJobTimeoutSeconds: "LEA_JOB_TIMEOUT_SECONDS"
 };
+
+export function companionListenHost(env = process.env) {
+  return String(env.LEA_COMPANION_HOST || DEFAULT_HOST).trim() || DEFAULT_HOST;
+}
 export { LEA_MODEL_OPTIONS };
 const LEA_MODEL_BY_ID = LEA_MODEL_BY_VALUE;
 const LEGACY_LEA_MODEL_ALIASES = new Map([
@@ -7585,8 +7589,9 @@ if (isMain) {
     );
   }
   const server = await createServer();
-  server.listen(DEFAULT_PORT, DEFAULT_HOST, () => {
-    console.log(`Overleaf Lea companion listening at http://${DEFAULT_HOST}:${DEFAULT_PORT}`);
+  const listenHost = companionListenHost();
+  server.listen(DEFAULT_PORT, listenHost, () => {
+    console.log(`Overleaf Lea companion listening at http://${listenHost}:${DEFAULT_PORT}`);
     console.log(`Lea workspace: ${buildLeaWorkspacePath(applyEnvDefaults({}, process.env).leaRepoPath)}`);
     // Warn about the key the CONFIGURED model actually needs, not always
     // OPENAI_API_KEY (AUDIT L10): a user on an Anthropic/Google model was told

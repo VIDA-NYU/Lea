@@ -11,8 +11,8 @@ The only runtime data that leaves your computer is the prompt sent to your chose
 Pick **Docker** for both applications with no toolchain to install. Pick the **local install**
 if you plan to develop Lea itself.
 
-> **Note.** First-time setup downloads Lean and Mathlib. That is several gigabytes and can take
-> a while on a slow connection. It happens once.
+> **Note.** The Docker image downloads about 3.7 GB and occupies about 10.7 GB after extraction.
+> Keep at least 20 GB free in Docker's storage for extraction. It happens once.
 
 ## Before you start
 
@@ -64,10 +64,9 @@ The VIDA image supports `linux/amd64` and `linux/arm64`; Docker selects the corr
 5. **Add your key.** Open **Settings**, choose a model, paste the matching API key, save. The key
    is validated against the provider immediately, so a typo tells you right away.
 
-Session metadata, your key, and Overleaf state persist under `apps/lea-standalone/data`,
-`apps/lea-standalone/config`, and `apps/lea-standalone/overleaf-state`. Stop with `Ctrl+C`.
-Export important projects before `docker compose down` or an image update because the proof
-workspace itself is not currently mounted on the host.
+Session metadata, your key, proof repositories, project registry, and Overleaf state persist
+under `apps/lea-standalone/{data,config,proofs,projects,overleaf-state}`. Stop with `Ctrl+C`;
+`docker compose down` and image updates preserve these directories.
 
 To use Overleaf, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**,
 and select `apps/overleaf-extension/extension`. Leave its companion URL at

@@ -6,6 +6,7 @@ shared adapter, in-process prover, Overleaf companion, Lean, and Mathlib.
 ## Requirements
 
 - Docker Desktop (or Docker Engine with Compose)
+- At least 20 GB free in Docker's storage
 - One API key from OpenAI, Anthropic, or Google Gemini
 - Google Chrome if you want the Overleaf extension
 
@@ -21,8 +22,10 @@ docker compose up
 ```
 
 The image is `ghcr.io/vida-nyu/leaui:main` and supports
-`linux/amd64` and `linux/arm64`. The first download is several gigabytes
-because Lean and Mathlib are included.
+`linux/amd64` and `linux/arm64`. The first download is about 3.7 GB and the
+extracted image occupies about 10.7 GB because Lean and Mathlib are included.
+Docker needs additional working space while extracting it, so keep at least
+20 GB free.
 
 Open <http://localhost:8001>, then use **Settings** to choose a model and paste
 the corresponding provider key. The app starts without a key.
@@ -45,8 +48,7 @@ Keep the container running while you use Lea in Overleaf.
 
 ## Update
 
-The `:main` tag follows the VIDA repository's current `main` branch. Export
-important projects, then update with:
+The `:main` tag follows the VIDA repository's current `main` branch. Update with:
 
 ```sh
 docker compose pull
@@ -59,11 +61,14 @@ Compose persists:
 
 - `./data`: sessions, timeline metadata, and adapter logs
 - `./config`: settings and provider keys
+- `./proofs`: proof and project git repositories
+- `./projects`: project registry metadata
 - `./overleaf-state`: companion job state
 - `lea-mathlib-build`: the verified Mathlib build cache
 
-The proof workspace is not currently mounted on the host. Export important
-projects before `docker compose down` or replacing the image.
+The host directories survive `docker compose down` and container/image
+replacement. The bundled Lake workspace remains in the image so a software
+update cannot leave stale Lean or Mathlib metadata on the host.
 
 ## Build from source
 
@@ -86,5 +91,6 @@ docker compose logs
 ```
 
 Confirm that ports `8001` and `31245` are free and that Docker Desktop is
-running. The container health check requires both the adapter and Overleaf
-companion to respond.
+running. If a pull reports `no space left on device`, increase Docker Desktop's
+disk usage limit or remove unused images in Docker Desktop. The container health
+check requires both the adapter and Overleaf companion to respond.

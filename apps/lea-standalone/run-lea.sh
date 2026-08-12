@@ -9,8 +9,8 @@
 #   ./run-lea.sh
 #
 # Then open http://localhost:8001 and add your provider API key in Settings.
-# Your settings/key, proof history, and event logs persist in ./lea-config and
-# ./lea-data next to this script.
+# Your settings/key, proof history, project registry, and event logs persist in
+# ./lea-{config,data,proofs,projects} next to this script.
 # =============================================================================
 set -euo pipefail
 
@@ -22,6 +22,8 @@ PORT="${LEA_PORT:-8001}"
 cd "$(dirname "$0")"
 DATA_DIR="$(pwd)/lea-data"
 CONFIG_DIR="$(pwd)/lea-config"
+PROOFS_DIR="$(pwd)/lea-proofs"
+PROJECTS_DIR="$(pwd)/lea-projects"
 
 echo "=== Lea ==="
 
@@ -37,11 +39,11 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p "$DATA_DIR" "$CONFIG_DIR"
+mkdir -p "$DATA_DIR" "$CONFIG_DIR" "$PROOFS_DIR" "$PROJECTS_DIR"
 
-# 2. Pull the latest image (first run downloads several GB — be patient).
+# 2. Pull the latest image (3.7 GB download; keep 20 GB free during extraction).
 echo "Pulling the Lea image ($IMAGE)…"
-echo "(First run downloads several GB of Lean + Mathlib. Later runs are instant.)"
+echo "(First run downloads 3.7 GB. Keep 20 GB free in Docker; later runs are instant.)"
 docker pull "$IMAGE"
 
 # 3. Replace any previous container.
@@ -69,6 +71,8 @@ exec docker run --rm --name "$CONTAINER" \
   -p "31245:31245" \
   -v "$DATA_DIR:/app/data" \
   -v "$CONFIG_DIR:/app/config" \
+  -v "$PROOFS_DIR:/app/prover/workspace/proofs" \
+  -v "$PROJECTS_DIR:/app/prover/workspace/projects" \
   -v "lea-overleaf-state:/app/apps/overleaf-extension/.overleaf-lean-stub" \
   -v "lea-mathlib-build:/app/prover/workspace/.lake/packages/mathlib/.lake/build" \
   "$IMAGE"

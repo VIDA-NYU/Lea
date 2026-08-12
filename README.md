@@ -54,7 +54,9 @@ Runs the standalone UI, shared adapter, Overleaf companion, Lean, and Mathlib in
 one prebuilt container published by VIDA. The only thing you install is Docker.
 
 1. **Install Docker Desktop** and start it: https://www.docker.com/products/docker-desktop/
-   (verify with `docker --version`).
+   (verify with `docker --version`). Keep at least **20 GB free** in Docker's
+   storage: the image downloads about 3.7 GB and occupies about 10.7 GB after
+   extraction because Lean and Mathlib are included.
 2. **Clone this repo and enter the app folder:**
    ```sh
    git clone https://github.com/VIDA-NYU/LeaUIOverleafEcosystem.git
@@ -70,10 +72,10 @@ one prebuilt container published by VIDA. The only thing you install is Docker.
 5. **Add your key:** open the **Settings** pane and paste in your API key (no key
    is needed to boot). You're ready to prove.
 
-Session metadata, your saved key, and Overleaf job state persist on your machine
-under `apps/lea-standalone/{data,config,overleaf-state}`. Stop with `Ctrl+C`.
-Export important projects before `docker compose down` or an image update; the
-proof workspace itself is not currently mounted on the host.
+Session metadata, your saved key, proof repositories, project registry, and
+Overleaf job state persist on your machine under
+`apps/lea-standalone/{data,config,proofs,projects,overleaf-state}`. Stop with
+`Ctrl+C`; `docker compose down` and image updates preserve these directories.
 
 To use Overleaf, load `apps/overleaf-extension/extension` as an unpacked Chrome
 extension. Its default companion URL (`http://127.0.0.1:31245`) points to the

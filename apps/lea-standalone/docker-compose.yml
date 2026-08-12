@@ -13,9 +13,9 @@
 # Developing locally? Build the same Dockerfile from source with:
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 #
-# Session metadata, saved settings/key, and Overleaf job logs persist on the
-# host. Export important projects before replacing the container because the
-# proof workspace itself is not currently mounted.
+# Session metadata, saved settings/key, proof repositories, project registry,
+# and Overleaf job logs persist on the host. The bundled Lake workspace stays
+# image-owned so upgrades cannot leave users on stale Lean/Mathlib metadata.
 
 services:
   lea:
@@ -26,6 +26,8 @@ services:
     volumes:
       - ./data:/app/data         # persisted SQLite DB + per-run event logs
       - ./config:/app/config     # persisted settings + API key (written by the Settings pane)
+      - ./proofs:/app/prover/workspace/proofs       # proof/project git repositories
+      - ./projects:/app/prover/workspace/projects   # project registry metadata
       - ./overleaf-state:/app/apps/overleaf-extension/.overleaf-lean-stub
       - lea-mathlib-build:/app/prover/workspace/.lake/packages/mathlib/.lake/build
     init: true                   # PID 1 signal handling / zombie reaping
