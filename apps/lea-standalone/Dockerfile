@@ -22,10 +22,17 @@
 # Stage 1: build the React frontend into static assets (dist/)
 # -----------------------------------------------------------------------------
 FROM node:22-bookworm-slim AS web
-WORKDIR /web/apps/lea-standalone
+WORKDIR /web
 
-COPY apps/lea-standalone/package.json apps/lea-standalone/package-lock.json ./
-RUN npm ci
+# npm workspaces are locked at the monorepo root.  The older app-local lockfile
+# is not authoritative and can drift from package.json, so install from the
+# root lock while copying only the workspace manifests needed by `npm ci`.
+COPY package.json package-lock.json ./
+COPY apps/lea-standalone/package.json ./apps/lea-standalone/package.json
+COPY apps/overleaf-extension/package.json ./apps/overleaf-extension/package.json
+RUN npm ci --workspace apps/lea-standalone
+
+WORKDIR /web/apps/lea-standalone
 
 # Preserve the monorepo-relative layout used by frontend imports while copying
 # only the files Vite actually reads (keeps this layer small + cacheable).
