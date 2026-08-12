@@ -1,27 +1,35 @@
-# Lea Interface — run the whole app (frontend + adapter + Lean/Mathlib) in one
-# container. The only thing you install is Docker.
+# Lea Interface — run both front ends' backends in one prebuilt container. The
+# only thing users install is Docker. This serves:
+#   - the standalone UI + adapter on http://localhost:8001
+#   - the Overleaf companion on   http://localhost:31245
 #
-#   docker compose build      # builds the image from source (first run is slow —
-#                             #   it downloads + bakes Mathlib; later runs are cached)
+#   docker compose pull       # fetch the current VIDA image
 #   docker compose up         # start it; open http://localhost:8001
 #   # then add your API key in the Settings pane (no key needed to boot)
 #
-# The build targets your machine's own CPU architecture, so it works on Intel &
-# Apple-Silicon Macs, Windows, and Linux with no extra flags.
+# The published image supports linux/amd64 and linux/arm64, so Docker selects
+# the correct image for Intel and Apple-Silicon machines automatically.
 #
-# Sessions, proof history, and your saved settings/key persist on the host in
-# ./data and ./config, so they survive restarts.
+# Developing locally? Build the same Dockerfile from source with:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# Session metadata, saved settings/key, and Overleaf job logs persist on the
+# host. Export important projects before replacing the container because the
+# proof workspace itself is not currently mounted.
 
 services:
   lea:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: leaui:local         # name for the locally-built image
+    image: ghcr.io/vida-nyu/leaui:main
     ports:
-      - "8001:8001"
+      - "8001:8001"              # standalone UI + adapter
+      - "31245:31245"            # Overleaf companion
     volumes:
       - ./data:/app/data         # persisted SQLite DB + per-run event logs
       - ./config:/app/config     # persisted settings + API key (written by the Settings pane)
+      - ./overleaf-state:/app/apps/overleaf-extension/.overleaf-lean-stub
+      - lea-mathlib-build:/app/prover/workspace/.lake/packages/mathlib/.lake/build
     init: true                   # PID 1 signal handling / zombie reaping
     restart: "no"
+
+volumes:
+  lea-mathlib-build:

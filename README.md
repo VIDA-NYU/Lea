@@ -50,32 +50,34 @@ Then pick one of the two paths below.
 
 ### Option A — Docker (no local toolchain) ⭐ easiest
 
-Runs the whole standalone app (UI + adapter + Lean + Mathlib) in one container.
-The only thing you install is Docker.
+Runs the standalone UI, shared adapter, Overleaf companion, Lean, and Mathlib in
+one prebuilt container published by VIDA. The only thing you install is Docker.
 
 1. **Install Docker Desktop** and start it: https://www.docker.com/products/docker-desktop/
    (verify with `docker --version`).
 2. **Clone this repo and enter the app folder:**
    ```sh
-   git clone https://github.com/darturi/UnifiedLeaEcosystem.git
-   cd UnifiedLeaEcosystem/apps/lea-standalone
+   git clone https://github.com/VIDA-NYU/LeaUIOverleafEcosystem.git
+   cd LeaUIOverleafEcosystem/apps/lea-standalone
    ```
-3. **Build and start it:**
+3. **Download and start it:**
    ```sh
-   docker compose build       # first build is slow — it downloads + bakes Mathlib
-   docker compose up          # start it (subsequent runs skip straight to here)
+   docker compose pull        # downloads ghcr.io/vida-nyu/leaui:main
+   docker compose up
    ```
-   The build targets your machine's own CPU, so no arch flags are needed.
+   The image supports Intel/AMD and ARM64 machines, so no architecture flags are needed.
 4. **Open** http://localhost:8001 in your browser.
 5. **Add your key:** open the **Settings** pane and paste in your API key (no key
    is needed to boot). You're ready to prove.
 
-Sessions, proofs, and your saved key persist on your machine under
-`apps/lea-standalone/{data,config}`, so they survive restarts. Stop with `Ctrl+C`
-(or `docker compose down`).
+Session metadata, your saved key, and Overleaf job state persist on your machine
+under `apps/lea-standalone/{data,config,overleaf-state}`. Stop with `Ctrl+C`.
+Export important projects before `docker compose down` or an image update; the
+proof workspace itself is not currently mounted on the host.
 
-> Docker covers the **standalone UI** only. The Overleaf extension needs the
-> local install below (it side-loads a Chrome extension).
+To use Overleaf, load `apps/overleaf-extension/extension` as an unpacked Chrome
+extension. Its default companion URL (`http://127.0.0.1:31245`) points to the
+same running container; no separate local toolchain is required.
 
 ### Option B — Local install (macOS / Linux)
 
@@ -87,8 +89,8 @@ bootstrap installs the missing ones for you.
    Check with `node --version`.
 2. **Clone this repo:**
    ```sh
-   git clone https://github.com/darturi/UnifiedLeaEcosystem.git
-   cd UnifiedLeaEcosystem
+   git clone https://github.com/VIDA-NYU/LeaUIOverleafEcosystem.git
+   cd LeaUIOverleafEcosystem
    ```
 3. **Bootstrap + provision** (installs `uv` and `elan` if absent, then sets
    everything up). For the leanest test install, use the UI-only, no-SafeVerify

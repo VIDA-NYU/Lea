@@ -1,0 +1,20 @@
+# Dev overlay — build the image from the local source tree instead of pulling
+# the published one. Usage (from apps/lea-standalone):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# First build is slow — it downloads + bakes Mathlib; later builds are cached.
+# CI publishes the same Dockerfile as the multi-arch user image
+# (.github/workflows/publish-image.yml at the monorepo root).
+
+services:
+  lea:
+    build:
+      # Context is the monorepo root (../.. from this app dir) so the build can
+      # bundle the Overleaf companion, shared model catalog, and scripts/, which
+      # live outside apps/lea-standalone. The Dockerfile's COPY paths are all
+      # root-relative to match.
+      context: ../..
+      dockerfile: apps/lea-standalone/Dockerfile
+    image: leaui:local           # local-only name; never pushed
+    pull_policy: build           # always build here, never pull the GHCR image

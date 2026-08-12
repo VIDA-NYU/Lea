@@ -13,8 +13,9 @@ Overleaf page -> Chrome extension -> companion (:31245) -> FastAPI adapter (:800
 The adapter then drives the vendored prover at `apps/lea-standalone/prover/`
 in-process. The companion does not start its own prover backend.
 
-For beta testers installing from a pinned release tag, see
-[BETA_INSTALL.md](BETA_INSTALL.md).
+For the VIDA-hosted Docker installation and Chrome side-load steps, see
+[BETA_INSTALL.md](BETA_INSTALL.md). The image already runs both the adapter and
+the companion; only the unpacked extension is loaded separately in Chrome.
 
 ## Pieces
 

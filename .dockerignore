@@ -1,0 +1,33 @@
+# Build context for apps/lea-standalone/Dockerfile is the MONOREPO ROOT (needed
+# to bundle both apps into one image). Keep the context small and never leak
+# local state or secrets into the image.
+
+# VCS + installed deps (recreated inside the image)
+.git
+**/.git
+**/node_modules
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+**/.DS_Store
+
+# Host-built frontend (the image builds its own into /web/dist)
+**/dist
+
+# Host-built Lean artifacts (rebuilt inside the image, per-arch)
+**/.lake
+apps/lea-standalone/prover/workspace/.lake
+apps/lea-standalone/prover/third_party/SafeVerify/.lake
+
+# Local runtime data + secrets — must never enter the image
+.env
+**/lea.env
+apps/lea-standalone/data
+apps/lea-standalone/config/lea.local.toml
+apps/overleaf-extension/.overleaf-lean-stub
+
+# Docs and tests aren't needed to build the image. The extension/ dir IS needed:
+# the companion's shared/ modules import extension/targetParserCore.mjs at runtime.
+docs
+**/tests

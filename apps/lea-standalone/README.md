@@ -12,6 +12,25 @@ It translates typed prover events into Server-Sent Events for the browser,
 commits proof changes to git, stores timeline metadata in SQLite, and exposes
 manual `lean_check` and SafeVerify endpoints.
 
+## Run The VIDA Image
+
+From this directory:
+
+```sh
+docker compose pull
+docker compose up
+```
+
+This anonymously pulls `ghcr.io/vida-nyu/leaui:main`, which contains the UI,
+adapter, prover, Overleaf companion, Lean, and Mathlib for both AMD64 and ARM64.
+Open `http://localhost:8001`; the companion is exposed on `:31245`.
+
+To build the same image from the checkout instead, use:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
 ## First-Time Setup
 
 From the monorepo root, the recommended setup is:

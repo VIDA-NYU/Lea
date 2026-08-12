@@ -29,10 +29,11 @@ fi
   done
 ) &
 
-# 3. Pull the prebuilt image from Docker Hub and start it.
+# 3. Pull the prebuilt image from GitHub's container registry (GHCR) and start it.
 #    (First run downloads several GB of Lean + Mathlib; later runs are instant.)
 echo "Starting Lea (first run downloads the image and can take a while)..."
 echo "When the app opens, add your API key in Settings to run proofs."
+docker compose pull
 docker compose up
 
 echo "Lea has stopped. Press Enter to close."; read -r _

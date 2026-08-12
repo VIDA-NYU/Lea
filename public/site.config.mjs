@@ -14,18 +14,18 @@ export const site = {
 
   // Absolute origin of the deployed site. Used for feed.xml, sitemap.xml and
   // social-preview tags. Change this if you move to a custom domain.
-  origin: "https://darturi.github.io",
+  origin: "https://vida-nyu.github.io",
 
   // Path the site is served under. GitHub Pages project sites live under
   // /<repo>/; a custom domain or user site would use "/".
   // Can be overridden at build time: `node build.mjs --base=/`
-  base: "/UnifiedLeaEcosystem/",
+  base: "/LeaUIOverleafEcosystem/",
 
   links: {
-    github: "https://github.com/darturi/UnifiedLeaEcosystem",
+    github: "https://github.com/VIDA-NYU/LeaUIOverleafEcosystem",
     githubProver: "https://github.com/darturi/lea-prover",
     discord: "https://discord.gg/CtEJvUTjm",
-    issues: "https://github.com/darturi/UnifiedLeaEcosystem/issues",
+    issues: "https://github.com/VIDA-NYU/LeaUIOverleafEcosystem/issues",
   },
 
   // Shown in the footer and on the about strip. Fill these in.
@@ -39,7 +39,7 @@ export const site = {
   nav: [
     { label: "install", href: "/install/" },
     { label: "blog", href: "/blog/" },
-    { label: "github", href: "https://github.com/darturi/UnifiedLeaEcosystem", external: true },
+    { label: "github", href: "https://github.com/VIDA-NYU/LeaUIOverleafEcosystem", external: true },
     { label: "discord", href: "https://discord.gg/CtEJvUTjm", external: true },
   ],
 

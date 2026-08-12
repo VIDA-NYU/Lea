@@ -291,11 +291,11 @@ export function homePage(ctx) {
   const { site } = ctx;
 
   const dockerSnippet = `git clone ${site.links.github}.git
-cd UnifiedLeaEcosystem/apps/lea-standalone
-docker compose build && docker compose up`;
+cd LeaUIOverleafEcosystem/apps/lea-standalone
+docker compose pull && docker compose up`;
 
   const localSnippet = `git clone ${site.links.github}.git
-cd UnifiedLeaEcosystem
+cd LeaUIOverleafEcosystem
 ./install.sh --target ui --skip-verify
 ./start-dev.sh`;
 

@@ -14,7 +14,7 @@
 # Any flags are forwarded verbatim to `npm run setup`.
 #
 # Prefer zero local toolchain entirely? Use Docker instead:
-#   cd apps/lea-standalone && docker compose up   # then open http://localhost:8001
+#   cd apps/lea-standalone && docker compose pull && docker compose up
 
 set -euo pipefail
 

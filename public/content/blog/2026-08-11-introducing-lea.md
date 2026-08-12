@@ -112,4 +112,4 @@ backbone is for.
 
 - [Install it](/install/) — Docker in one command, or a local checkout
 - [Join the Discord](https://discord.gg/CtEJvUTjm) — installs, proofs, and what to build next
-- [Read the source](https://github.com/darturi/UnifiedLeaEcosystem)
+- [Read the source](https://github.com/VIDA-NYU/LeaUIOverleafEcosystem)

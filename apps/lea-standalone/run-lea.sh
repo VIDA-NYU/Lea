@@ -3,7 +3,7 @@
 # Lea — one-command launcher.
 #
 # Share THIS SINGLE FILE. Recipients only need Docker Desktop installed; this
-# script pulls the prebuilt image from Docker Hub and runs the whole app
+# script pulls the prebuilt image from VIDA's GitHub Container Registry and runs the whole app
 # (web UI + adapter + bundled Lea prover + Lean + Mathlib) in one container.
 #
 #   ./run-lea.sh
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 # Published image (override with: LEA_IMAGE=you/repo:tag ./run-lea.sh)
-IMAGE="${LEA_IMAGE:-shaswatpatel123/leaui:latest}"
+IMAGE="${LEA_IMAGE:-ghcr.io/vida-nyu/leaui:main}"
 CONTAINER="lea-interface"
 PORT="${LEA_PORT:-8001}"
 
@@ -66,6 +66,9 @@ echo "When it opens, add your provider API key in Settings to run proofs."
 exec docker run --rm --name "$CONTAINER" \
   --init \
   -p "${PORT}:8001" \
+  -p "31245:31245" \
   -v "$DATA_DIR:/app/data" \
   -v "$CONFIG_DIR:/app/config" \
+  -v "lea-overleaf-state:/app/apps/overleaf-extension/.overleaf-lean-stub" \
+  -v "lea-mathlib-build:/app/prover/workspace/.lake/packages/mathlib/.lake/build" \
   "$IMAGE"
