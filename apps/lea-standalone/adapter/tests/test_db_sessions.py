@@ -40,12 +40,12 @@ def test_status_follows_latest_code_step_verdict(tmp_path, monkeypatch):
     session = store.create_session("Verdict tracking")
     run = store.create_run(session["id"], "gpt-4o", "openai", 3)
 
-    store.add_code_step(session["id"], run["id"], "p.lean", commit_sha="1" * 40, check_status="error")
+    store.add_code_step(session["id"], run["id"], "p.lean", content="proof-1", check_status="error")
     assert store.session_detail(session["id"])["status"] == "error"
     assert _list_status(session["id"]) == "error"
 
     # a later step's verdict wins — the working copy moved on
-    store.add_code_step(session["id"], run["id"], "p.lean", commit_sha="2" * 40, check_status="ok")
+    store.add_code_step(session["id"], run["id"], "p.lean", content="proof-2", check_status="ok")
     assert store.session_detail(session["id"])["status"] == "ok"
     assert _list_status(session["id"]) == "ok"
 
@@ -56,7 +56,7 @@ def test_checked_agent_step_uses_run_outcome_for_proof_or_disproof(tmp_path, mon
     proved_run = store.create_run(proved["id"], "gpt-4o", "openai", 3)
     store.add_code_step(
         proved["id"], proved_run["id"], "p.lean",
-        commit_sha="1" * 40, check_status="ok", artifact_kind="proof",
+        content="proof-1", check_status="ok", artifact_kind="proof",
     )
     store.update_run(proved_run["id"], "needs_review", result_kind="needs_review")
     assert store.session_detail(proved["id"])["status"] == "proved"
@@ -66,7 +66,7 @@ def test_checked_agent_step_uses_run_outcome_for_proof_or_disproof(tmp_path, mon
     disproved_run = store.create_run(disproved["id"], "gpt-4o", "openai", 3)
     store.add_code_step(
         disproved["id"], disproved_run["id"], "d.lean",
-        commit_sha="2" * 40, check_status="ok", artifact_kind="proof",
+        content="proof-2", check_status="ok", artifact_kind="proof",
     )
     store.update_run(disproved_run["id"], "disproved", result_kind="disproved")
     assert store.session_detail(disproved["id"])["status"] == "disproved"
@@ -75,7 +75,7 @@ def test_checked_agent_step_uses_run_outcome_for_proof_or_disproof(tmp_path, mon
     # A later human edit is a new working copy with no run outcome attached.
     store.add_code_step(
         disproved["id"], None, "d.lean",
-        commit_sha="3" * 40, author="user", check_status="ok", artifact_kind="proof",
+        content="proof-3", author="user", check_status="ok", artifact_kind="proof",
     )
     assert store.session_detail(disproved["id"])["status"] == "proved"
     assert _list_status(disproved["id"]) == "proved"
@@ -87,7 +87,7 @@ def test_checked_artifact_kind_drives_primary_status_when_run_needs_review(tmp_p
     definition_run = store.create_run(definition["id"], "gpt-4o", "openai", 3)
     store.add_code_step(
         definition["id"], definition_run["id"], "d.lean",
-        commit_sha="1" * 40, check_status="ok", artifact_kind="definition",
+        content="proof-1", check_status="ok", artifact_kind="definition",
     )
     store.update_run(definition_run["id"], "needs_review", result_kind="needs_review")
     assert store.session_detail(definition["id"])["status"] == "defined"
@@ -97,7 +97,7 @@ def test_checked_artifact_kind_drives_primary_status_when_run_needs_review(tmp_p
     unknown_run = store.create_run(unknown["id"], "gpt-4o", "openai", 3)
     store.add_code_step(
         unknown["id"], unknown_run["id"], "u.lean",
-        commit_sha="2" * 40, check_status="ok", artifact_kind="unknown",
+        content="proof-2", check_status="ok", artifact_kind="unknown",
     )
     store.update_run(unknown_run["id"], "needs_review", result_kind="needs_review")
     assert store.session_detail(unknown["id"])["status"] == "ok"
@@ -108,7 +108,7 @@ def test_checked_ok_without_artifact_kind_stays_generic_ok(tmp_path, monkeypatch
     _fresh_db(tmp_path, monkeypatch)
     session = store.create_session("Legacy row")
     run = store.create_run(session["id"], "gpt-4o", "openai", 3)
-    store.add_code_step(session["id"], run["id"], "p.lean", commit_sha="1" * 40, check_status="ok")
+    store.add_code_step(session["id"], run["id"], "p.lean", content="proof-1", check_status="ok")
     store.update_run(run["id"], "needs_review", result_kind="needs_review")
     assert store.session_detail(session["id"])["status"] == "ok"
     assert _list_status(session["id"]) == "ok"
@@ -119,7 +119,7 @@ def test_step_without_verdict_is_unchecked(tmp_path, monkeypatch):
     session = store.create_session("Pending check")
     run = store.create_run(session["id"], "gpt-4o", "openai", 3)
     # D6: a write is committed before lean_check returns -> verdict not yet known
-    store.add_code_step(session["id"], run["id"], "p.lean", commit_sha="3" * 40)
+    store.add_code_step(session["id"], run["id"], "p.lean", content="proof-3")
     assert store.session_detail(session["id"])["status"] == "unchecked"
     assert _list_status(session["id"]) == "unchecked"
 
@@ -141,9 +141,29 @@ def test_active_run_does_not_override_an_existing_verdict(tmp_path, monkeypatch)
     _fresh_db(tmp_path, monkeypatch)
     session = store.create_session("Has code, still running")
     run = store.create_run(session["id"], "gpt-4o", "openai", 3)  # stays 'pending'
-    store.add_code_step(session["id"], run["id"], "p.lean", commit_sha="9" * 40, check_status="ok")
+    store.add_code_step(session["id"], run["id"], "p.lean", content="proof-9", check_status="ok")
     assert store.session_detail(session["id"])["status"] == "ok"
     assert _list_status(session["id"]) == "ok"
+
+
+def test_list_sessions_surfaces_active_run_count_alongside_verdict(tmp_path, monkeypatch):
+    # v2.3 item 13: because a session that already has code reads its verdict
+    # ('ok'/'proved') even while re-running (D14), the sidebar can't learn about a
+    # live background run from `status` alone. `list_sessions` carries a separate
+    # `active_run_count` so a running dot can light regardless of the derived status.
+    _fresh_db(tmp_path, monkeypatch)
+    session = store.create_session("Proved, and re-running")
+    run = store.create_run(session["id"], "gpt-4o", "openai", 3)  # stays 'pending'
+    store.add_code_step(session["id"], run["id"], "p.lean", content="proof-9", check_status="ok")
+
+    row = next(s for s in store.list_sessions() if s["id"] == session["id"])
+    assert row["status"] == "ok"           # verdict unchanged (D14)
+    assert row["active_run_count"] == 1    # ...but the live run is still visible
+
+    store.update_run(run["id"], "proved")  # run leaves the active set
+    row = next(s for s in store.list_sessions() if s["id"] == session["id"])
+    assert row["active_run_count"] == 0     # count drops; status stays the verdict
+    assert row["status"] == "ok"
 
 
 def test_running_flips_to_verdict_when_run_finishes(tmp_path, monkeypatch):
@@ -176,7 +196,7 @@ def test_user_edit_verdict_overrides_after_a_run(tmp_path, monkeypatch):
     _fresh_db(tmp_path, monkeypatch)
     session = store.create_session("Human takes over")
     run = store.create_run(session["id"], "gpt-4o", "openai", 3)
-    store.add_code_step(session["id"], run["id"], "p.lean", commit_sha="a" * 40, check_status="ok")
+    store.add_code_step(session["id"], run["id"], "p.lean", content="proof-a", check_status="ok")
     # user edits outside the run (run_id=None) and breaks it
-    store.add_code_step(session["id"], None, "p.lean", commit_sha="b" * 40, author="user", check_status="error")
+    store.add_code_step(session["id"], None, "p.lean", content="proof-b", author="user", check_status="error")
     assert store.session_detail(session["id"])["status"] == "error"

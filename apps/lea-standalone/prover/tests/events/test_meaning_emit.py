@@ -9,6 +9,7 @@ Exits 0 if every check passes, 1 otherwise.
 """
 
 import sys
+from pathlib import Path
 
 from lea.agent import _meaning_events
 from lea.events import FileChanged, CheckResult
@@ -27,7 +28,13 @@ def check(name: str, cond: bool) -> None:
 def test_write_lean_ok():
     evs = _meaning_events("write_file", {"path": "proofs/s1/sqrt_two.lean"}, "Wrote 12 lines.")
     check("write .lean ok -> one FileChanged", len(evs) == 1 and isinstance(evs[0], FileChanged))
-    check("FileChanged carries path", evs and evs[0].path == "proofs/s1/sqrt_two.lean")
+    # The event carries the path the TOOL used, not the string the model typed: these
+    # events cross into the adapter, which reads the file back, and a bare relative name
+    # there resolves against a different directory entirely. With no activation open the
+    # base is the process cwd, exactly as the tools use.
+    check("FileChanged carries the resolved path",
+          evs and evs[0].path == str(Path("proofs/s1/sqrt_two.lean").resolve()))
+    check("FileChanged path is absolute", evs and Path(evs[0].path).is_absolute())
 
 
 def test_edit_lean_ok():
@@ -64,7 +71,8 @@ def test_lean_check_error():
     check("error check status error", evs and evs[0].status == "error")
     check("error check detail = first error line",
           evs and evs[0].detail == "a.lean:3:1: error: unknown identifier 'foo'")
-    check("error check path", evs and evs[0].path == "a.lean")
+    check("error check carries the resolved path",
+          evs and evs[0].path == str(Path("a.lean").resolve()))
 
 
 def test_unrelated_tool():

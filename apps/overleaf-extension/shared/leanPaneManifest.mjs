@@ -20,11 +20,11 @@ const DEFINITION_KINDS = new Set(["definition"]);
 // strict target list rather than the environment loop.
 const STANDALONE_TARGET_SYNTAXES = new Set(["tag", "leacode"]);
 
-// The pane hashes the exact same canonical text the formalize path hashes
-// (`hashTargetText` over `stripLeaTargetText`), so an item's `sourceHash` and a
-// finished job's `targetTextHash` are directly comparable for staleness. These
-// aliases keep the original export names while delegating to the single source of
-// truth in theoremParser/targetParserCore (PLAN-overleaf-lean-pane-improvements item 1).
+// The pane hashes the exact same canonical body text the formalize path hashes
+// (`hashTargetText` over `stripLeaTargetText`). The server combines that body
+// hash with each item's uses/context metadata for full freshness checks. These
+// aliases keep the original export names while delegating to the single source
+// of truth in theoremParser/targetParserCore.
 export const normalizeLeanPaneText = normalizeTargetText;
 export const hashLeanPaneSource = hashTargetText;
 
@@ -192,6 +192,7 @@ export function parseLeanPaneItemsFromFile(file, initialOrder = 0) {
       sourceStartOffset: from,
       sourceEndOffset: to,
       sourceHash: hashTargetText(naturalLanguageLatex),
+      syntax: target?.syntax || "comment",
       naturalLanguageLatex,
       naturalLanguageRendered: renderLightLatex(naturalLanguageLatex),
       leanKind: leanKindFor(target, kind),
@@ -293,4 +294,3 @@ function offsetToLineColumn(source, offset) {
 function normalizePath(value) {
   return String(value || "").replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/{2,}/g, "/").trim();
 }
-

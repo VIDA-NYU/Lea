@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Overleaf Lea Formalizer MVP",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Run Lea formalization jobs from labeled Overleaf theorem blocks.",
   "permissions": ["storage", "tabs"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
@@ -11,8 +11,8 @@
   "content_scripts": [
     {
       "matches": ["https://www.overleaf.com/project/*"],
-      "js": ["content.js"],
-      "css": ["content.css"],
+      "js": ["vendor/katex/katex.min.js", "modelPicker.js", "content.js"],
+      "css": ["vendor/katex/katex.min.css", "lea-theme.css", "modelPicker.css", "content.css"],
       "run_at": "document_start"
     },
     {
@@ -23,7 +23,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["pageBridge.js", "targetParserCore.mjs", "zipTex.mjs", "leanPaneView.mjs"],
+      "resources": ["pageBridge.js", "targetParserCore.mjs", "zipTex.mjs", "leanPaneView.mjs", "leanPaneMath.mjs", "blueprintLayout.mjs", "blueprintPaneView.mjs", "editorHookWatchdog.mjs", "eventsClient.mjs", "vendor/katex/fonts/*"],
       "matches": ["https://www.overleaf.com/*"]
     }
   ],

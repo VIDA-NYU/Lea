@@ -20,7 +20,8 @@ router = APIRouter()
 
 class SkillCreate(BaseModel):
     name: str
-    body: str = ""
+    body: str = ""            # supplied directly, or compiled from `authoring`
+    authoring: dict | None = None
     is_global: bool = False
     project_ids: list[str] = []
 
@@ -28,6 +29,7 @@ class SkillCreate(BaseModel):
 class SkillUpdate(BaseModel):
     name: str | None = None
     body: str | None = None
+    authoring: dict | None = None
 
 
 class SkillAssignment(BaseModel):
@@ -52,7 +54,8 @@ def create_skill(request: SkillCreate) -> dict:
     scope"): when `is_global` or `project_ids` are given, the assignment is set
     right after create so the row comes back fully scoped."""
     try:
-        skill = store.create_skill(request.name, request.body)
+        skill = store.create_skill(request.name, request.body,
+                                   authoring=request.authoring)
         if request.is_global or request.project_ids:
             skill = store.set_skill_assignment(
                 skill["id"], is_global=request.is_global, project_ids=request.project_ids
@@ -76,14 +79,76 @@ def import_skill(request: SkillImport) -> dict:
         skill = store.create_skill(
             imported.name, imported.body,
             source_url=imported.source_url, source_ref=imported.source_ref,
+            # H4: the author's own `description:` — NOT as an authoring field. Passing it
+            # as `authoring` would recompile `body` from that one line and discard the
+            # imported SKILL.md entirely; and it would switch the editor to the guided
+            # form, whose next save would do the same. An imported skill keeps its prose.
+            description=imported.description,
         )
+        if imported.files:
+            store.set_skill_files(skill["id"], imported.files)
+            skill = store.get_skill(skill["id"])
         if request.is_global or request.project_ids:
             skill = store.set_skill_assignment(
                 skill["id"], is_global=request.is_global, project_ids=request.project_ids
             )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    # H5/H8: a real skill repo bundles more than the skill. Roles and servers are created
+    # alongside it, and reported back so the import can say what it brought — an import
+    # that silently adds a sub-agent would be worse than one that adds none.
+    skill["imported_roles"] = _import_roles(imported.roles)
+    skill["imported_servers"] = _import_servers(imported.mcp_servers)
     return skill
+
+
+def _import_roles(roles: list[dict]) -> list[dict]:
+    """Create each bundled role, skipping ones whose name is taken. A collision is
+    reported, never silently overwritten — the existing role may be one the user wrote."""
+    from lea import profiles as lea_profiles
+
+    reserved = set(lea_profiles.available_profiles())
+    created: list[dict] = []
+    for role in roles:
+        try:
+            row = store.create_agent_role(
+                name=role["name"], system_prompt=role["system_prompt"],
+                description=role.get("description"), tools=role.get("tools"),
+                reserved_names=reserved,
+            )
+            created.append({"name": row["slug"], "status": "added",
+                            "unmapped_tools": role.get("unmapped_tools") or []})
+        except ValueError as exc:
+            created.append({"name": role["name"], "status": "skipped", "reason": str(exc)})
+    return created
+
+
+def _import_servers(servers: dict) -> list[dict]:
+    """Create each declared MCP server **disabled**.
+
+    The skill says which servers it wants; it does not get to start them. Running a
+    third-party command on the user's machine stays an explicit act — they enable it in
+    Library → MCP servers, where the Test button is.
+    """
+    created: list[dict] = []
+    for name, spec in (servers or {}).items():
+        if not isinstance(spec, dict):
+            continue
+        try:
+            row = store.create_mcp_server(
+                name=name,
+                transport="stdio" if spec.get("command") else "http",
+                command=spec.get("command"),
+                args=[str(a) for a in spec.get("args") or []],
+                env={k: str(v) for k, v in (spec.get("env") or {}).items()},
+                url=spec.get("url"),
+                enabled=False,
+            )
+            created.append({"name": row["slug"], "status": "added_disabled"})
+        except ValueError as exc:
+            created.append({"name": name, "status": "skipped", "reason": str(exc)})
+    return created
 
 
 @router.get("/api/skills/{skill_id}")
@@ -97,7 +162,8 @@ def get_skill(skill_id: str) -> dict:
 @router.put("/api/skills/{skill_id}")
 def update_skill(skill_id: str, request: SkillUpdate) -> dict:
     try:
-        updated = store.update_skill(skill_id, name=request.name, body=request.body)
+        updated = store.update_skill(skill_id, name=request.name, body=request.body,
+                                     authoring=request.authoring)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     if updated is None:

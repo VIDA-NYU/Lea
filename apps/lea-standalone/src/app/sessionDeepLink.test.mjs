@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   pickInitialSession,
   readDeepLinkSessionId,
+  readDeepLinkFormalizationId,
+  stripNavigationParams,
   stripSessionParam,
 } from './sessionDeepLink.mjs';
 
@@ -13,6 +15,15 @@ test('readDeepLinkSessionId extracts the session param', () => {
   assert.equal(readDeepLinkSessionId('?session=%20'), null);
   assert.equal(readDeepLinkSessionId('?view=stats'), null);
   assert.equal(readDeepLinkSessionId(''), null);
+});
+
+test('formalization deep links are parsed and navigation params can be stripped together', () => {
+  assert.equal(readDeepLinkFormalizationId('?formalization=f-1'), 'f-1');
+  assert.equal(readDeepLinkFormalizationId('?formalization=%20'), null);
+  assert.equal(
+    stripNavigationParams('?view=stats&session=s-1&formalization=f-1'),
+    '?view=stats',
+  );
 });
 
 test('stripSessionParam removes session but keeps other params', () => {

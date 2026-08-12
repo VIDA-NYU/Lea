@@ -7,6 +7,8 @@ __pycache__/
 *.pyc
 data/
 config/lea.local.toml
+# D6: per-role sub-agent overrides (local user data)
+config/subagent-overrides.json
 
 # Runtime dirs created by run-lea.sh / docker (persisted DB, settings, key)
 lea-data/

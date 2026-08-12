@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import lea.config
+import os
 from app.config import configured_provider_keys, load_config
 
 
@@ -66,6 +67,16 @@ def test_load_config_honors_ui_settings(tmp_path):
     assert config.max_spend_usd == 12.5
     assert isinstance(config.lea_root, Path) and config.lea_root.name == "prover"
     assert config.narrate_tool_steps is True
+
+
+def test_ui_model_is_not_overridden_by_process_environment(tmp_path, monkeypatch):
+    config_path = tmp_path / "lea.local.toml"
+    config_path.write_text('model = "ui-selected-model"\n')
+    monkeypatch.setenv("LEA_MODEL", "environment-model")
+
+    config = load_config(config_path)
+
+    assert config.model == "ui-selected-model"
 
 
 def test_provider_keys_go_to_env_not_onto_the_config_object(tmp_path, monkeypatch):
@@ -146,3 +157,47 @@ def test_load_config_rejects_negative_max_spend(tmp_path):
 
     with pytest.raises(ValueError, match="max_spend_usd"):
         load_config(config_path)
+
+
+# --- AUDIT-2026-07-24 C8: clearing a key must take it out of the environment ----
+
+def test_clearing_a_key_retracts_it_from_the_environment(tmp_path, monkeypatch):
+    """Exporting was one-way: "Clear" removed the key from the file while the value
+    stayed live in os.environ for the rest of the process, so LiteLLM kept
+    authenticating with a credential the user believed they had revoked — and the
+    Settings UI, which reads the file, reported it as gone. The two disagreed, and the
+    environment was the one that mattered."""
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config_path = tmp_path / "lea.local.toml"
+
+    config_path.write_text('MISTRAL_API_KEY = "sk-live"\n')
+    load_config(config_path)
+    assert os.environ["MISTRAL_API_KEY"] == "sk-live"
+
+    config_path.write_text("")  # the key was cleared in Settings
+    load_config(config_path)
+    assert "MISTRAL_API_KEY" not in os.environ
+
+
+def test_a_key_this_loader_never_set_is_left_alone(tmp_path, monkeypatch):
+    """Only keys WE exported are retracted. One the user exported in their own shell is
+    theirs, and unsetting it would break a working setup for no reason."""
+    monkeypatch.setenv("COHERE_API_KEY", "sk-from-the-users-shell")
+    config_path = tmp_path / "lea.local.toml"
+    config_path.write_text("")
+
+    load_config(config_path)
+
+    assert os.environ["COHERE_API_KEY"] == "sk-from-the-users-shell"
+
+
+def test_a_rotated_key_replaces_the_old_value(tmp_path, monkeypatch):
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config_path = tmp_path / "lea.local.toml"
+
+    config_path.write_text('MISTRAL_API_KEY = "sk-old"\n')
+    load_config(config_path)
+    config_path.write_text('MISTRAL_API_KEY = "sk-new"\n')
+    load_config(config_path)
+
+    assert os.environ["MISTRAL_API_KEY"] == "sk-new"

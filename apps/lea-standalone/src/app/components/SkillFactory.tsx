@@ -5,6 +5,8 @@ import { useFactories } from '../stores/factories';
 import { useProjects } from '../stores/projects';
 import { MarkdownMessage } from './MarkdownMessage';
 import { ScopeAssignment, ScopeBadge, type Scope } from './ScopeAssignment';
+import { AuthoringFields, EMPTY_AUTHORING, hasAuthoring } from './AuthoringFields';
+import type { AuthoringFieldValues } from '../lib/api';
 
 // The Skill Factory page (v2.1.1 F11, D52/D55/D58). A full-page Library view:
 // leads with Add-from-GitHub (paste a link → Add), with an "or write from scratch"
@@ -111,6 +113,9 @@ function AddSkill() {
   const [mode, setMode] = useState<'github' | 'scratch'>('github');
   const [url, setUrl] = useState('');
   const [name, setName] = useState('');
+  // C1: the guided questions ARE the from-scratch path. An empty markdown box is the
+  // thing this phase exists to remove.
+  const [fields, setFields] = useState<AuthoringFieldValues>(EMPTY_AUTHORING);
   const [scope, setScope] = useState<Scope>({ is_global: false, project_ids: [] });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -119,6 +124,7 @@ function AddSkill() {
   const reset = () => {
     setUrl('');
     setName('');
+    setFields(EMPTY_AUTHORING);
     setScope({ is_global: false, project_ids: [] });
   };
 
@@ -130,11 +136,20 @@ function AddSkill() {
       if (mode === 'github') {
         if (!url.trim()) throw new Error('Paste a GitHub link first.');
         const skill = await addSkillFromGitHub({ url: url.trim(), ...scope });
-        setOk(`Imported “${skill.name}”.`);
+        // A real skill repo brings more than the skill. Saying so matters: an import
+        // that silently added four sub-agents would be worse than one that added none.
+        const bits = [`Imported “${skill.name}”`];
+        if (skill.file_paths?.length) bits.push(`${skill.file_paths.length} reference files`);
+        const roles = (skill.imported_roles || []).filter((r) => r.status === 'added');
+        if (roles.length) bits.push(`${roles.length} sub-agent${roles.length > 1 ? 's' : ''}`);
+        const servers = (skill.imported_servers || []).filter((r) => r.status.startsWith('added'));
+        if (servers.length) bits.push(`${servers.length} MCP server${servers.length > 1 ? 's' : ''} (turned off)`);
+        setOk(bits.join(' · ') + '.');
       } else {
         if (!name.trim()) throw new Error('Give the skill a name.');
-        const skill = await addSkill({ name: name.trim(), body: '', ...scope });
-        setOk(`Created “${skill.name}”. Add its content below.`);
+        if (!hasAuthoring(fields)) throw new Error('Answer at least the first question.');
+        const skill = await addSkill({ name: name.trim(), authoring: fields, ...scope });
+        setOk(`Created “${skill.name}”.`);
       }
       reset();
     } catch (err) {
@@ -170,12 +185,15 @@ function AddSkill() {
           spellCheck={false}
         />
       ) : (
-        <input
-          className="sf-add-input"
-          value={name}
-          placeholder="Skill name, e.g. “Ring & field tactics”"
-          onChange={(e) => setName(e.target.value)}
-        />
+        <>
+          <input
+            className="sf-add-input"
+            value={name}
+            placeholder="Skill name, e.g. “Ring & field tactics”"
+            onChange={(e) => setName(e.target.value)}
+          />
+          <AuthoringFields kind="skill" value={fields} onChange={setFields} disabled={busy} />
+        </>
       )}
 
       <ScopeAssignment value={scope} projects={projects} onChange={setScope} disabled={busy} />
@@ -200,6 +218,13 @@ function SkillDetail({ skill }: { skill: Skill }) {
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(skill.body);
+  // A skill written through the form is edited through the form; one that was imported
+  // or hand-written keeps its markdown editor. The form is an option, never a migration
+  // of prose someone already wrote.
+  const authored = hasAuthoring(skill.authoring);
+  const [fields, setFields] = useState<AuthoringFieldValues>(
+    { ...EMPTY_AUTHORING, ...(skill.authoring || {}) },
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Scope edits save on change (small, immediate); guarded against overlap.
@@ -212,7 +237,7 @@ function SkillDetail({ skill }: { skill: Skill }) {
     setBusy(true);
     setError(null);
     try {
-      await editSkill(skill.id, { body: draft });
+      await editSkill(skill.id, authored ? { authoring: fields } : { body: draft });
       setEditing(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -256,6 +281,36 @@ function SkillDetail({ skill }: { skill: Skill }) {
         </button>
       </div>
 
+      {skill.description && <div className="sf-skill-desc">{skill.description}</div>}
+
+      {!!skill.file_paths?.length && (
+        <>
+          <div className="sf-section-label">
+            Reference material ({skill.file_paths.length})
+          </div>
+          <div className="mcp-hint" style={{ marginBottom: 8 }}>
+            Lea is told these exist and opens the ones it needs — they are not all loaded
+            into every proof.
+          </div>
+          <div className="sf-files">
+            {skill.file_paths.map((f) => (
+              <div className="sf-file" key={f}>{f}</div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {!!skill.triggers?.length && (
+        <>
+          <div className="sf-section-label">Only when the task mentions</div>
+          <div className="sf-files">
+            {skill.triggers.map((t) => (
+              <span className="cap-badge" key={t} style={{ marginRight: 6 }}>{t}</span>
+            ))}
+          </div>
+        </>
+      )}
+
       {skill.source_url && (
         <a className="sf-source" href={skill.source_url} target="_blank" rel="noreferrer">
           <Github size={12} /> Imported from GitHub
@@ -277,7 +332,19 @@ function SkillDetail({ skill }: { skill: Skill }) {
         )}
       </div>
 
-      {editing ? (
+      {editing && authored ? (
+        <div className="sf-body-editor">
+          <AuthoringFields kind="skill" value={fields} onChange={setFields} disabled={busy} />
+          <div className="sf-body-foot">
+            <button className="sf-cancel" onClick={() => setEditing(false)} disabled={busy}>
+              Cancel
+            </button>
+            <button className="sf-save" onClick={saveBody} disabled={busy}>
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      ) : editing ? (
         <div className="sf-body-editor">
           <textarea
             className="sf-textarea"

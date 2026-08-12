@@ -15,8 +15,10 @@ dependencies = [
     "anthropic>=0.96.0",
     "google-genai>=1.70.0",
     "openai>=2.32.0",
-    "litellm>=1.75.5",
+    # 1.88.1 adds the Chat→Responses bridge used by GPT-5.6 reasoning + tools.
+    "litellm>=1.88.1,<2.0.0",
     "mcp>=1.0",
+    "pyyaml>=6.0",  # declarative agent profiles (item 19); used directly by lea/profiles.py
 ]
 
 [dependency-groups]

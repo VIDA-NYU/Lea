@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { CodeStep, SafeVerifyStatus } from '../lib/api';
+import {
+  getCurrentFormalization,
+  type CodeStep,
+  type SafeVerifyStatus,
+} from '../lib/api';
 import { LiveEditor } from './LiveEditor';
 import { diffForStep } from '../lib/codeDiff';
 import { ensureHighlighter, highlightToLines, isHighlighterReady } from '../lib/leanHighlight.mjs';
@@ -7,6 +11,10 @@ import { deriveCodeStepProofStatus } from '../lib/proofDisplay.mjs';
 import { sortCodeSteps } from '../lib/timeline.mjs';
 import { distinctFiles, latestIndexForPath, mainFilePath } from '../lib/canvasFiles.mjs';
 import { useProofSession } from '../stores/proofSession';
+import {
+  formalizationCanvasSteps,
+  stepsForFormalization,
+} from '../lib/formalizations.mjs';
 
 export interface CheckOutcome {
   status: string;
@@ -22,13 +30,19 @@ export function Canvas({
   onClose,
   onSaveAndCheck,
   onVerify,
+  onOpenSession,
 }: {
   // Present once the session is persisted; the Live editor needs it for the
   // per-session LSP WebSocket. Absent on a brand-new, unsaved session.
   sessionId?: string;
   onClose: () => void;
-  onSaveAndCheck: (content: string, path?: string) => Promise<CheckOutcome>;
+  onSaveAndCheck: (
+    content: string,
+    path?: string,
+    baseRevision?: string,
+  ) => Promise<CheckOutcome>;
   onVerify: (path?: string) => Promise<CheckOutcome>;
+  onOpenSession?: (sessionId: string) => void;
 }) {
   // v2.2: History = the Shiki snapshot stepper (unchanged); Live = the lean4monaco
   // editor with real goals/hover/diagnostics (D66). Live needs a persisted session
@@ -36,19 +50,102 @@ export function Canvas({
   const [mode, setMode] = useState<'history' | 'live'>('history');
   // R1b/R1c: canvas state (verdict, snapshots, stepper position, run-active flag)
   // comes straight from the store now — no props from App.
-  const persistedVerify = useProofSession((s) => s.safeVerify);
+  const sessionPersistedVerify = useProofSession((s) => s.safeVerify);
   const isRunning = useProofSession((s) => s.isRunning);
   const rawSteps = useProofSession((s) => s.codeSteps);
-  const codeSteps = useMemo(() => sortCodeSteps(rawSteps), [rawSteps]);
-  const index = useProofSession((s) => s.codeIndex);
-  const onIndexChange = useProofSession((s) => s.setCodeIndex);
+  const allCodeSteps = useMemo(() => sortCodeSteps(rawSteps), [rawSteps]);
+  const scope = useProofSession((s) => s.formalizationScope);
+  const revisionMode = useProofSession((s) => s.canvasRevisionMode);
+  const setRevisionMode = useProofSession((s) => s.setCanvasRevisionMode);
+  const currentSnapshot = useProofSession((s) => s.currentFormalizationSnapshot);
+  const setCurrentSnapshot = useProofSession((s) => s.setCurrentFormalizationSnapshot);
+  const refreshToken = useProofSession((s) => s.formalizationRefreshToken);
+  const [currentLoading, setCurrentLoading] = useState(false);
+  const [currentError, setCurrentError] = useState<string | null>(null);
+  const scoped = scope !== 'project' && scope !== 'new';
+  useEffect(() => {
+    if (!scoped || !sessionId) {
+      setCurrentSnapshot(null);
+      setCurrentError(null);
+      return;
+    }
+    let cancelled = false;
+    setCurrentSnapshot(null);
+    setCurrentLoading(true);
+    setCurrentError(null);
+    getCurrentFormalization(scope, sessionId)
+      .then((snapshot) => {
+        if (!cancelled) setCurrentSnapshot(snapshot);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setCurrentError(err instanceof Error ? err.message : String(err));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCurrentLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [scope, scoped, sessionId, refreshToken, setCurrentSnapshot]);
+
+  const persistedVerify = scoped
+    ? (
+        currentSnapshot?.formalization_id === scope
+        && currentSnapshot.safe_verify?.current
+          ? {
+              status: currentSnapshot.safe_verify.status,
+              detail: currentSnapshot.safe_verify.detail,
+            }
+          : null
+      )
+    : sessionPersistedVerify;
+  const historicalSteps = useMemo(
+    () => scoped ? stepsForFormalization(allCodeSteps, scope) : allCodeSteps,
+    [allCodeSteps, scope, scoped],
+  );
+  const showingCurrent = Boolean(scoped && revisionMode === 'current');
+  const codeSteps = useMemo(
+    () => scoped
+      ? formalizationCanvasSteps({
+          mode: revisionMode,
+          formalizationId: scope,
+          snapshot: currentSnapshot,
+          historicalSteps,
+        })
+      : historicalSteps,
+    [currentSnapshot, historicalSteps, revisionMode, scope, scoped],
+  );
+  const globalIndex = useProofSession((s) => s.codeIndex);
+  const setGlobalIndex = useProofSession((s) => s.setCodeIndex);
+  const [currentIndex, setCurrentIndex] = useState(0);
   const total = codeSteps.length;
-  const safeIndex = Math.min(Math.max(index, 0), Math.max(total - 1, 0));
+  const selectedId = allCodeSteps[globalIndex]?.id;
+  const selectedScopedIndex = historicalSteps.findIndex((item) => item.id === selectedId);
+  const safeIndex = showingCurrent
+    ? Math.min(currentIndex, Math.max(0, total - 1))
+    : selectedScopedIndex >= 0
+      ? selectedScopedIndex
+      : Math.max(0, total - 1);
+  useEffect(() => {
+    if (showingCurrent) setCurrentIndex(0);
+  }, [scope, currentSnapshot?.revision_token, showingCurrent]);
+  const onIndexChange = (nextIndex: number) => {
+    const bounded = Math.min(Math.max(nextIndex, 0), Math.max(total - 1, 0));
+    if (showingCurrent) {
+      setCurrentIndex(bounded);
+      return;
+    }
+    const id = codeSteps[bounded]?.id;
+    const nextGlobal = allCodeSteps.findIndex((item) => item.id === id);
+    if (nextGlobal >= 0) setGlobalIndex(nextGlobal);
+  };
   const step = codeSteps[safeIndex];
 
   // Live mode needs a saved session + a file to open. If those go away (e.g. the
   // session resets), fall back to History so we never mount the editor with nothing.
-  const canLive = !!sessionId && total > 0;
+  const canLive = !!sessionId && total > 0 && (!scoped || showingCurrent);
   useEffect(() => {
     if (!canLive && mode === 'live') setMode('history');
   }, [canLive, mode]);
@@ -60,8 +157,18 @@ export function Canvas({
   // write is the newest step overall (the old `isLatest === total-1` hid them).
   const shownPath = step?.path;
   const files = useMemo(() => distinctFiles(codeSteps), [codeSteps]);
-  const mainPath = useMemo(() => mainFilePath(codeSteps), [codeSteps]);
-  const isFileCurrent = !!step && safeIndex === latestIndexForPath(codeSteps, shownPath);
+  const mainPath = useMemo(
+    () => showingCurrent
+      ? (
+          currentSnapshot?.files.find((file) => file.role === 'primary')?.path
+          || mainFilePath(codeSteps)
+        )
+      : mainFilePath(codeSteps),
+    [codeSteps, currentSnapshot, showingCurrent],
+  );
+  const isFileCurrent = !!step && (
+    showingCurrent || safeIndex === latestIndexForPath(codeSteps, shownPath)
+  );
   const pickFile = (path: string) => onIndexChange(latestIndexForPath(codeSteps, path));
 
   const [busy, setBusy] = useState(false);
@@ -74,10 +181,17 @@ export function Canvas({
 
   const rows = useMemo(() => {
     if (!step) return [];
+    if (showingCurrent) {
+      return String(step.code).split('\n').map((line: string, index: number) => ({
+        kind: 'unchanged',
+        line,
+        newLineNumber: index + 1,
+      }));
+    }
     // diffForStep returns unchanged/added/removed; the current file is the
     // non-removed rows, with 'added' lines tinted green like the mockup.
     return diffForStep(codeSteps, safeIndex).filter((r: any) => r.kind !== 'removed');
-  }, [codeSteps, safeIndex, step]);
+  }, [codeSteps, safeIndex, showingCurrent, step]);
 
   // Lean highlighting via Shiki (#11). The highlighter loads async once per session;
   // `hlReady` flips true when it's in, triggering a re-highlight. `tokenLines` is the
@@ -130,6 +244,13 @@ export function Canvas({
   // when viewing the shown file's current snapshot, so a reload still shows
   // SafeVerify ✓ (M24) — and it stays on the main proof, not a later scratch.
   const shownVerify = verify ?? (isFileCurrent ? persistedVerify ?? null : null);
+  const conversationBehind = Boolean(
+    showingCurrent
+    && currentSnapshot?.conversation
+    && currentSnapshot.conversation.files.length > 0
+    && !currentSnapshot.conversation.is_current,
+  );
+  const updater = currentSnapshot?.last_updated_session;
 
   return (
     <section className="canvas">
@@ -163,8 +284,63 @@ export function Canvas({
         </button>
       </div>
 
+      {scoped && revisionMode === 'historical' && (
+        <div className="revision-notice historical">
+          <span>
+            Historical snapshot from this conversation — not necessarily the current project version.
+          </span>
+          <button type="button" onClick={() => setRevisionMode('current')}>
+            View current
+          </button>
+        </div>
+      )}
+      {conversationBehind && (
+        <div className="revision-notice">
+          <span>
+            Updated in <strong>{updater?.title || 'another conversation'}</strong>
+            {currentSnapshot?.last_updated_at
+              ? ` on ${formatRevisionDate(currentSnapshot.last_updated_at)}`
+              : ''}. This conversation last worked on an earlier revision.
+          </span>
+          <div className="revision-actions">
+            <button type="button" onClick={() => setRevisionMode('historical')}>
+              View this conversation&apos;s version
+            </button>
+            {updater?.id && updater.id !== sessionId && onOpenSession && (
+              <button type="button" onClick={() => onOpenSession(updater.id)}>
+                Open updating conversation
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {scoped && showingCurrent && currentLoading && !step && (
+        <div className="revision-loading">Loading current project version…</div>
+      )}
+      {scoped && showingCurrent && currentError && (
+        <div className="revision-notice error">
+          <span>{currentError}</span>
+          {historicalSteps.length > 0 && (
+            <button type="button" onClick={() => setRevisionMode('historical')}>
+              View this conversation&apos;s version
+            </button>
+          )}
+        </div>
+      )}
+
       {mode === 'live' && sessionId ? (
-        <LiveEditor sessionId={sessionId} locked={isRunning} onSave={onSaveAndCheck} onVerify={onVerify} />
+        <LiveEditor
+          sessionId={sessionId}
+          locked={isRunning}
+          onSave={(content, path) => onSaveAndCheck(
+            content,
+            path,
+            scoped && showingCurrent
+              ? currentSnapshot?.revision_token || undefined
+              : undefined,
+          )}
+          onVerify={onVerify}
+        />
       ) : (
         <>
       {total > 0 && (
@@ -180,7 +356,9 @@ export function Canvas({
             ›
           </button>
           <span className="label">
-            Step {safeIndex + 1} of {total}
+            {showingCurrent
+              ? 'Current project version'
+              : `Step ${safeIndex + 1} of ${total}`}
             {step?.turn ? <span className="stepname"> · turn {step.turn}</span> : null}
             {step?.author === 'user' ? <span className="stepname"> · your edit</span> : null}
           </span>
@@ -190,7 +368,11 @@ export function Canvas({
       )}
 
       {!step ? (
-        <div className="canvas-empty">Lean code will appear here as Lea edits files.</div>
+        <div className="canvas-empty">
+          {scoped
+            ? 'This formalization has no attributed Lean file yet.'
+            : 'Lean code will appear here as Lea edits files.'}
+        </div>
       ) : (
         <div className="code-wrap">
           <pre className="code">
@@ -252,6 +434,16 @@ export function Canvas({
 }
 
 type FileMeta = { path: string; isScratch: boolean; latestIndex: number; count: number };
+
+function formatRevisionDate(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: parsed.getFullYear() === new Date().getFullYear() ? undefined : 'numeric',
+  });
+}
 
 function baseName(path: string): string {
   return path.split('/').pop() || path;

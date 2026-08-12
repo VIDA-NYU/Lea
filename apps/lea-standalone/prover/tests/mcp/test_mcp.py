@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 import lea.tools  # noqa: F401 — register built-ins so the collision test is meaningful
-from lea.mcp import MCPManager
+from lea.mcp import MCPManager, summarize_stderr
 from lea.registry import REGISTRY, build_toolset
 
 _FAILURES: list[str] = []
@@ -70,8 +70,31 @@ def test_no_servers_is_noop():
     check("empty manager start/stop is a no-op", True)
 
 
+def test_summarize_stderr_picks_the_actionable_line():
+    """A stdio crash arrives as a traceback whose LAST line is box-drawing, so the raw
+    tail tells the user nothing. The useful line is the innermost error (v2.5 E0b)."""
+    exception_group = """
+  + Exception Group Traceback (most recent call last):
+  |   File "/x/bin/lean-lsp-mcp", line 12, in <module>
+  |     sys.exit(main())
+  | ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+    |     raise ValueError(
+    | ValueError: Lean project path '/Users/x' must contain `lean-toolchain`.
+    +------------------------------------
+"""
+    picked = summarize_stderr(exception_group)
+    check("picks the innermost ValueError, not the ExceptionGroup",
+          picked.startswith("Lean project path"))
+    check("strips the exception class name", not picked.startswith("ValueError"))
+    check("drops the trailing box-drawing line", "+---" not in picked)
+    check("empty stderr yields empty summary", summarize_stderr("") == "")
+    check("no error line falls back to the last prose line",
+          summarize_stderr("starting up\nsomething odd happened") == "something odd happened")
+
+
 def main():
     print("mcp integration tests:")
+    test_summarize_stderr_picks_the_actionable_line()
     test_no_servers_is_noop()
     test_warn_and_continue_on_bad_server()
     test_stdio_roundtrip()

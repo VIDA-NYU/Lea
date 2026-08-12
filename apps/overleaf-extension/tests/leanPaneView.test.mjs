@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   aggregatePaneStatus,
+  buildPaneUseRelationships,
   buildLeanPaneTree,
   canEditPaneItem,
   canFormalizePaneItem,
@@ -12,15 +13,19 @@ import {
   formatBreakageAttribution,
   formatDependentOutcome,
   formatDependentsImpact,
+  formatLiteLatexText,
   formatRepairOutcome,
   formatLiteMath,
   formatPaneStatus,
+  githubImportMatchedTargets,
+  githubImportMatchedTargetKeys,
   hasInProgressItems,
   highlightLeanLine,
   overlayActiveTex,
   paneItemActions,
   paneItemToEditTarget,
   paneItemToFormalizeTarget,
+  paneItemToGithubImportTarget,
   paneProgressBucketForItem,
   paneProgressSegments,
   deriveShareControls,
@@ -30,6 +35,8 @@ import {
   reconcileDependentsImpact,
   shouldRefetchLeanPaneFiles,
   stillBrokenDependents,
+  stubbableItems,
+  formalizableItems,
   summarizePaneProgress,
   treeAncestorIdsForFile
 } from "../extension/leanPaneView.mjs";
@@ -41,7 +48,7 @@ test("formatPaneStatus maps known statuses and falls back to unknown", () => {
   assert.equal(formatPaneStatus("defined"), "defined");
   assert.equal(formatPaneStatus("disproved"), "counterexample");
   assert.equal(formatPaneStatus("in-progress"), "in progress");
-  assert.equal(formatPaneStatus("stale"), "stale");
+  assert.equal(formatPaneStatus("stale"), "out of date");
   assert.equal(formatPaneStatus("mixed"), "mixed");
   assert.equal(formatPaneStatus("nonsense"), "unknown");
   assert.equal(formatPaneStatus(undefined), "unknown");
@@ -86,16 +93,17 @@ test("hasInProgressItems detects any in-progress item", () => {
   assert.equal(hasInProgressItems(undefined), false);
 });
 
-test("canFormalizePaneItem requires a valid marker, an actionable state, and no active run", () => {
+test("canFormalizePaneItem keeps reruns available for settled items and blocks active runs", () => {
   const base = { formalizable: true, inProgress: false, status: "missing-stub" };
   assert.equal(canFormalizePaneItem(base), true);
   assert.equal(canFormalizePaneItem({ ...base, status: "stale" }), true);
   assert.equal(canFormalizePaneItem({ ...base, status: "invalid" }), true);
-  // Terminal-good states and running jobs are not re-formalizable from the pane.
-  assert.equal(canFormalizePaneItem({ ...base, status: "valid" }), false);
-  assert.equal(canFormalizePaneItem({ ...base, status: "defined" }), false);
-  assert.equal(canFormalizePaneItem({ ...base, status: "disproved" }), false);
+  // Terminal-good states remain explicitly re-formalizable.
+  assert.equal(canFormalizePaneItem({ ...base, status: "valid" }), true);
+  assert.equal(canFormalizePaneItem({ ...base, status: "defined" }), true);
+  assert.equal(canFormalizePaneItem({ ...base, status: "disproved" }), true);
   assert.equal(canFormalizePaneItem({ ...base, inProgress: true }), false);
+  assert.equal(canFormalizePaneItem({ ...base, status: "in-progress" }), false);
   // A malformed marker (no valid target) is not formalizable.
   assert.equal(canFormalizePaneItem({ ...base, formalizable: false }), false);
   assert.equal(canFormalizePaneItem(undefined), false);
@@ -160,7 +168,7 @@ test("paneItemActions promotes Repair over Re-formalize on a broken item and kee
   assert.deepEqual(actions.rail.map((action) => action.id), ["go-to-source", "chat", "view-in-lea"]);
 });
 
-test("paneItemActions leaves a settled valid item with no primary action", () => {
+test("paneItemActions keeps Re-formalize primary on a settled valid item", () => {
   const item = {
     formalizable: true,
     inProgress: false,
@@ -171,7 +179,7 @@ test("paneItemActions leaves a settled valid item with no primary action", () =>
     leanArtifactContent: "theorem main_theorem : True := by trivial"
   };
   const actions = paneItemActions(item);
-  assert.equal(actions.primary, null);
+  assert.deepEqual(actions.primary, { id: "formalize", label: "Re-formalize" });
   assert.deepEqual(actions.rail.map((action) => action.id), ["go-to-source", "chat", "view-in-lea"]);
   assert.deepEqual(actions.overflow.map((action) => action.id), ["edit"]);
 });
@@ -202,20 +210,104 @@ test("paneItemToFormalizeTarget shapes the /formalize payload from a pane item",
     label: "even_nat",
     naturalLanguageLatex: "A natural number is even...",
     targetUses: ["parity"],
-    targetContext: "Use Nat parity."
+    targetContext: "Use Nat parity.",
+    sourceFile: "sections/parity.tex",
+    sourceStartLine: 14,
+    sourceEndLine: 19,
+    sourceHash: "source-hash",
+    syntax: "comment"
   });
   assert.deepEqual(target, {
     targetKind: "definition",
     targetLabel: "even_nat",
     targetText: "A natural number is even...",
     targetUses: ["parity"],
-    targetContext: "Use Nat parity."
+    targetContext: "Use Nat parity.",
+    sourceFile: "sections/parity.tex",
+    sourceStartLine: 14,
+    sourceEndLine: 19,
+    sourceHash: "source-hash",
+    syntax: "comment"
   });
 
   const theorem = paneItemToFormalizeTarget({ leanKind: "theorem", label: "thm", naturalLanguageLatex: "X" });
   assert.equal(theorem.targetKind, "theorem");
   assert.deepEqual(theorem.targetUses, []);
   assert.equal(theorem.targetContext, "");
+});
+
+test("paneItemToGithubImportTarget keeps the stable label and current declaration separate", () => {
+  assert.deepEqual(
+    paneItemToGithubImportTarget({
+      leanKind: "theorem",
+      label: "stable_marker",
+      leanDeclarationName: "renamed_theorem",
+      naturalLanguageLatex: "Every x has P(x).",
+      sourceHash: "source-sha",
+    }),
+    {
+      targetKind: "theorem",
+      targetLabel: "stable_marker",
+      declarationName: "renamed_theorem",
+      displayTitle: "renamed_theorem",
+      statement: "Every x has P(x).",
+      sourceHash: "source-sha",
+    },
+  );
+});
+
+test("githubImportMatchedTargetKeys locks only matched declarations in importable files", () => {
+  const targets = [
+    { targetKind: "theorem", targetLabel: "stable_marker", declarationName: "renamed_theorem" },
+    { targetKind: "theorem", targetLabel: "conflict_marker", declarationName: "conflict_theorem" },
+    { targetKind: "definition", targetLabel: "fallback_marker", declarationName: "fallback_definition" },
+  ];
+  const preview = {
+    plan: {
+      files: [
+        {
+          disposition: "add",
+          destination_path: "Stable.lean",
+          declarations: [{ match: {
+            origin_key: "project-1:theorem:stable_marker",
+            declaration_name: "renamed_theorem",
+          } }],
+        },
+        {
+          disposition: "path_conflict",
+          destination_path: "Conflict.lean",
+          declarations: [{ match: {
+            origin_key: "project-1:theorem:conflict_marker",
+            declaration_name: "conflict_theorem",
+          } }],
+        },
+        {
+          disposition: "already_present",
+          destination_path: "Fallback.lean",
+          declarations: [{ match: {
+            origin_key: null,
+            declaration_name: "fallback_definition",
+          } }],
+        },
+      ],
+    },
+  };
+
+  assert.deepEqual(
+    githubImportMatchedTargetKeys(preview, targets).sort(),
+    ["definition:fallback_marker", "theorem:stable_marker"],
+  );
+  assert.deepEqual(
+    githubImportMatchedTargets(preview, targets).map((target) => ({
+      key: target.key,
+      displayTitle: target.displayTitle,
+      destinationPath: target.destinationPath,
+    })),
+    [
+      { key: "theorem:stable_marker", displayTitle: "renamed_theorem", destinationPath: "Stable.lean" },
+      { key: "definition:fallback_marker", displayTitle: "fallback_definition", destinationPath: "Fallback.lean" },
+    ],
+  );
 });
 
 test("buildLeanPaneTree groups files into a compact source tree", () => {
@@ -243,6 +335,73 @@ test("buildLeanPaneTree omits files with no manifest items and preserves item or
   assert.deepEqual(tree.files[0].items.map((item) => item.id), ["a", "b"]);
 });
 
+test("buildPaneUseRelationships resolves ordered uses and derives reverse edges by stable marker label", () => {
+  const base = {
+    id: "theorem:base:0",
+    label: "base",
+    leanDeclarationName: "base_after_manual_rename",
+    status: "valid",
+    targetUses: []
+  };
+  const middle = {
+    id: "theorem:middle:1",
+    label: "middle",
+    status: "stub-generated",
+    targetUses: ["base"]
+  };
+  const result = {
+    id: "theorem:result:2",
+    label: "result",
+    status: "invalid",
+    targetUses: ["middle", "outside_inventory"]
+  };
+
+  const relationships = buildPaneUseRelationships([base, middle, result]);
+  assert.deepEqual(
+    relationships.usesByItem.get(result).map((relationship) => ({
+      label: relationship.label,
+      itemId: relationship.item?.id || null,
+      status: relationship.status,
+      resolution: relationship.resolution
+    })),
+    [
+      { label: "middle", itemId: middle.id, status: "stub-generated", resolution: "resolved" },
+      { label: "outside_inventory", itemId: null, status: "unknown", resolution: "not-in-inventory" }
+    ]
+  );
+  assert.deepEqual(
+    relationships.usedByItem.get(base).map((relationship) => relationship.label),
+    ["middle"]
+  );
+  assert.deepEqual(
+    relationships.usedByItem.get(middle).map((relationship) => relationship.label),
+    ["result"]
+  );
+});
+
+test("buildPaneUseRelationships leaves duplicate labels ambiguous and handles cycles without traversal", () => {
+  const duplicateA = { id: "a", label: "duplicate", status: "valid", targetUses: [] };
+  const duplicateB = { id: "b", label: "duplicate", status: "invalid", targetUses: [] };
+  const source = { id: "source", label: "source", status: "valid", targetUses: ["duplicate"] };
+  const cycleA = { id: "cycle-a", label: "cycle_a", status: "valid", targetUses: ["cycle_b"] };
+  const cycleB = { id: "cycle-b", label: "cycle_b", status: "valid", targetUses: ["cycle_a", "cycle_b"] };
+
+  const relationships = buildPaneUseRelationships([duplicateA, duplicateB, source, cycleA, cycleB]);
+  const ambiguous = relationships.usesByItem.get(source)[0];
+  assert.equal(ambiguous.resolution, "ambiguous");
+  assert.equal(ambiguous.item, null);
+  assert.deepEqual(relationships.usedByItem.get(duplicateA), []);
+  assert.deepEqual(relationships.usedByItem.get(duplicateB), []);
+  assert.deepEqual(
+    relationships.usesByItem.get(cycleB).map((relationship) => relationship.item.id),
+    ["cycle-a", "cycle-b"]
+  );
+  assert.deepEqual(
+    relationships.usedByItem.get(cycleB).map((relationship) => relationship.item.id),
+    ["cycle-a", "cycle-b"]
+  );
+});
+
 test("aggregatePaneStatus applies file status precedence", () => {
   assert.equal(aggregatePaneStatus([{ status: "valid" }, { status: "in-progress" }]), "in-progress");
   assert.equal(aggregatePaneStatus([{ status: "valid" }, { status: "error" }, { status: "invalid" }]), "error");
@@ -265,7 +424,8 @@ test("paneProgressBucketForItem maps pane and companion statuses to progress buc
   for (const status of ["failed", "invalid", "error"]) {
     assert.equal(paneProgressBucketForItem({ status }), "failed");
   }
-  for (const status of ["missing-stub", "unformalized", "unknown", "stale", "in-progress", undefined, "new-weird-status"]) {
+  assert.equal(paneProgressBucketForItem({ status: "stale" }), "outOfDate");
+  for (const status of ["missing-stub", "unformalized", "unknown", "in-progress", undefined, "new-weird-status"]) {
     assert.equal(paneProgressBucketForItem({ status }), "unformalized");
   }
 });
@@ -285,6 +445,7 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
     success: 3,
     sorryStubbed: 0,
     failed: 1,
+    outOfDate: 0,
     unformalized: 4,
     inProgress: 0
   });
@@ -303,6 +464,7 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
     success: 6,
     sorryStubbed: 1,
     failed: 0,
+    outOfDate: 0,
     unformalized: 1,
     inProgress: 0
   });
@@ -316,6 +478,7 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
     success: 0,
     sorryStubbed: 2,
     failed: 0,
+    outOfDate: 0,
     unformalized: 1,
     inProgress: 0
   });
@@ -346,6 +509,24 @@ test("paneProgressSegments returns ordered nonzero segments with percentages", (
     ["sorry-stubbed", 2, 66.66666666666666, "Sorry-stubbed: 2 of 3, 66.7%"],
     ["unformalized", 1, 33.33333333333333, "Unformalized: 1 of 3, 33.3%"]
   ]);
+});
+
+test("pane progress gives stale items their own out-of-date segment", () => {
+  const summary = summarizePaneProgress([
+    { status: "valid" },
+    { status: "stale" },
+    { status: "missing-stub" }
+  ]);
+  assert.equal(summary.outOfDate, 1);
+  assert.equal(summary.unformalized, 1);
+  assert.deepEqual(
+    paneProgressSegments(summary).map((segment) => [segment.id, segment.count]),
+    [["success", 1], ["out-of-date", 1], ["unformalized", 1]]
+  );
+  assert.equal(
+    formatPaneProgressLabel("main.tex", summary),
+    "main.tex: 3 Lea items, 1 successful, 1 out of date, 1 unformalized."
+  );
 });
 
 test("formatPaneProgressLabel omits zero-count buckets and includes running count", () => {
@@ -387,6 +568,23 @@ test("parsePaneLatex splits inline and display math delimiters", () => {
     { type: "math", text: "a_n\\to 0", display: true },
     { type: "text", text: " now." }
   ]);
+
+  assert.deepEqual(parsePaneLatex([
+    "Before.",
+    "\\begin{align}",
+    "a &\\triangleq b \\\\",
+    "c &= d",
+    "\\end{align}",
+    "After."
+  ].join("\n")), [
+    { type: "text", text: "Before.\n" },
+    {
+      type: "math",
+      text: "\\begin{align}\na &\\triangleq b \\\\\nc &= d\n\\end{align}",
+      display: true
+    },
+    { type: "text", text: "\nAfter." }
+  ]);
 });
 
 test("parsePaneLatex leaves unmatched delimiters as readable text", () => {
@@ -407,11 +605,34 @@ test("formatLiteMath prettifies common theorem math without dependencies", () =>
     { type: "sub", text: "n+1" },
     { type: "text", text: " → α" }
   ]);
+
+  assert.deepEqual(formatLiteMath("f(x) \\triangleq x^2"), [
+    { type: "text", text: "f(x) ≜ x" },
+    { type: "sup", text: "2" }
+  ]);
 });
 
 test("formatLiteMath keeps unknown commands visible as fallback text", () => {
   assert.deepEqual(formatLiteMath("\\Spec R \\subseteq X"), [
-    { type: "text", text: "Spec R ⊆ X" }
+    { type: "text", text: "\\Spec R ⊆ X" }
+  ]);
+});
+
+test("formatLiteLatexText styles common prose and preserves unknown commands", () => {
+  assert.deepEqual(
+    formatLiteLatexText("A \\emph{locally \\textbf{finite}} family~uses \\Spec and \\eqref{eq:key}."),
+    [
+      { type: "text", text: "A ", marks: [] },
+      { type: "text", text: "locally ", marks: ["em"] },
+      { type: "text", text: "finite", marks: ["em", "strong"] },
+      { type: "text", text: " family\u00a0uses \\Spec and ", marks: [] },
+      { type: "text", text: "(eq:key)", marks: ["ref"] },
+      { type: "text", text: ".", marks: [] }
+    ]
+  );
+
+  assert.deepEqual(formatLiteLatexText("\\label{hidden}Cost: \\$5 \\& 10\\%."), [
+    { type: "text", text: "Cost: $5 & 10%.", marks: [] }
   ]);
 });
 
@@ -603,6 +824,46 @@ test("formatRepairOutcome covers every batch item state", () => {
     /skipped -- depends on failed repair of b\./
   );
   assert.match(formatRepairOutcome({ targetLabel: "c", state: "skipped", reason: "already_fixed" }), /already compiles/);
+});
+
+test("formatRepairOutcome is operation-aware for stub and formalize batches", () => {
+  // Running verb + terminal vocabulary track the batch operation.
+  assert.equal(formatRepairOutcome({ targetLabel: "t", state: "running" }, "stub"), "t: stubbing...");
+  assert.equal(formatRepairOutcome({ targetLabel: "t", state: "running" }, "formalize"), "t: formalizing...");
+  assert.equal(formatRepairOutcome({ targetLabel: "t", state: "stubbed" }, "stub"), "t: stub created.");
+  assert.equal(formatRepairOutcome({ targetLabel: "t", state: "formalized" }, "formalize"), "t: formalized and verified.");
+  assert.equal(formatRepairOutcome({ targetLabel: "t", state: "disproved" }, "formalize"), "t: counterexample found.");
+  assert.match(formatRepairOutcome({ targetLabel: "t", state: "failed", reason: "no key" }, "stub"), /stub failed -- no key/);
+  assert.match(formatRepairOutcome({ targetLabel: "t", state: "failed" }, "formalize"), /formalization failed/);
+  assert.match(
+    formatRepairOutcome({ targetLabel: "c", state: "skipped", reason: "depends_on_failed:b" }, "formalize"),
+    /skipped -- depends on failed formalization of b\./
+  );
+  // A stopped batch marks its unsettled items canceled, in any operation.
+  assert.equal(formatRepairOutcome({ targetLabel: "t", state: "canceled" }, "stub"), "t: stopped.");
+  assert.equal(formatRepairOutcome({ targetLabel: "t", state: "canceled" }, "formalize"), "t: stopped.");
+});
+
+test("stubbableItems / formalizableItems skip completed work in project-level batches", () => {
+  const items = [
+    { targetLabel: "fresh_thm", status: "missing-stub", leanKind: "theorem", formalizable: true },
+    { targetLabel: "fresh_def", status: "missing-stub", leanKind: "def", formalizable: true },
+    { targetLabel: "stubbed_thm", status: "stub-generated", leanKind: "theorem", formalizable: true },
+    { targetLabel: "broken_thm", status: "invalid", leanKind: "theorem", formalizable: true },
+    { targetLabel: "done_thm", status: "valid", leanKind: "theorem", formalizable: true },
+    { targetLabel: "running_thm", status: "missing-stub", leanKind: "theorem", formalizable: true, inProgress: true },
+    { targetLabel: "unmarked", status: "missing-stub", leanKind: "theorem", formalizable: false }
+  ];
+  // Stub: un-stubbed THEOREMS only -- no definitions, no already-stubbed, none
+  // in progress, none without a valid marker.
+  assert.deepEqual(stubbableItems(items).map((i) => i.targetLabel), ["fresh_thm"]);
+  // Formalize all: everything not yet verified -- fresh items (incl.
+  // definitions), sorry-stubs to complete, and broken items to re-formalize.
+  // A valid proof remains individually rerunnable but is not restarted in bulk.
+  assert.deepEqual(
+    formalizableItems(items).map((i) => i.targetLabel),
+    ["fresh_thm", "fresh_def", "stubbed_thm", "broken_thm"]
+  );
 });
 
 // --- Stale-offer reconciliation (docs/PLAN-self-repair-stale-offers.md) ----

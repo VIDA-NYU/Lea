@@ -23,6 +23,20 @@ messages, usage, and code-step metadata; git stores proof content under the
 prover workspace. Overleaf-created formalizations go through the same adapter, so
 they appear in the standalone UI and can be opened with a `?session=<id>` link.
 
+## Website
+
+The public site (landing page, install guide, blog) lives in
+[`public/`](public/README.md) and is a dependency-free static site.
+
+```sh
+npm run site:dev     # preview at http://localhost:4321, rebuilding on save
+npm run site:build   # write public/dist
+npm run site:test    # unit tests for the Markdown renderer
+```
+
+Adding a blog post means adding one Markdown file to `public/content/blog/`.
+Pushing to `main` publishes to GitHub Pages via `.github/workflows/site.yml`.
+
 ## Quick start
 
 You supply one provider API key; everything else is provisioned for you. Get a

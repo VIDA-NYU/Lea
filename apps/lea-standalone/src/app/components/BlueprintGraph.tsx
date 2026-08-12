@@ -1,108 +1,26 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getProjectGraph, type GraphNode, type ProjectGraph } from '../lib/api';
+// Layout geometry + status label/class strings are shared, framework-free, with the
+// Overleaf extension's blueprint view so both front ends lay the graph out identically
+// (one source of truth — see packages/lea-blueprint/blueprintLayout.mjs).
+import {
+  NODE_W,
+  NODE_H,
+  STATUS_LABEL,
+  computeLayout,
+  statusClass,
+  statusLabel,
+  truncate,
+} from '../../../../../packages/lea-blueprint/blueprintLayout.mjs';
 
 // The interactive blueprint graph (F7/D28/D29). Renders the derived dependency
 // graph: shape encodes `kind` (definition → box, lemma/theorem → ellipse), color
 // encodes the live-derived `status`, edges are `uses` dependencies. Clicking a node
 // opens a detail panel listing the sessions that built it (deep-link into the chat).
 //
-// Layout is a hand-rolled layered DAG: a node's level is the longest chain of
-// dependencies beneath it, so foundations sit at the bottom and the theorems that
-// build on them rise to the top. No external graph library.
-
-const NODE_W = 176;
-const NODE_H = 54;
-const H_GAP = 36;
-const V_GAP = 72;
-const PAD = 28;
-
-const STATUS_LABEL: Record<string, string> = {
-  planned: 'Planned',
-  stated: 'Stated',
-  ready: 'Ready',
-  proved: 'Proved',
-  failed: 'Failed',
-};
-
-// A `proved` node splits on the audit-grade verdict: SafeVerify-cleared reads as a
-// sealed "Proved ✓"; a Lean-check-only pass reads as "check ✓ · audit pending" (the
-// node compiles + has no sorry, but the kernel/axiom audit hasn't confirmed it).
-function statusLabel(n: GraphNode): string {
-  if (n.status === 'proved') return n.verified ? 'Proved ✓' : 'check ✓ · audit pending';
-  return STATUS_LABEL[n.status] ?? n.status;
-}
-
-// Status class for color, refined for proved: audited keeps the strong green;
-// unaudited gets a paler, dashed treatment so it doesn't read as fully sealed.
-function statusClass(n: GraphNode): string {
-  if (n.status === 'proved') return n.verified ? 'bp-proved bp-audited' : 'bp-proved bp-unaudited';
-  return `bp-${n.status}`;
-}
-
-interface Placed {
-  node: GraphNode;
-  x: number;
-  y: number;
-}
-
-interface Layout {
-  placed: Map<string, Placed>;
-  width: number;
-  height: number;
-  order: string[];
-}
-
-// Longest-dependency-path level per node (memoized, cycle-guarded), then a centered
-// row per level. Edge `from → to` means `from` depends on `to`, so `to` is deeper.
-function computeLayout(graph: ProjectGraph): Layout {
-  const keys = new Set(graph.nodes.map((n) => n.key));
-  const deps = new Map<string, string[]>();
-  for (const n of graph.nodes) deps.set(n.key, n.uses.filter((u) => keys.has(u)));
-
-  const level = new Map<string, number>();
-  const visiting = new Set<string>();
-  const levelOf = (key: string): number => {
-    if (level.has(key)) return level.get(key)!;
-    if (visiting.has(key)) return 0; // break cycles defensively
-    visiting.add(key);
-    let lv = 0;
-    for (const d of deps.get(key) ?? []) lv = Math.max(lv, levelOf(d) + 1);
-    visiting.delete(key);
-    level.set(key, lv);
-    return lv;
-  };
-  for (const n of graph.nodes) levelOf(n.key);
-
-  const maxLevel = graph.nodes.reduce((m, n) => Math.max(m, level.get(n.key) ?? 0), 0);
-  const byLevel = new Map<number, GraphNode[]>();
-  for (const n of graph.nodes) {
-    const lv = level.get(n.key) ?? 0;
-    (byLevel.get(lv) ?? byLevel.set(lv, []).get(lv)!).push(n);
-  }
-
-  const rowWidth = (count: number) => count * NODE_W + (count - 1) * H_GAP;
-  const width = Math.max(
-    NODE_W + PAD * 2,
-    ...Array.from(byLevel.values(), (row) => rowWidth(row.length) + PAD * 2),
-  );
-  const height = PAD * 2 + (maxLevel + 1) * NODE_H + maxLevel * V_GAP;
-
-  const placed = new Map<string, Placed>();
-  const order: string[] = [];
-  for (const [lv, row] of byLevel) {
-    const startX = (width - rowWidth(row.length)) / 2;
-    const y = PAD + (maxLevel - lv) * (NODE_H + V_GAP);
-    row.forEach((node, i) => {
-      placed.set(node.key, { node, x: startX + i * (NODE_W + H_GAP), y });
-      order.push(node.key);
-    });
-  }
-  return { placed, width, height, order };
-}
-
-function truncate(text: string, max = 22): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
+// Layout is a hand-rolled layered DAG (in the shared module): a node's level is the
+// longest chain of dependencies beneath it, so foundations sit at the bottom and the
+// theorems that build on them rise to the top. No external graph library.
 
 export function BlueprintGraph({
   projectId,

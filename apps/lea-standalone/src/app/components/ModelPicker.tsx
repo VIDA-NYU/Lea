@@ -15,11 +15,22 @@ export function ModelPicker({
   catalog,
   featured,
   onChange,
+  placeholder = 'Select model',
+  openSignal,
 }: {
   value: string;
   catalog: ModelCatalogEntry[];
   featured: ModelOption[];
   onChange: (value: string) => void;
+  // Button label when no model is set (e.g. "Inherit coordinator's model" on the
+  // Sub-agents page, where an empty value means inherit).
+  placeholder?: string;
+  // Open the picker from OUTSIDE: bump this number and the overlay opens (v2.4, so a
+  // diagnostic's "Change model" button lands on the picker itself rather than
+  // dropping the user on the Settings page to go and find it). A counter rather than
+  // a boolean so repeated requests re-open it — with a boolean, closing the picker
+  // and asking again would be a no-op, since the prop never changed.
+  openSignal?: number;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -73,10 +84,17 @@ export function ModelPicker({
     listRef.current?.querySelector('.mm-row.active')?.scrollIntoView({ block: 'nearest' });
   }, [active]);
 
+  // An outside request to open (see `openSignal`). Guarded on a truthy value so the
+  // initial mount — where the counter is 0/undefined — doesn't pop the picker open
+  // at every page load.
+  useEffect(() => {
+    if (openSignal) setOpen(true);
+  }, [openSignal]);
+
   return (
     <>
       <button className="chip model model-trigger" onClick={() => setOpen(true)} title="Change model">
-        {value || 'Select model'} <span className="caret">▾</span>
+        {value || placeholder} <span className="caret">▾</span>
       </button>
 
       {open && (

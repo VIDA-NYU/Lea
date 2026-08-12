@@ -6,10 +6,23 @@ import { StatsPage } from './components/StatsPage';
 import { SettingsPage } from './components/SettingsPage';
 import { ProjectWindow } from './components/ProjectWindow';
 import { SkillFactory } from './components/SkillFactory';
+import { SubagentFactory } from './components/SubagentFactory';
+import { McpFactory } from './components/McpFactory';
+import { ToolFactory } from './components/ToolFactory';
+import { SkillsMcpPicker } from './components/SkillsMcpPicker';
+import { useFactories } from './stores/factories';
+import { ProjectsHub } from './components/ProjectsHub';
 import { NewProjectDialog } from './components/NewProjectDialog';
 import { SearchOverlay } from './components/SearchOverlay';
 import { sortCodeSteps } from './lib/timeline.mjs';
-import { pickInitialSession, stripSessionParam } from './sessionDeepLink.mjs';
+import { inferComposerFormalizationScope } from './lib/formalizations.mjs';
+import { parseSlashCommand } from './lib/slashCommands.js';
+import { runSlashCommand } from './lib/slashCommandRunner';
+import {
+  pickInitialSession,
+  readDeepLinkFormalizationId,
+  stripNavigationParams,
+} from './sessionDeepLink.mjs';
 import { useProofSession } from './stores/proofSession';
 import { useSessions } from './stores/sessions';
 import { useProjects } from './stores/projects';
@@ -24,14 +37,18 @@ import {
   type RunStatus,
   type SessionDetail,
   type StatusEvent,
+  type Formalization,
   createRun,
-  createSessionInProject,
   getSession,
+  getFormalization,
+  listProjectFormalizations,
   interruptRun,
   leanCheckSession,
   submitApproval,
   verifySession,
   writeSessionFile,
+  updateSessionTitle,
+  RevisionConflictError,
 } from './lib/api';
 
 const SELECTED_SESSION_KEY = 'lea:selectedSessionId';
@@ -72,6 +89,7 @@ export default function App() {
   const setRunStatus = useProofSession((s) => s.setRunStatus);
   const setRunStatusById = useProofSession((s) => s.setRunStatusById);
   const setRunResultKindById = useProofSession((s) => s.setRunResultKindById);
+  const setRunFocusById = useProofSession((s) => s.setRunFocusById);
   const approvals = useProofSession((s) => s.approvals);
   const setApprovals = useProofSession((s) => s.setApprovals);
   const approvalBusy = useProofSession((s) => s.approvalBusy);
@@ -103,6 +121,24 @@ export default function App() {
   const setSafeVerify = useProofSession((s) => s.setSafeVerify);
   const setVerifySurface = useProofSession((s) => s.setVerifySurface);
   const setGoalSurface = useProofSession((s) => s.setGoalSurface);
+  const formalizations = useProofSession((s) => s.formalizations);
+  const setFormalizations = useProofSession((s) => s.setFormalizations);
+  const formalizationScope = useProofSession((s) => s.formalizationScope);
+  const setFormalizationScope = useProofSession((s) => s.setFormalizationScope);
+  const composerScopeOverride = useProofSession((s) => s.composerScopeOverride);
+  const setComposerScopeOverride = useProofSession((s) => s.setComposerScopeOverride);
+  const currentFormalizationSnapshot = useProofSession(
+    (s) => s.currentFormalizationSnapshot,
+  );
+  const setCurrentFormalizationSnapshot = useProofSession(
+    (s) => s.setCurrentFormalizationSnapshot,
+  );
+  const bumpFormalizationRefresh = useProofSession(
+    (s) => s.bumpFormalizationRefresh,
+  );
+  const setCanvasRevisionMode = useProofSession(
+    (s) => s.setCanvasRevisionMode,
+  );
   // Model state (active model, catalog, featured, key-missing) lives in the model
   // store (R4); ChatThread reads it directly. App only kicks off the startup load
   // (in the restore effect) + re-sync on returning from Settings.
@@ -133,14 +169,34 @@ export default function App() {
         savedId: window.localStorage.getItem(SELECTED_SESSION_KEY),
         sessions: loaded,
       });
-      if (source === 'deep-link') {
+      const deepLinkedFormalizationId = readDeepLinkFormalizationId(
+        window.location.search,
+      );
+      if (source === 'deep-link' || deepLinkedFormalizationId) {
         // Strip the param so a later reload falls back to the saved-session restore.
-        const cleaned = stripSessionParam(window.location.search);
+        const cleaned = stripNavigationParams(window.location.search);
         window.history.replaceState(
           {},
           '',
           `${window.location.pathname}${cleaned}${window.location.hash}`,
         );
+      }
+      if (deepLinkedFormalizationId) {
+        const formalization = await getFormalization(deepLinkedFormalizationId);
+        const targetSessionId =
+          source === 'deep-link'
+            ? initialSessionId
+            : formalization.sessions[0]?.id;
+        if (targetSessionId && targetSessionId !== initialSessionId) {
+          await loadSession(targetSessionId);
+        }
+        if (targetSessionId) {
+          setFormalizationScope(formalization.id);
+          setCanvasCollapsed(false);
+        } else if (formalization.project_id) {
+          await openProject(formalization.project_id);
+          setView('project');
+        }
       }
       if (initialSessionId) {
         try {
@@ -157,10 +213,9 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Subscribe once to the session-list feed. Each `sessions_changed` event just
-  // re-fetches the list; this only swaps the sidebar array and never touches the
-  // open session's detail/streaming state (selection is keyed by id), so it can't
-  // clobber a live run or steal focus. The browser EventSource auto-reconnects if
+  // Subscribe once to the session-list feed. Each `sessions_changed` event
+  // refreshes the sidebar and invalidates the selected formalization's canonical
+  // snapshot. It never rewrites the open session timeline. The browser EventSource auto-reconnects if
   // the capped server stream recycles. A session started anywhere — including an
   // Overleaf-driven formalization the companion creates via POST /api/runs —
   // appears live without a manual refresh.
@@ -168,6 +223,7 @@ export default function App() {
     const source = new EventSource('/api/sessions/events');
     source.addEventListener('sessions_changed', () => {
       refreshSessions().catch(() => {});
+      bumpFormalizationRefresh();
     });
     return () => source.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -206,25 +262,81 @@ export default function App() {
   const handleStartProjectProof = async (message: string) => {
     const content = message.trim();
     if (!content || !currentProject) return;
-    const projectId = currentProject.id;
     setError(undefined);
     try {
-      const session = await createSessionInProject(projectId, content.slice(0, 120));
       resetForNewSession(); // clear the proof view for the fresh session
-      const run = await createRun(content, session.id);
+      const run = await createRun(
+        content,
+        undefined,
+        useModel.getState().model,
+        {
+          project_slug: currentProject.slug,
+          project_title: currentProject.title,
+          project_namespace: currentProject.namespace,
+          new_formalization: { display_title: content.slice(0, 120) },
+        },
+      );
       setSelectedSessionId(run.session_id);
       setCurrentRunId(run.run_id);
       setRunStatus('running');
       setRunStatusById((prev) => ({ ...prev, [run.run_id]: 'running' }));
       setRunResultKindById((prev) => ({ ...prev, [run.run_id]: null }));
+      setRunFocusById((prev) => ({
+        ...prev,
+        [run.run_id]: run.focus_formalization_id,
+      }));
       setIsRunning(true);
       setMessages([run.message]);
+      setFormalizations(run.formalization ? [run.formalization] : []);
+      setFormalizationScope(run.focus_formalization_id || 'new');
       window.localStorage.setItem(SELECTED_SESSION_KEY, run.session_id);
       setView('main');
       await refreshSessions();
       attachStream(run.run_id, run.session_id);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to start the proof.');
+    }
+  };
+
+  const handleStartProjectFormalization = async (
+    formalization: Formalization,
+    message?: string,
+  ) => {
+    if (!currentProject) return;
+    const content = (
+      message
+      || `Continue working on ${formalization.declaration_name || formalization.display_title}.`
+    ).trim();
+    setError(undefined);
+    try {
+      resetForNewSession();
+      const run = await createRun(
+        content,
+        undefined,
+        useModel.getState().model,
+        {
+          project_slug: currentProject.slug,
+          project_title: currentProject.title,
+          project_namespace: currentProject.namespace,
+          focus_formalization_id: formalization.id,
+        },
+      );
+      setSelectedSessionId(run.session_id);
+      setCurrentRunId(run.run_id);
+      setRunStatus('running');
+      setRunStatusById({ [run.run_id]: 'running' });
+      setRunResultKindById({ [run.run_id]: null });
+      setRunFocusById({ [run.run_id]: run.focus_formalization_id });
+      setIsRunning(true);
+      setMessages([run.message]);
+      setFormalizations([formalization]);
+      setFormalizationScope(formalization.id);
+      window.localStorage.setItem(SELECTED_SESSION_KEY, run.session_id);
+      setView('main');
+      await refreshSessions();
+      attachStream(run.run_id, run.session_id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to start the conversation.');
     }
   };
 
@@ -242,6 +354,31 @@ export default function App() {
     loadSession(sessionId).catch((err) => setError(err instanceof Error ? err.message : String(err)));
   };
 
+  const handleOpenFormalization = async (formalizationId: string) => {
+    try {
+      const formalization = await getFormalization(formalizationId);
+      const recentSession = formalization.sessions[0];
+      if (recentSession) {
+        closeProject();
+        setView('main');
+        await loadSession(recentSession.id);
+        setFormalizationScope(formalization.id);
+        setCanvasCollapsed(false);
+      } else if (formalization.project_id) {
+        await openProject(formalization.project_id);
+        setView('project');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to open formalization.');
+    }
+  };
+
+  const handleRenameSession = async (nextTitle: string) => {
+    if (!selectedSessionId) return;
+    await updateSessionTitle(selectedSessionId, nextTitle);
+    await refreshSessions();
+  };
+
   // F9: ⌘K (and Ctrl+K) toggles the global search overlay, from any view.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -257,23 +394,17 @@ export default function App() {
   const resetForNewSession = () => {
     closeStream();
     setSelectedSessionId(undefined);
-    setMessages([]);
-    setCodeSteps([]);
-    setStatusEvents([]);
-    setCodeIndex(0);
-    setIsRunning(false);
-    setCurrentRunId(undefined);
-    setRunStatus(undefined);
-    setRunStatusById({});
-    setRunResultKindById({});
-    setApprovals([]);
-    setApprovalBusy(false);
-    setError(undefined);
+    // One call, not a hand-maintained list of setters. The list version silently
+    // rotted: every slice added to the store had to be remembered here too, and the
+    // ones that weren't stayed glued to the screen across "New session" — a
+    // `step_error` card from the previous session survived until a manual refresh,
+    // and the sub-agent maps had the same hole. This merge is the proof: upstream
+    // grew the same list from 18 setters to 23 while I was removing it, and all five
+    // additions (formalizations, scope, composer override, snapshot, revision mode)
+    // are covered by SESSION_SCOPED without anyone having to remember them here.
+    // `setDraft` stays: the composer draft is App state, not store state.
+    useProofSession.getState().resetSessionScoped();
     setDraft('');
-    setEditedPath(undefined);
-    setSafeVerify(null);
-    setVerifySurface(null);
-    setGoalSurface(null);
     window.localStorage.removeItem(SELECTED_SESSION_KEY);
   };
 
@@ -283,15 +414,83 @@ export default function App() {
     setError(undefined);
     setEditedPath(undefined);
     setApprovals((prev) => prev.filter((a) => a.decision));
+
+    // Slash command? Dispatch through the command framework instead of starting a run.
+    // 'action' commands (e.g. /compact) do their work and return; 'prompt' commands fall
+    // through to a normal run with their expanded template.
+    const parsed = parseSlashCommand(content);
+    if (parsed) {
+      setDraft('');
+      try {
+        const dispatch = await runSlashCommand(parsed.name, {
+          sessionId: selectedSessionId,
+          args: parsed.args,
+        });
+        if (!dispatch.handled) {
+          setError(`Unknown command: /${parsed.name}`);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : `Failed to run /${parsed.name}.`);
+      }
+      return;
+    }
+
     try {
-      const run = await createRun(content, selectedSessionId);
+      let scopeCandidates = formalizations;
+      if (!composerScopeOverride && selectedSession?.project_id) {
+        try {
+          const projectItems = await listProjectFormalizations(selectedSession.project_id);
+          const byId = new Map(
+            [...formalizations, ...projectItems.formalizations].map((item) => [item.id, item]),
+          );
+          scopeCandidates = [...byId.values()];
+        } catch {
+          // Scope inference remains useful with the session-local list when the
+          // project list is temporarily unavailable.
+        }
+      }
+      const resolvedScope =
+        composerScopeOverride
+        || inferComposerFormalizationScope({
+          message: content,
+          formalizations: scopeCandidates,
+          viewedScope: formalizationScope,
+        });
+      setFormalizationScope(resolvedScope);
+      setCanvasRevisionMode('current');
+      const scope =
+        resolvedScope === 'new'
+          ? { new_formalization: { display_title: content.slice(0, 120) } }
+          : resolvedScope === 'project'
+            ? undefined
+            : { focus_formalization_id: resolvedScope };
+      const run = await createRun(
+        content,
+        selectedSessionId,
+        useModel.getState().model,
+        scope,
+      );
       setSelectedSessionId(run.session_id);
       setCurrentRunId(run.run_id);
       setRunStatus('running');
       setRunStatusById((prev) => ({ ...prev, [run.run_id]: 'running' }));
       setRunResultKindById((prev) => ({ ...prev, [run.run_id]: null }));
+      setRunFocusById((prev) => ({
+        ...prev,
+        [run.run_id]: run.focus_formalization_id,
+      }));
       setIsRunning(true);
       setMessages((current) => [...current, run.message]);
+      if (run.formalization) {
+        setFormalizations([
+          ...formalizations.filter((item) => item.id !== run.formalization!.id),
+          run.formalization,
+        ]);
+      }
+      if (run.focus_formalization_id) {
+        setFormalizationScope(run.focus_formalization_id);
+      }
+      setComposerScopeOverride(null);
       setDraft('');
       window.localStorage.setItem(SELECTED_SESSION_KEY, run.session_id);
       await refreshSessions();
@@ -325,6 +524,7 @@ export default function App() {
 
   const selectStep = (idx: number) => {
     setCodeIndex(idx);
+    setCanvasRevisionMode('historical');
     setCanvasCollapsed(false);
   };
 
@@ -333,32 +533,86 @@ export default function App() {
   // The canvas passes the file it's showing (#10); fall back to the latest step's
   // file for the single-file case. So Edit/lean_check and SafeVerify act on the
   // *chosen* file, not always the newest (possibly scratch) one.
-  const handleSaveAndCheck = async (content: string, path?: string): Promise<CheckOutcome> => {
+  const handleSaveAndCheck = async (
+    content: string,
+    path?: string,
+    baseRevision?: string,
+  ): Promise<CheckOutcome> => {
     const target = path ?? sortedCode[sortedCode.length - 1]?.path;
     if (!selectedSessionId || !target) return { status: 'error', detail: 'No file to edit.' };
-    await writeSessionFile(selectedSessionId, target, content, 'Manual edit from the canvas.');
-    const result = await leanCheckSession(selectedSessionId, target);
+    const focusId =
+      formalizationScope === 'project' || formalizationScope === 'new'
+        ? undefined : formalizationScope;
+    try {
+      await writeSessionFile(
+        selectedSessionId,
+        target,
+        content,
+        'Manual edit from the canvas.',
+        focusId,
+        baseRevision || currentFormalizationSnapshot?.revision_token || undefined,
+      );
+    } catch (err) {
+      if (err instanceof RevisionConflictError) {
+        setCanvasRevisionMode('current');
+        bumpFormalizationRefresh();
+        setError(err.message);
+      }
+      throw err;
+    }
+    const result = await leanCheckSession(selectedSessionId, target, focusId);
     await reconcile(selectedSessionId);
     await refreshSessions();
     setEditedPath(target); // after reconcile (which clears it) — surface the nudge
     setSafeVerify(null); // the edit invalidates any prior SafeVerify verdict
+    setCanvasRevisionMode('current');
+    bumpFormalizationRefresh();
     return result;
   };
 
   const handleVerify = async (path?: string): Promise<CheckOutcome> => {
     const target = path ?? sortedCode[sortedCode.length - 1]?.path;
     if (!selectedSessionId) return { status: 'error', detail: 'No session.' };
-    const result = await verifySession(selectedSessionId, target);
+    const focusId =
+      formalizationScope === 'project' || formalizationScope === 'new'
+        ? undefined : formalizationScope;
+    const result = await verifySession(selectedSessionId, target, focusId);
     setSafeVerify({ status: result.status, detail: result.detail });
+    bumpFormalizationRefresh();
     return result;
   };
 
   // F9: the overlay rides alongside every view so ⌘K works from anywhere.
+  // E0e: `/skills` and `/mcp` open this over whatever view is showing, so it is shared
+  // alongside `searchOverlay` rather than living inside one page.
+  const skillsMcpPickerKind = useFactories((s) => s.skillsMcpPicker);
+  const setSkillsMcpPicker = useFactories((s) => s.setSkillsMcpPicker);
+  const skillsMcpPicker =
+    skillsMcpPickerKind && selectedSession?.id ? (
+      <SkillsMcpPicker
+        kind={skillsMcpPickerKind}
+        sessionId={selectedSession.id}
+        onClose={() => setSkillsMcpPicker(null)}
+      />
+    ) : null;
+
   const searchOverlay = (
     <SearchOverlay
       open={searchOpen}
       onClose={() => setSearchOpen(false)}
       onOpenSession={handleOpenSearchResult}
+      onOpenFormalization={handleOpenFormalization}
+    />
+  );
+
+  // The new-project dialog must be mountable from any view that can trigger it (the main
+  // shell AND the Projects hub) — otherwise `setNewProjectOpen(true)` from the hub sets
+  // state with nothing rendered to show it. Shared like `searchOverlay`.
+  const newProjectDialog = (
+    <NewProjectDialog
+      open={newProjectOpen}
+      onClose={() => setNewProjectOpen(false)}
+      onCreate={handleCreateProject}
     />
   );
 
@@ -366,10 +620,12 @@ export default function App() {
     return (
       <>
         {searchOverlay}
+        {skillsMcpPicker}
         <ProjectWindow
           project={currentProject}
           onBack={leaveProject}
           onStartProof={handleStartProjectProof}
+          onStartFormalization={handleStartProjectFormalization}
           onOpenSession={handleOpenProjectSession}
         />
       </>
@@ -378,13 +634,52 @@ export default function App() {
     return (
       <>
         {searchOverlay}
+        {skillsMcpPicker}
         <SkillFactory onBack={() => setView('main')} />
+      </>
+    );
+  if (view === 'subagents')
+    return (
+      <>
+        {searchOverlay}
+        {skillsMcpPicker}
+        <SubagentFactory onBack={() => setView('main')} />
+      </>
+    );
+  if (view === 'mcp')
+    return (
+      <>
+        {searchOverlay}
+        {skillsMcpPicker}
+        <McpFactory onBack={() => setView('main')} />
+      </>
+    );
+  if (view === 'tools')
+    return (
+      <>
+        {searchOverlay}
+        {skillsMcpPicker}
+        <ToolFactory onBack={() => setView('main')} />
+      </>
+    );
+  if (view === 'projects-hub')
+    return (
+      <>
+        {searchOverlay}
+        {skillsMcpPicker}
+        {newProjectDialog}
+        <ProjectsHub
+          onBack={() => setView('main')}
+          onOpenProject={openProjectWindow}
+          onNewProject={() => setNewProjectOpen(true)}
+        />
       </>
     );
   if (view === 'stats')
     return (
       <>
         {searchOverlay}
+        {skillsMcpPicker}
         <StatsPage onBack={() => setView('main')} />
       </>
     );
@@ -392,6 +687,7 @@ export default function App() {
     return (
       <>
         {searchOverlay}
+        {skillsMcpPicker}
         <SettingsPage
           onBack={() => {
             setView('main');
@@ -405,11 +701,8 @@ export default function App() {
   return (
     <div className="lea-app">
       {searchOverlay}
-      <NewProjectDialog
-        open={newProjectOpen}
-        onClose={() => setNewProjectOpen(false)}
-        onCreate={handleCreateProject}
-      />
+        {skillsMcpPicker}
+      {newProjectDialog}
       <div className={`app ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
         <Sidebar
           runningSessionId={isRunning ? selectedSessionId : undefined}
@@ -423,9 +716,25 @@ export default function App() {
           }}
           onSelectProject={openProjectWindow}
           onNewProject={() => setNewProjectOpen(true)}
+          onOpenProjectsHub={() => {
+            closeProject();
+            setView('projects-hub');
+          }}
           onOpenSkills={() => {
             closeProject();
             setView('skills');
+          }}
+          onOpenSubagents={() => {
+            closeProject();
+            setView('subagents');
+          }}
+          onOpenMcp={() => {
+            closeProject();
+            setView('mcp');
+          }}
+          onOpenTools={() => {
+            closeProject();
+            setView('tools');
           }}
           onOpenSearch={() => setSearchOpen(true)}
           onOpenSettings={() => setView('settings')}
@@ -443,15 +752,23 @@ export default function App() {
             sidebarCollapsed={sidebarCollapsed}
             onExpandSidebar={() => setSidebarCollapsed(false)}
             session={selectedSession}
+            onSelectSession={(id) => {
+              closeProject();
+              loadSession(id).catch((err) => setError(err instanceof Error ? err.message : String(err)));
+            }}
             onSelectStep={selectStep}
             onDecide={handleDecide}
             onOpenSettings={() => setView('settings')}
+            onOpenLibrary={(focus) =>
+              setView(focus === 'subagents' ? 'subagents' : focus === 'skills' ? 'skills' : 'mcp')
+            }
             draft={draft}
             onDraftChange={setDraft}
             onSubmit={handleSubmit}
             onInterrupt={handleInterrupt}
             canvasCollapsed={canvasCollapsed}
             onToggleCanvas={() => setCanvasCollapsed((v) => !v)}
+            onRenameSession={handleRenameSession}
           />
 
           {!canvasCollapsed && (
@@ -471,6 +788,12 @@ export default function App() {
             onClose={() => setCanvasCollapsed(true)}
             onSaveAndCheck={handleSaveAndCheck}
             onVerify={handleVerify}
+            onOpenSession={(id) => {
+              closeProject();
+              loadSession(id).catch((err) =>
+                setError(err instanceof Error ? err.message : String(err)),
+              );
+            }}
           />
         </div>
       </div>

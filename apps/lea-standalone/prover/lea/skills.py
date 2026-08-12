@@ -11,13 +11,40 @@ from pathlib import Path
 
 from .errors import SkillError
 
+# Directories the AgentSkills standard puts beside an entry point. Their presence is what
+# marks a skill as multi-file, and therefore advertised rather than injected.
+_RESOURCE_DIRS = ("references", "scripts", "assets")
+
+
+def _resource_listing(skill_dir: Path) -> list[str]:
+    """Relative paths of a multi-file skill's resources, or [] if it has none."""
+    found: list[str] = []
+    for sub in _RESOURCE_DIRS:
+        root = skill_dir / sub
+        if not root.is_dir():
+            continue
+        found.extend(sorted(str(p.relative_to(skill_dir)) for p in root.rglob("*")
+                            if p.is_file()))
+    return found
+
 
 def load_skills(paths: list[str]) -> str:
-    """Read each skill file and return a single block to append to the prompt.
+    """Read each skill and return a single block to append to the prompt.
 
-    Each file's content is placed under a `## Skill: <stem>` header, in the order
-    given. Paths are resolved relative to the current working directory. Returns
-    "" for an empty list. Raises SkillError if a file is missing or unreadable.
+    **Two modes, chosen by what is on disk (v2.5 H3).**
+
+    A single-file skill is INJECTED whole, exactly as before — that is what Lea's own
+    small always-on skills are, and nothing about them changes.
+
+    A skill that ships `references/` (or `scripts/`/`assets/`) beside its entry point is
+    ADVERTISED instead: the entry point plus a list of its resources and where they live,
+    for the agent to `read_file` on demand. This is the AgentSkills progressive-disclosure
+    contract, and it is not optional — a real skill's references run to hundreds of KB
+    (`lean4-skills` ships ~690 KB across 41 files, some 170k tokens), so concatenating
+    them is not a worse choice, it is an impossible one.
+
+    Paths are resolved relative to the current working directory. Returns "" for an empty
+    list. Raises SkillError if an entry point is missing or unreadable.
     """
     if not paths:
         return ""
@@ -28,5 +55,14 @@ def load_skills(paths: list[str]) -> str:
             text = path.read_text()
         except OSError as e:
             raise SkillError(f"could not read skill {p!r}: {e}") from e
-        blocks.append(f"## Skill: {path.stem}\n{text.strip()}")
+        name = path.parent.name if path.name.lower() == "skill.md" else path.stem
+        resources = _resource_listing(path.parent)
+        block = f"## Skill: {name}\n{text.strip()}"
+        if resources:
+            listing = "\n".join(f"- {path.parent / r}" for r in resources)
+            block += (
+                f"\n\nThis skill has reference material you can open with `read_file` "
+                f"when you need it — do not assume its contents:\n{listing}"
+            )
+        blocks.append(block)
     return "\n\n" + "\n\n".join(blocks)

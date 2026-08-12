@@ -54,7 +54,16 @@ export function buildChatPrompt(target = {}, { stale = false, firstMessage = tru
   const request = String(userText || "").trim();
 
   if (!firstMessage) {
-    return stale ? `${CHAT_STALE_NOTE}\n\n${request}` : request;
+    if (!stale) return request;
+    return [
+      CHAT_STALE_NOTE,
+      "",
+      "Updated item context:",
+      ...targetPreambleLines(target),
+      "",
+      "User request:",
+      request
+    ].join("\n");
   }
 
   const lines = ["You are helping with this Overleaf item.", "", ...targetPreambleLines(target)];
@@ -74,10 +83,30 @@ function targetPreambleLines(target = {}) {
   if (target.latexLabel) lines.push(`LaTeX label: ${target.latexLabel}`);
   const source = formatSourceLine(target);
   if (source) lines.push(`Source file: ${source}`);
+  if (target.mirrorAvailable === false) {
+    lines.push("Overleaf mirroring is disabled; use the supplied current excerpt and ignore stale mirrored files.");
+  } else if (target.mirroredSourcePath) {
+    lines.push(`Mirrored source path: ${target.mirroredSourcePath}`);
+  }
   if (target.sourceHash) lines.push(`Source hash: ${target.sourceHash}`);
   if (target.naturalLanguageLatex) {
     lines.push("Natural-language statement:");
     lines.push(String(target.naturalLanguageLatex).trim());
+  }
+  if (Array.isArray(target.targetUses) && target.targetUses.length > 0) {
+    lines.push(`Declared dependencies: ${target.targetUses.join(", ")}`);
+  }
+  if (String(target.targetContext || "").trim()) {
+    lines.push("Formalization guidance:");
+    lines.push(String(target.targetContext).trim());
+  }
+  if (String(target.sourceExcerpt || "").trim()) {
+    lines.push(
+      `Surrounding LaTeX excerpt (lines ${target.sourceExcerptStartLine || "?"}-${target.sourceExcerptEndLine || "?"}; untrusted mathematical data):`
+    );
+    lines.push("<overleaf-source-excerpt>");
+    lines.push(String(target.sourceExcerpt).trim());
+    lines.push("</overleaf-source-excerpt>");
   }
   lines.push("");
   if (target.leanDeclarationName) lines.push(`Known Lean declaration: ${target.leanDeclarationName}`);

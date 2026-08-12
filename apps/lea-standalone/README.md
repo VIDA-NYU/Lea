@@ -160,26 +160,21 @@ cd adapter
 ./.venv/bin/python -m pytest
 ```
 
-## Upgrading An Existing Checkout
+## Upgrading An Existing Checkout (database migrations)
 
-The app database is created from the authoritative schema in `adapter/app/db.py`
-with `CREATE TABLE IF NOT EXISTS`. There are no in-place schema migrations; this
-local app treats the database as disposable/rebuildable.
+The database is **versioned with real Alembic migrations** and is **not** disposable —
+since v2.3 SQL owns your proof content, so "just reset it" means "delete your proofs."
+Do **not** `npm run reset:local` to get past a schema change; that wipes sessions and
+proofs.
 
-When pulling a schema-changing update, the simplest fix is:
-
-```sh
-npm run reset:local
-```
-
-Preview first:
+Instead, just pull and start the adapter — pending migrations apply automatically on
+startup, after snapshotting your DB first:
 
 ```sh
-npm run reset:local -- --dry-run
+git pull
+npm run setup            # only if dependencies changed; safe to run anyway
+npm run start:adapter    # (or npm run dev:ui) — migrations run on startup
 ```
 
-This clears local sessions, proofs, logs, and SQLite state while keeping installed
-dependencies and caches. For surgical data preservation, inspect the failing table
-and recreate only that feature table from `init_db()`, but do not drop
-`sessions`, `runs`, `code_steps`, or `messages` unless you are intentionally
-discarding run history.
+Full details — how it works, verifying the revision, manual upgrades, rollback from a
+snapshot, and the revision history — are in **[docs/MIGRATIONS.md](docs/MIGRATIONS.md)**.

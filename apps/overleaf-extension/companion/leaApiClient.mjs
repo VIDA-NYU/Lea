@@ -10,9 +10,10 @@ const TOOL_APPROVAL_DECISION = "always_session";
 // done.status values the adapter emits (see bridge._FINISH_STATUS + run_lea):
 //   proved | disproved | needs_review | answered | max_turns | cancelled | failed
 // For a *formalization* job, "proved" and "disproved" are completed checked work;
-// "answered" finished cleanly but proved nothing. "success" is accepted only as a
-// backward-compatible alias for older adapter test doubles.
-const SUCCESS_DONE_STATUS = new Set(["proved", "disproved", "success"]);
+// "answered" finished cleanly but proved nothing. The old "success" alias (kept
+// for pre-vocabulary test doubles) was removed once the integration harness
+// (tests/integration/) began asserting the real wire vocabulary.
+const SUCCESS_DONE_STATUS = new Set(["proved", "disproved"]);
 
 function toNonNegativeNumber(value) {
   const n = Number(value);
@@ -113,6 +114,24 @@ export function fetchAdapterSettings({ fetchImpl, baseUrl }) {
   });
 }
 
+export function fetchAdapterModelCatalog({ fetchImpl, baseUrl }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/models`, {
+    method: "GET",
+    headers: buildHeaders(null),
+  });
+}
+
+export function fetchAdapterModelRequirements({ fetchImpl, baseUrl, model }) {
+  return fetchJson(
+    fetchImpl,
+    `${baseUrl}/api/models/requirements?model=${encodeURIComponent(String(model || ""))}`,
+    {
+      method: "GET",
+      headers: buildHeaders(null),
+    }
+  );
+}
+
 export function putAdapterSettings({ fetchImpl, baseUrl, body }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/settings`, {
     method: "PUT",
@@ -133,16 +152,18 @@ export function fetchAdapterUsageStats({ fetchImpl, baseUrl }) {
   });
 }
 
-// Mirror the Overleaf project's .tex sources into the matching adapter project's
+// Mirror the Overleaf project's .tex/.sty/.cls sources into the matching adapter project's
 // `.lea/files/overleaf/` (resolved by slug, get-or-create — same slug the run uses).
 // The adapter reconciles synchronously and defers the git commit, so this returns
-// quickly; `files` is `[{ path, content }]` (.tex only). Best-effort: a transport
+// quickly; `files` is `[{ path, content }]`. Best-effort: a transport
 // failure surfaces as `{ ok:false }` and the caller logs/ignores it.
-export function mirrorProjectTexFiles({ fetchImpl, baseUrl, slug, files }) {
+export function mirrorProjectTexFiles({ fetchImpl, baseUrl, slug, files, mode = "reconcile" }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/mirror`, {
     method: "POST",
     headers: buildHeaders(null, { "Content-Type": "application/json" }),
-    body: JSON.stringify({ source: "overleaf", files: files || [] }),
+    // mode "upsert" (PLAN 3.2) writes only the provided files — the active-
+    // buffer tier; "reconcile" treats the payload as the full truth set.
+    body: JSON.stringify({ source: "overleaf", mode, files: files || [] }),
   });
 }
 
@@ -150,6 +171,69 @@ export function mirrorProjectTexFiles({ fetchImpl, baseUrl, slug, files }) {
 // The adapter's by-slug routes mirror the Lea UI's by-id export/share surface but
 // are keyed by the same document slug the mirror/run paths use. None of them ever
 // create a project — an unknown slug is a 404 ("nothing to export yet").
+
+// Structured artifact index (PLAN-system-hardening 4.1/4.2): which declaration
+// lives in which file, as recorded by the adapter's run finalizer. The primary
+// artifact-identification source; registry-markdown diffing is the fallback.
+export function fetchProjectArtifactsBySlug({ fetchImpl, baseUrl, slug }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/artifacts`, {
+    method: "GET",
+    headers: buildHeaders(null),
+  });
+}
+
+// Blueprint dependency graph with live-derived status (FEATURE-overleaf-blueprint-view):
+// the parsed `.lea/blueprint.md` nodes + `uses` edges, each node enriched with its
+// status/verified/session attribution. The read-only viewer in the Lean pane reads this.
+export function fetchProjectGraphBySlug({ fetchImpl, baseUrl, slug }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/graph`, {
+    method: "GET",
+    headers: buildHeaders(null),
+  });
+}
+
+// Populate the blueprint from the project's formalized artifacts (the "Generate from
+// formalized theorems" button). Additive + idempotent on the adapter side. Returns
+// { added, skipped, warnings, graph }.
+export function generateProjectBlueprintBySlug({ fetchImpl, baseUrl, slug }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/blueprint/generate`, {
+    method: "POST",
+    headers: buildHeaders(null, { "Content-Type": "application/json" }),
+    body: "{}",
+  });
+}
+
+// Ledger-side target evidence (PLAN-system-hardening 4.4): per-declaration
+// file existence / sorry scan / newest check verdict, straight from the
+// adapter's own records. One of the two sources the ledger status engine
+// merges (the other is the companion's job overlay).
+export function fetchProjectTargetStatusBySlug({ fetchImpl, baseUrl, slug, declarations }) {
+  const query = encodeURIComponent((declarations || []).join(","));
+  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/target-status?declarations=${query}`, {
+    method: "GET",
+    headers: buildHeaders(null),
+  });
+}
+
+// Single-writer retirement (PLAN-system-hardening 4.5): a retry asks the adapter
+// to delete the previous proof and record that change. If the retry does not
+// verify, the adapter restores its SQL-owned verified snapshot (falling back to
+// project Git history for legacy/manual files).
+export function retireProjectArtifactBySlug({ fetchImpl, baseUrl, slug, path }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/artifacts/retire`, {
+    method: "POST",
+    headers: buildHeaders(null, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ path }),
+  });
+}
+
+export function restoreProjectArtifactBySlug({ fetchImpl, baseUrl, slug, path, retireCommit }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/artifacts/restore`, {
+    method: "POST",
+    headers: buildHeaders(null, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ path, retire_commit: retireCommit }),
+  });
+}
 
 export function fetchProjectShareStatus({ fetchImpl, baseUrl, slug }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/share`, {
@@ -215,6 +299,52 @@ export function pushProjectBySlug({ fetchImpl, baseUrl, slug }) {
   });
 }
 
+// Additive GitHub project import (inverse of Share): analyze, confirm, then poll.
+export function previewGithubImportBySlug({
+  fetchImpl,
+  baseUrl,
+  slug,
+  repositoryUrl,
+  targets = [],
+  projectName = null,
+  namespace = null,
+}) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/github-imports/preview`, {
+    method: "POST",
+    headers: buildHeaders(null, { "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      repository_url: repositoryUrl,
+      targets,
+      project_name: projectName,
+      namespace,
+    }),
+  });
+}
+
+export function confirmGithubImportBySlug({ fetchImpl, baseUrl, slug, previewId }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/github-imports`, {
+    method: "POST",
+    headers: buildHeaders(null, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ preview_id: previewId }),
+  });
+}
+
+export function getGithubImportBySlug({ fetchImpl, baseUrl, slug, importId }) {
+  return fetchJson(
+    fetchImpl,
+    `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/github-imports/${encodeURIComponent(importId)}`,
+    { method: "GET", headers: buildHeaders(null) }
+  );
+}
+
+export function syncProjectFormalizationTargetsBySlug({ fetchImpl, baseUrl, slug, targets = [] }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/formalizations/sync`, {
+    method: "POST",
+    headers: buildHeaders(null, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ targets }),
+  });
+}
+
 // Pull `filename="…"` out of a Content-Disposition header (the adapter always
 // quotes it). Exported for tests.
 export function filenameFromContentDisposition(header) {
@@ -256,7 +386,22 @@ export async function exportProjectZipBySlug({ fetchImpl, baseUrl, slug }) {
   };
 }
 
-export async function startApiRun({ fetchImpl, baseUrl, apiKey, message, sessionId = null, autonomous = true, projectSlug = null, projectTitle = null, projectNamespace = null, origin = null, originUrl = null }) {
+export async function startApiRun({
+  fetchImpl,
+  baseUrl,
+  apiKey,
+  message,
+  sessionId = null,
+  autonomous = true,
+  projectSlug = null,
+  projectTitle = null,
+  projectNamespace = null,
+  origin = null,
+  originUrl = null,
+  focusFormalizationId = null,
+  focusSourceHash = null,
+  newFormalization = null,
+}) {
   // `autonomous: true` tells the adapter to run with no per-tool approval gate and
   // the non-interactive `default` prompt variant, so the Overleaf job formalizes
   // end-to-end with zero human interaction. (The client also auto-resolves any
@@ -280,6 +425,9 @@ export async function startApiRun({ fetchImpl, baseUrl, apiKey, message, session
   }
   if (origin) body.origin = origin;
   if (originUrl) body.origin_url = originUrl;
+  if (focusFormalizationId) body.focus_formalization_id = focusFormalizationId;
+  if (focusSourceHash) body.focus_source_hash = focusSourceHash;
+  if (newFormalization) body.new_formalization = newFormalization;
   return fetchJson(fetchImpl, `${baseUrl}/api/runs`, {
     method: "POST",
     headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
@@ -336,9 +484,13 @@ export function fetchApiSessionDetail({ fetchImpl, baseUrl, apiKey, sessionId })
 // no-op save. Used by the Overleaf lean pane's manual-edit surface
 // (docs/FEATURE-overleaf-lean-pane-manual-edit.md) -- the same primitive the
 // standalone canvas already uses, just called from a second client.
-export function writeApiSessionFile({ fetchImpl, baseUrl, apiKey, sessionId, path, content, note }) {
+export function writeApiSessionFile({
+  fetchImpl, baseUrl, apiKey, sessionId, path, content, note,
+  formalizationId = null,
+}) {
   const body = { path, content };
   if (note) body.note = note;
+  if (formalizationId) body.formalization_id = formalizationId;
   return fetchJson(fetchImpl, `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/file`, {
     method: "POST",
     headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
@@ -353,11 +505,15 @@ export function writeApiSessionFile({ fetchImpl, baseUrl, apiKey, sessionId, pat
 // records a *new* code_step attributed to that author -- used for
 // re-verifying a project dependent that the edit itself didn't touch. See
 // docs/PLAN-overleaf-lean-pane-manual-edit.md Phase 1/2.
-export function runApiSessionLeanCheck({ fetchImpl, baseUrl, apiKey, sessionId, path, author, summary }) {
+export function runApiSessionLeanCheck({
+  fetchImpl, baseUrl, apiKey, sessionId, path, author, summary,
+  formalizationId = null,
+}) {
   const body = {};
   if (path) body.path = path;
   if (author) body.author = author;
   if (summary) body.summary = summary;
+  if (formalizationId) body.formalization_id = formalizationId;
   return fetchJson(fetchImpl, `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/lean-check`, {
     method: "POST",
     headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
@@ -415,9 +571,9 @@ export async function streamApiRun({
     return { ok: false, error: `Could not open run event stream: ${error instanceof Error ? error.message : String(error)}` };
   }
   if (!response?.ok || !response.body) {
-    // httpStatus lets the caller tell a transient rejection apart from a real
-    // failure — 409 means the adapter's single-run slot is held by another run
-    // (see runApiProofJob's re-attach loop), not that this run's proof failed.
+    // httpStatus lets the caller tell an HTTP rejection (real failure — the
+    // Phase 2 adapter has no busy/finished 409s) apart from a dropped
+    // transport (httpStatus null), which runApiProofJob retries.
     return { ok: false, httpStatus: response?.status ?? null, error: `Run event stream returned HTTP ${response?.status ?? "?"}.` };
   }
 
@@ -478,9 +634,8 @@ export async function streamApiRun({
 // until the job timeout.
 const MAX_RUN_ROW_MISSES = 5;
 
-// De-synchronize concurrent waiters: queued runs polling in lockstep would
-// all re-attach at the same instant when the slot frees; jitter gives earlier
-// arrivals a fair shot and avoids a thundering herd on the adapter.
+// De-synchronize concurrent re-attachers after a transport drop (e.g. the
+// adapter restarting mid-run) so they don't hammer it in lockstep.
 function retryDelayWithJitter(baseMs) {
   return baseMs + Math.floor(Math.random() * baseMs * 0.5);
 }
@@ -504,14 +659,31 @@ function waitBeforeRetry(ms, signal) {
   });
 }
 
-// Read one run's { status, result_kind, result_detail } off the session detail.
-// Best-effort: null when the adapter or the row can't be reached.
+// Read one run's { id, status, result_kind, result_detail } — the cheap poll the
+// busy-wait / stream-drop retry loop makes every ~3s. Hits the dedicated
+// GET /api/runs/{run_id} (v2.3 item 16), which reads a single run row instead of
+// the full session detail (messages + code_steps + status_events + usage) the old
+// path paid on every tick — a self-inflicted DB-contention source under concurrency.
+// A 404 for that route on an older adapter falls back to the session-detail scan so
+// a companion pointed at a pre-item-16 backend still works. Best-effort: null when
+// the adapter or the row can't be reached.
 async function fetchApiRunRow({ fetchImpl, baseUrl, apiKey, sessionId, runId }) {
-  if (!sessionId) return null;
-  const detail = await fetchApiSessionDetail({ fetchImpl, baseUrl, apiKey, sessionId });
-  if (!detail.ok || !detail.body) return null;
-  const runs = Array.isArray(detail.body.runs) ? detail.body.runs : [];
-  return runs.find((r) => r && r.id === runId) || null;
+  if (!runId) return null;
+  const res = await fetchJson(fetchImpl, `${baseUrl}/api/runs/${encodeURIComponent(runId)}`, {
+    method: "GET",
+    headers: buildHeaders(apiKey),
+  });
+  if (res.ok && res.body) return res.body;
+  // 404 here is ambiguous: an unknown run id (nothing to fall back to), OR an old
+  // adapter that lacks the route. Only try the legacy scan when we have a session
+  // to scan; a bare unknown-run 404 stays null.
+  if (res.status === 404 && sessionId) {
+    const detail = await fetchApiSessionDetail({ fetchImpl, baseUrl, apiKey, sessionId });
+    if (!detail.ok || !detail.body) return null;
+    const runs = Array.isArray(detail.body.runs) ? detail.body.runs : [];
+    return runs.find((r) => r && r.id === runId) || null;
+  }
+  return null;
 }
 
 // High-level: start a run and drive it to completion, returning the shape the
@@ -533,6 +705,9 @@ export async function runApiProofJob({
   projectNamespace = null,
   origin = null,
   originUrl = null,
+  focusFormalizationId = null,
+  focusSourceHash = null,
+  newFormalization = null,
   appendLog = null,
   logPath = null,
   onEvent = null,
@@ -543,7 +718,22 @@ export async function runApiProofJob({
     if (appendLog && logPath) await appendLog(logPath, line);
   };
 
-  const start = await startApiRun({ fetchImpl, baseUrl, apiKey, message, sessionId, autonomous, projectSlug, projectTitle, projectNamespace, origin, originUrl });
+  const start = await startApiRun({
+    fetchImpl,
+    baseUrl,
+    apiKey,
+    message,
+    sessionId,
+    autonomous,
+    projectSlug,
+    projectTitle,
+    projectNamespace,
+    origin,
+    originUrl,
+    focusFormalizationId,
+    focusSourceHash,
+    newFormalization,
+  });
   if (!start.ok) return { ok: false, timedOut: false, error: start.error };
 
   const runId = start.body?.run_id;
@@ -561,35 +751,40 @@ export async function runApiProofJob({
   }, Math.max(1, timeoutMs));
   if (typeof timer.unref === "function") timer.unref();
 
-  // The adapter runs one prover job at a time and only *starts* a run when its
-  // event stream is first attached, so a 409 on the attach means "the single-run
-  // slot is held by another run" — NOT that this run failed. The created run
-  // stays `pending` adapter-side and is perfectly startable later, so wait and
-  // re-attach until the slot frees (bounded by the timeout timer above). A 409
-  // can also mean "run already completed" (something else saw it through), so
-  // consult the run row to pick retry vs. resolve — never fail on 409 alone.
+  // Phase 2 contract (PLAN-system-hardening): the adapter queues runs
+  // server-side and the events endpoint is a pure observer — attach is
+  // idempotent, a queued run streams `queued` frames, and a finished run
+  // replays to a terminal `done`. The old 409 busy/finished disambiguation is
+  // gone; any HTTP rejection of the attach is a real failure.
   //
-  // The same run-row consultation also covers a DROPPED stream (open transport
-  // error, mid-stream disconnect, or a clean close without a `done` frame):
-  // the run may well still be executing adapter-side, so failing the job here
-  // both abandoned a live, billing run and mislabeled its eventual outcome.
-  // Re-attach while the row reads pending/running; adopt the row's outcome
-  // once terminal. Only a non-409 HTTP rejection of the attach, or a stream
-  // that DID deliver a terminal status, is a real, immediate failure.
+  // What remains client-side is transport robustness: a DROPPED stream (open
+  // error, mid-stream disconnect, or close without a `done` frame) does not
+  // mean the run failed — it may still be executing adapter-side, so failing
+  // the job here would abandon a live, billing run and mislabel its outcome.
+  // Consult the run row: re-attach while it reads pending/running, adopt its
+  // outcome once terminal, and give up (with a best-effort interrupt) only
+  // when the adapter is unreachable past MAX_RUN_ROW_MISSES.
+  let loggedQueued = false;
+  const observeEvent = async (type, data) => {
+    if (type === "queued" && !loggedQueued) {
+      loggedQueued = true;
+      await log(`[backend] Lea adapter queued this run (position ${Number.isFinite(data?.position) ? data.position : "?"}).\n`);
+    }
+    if (onEvent) await onEvent(type, data);
+  };
+
   let outcome;
-  let loggedBusyWait = false;
   let loggedStreamDrop = false;
   let rowMisses = 0;
   try {
     for (;;) {
       outcome = await streamApiRun({
         fetchImpl, baseUrl, apiKey, runId, maxTurns, autoApprove,
-        signal: abort.signal, onEvent, onProgressUpdated,
+        signal: abort.signal, onEvent: observeEvent, onProgressUpdated,
       });
       if (outcome.ok || outcome.aborted) break;
-      const busy409 = outcome.httpStatus === 409;
       const streamDropped = outcome.httpStatus == null && !outcome.doneStatus;
-      if (!busy409 && !streamDropped) break;
+      if (!streamDropped) break;
 
       const row = await fetchApiRunRow({ fetchImpl, baseUrl, apiKey, sessionId: newSessionId, runId });
       const rowStatus = String(row?.status || "").toLowerCase();
@@ -606,11 +801,13 @@ export async function runApiProofJob({
         };
         break;
       }
-      if (!row && streamDropped) {
-        // Stream AND status read both failing: the adapter is unreachable.
+      if (!rowStatus) {
+        // A missing row and a malformed row with no status are equally useless
+        // for deciding whether the detached run is still live. Bound both cases;
+        // otherwise an older/incompatible adapter can keep this loop alive forever.
         rowMisses += 1;
         if (rowMisses >= MAX_RUN_ROW_MISSES) {
-          await log("[backend] Lea adapter is unreachable; giving up on this run and requesting an interrupt.\n");
+          await log("[backend] Lea run status is unavailable; giving up on this run and requesting an interrupt.\n");
           interruptApiRun({ fetchImpl, baseUrl, apiKey, runId }).catch(() => {});
           break;
         }
@@ -618,11 +815,7 @@ export async function runApiProofJob({
         rowMisses = 0;
       }
 
-      if (busy409 && !loggedBusyWait) {
-        loggedBusyWait = true;
-        await log("[backend] Lea adapter is busy (another run is active); waiting for the run slot...\n");
-      }
-      if (streamDropped && !loggedStreamDrop) {
+      if (!loggedStreamDrop) {
         loggedStreamDrop = true;
         await log("[backend] Run event stream dropped while the run is still live; re-attaching...\n");
       }
@@ -646,6 +839,7 @@ export async function runApiProofJob({
       doneStatus: outcome?.doneStatus || null,
       resultKind: outcome?.resultKind || null,
       resultDetail: outcome?.resultDetail || null,
+      formalizationId: start.body?.focus_formalization_id || start.body?.formalization?.id || null,
       error: "Lea adapter run timed out.",
       ...usage,
     };
@@ -658,6 +852,7 @@ export async function runApiProofJob({
     doneStatus: outcome.doneStatus,
     resultKind: outcome.resultKind || null,
     resultDetail: outcome.resultDetail || null,
+    formalizationId: start.body?.focus_formalization_id || start.body?.formalization?.id || null,
     error: outcome.ok ? undefined : outcome.error,
     ...usage,
   };

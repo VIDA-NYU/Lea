@@ -6,11 +6,15 @@ whitelisted axioms — catching `sorry`, `axiom`/`opaque` smuggling,
 `native_decide`, `local notation` shadows, `abbrev` redefinitions, and
 `partial`/`unsafe` tricks that a plain compile lets through.
 
-It is *comparison-style*: it checks a *submission* file against a *target*
-signature. `interface.verify(path)` derives the target from the proof's own main
-theorem (header + `:= by sorry`), so the check is universal — it catches a
-tampered *proof*. (Catching a tampered *statement* would need a separately
-trusted target; a later follow-up.)
+It is *comparison-style*: it checks a *submission* file against a *target*. The
+target is the submission with every theorem/lemma proof body replaced by `sorry`
+and its imports + `def`s kept (`sorry_target`), so it compiles even for a project
+file with its own vocabulary, and SafeVerify audits *every* theorem's type + the
+`def` bodies in one pass — catching a tampered *proof* or a redefined supporting
+`def`. (Catching a tampered *statement* would need a separately trusted target —
+the target here is still derived from the submission, so a weakened statement is
+inherited by the target and passes; pinning a trusted statement is a human/spec
+responsibility, not something a Lean-level checker can close.)
 
 This is the low-level subsystem (parallels `lsp_daemon.py`): it returns plain
 `(ok, detail)` tuples and knows nothing about the typed events — `interface.py`
@@ -31,11 +35,23 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import threading
 from pathlib import Path
+
+from .imports import direct_imports
 
 PROVER_ROOT = Path(__file__).resolve().parent.parent
 SAFE_VERIFY_DIR = PROVER_ROOT / "third_party" / "SafeVerify"
 WORKSPACE = PROVER_ROOT / "workspace"
+
+# D74/H9 — SafeVerify is the single heaviest operation (~two full Mathlib
+# compiles + a kernel replay). `interface.verify` used to lean on the adapter's
+# run lock for serialization; that lock is being deleted (v2.3), so bound the
+# fan-out here where the expensive subprocesses actually launch, guarding every
+# caller of `verify_proof` regardless of entry point. Default 2 mirrors the cold
+# `lean_check` bound (D74); raise via env for a beefier host.
+_SAFEVERIFY_CONCURRENCY = max(1, int(os.environ.get("LEA_SAFEVERIFY_CONCURRENCY", "2")))
+_verify_sem = threading.BoundedSemaphore(_SAFEVERIFY_CONCURRENCY)
 
 
 # --- availability -----------------------------------------------------------
@@ -78,6 +94,79 @@ def theorem_signature(code: str) -> str | None:
 _NAMESPACE_RE = re.compile(r"(?m)^[ \t]*namespace[ \t]+([\w.]+)[ \t]*$")
 
 
+# Top-level declaration boundaries — a line starting (column 0) with a Lean
+# top-level keyword or an attribute. `sorry_target` splits the file at these so it
+# can rewrite each theorem/lemma proof body while leaving everything else verbatim.
+_DECL_BOUNDARY_RE = re.compile(
+    r"(?m)^(?=@\[|attribute\b|set_option\b|import\b|open\b|namespace\b|end\b|section\b|"
+    r"variable\b|variables\b|universe\b|noncomputable\b|private\b|protected\b|scoped\b|"
+    r"local\b|theorem\b|lemma\b|def\b|abbrev\b|instance\b|structure\b|inductive\b|"
+    r"class\b|opaque\b|example\b|axiom\b)"
+)
+
+# A block that is a `theorem`/`lemma` (after optional attributes/modifiers) — only
+# these have their proof body replaced by `sorry` in the target.
+_THM_BLOCK_RE = re.compile(
+    r"(?s)^(?:@\[[^\]]*\]\s*)*(?:(?:private|protected|scoped|local)\s+)*(?:theorem|lemma)\b"
+)
+
+
+def sorry_target(code: str, *, imports: bool = True) -> str:
+    """Turn a full proof file into a SafeVerify **target**: the same file with every
+    top-level ``theorem``/``lemma`` proof body replaced by ``:= by sorry``, and
+    everything else — imports, ``open``s, namespaces, and ``def`` bodies — kept
+    verbatim.
+
+    This replaces the old bare-signature target (just the last theorem's header). Two
+    bugs that fixes:
+
+      * **The target now compiles.** A structured project file defines its own
+        vocabulary (``def HasDiscrepancyBoundUpTo …``); a theorem referencing it in a
+        target that carried only ``import Mathlib`` + the lone signature failed with
+        "unknown identifier". Carrying the whole file's imports + defs fixes it.
+      * **Every theorem is audited, not just the last.** SafeVerify already iterates
+        *all* target declarations, so one properly-populated target checks every
+        theorem's type against the submission in a single compile — no per-theorem loop.
+
+    Keeping ``def`` bodies intact also lets SafeVerify enforce its "definition bodies
+    must match" rule, so the submission can't silently redefine a name the statement
+    depends on. Other declarations (instances, examples, structures) are left verbatim:
+    the target is structurally identical to the submission apart from theorem bodies, so
+    any auto-generated names line up between the two compiles.
+
+    ``imports=False`` drops the submission's own ``import`` lines, so the caller can
+    supply a **trusted** prelude instead (:func:`trusted_target_import_prelude`). That
+    matters: copying the submission's imports verbatim would let an untrusted module
+    establish the meaning of names appearing in the target's signatures — the target is
+    supposed to be the part we trust. A def whose dependencies were dropped this way
+    fails to compile, which surfaces as a target-compile error, never a false pass.
+
+    Limitation (shared with :func:`theorem_signature`): the body delimiter is the first
+    ``:=`` in a declaration, so a theorem whose *type* contains ``:=`` (e.g. a ``let`` in
+    the type) is split wrong and the target won't compile — reported as a target-compile
+    error, never a false pass.
+    """
+    starts = [m.start() for m in _DECL_BOUNDARY_RE.finditer(code)]
+    if not starts:
+        return code
+    if starts[0] != 0:
+        starts.insert(0, 0)
+    spans = [(starts[i], starts[i + 1] if i + 1 < len(starts) else len(code))
+             for i in range(len(starts))]
+    out: list[str] = []
+    for s, e in spans:
+        block = code[s:e]
+        if not imports and block.lstrip().startswith("import "):
+            continue
+        if _THM_BLOCK_RE.match(block):
+            idx = block.find(":=")
+            if idx != -1:
+                out.append(block[:idx].rstrip() + " := by sorry\n\n")
+                continue
+        out.append(block)
+    return "".join(out)
+
+
 def namespace_context(code: str) -> tuple[str, str]:
     """The `namespace …` wrapper(s) around the proof, as ``(open_block, close_block)``.
 
@@ -93,6 +182,36 @@ def namespace_context(code: str) -> tuple[str, str]:
     open_block = "".join(f"namespace {n}\n" for n in names) + "\n"
     close_block = "\n" + "".join(f"end {n}\n" for n in reversed(names))
     return open_block, close_block
+
+
+# A target may import only immutable dependencies plus already-built Lea project
+# siblings. Copying an arbitrary model-authored module into the trusted target
+# would defeat SafeVerify's import-superset defense against type redefinitions.
+_TRUSTED_TARGET_IMPORT_ROOTS = frozenset(
+    {"Init", "Lean", "Std", "Batteries", "Mathlib", "Lea"}
+)
+
+
+def trusted_target_import_prelude(code: str) -> str:
+    """Direct imports safe to reproduce in a target derived from ``code``.
+
+    The previous target always used ``import Mathlib``. Because SafeVerify
+    requires the submission's transitive imports to cover the target's closure,
+    that accidentally made every targeted submission unverifiable. Reusing only
+    trusted direct imports keeps the same superset check, but makes its baseline
+    the proof's actual dependency closure rather than the Mathlib barrel.
+
+    `Lea.*` modules are the project's already-built sibling artifacts. The replay
+    path already exposes exactly that build directory through `_replay_env`; they
+    are needed when a project theorem's *statement* mentions a sibling definition.
+    Unknown package roots are deliberately omitted, so they cannot establish the
+    trusted meaning of names in the target signature.
+    """
+    imports: list[str] = []
+    for module in direct_imports(code):
+        if module.split(".", 1)[0] in _TRUSTED_TARGET_IMPORT_ROOTS:
+            imports.append(module)
+    return "".join(f"import {module}\n" for module in imports)
 
 
 # --- the grader (recovered from eval/utils/verify.py) -----------------------
@@ -208,32 +327,35 @@ def verify_proof(
     submission_olean = scratch / f"{stem}_submission.olean"
     report_path = scratch / f"{stem}_report.json"
 
-    try:
-        ok, out = _compile_to_olean(target_src, target_olean, lake_project, compile_timeout)
-        if not ok:
-            return False, f"Target compile failed: {out}"
-
-        ok, out = _compile_to_olean(submission_src, submission_olean, lake_project, compile_timeout)
-        if not ok:
-            return False, f"Submission compile failed: {out}"
-
+    # Held across both compiles + the replay (D74/H9). The scratch paths above are
+    # cheap to name outside the gate; only the subprocess launches are bounded.
+    with _verify_sem:
         try:
-            result = subprocess.run(
-                ["lake", "exe", "safe_verify", "-v",
-                 str(target_olean.resolve()), str(submission_olean.resolve()),
-                 "--disallow-partial", "-s", str(report_path.resolve())],
-                capture_output=True, text=True, timeout=safe_verify_timeout,
-                cwd=str(SAFE_VERIFY_DIR), env=_replay_env(lake_project),
-            )
-        except subprocess.TimeoutExpired:
-            return False, f"SafeVerify timed out ({safe_verify_timeout}s)"
+            ok, out = _compile_to_olean(target_src, target_olean, lake_project, compile_timeout)
+            if not ok:
+                return False, f"Target compile failed: {out}"
 
-        output = (result.stdout + "\n" + result.stderr).strip()
-        if result.returncode == 0:
-            return True, "OK (SafeVerify passed)"
-        if "theorem type mismatch" in output and _universe_alpha_equiv(output):
-            return True, "OK (SafeVerify rejected on universe/hygiene-only naming difference; types alpha-equivalent)"
-        return False, output if output else f"SafeVerify exit code {result.returncode}"
-    finally:
-        for p in (target_olean, submission_olean, report_path):
-            p.unlink(missing_ok=True)
+            ok, out = _compile_to_olean(submission_src, submission_olean, lake_project, compile_timeout)
+            if not ok:
+                return False, f"Submission compile failed: {out}"
+
+            try:
+                result = subprocess.run(
+                    ["lake", "exe", "safe_verify", "-v",
+                     str(target_olean.resolve()), str(submission_olean.resolve()),
+                     "--disallow-partial", "-s", str(report_path.resolve())],
+                    capture_output=True, text=True, timeout=safe_verify_timeout,
+                    cwd=str(SAFE_VERIFY_DIR), env=_replay_env(lake_project),
+                )
+            except subprocess.TimeoutExpired:
+                return False, f"SafeVerify timed out ({safe_verify_timeout}s)"
+
+            output = (result.stdout + "\n" + result.stderr).strip()
+            if result.returncode == 0:
+                return True, "OK (SafeVerify passed)"
+            if "theorem type mismatch" in output and _universe_alpha_equiv(output):
+                return True, "OK (SafeVerify rejected on universe/hygiene-only naming difference; types alpha-equivalent)"
+            return False, output if output else f"SafeVerify exit code {result.returncode}"
+        finally:
+            for p in (target_olean, submission_olean, report_path):
+                p.unlink(missing_ok=True)

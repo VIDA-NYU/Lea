@@ -30,12 +30,12 @@ import {
 } from '../lib/api';
 import { OriginBadge } from './OriginBadge';
 
-// Warm-paper palette (mirrors src/styles/lea-v2.css) so charts read like the
-// main chat panel rather than the old neon shadcn dashboard.
-const INPUT_COLOR = '#c96442'; // --accent (terracotta)
-const OUTPUT_COLOR = '#2f6f9f'; // --fn (blue)
-const MONEY_COLOR = '#4f8a5b'; // --green
-const MODEL_COLORS = ['#c96442', '#2f6f9f', '#4f8a5b', '#b8842a', '#9a3e8f', '#c0564a'];
+// Monochrome-first Lea palette; extra hues are reserved for chart series where
+// color distinguishes data rather than decorating product chrome.
+const INPUT_COLOR = '#1c1c20'; // --accent
+const OUTPUT_COLOR = '#2563a8'; // --fn
+const MONEY_COLOR = '#2f8f5b'; // --green
+const MODEL_COLORS = ['#1c1c20', '#2563a8', '#2f8f5b', '#c0872e', '#7c3aed', '#d14343'];
 const LIVE_STATS_REFRESH_MS = 1000;
 
 function fmtNumber(value: number, digits = 0) {
@@ -90,7 +90,7 @@ function fmtDuration(seconds: number) {
 
 function modelColor(model: string | null | undefined) {
   if (!model) {
-    return '#8a8983'; // --muted
+    return '#8b8b93'; // --muted
   }
   let hash = 0;
   for (const char of model) {
@@ -119,7 +119,7 @@ function originLabel(origin: string) {
 function originColor(origin: string) {
   if (origin === 'overleaf') return INPUT_COLOR; // terracotta accent
   if (origin === 'ui') return OUTPUT_COLOR; // blue
-  return '#8a8983'; // --muted
+  return '#8b8b93'; // --muted
 }
 
 function groupSessions(sessions: UsageSessionSummary[]) {

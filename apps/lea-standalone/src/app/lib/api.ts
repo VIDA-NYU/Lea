@@ -17,9 +17,21 @@ import type {
   ProjectFile,
   ProjectGraph,
   Skill,
+  AuthoringFieldValues,
+  McpServer,
+  McpTransport,
+  McpTestResult,
+  CustomTool,
+  SessionSkillsMcp,
+  SubagentProfile,
+  SubagentSettings,
   BlueprintWarning,
   TreeEntry,
   SearchResult,
+  Formalization,
+  FormalizationCurrentSnapshot,
+  GithubImportPreview,
+  GithubImportProgress,
 } from './types';
 
 export * from './types';
@@ -52,14 +64,89 @@ export async function getSession(sessionId: string): Promise<SessionDetail> {
 export async function createRun(
   message: string,
   sessionId?: string,
-): Promise<{ session_id: string; run_id: string; message: ChatMessage }> {
+  model?: string,
+  scope?: {
+    focus_formalization_id?: string;
+    focus_source_hash?: string;
+    project_slug?: string;
+    project_title?: string;
+    project_namespace?: string;
+    new_formalization?: {
+      display_title: string;
+      kind?: string;
+      declaration_name?: string;
+      statement?: string;
+      origin?: string;
+      origin_key?: string;
+      source_hash?: string;
+    };
+  },
+): Promise<{
+  session_id: string;
+  run_id: string;
+  model: string;
+  message: ChatMessage;
+  focus_formalization_id?: string | null;
+  formalization?: Formalization | null;
+}> {
   const response = await fetch('/api/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, session_id: sessionId }),
+    body: JSON.stringify({ message, session_id: sessionId, model, ...scope }),
   });
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Failed to start run: ${response.statusText}`));
+  }
+  return response.json();
+}
+
+export async function listProjectFormalizations(
+  projectId: string,
+): Promise<{ formalizations: Formalization[]; summary: Record<string, number> }> {
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/formalizations`,
+  );
+  if (!response.ok) {
+    throw new Error(await detailMessage(response, 'Failed to load formalizations.'));
+  }
+  return response.json();
+}
+
+export async function getFormalization(formalizationId: string): Promise<Formalization> {
+  const response = await fetch(
+    `/api/formalizations/${encodeURIComponent(formalizationId)}`,
+  );
+  if (!response.ok) {
+    throw new Error(await detailMessage(response, 'Failed to load formalization.'));
+  }
+  return response.json();
+}
+
+export async function getCurrentFormalization(
+  formalizationId: string,
+  sessionId?: string,
+): Promise<FormalizationCurrentSnapshot> {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+  const response = await fetch(
+    `/api/formalizations/${encodeURIComponent(formalizationId)}/current${query}`,
+  );
+  if (!response.ok) {
+    throw new Error(await detailMessage(response, 'Failed to load the current formalization.'));
+  }
+  return response.json();
+}
+
+export async function updateSessionTitle(
+  sessionId: string,
+  title: string,
+): Promise<SessionSummary> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  });
+  if (!response.ok) {
+    throw new Error(await detailMessage(response, 'Failed to rename conversation.'));
   }
   return response.json();
 }
@@ -87,6 +174,41 @@ export async function interruptRun(runId: string): Promise<void> {
   if (!response.ok && response.status !== 409) {
     throw new Error(await detailMessage(response, `Failed to interrupt run: ${response.statusText}`));
   }
+}
+
+// Stop a single running child sub-agent (D2), addressed by its child SESSION id —
+// without cancelling the coordinator run. A 404 means it already finished (nothing to
+// stop), which we treat as success.
+export async function interruptSubagent(sessionId: string): Promise<void> {
+  const response = await fetch(`/api/sub-agents/${encodeURIComponent(sessionId)}/interrupt`, { method: 'POST' });
+  if (!response.ok && response.status !== 404) {
+    throw new Error(await detailMessage(response, `Failed to stop sub-agent: ${response.statusText}`));
+  }
+}
+
+// Manual context compaction (G3): the `/compact` slash command fires the same condenser
+// G1 runs automatically. Returns the token delta so the composer can note "freed ~N".
+export interface CompactionResult {
+  changed: boolean;
+  pruned: number;
+  summarized: boolean;
+  before_tokens: number;
+  after_tokens: number;
+  freed_tokens: number;
+  referenced_files: string[]; // files still in the model's view after compaction
+  // The durable timeline marker (kind='compaction'), present only when something changed;
+  // null on a no-op. Its `content` is the JSON payload the thread renders as the card.
+  message: ChatMessage | null;
+}
+
+export async function compactSession(sessionId: string): Promise<CompactionResult> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/compact`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    throw new Error(await detailMessage(response, `Failed to compact: ${response.statusText}`));
+  }
+  return response.json();
 }
 
 // ── Projects (v2.1) ────────────────────────────────────────────────────────────
@@ -296,6 +418,75 @@ export async function putProjectFile(
   return response.json();
 }
 
+export class GithubImportApiError extends Error {
+  code?: string;
+  status: number;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'GithubImportApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+async function throwGithubImportError(response: Response, fallback: string): Promise<never> {
+  const body = await response.json().catch(() => ({} as any));
+  const detail = body.detail ?? body;
+  const message =
+    (typeof detail === 'string' ? detail : detail?.message) || fallback;
+  throw new GithubImportApiError(message, response.status, detail?.error || detail?.code);
+}
+
+export async function previewProjectGithubImport(
+  projectId: string,
+  repositoryUrl: string,
+): Promise<GithubImportPreview> {
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/github-imports/preview`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repository_url: repositoryUrl }),
+    },
+  );
+  if (!response.ok) {
+    return throwGithubImportError(response, 'Failed to analyze the GitHub repository.');
+  }
+  return response.json();
+}
+
+export async function confirmProjectGithubImport(
+  projectId: string,
+  previewId: string,
+): Promise<GithubImportProgress> {
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/github-imports`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preview_id: previewId }),
+    },
+  );
+  if (!response.ok) {
+    return throwGithubImportError(response, 'Failed to add the Lean files.');
+  }
+  return response.json();
+}
+
+export async function getProjectGithubImport(
+  projectId: string,
+  importId: string,
+): Promise<GithubImportProgress> {
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/github-imports/${encodeURIComponent(importId)}`,
+  );
+  if (!response.ok) {
+    return throwGithubImportError(response, 'Failed to load GitHub import progress.');
+  }
+  return response.json();
+}
+
 // The browser navigates here to download the project as a zip.
 export function projectExportUrl(projectId: string): string {
   return `/api/projects/${encodeURIComponent(projectId)}/export`;
@@ -332,6 +523,68 @@ export async function pushProject(
   return response.json();
 }
 
+// ── Sub-agents (D6) ───────────────────────────────────────────────────────────
+// View/edit each built-in role's settings over /api/sub-agents. Edits persist as
+// per-role overrides (not by mutating the vendored YAML) and are merged at spawn.
+export async function createSubagentRole(input: {
+  name: string;
+  authoring?: AuthoringFieldValues;
+  system_prompt?: string;
+  model?: string | null;
+  tools?: string[] | null;
+  max_turns?: number | null;
+}): Promise<SubagentProfile> {
+  const response = await fetch('/api/sub-agents/roles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Failed to add the sub-agent.'));
+  return response.json();
+}
+
+export async function updateSubagentRole(
+  roleId: string,
+  update: { name?: string; authoring?: AuthoringFieldValues; max_turns?: number | null },
+): Promise<SubagentProfile> {
+  const response = await fetch(`/api/sub-agents/roles/${encodeURIComponent(roleId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(update),
+  });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Failed to update the sub-agent.'));
+  return response.json();
+}
+
+export async function deleteSubagentRole(roleId: string): Promise<void> {
+  const response = await fetch(`/api/sub-agents/roles/${encodeURIComponent(roleId)}`, { method: 'DELETE' });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Failed to delete the sub-agent.'));
+}
+
+export async function listSubagentProfiles(): Promise<SubagentProfile[]> {
+  const response = await fetch('/api/sub-agents/profiles');
+  if (!response.ok)
+    throw new Error(await detailMessage(response, `Failed to load sub-agents: ${response.statusText}`));
+  const data = await response.json();
+  return Array.isArray(data.profiles) ? data.profiles : [];
+}
+
+// PUT the effective settings the user edited; the backend stores only the diff-from-
+// default (so an untouched default keeps flowing through; sending defaults resets it).
+export async function updateSubagentProfile(
+  name: string,
+  settings: Partial<SubagentSettings>,
+): Promise<SubagentProfile> {
+  const response = await fetch(`/api/sub-agents/profiles/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+  if (!response.ok)
+    throw new Error(await detailMessage(response, `Failed to save sub-agent: ${response.statusText}`));
+  return response.json();
+}
+
 // ── Skills (Skill Factory, v2.1.1) ────────────────────────────────────────────
 // CRUD + scope assignment + GitHub import over /api/skills. A skill's `body` is
 // markdown injected into the prover's system prompt for the project runs it
@@ -346,6 +599,7 @@ export async function listSkills(): Promise<Skill[]> {
 export async function createSkill(input: {
   name: string;
   body?: string;
+  authoring?: AuthoringFieldValues;
   is_global?: boolean;
   project_ids?: string[];
 }): Promise<Skill> {
@@ -359,11 +613,16 @@ export async function createSkill(input: {
 }
 
 // Import a skill from a GitHub link (D56) — the headline "paste a link → Add".
+export interface ImportedExtras {
+  imported_roles?: { name: string; status: string; reason?: string; unmapped_tools?: string[] }[];
+  imported_servers?: { name: string; status: string; reason?: string }[];
+}
+
 export async function importSkill(input: {
   url: string;
   is_global?: boolean;
   project_ids?: string[];
-}): Promise<Skill> {
+}): Promise<Skill & ImportedExtras> {
   const response = await fetch('/api/skills/import', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -375,7 +634,7 @@ export async function importSkill(input: {
 
 export async function updateSkill(
   skillId: string,
-  update: { name?: string; body?: string },
+  update: { name?: string; body?: string; authoring?: AuthoringFieldValues },
 ): Promise<Skill> {
   const response = await fetch(`/api/skills/${encodeURIComponent(skillId)}`, {
     method: 'PUT',
@@ -404,6 +663,224 @@ export async function deleteSkill(skillId: string): Promise<void> {
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to delete the skill.'));
 }
 
+// ── MCP servers (v2.5 E0) ─────────────────────────────────────────────────────
+// Deliberately mirrors the skills client above: same CRUD + assignment shape,
+// because an MCP server is the same kind of library item. `testMcpServer` has no
+// skills counterpart — it dry-runs an UNSAVED draft so the form can answer "did I
+// type this right?" before a row exists (E0b).
+export interface McpServerInput {
+  name: string;
+  transport?: McpTransport;
+  command?: string | null;
+  args?: string[];
+  env?: Record<string, string>;
+  env_from?: string[];
+  url?: string | null;
+  api_key_name?: string | null;
+  enabled?: boolean;
+  is_global?: boolean;
+  project_ids?: string[];
+}
+
+export async function listMcpServers(): Promise<McpServer[]> {
+  const response = await fetch('/api/mcp-servers');
+  if (!response.ok) throw new Error(`Failed to load MCP servers: ${response.statusText}`);
+  const data = await response.json();
+  return Array.isArray(data.servers) ? data.servers : [];
+}
+
+export async function createMcpServer(input: McpServerInput): Promise<McpServer> {
+  const response = await fetch('/api/mcp-servers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Failed to add the MCP server.'));
+  return response.json();
+}
+
+export async function updateMcpServer(
+  serverId: string,
+  update: Partial<McpServerInput>,
+): Promise<McpServer> {
+  const response = await fetch(`/api/mcp-servers/${encodeURIComponent(serverId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(update),
+  });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Failed to update the MCP server.'));
+  return response.json();
+}
+
+export async function setMcpServerAssignment(
+  serverId: string,
+  assignment: { is_global: boolean; project_ids: string[] },
+): Promise<McpServer> {
+  const response = await fetch(`/api/mcp-servers/${encodeURIComponent(serverId)}/assignment`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(assignment),
+  });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Failed to update the server scope.'));
+  return response.json();
+}
+
+export async function deleteMcpServer(serverId: string): Promise<void> {
+  const response = await fetch(`/api/mcp-servers/${encodeURIComponent(serverId)}`, { method: 'DELETE' });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Failed to delete the MCP server.'));
+}
+
+// ── Per-session skills / MCP (v2.5 E0e) ───────────────────────────────────────
+export async function getSessionSkillsMcp(sessionId: string): Promise<SessionSkillsMcp> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/skills-mcp`);
+  if (!response.ok) throw new Error(await detailMessage(response, 'Failed to load skills and servers.'));
+  return response.json();
+}
+
+export async function setSessionSkillMcp(
+  sessionId: string,
+  toggle: { kind: 'skill' | 'mcp_server'; item_id: string; action: 'add' | 'remove' | null },
+): Promise<SessionSkillsMcp> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/skills-mcp`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(toggle),
+  });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Failed to update skills and servers.'));
+  return response.json();
+}
+
+export async function getMcpServerDefaults(): Promise<{ lean_project_path: string | null }> {
+  const response = await fetch('/api/mcp-servers/defaults');
+  if (!response.ok) return { lean_project_path: null };
+  return response.json();
+}
+
+export async function listCustomTools(): Promise<CustomTool[]> {
+  const response = await fetch('/api/custom-tools');
+  if (!response.ok) return [];
+  const data = await response.json();
+  return Array.isArray(data.tools) ? data.tools : [];
+}
+
+export async function createCustomTool(input: {
+  name: string;
+  url: string;
+  description?: string;
+  authoring?: AuthoringFieldValues;
+  method?: string;
+  params?: Record<string, unknown>;
+  auth_key_name?: string | null;
+  is_global?: boolean;
+  project_ids?: string[];
+}): Promise<CustomTool> {
+  const response = await fetch('/api/custom-tools', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Failed to add the tool.'));
+  return response.json();
+}
+
+export async function setCustomToolAssignment(
+  toolId: string,
+  assignment: { is_global: boolean; project_ids: string[] },
+): Promise<CustomTool> {
+  const response = await fetch(`/api/custom-tools/${encodeURIComponent(toolId)}/assignment`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(assignment),
+  });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Failed to scope the tool.'));
+  return response.json();
+}
+
+export async function deleteCustomTool(toolId: string): Promise<void> {
+  const response = await fetch(`/api/custom-tools/${encodeURIComponent(toolId)}`, { method: 'DELETE' });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Failed to delete the tool.'));
+}
+
+export interface CatalogEntry {
+  id: string;
+  title: string;
+  summary: string;
+  requires?: string;
+  installed: boolean;
+  skill_url?: string;
+  skill_note?: string;
+  recommended_tools?: string[];
+}
+
+export async function listMcpCatalog(): Promise<CatalogEntry[]> {
+  const response = await fetch('/api/mcp-servers/catalog');
+  if (!response.ok) return [];
+  const data = await response.json();
+  return Array.isArray(data.entries) ? data.entries : [];
+}
+
+export async function installMcpCatalogEntry(entryId: string): Promise<McpServer> {
+  const response = await fetch(`/api/mcp-servers/catalog/${encodeURIComponent(entryId)}`, {
+    method: 'POST',
+  });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Could not install that.'));
+  return response.json();
+}
+
+export interface ToolCatalogEntry {
+  id: string;
+  title: string;
+  summary: string;
+  requires?: string;
+  installed: boolean;
+}
+
+export async function listToolCatalog(): Promise<ToolCatalogEntry[]> {
+  const response = await fetch('/api/custom-tools/catalog');
+  if (!response.ok) return [];
+  const data = await response.json();
+  return Array.isArray(data.entries) ? data.entries : [];
+}
+
+export async function installToolCatalogEntry(entryId: string): Promise<CustomTool> {
+  const response = await fetch(`/api/custom-tools/catalog/${encodeURIComponent(entryId)}`, {
+    method: 'POST',
+  });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Could not install that.'));
+  return response.json();
+}
+
+export interface McpKeyRequirement {
+  env: string;
+  servers: string[];
+  configured: boolean;
+}
+
+export async function getMcpKeyRequirements(): Promise<McpKeyRequirement[]> {
+  const response = await fetch('/api/mcp-servers/key-requirements');
+  if (!response.ok) return [];
+  const data = await response.json();
+  return Array.isArray(data.requirements) ? data.requirements : [];
+}
+
+export async function testMcpServer(spec: {
+  transport?: McpTransport;
+  command?: string | null;
+  args?: string[];
+  env?: Record<string, string>;
+  env_from?: string[];
+  url?: string | null;
+  api_key_name?: string | null;
+}): Promise<McpTestResult> {
+  const response = await fetch('/api/mcp-servers/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(spec),
+  });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Could not run the test.'));
+  return response.json();
+}
+
 // ── Global search (Slice 7, D41) ──────────────────────────────────────────────
 // Sessions matching the query by their own title or their project's title, each
 // tagged with its project. The only way to reach a project session (sidebar-hidden).
@@ -419,6 +896,25 @@ export interface FileWriteResult {
   unchanged: boolean;
   code_step?: CodeStep | null;
   note?: ChatMessage | null;
+  revision_token?: string | null;
+}
+
+export class RevisionConflictError extends Error {
+  currentRevision?: string | null;
+  lastUpdatedSession?: { id: string; title: string } | null;
+
+  constructor(
+    message: string,
+    detail?: {
+      current_revision?: string | null;
+      last_updated_session?: { id: string; title: string } | null;
+    },
+  ) {
+    super(message);
+    this.name = 'RevisionConflictError';
+    this.currentRevision = detail?.current_revision;
+    this.lastUpdatedSession = detail?.last_updated_session;
+  }
 }
 
 export async function writeSessionFile(
@@ -426,13 +922,30 @@ export async function writeSessionFile(
   path: string,
   content: string,
   note?: string,
+  formalizationId?: string,
+  baseRevision?: string,
 ): Promise<FileWriteResult> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/file`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, content, note }),
+    body: JSON.stringify({
+      path,
+      content,
+      note,
+      formalization_id: formalizationId,
+      base_revision: baseRevision,
+    }),
   });
   if (!response.ok) {
+    if (response.status === 409) {
+      const body = await response.json().catch(() => ({} as any));
+      if (body.detail?.code === 'revision_conflict') {
+        throw new RevisionConflictError(
+          body.detail.message || 'This formalization changed in another conversation.',
+          body.detail,
+        );
+      }
+    }
     throw new Error(await detailMessage(response, `Failed to save file: ${response.statusText}`));
   }
   return response.json();
@@ -441,11 +954,12 @@ export async function writeSessionFile(
 export async function leanCheckSession(
   sessionId: string,
   path?: string,
+  formalizationId?: string,
 ): Promise<{ path: string; status: 'ok' | 'error'; detail?: string | null }> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/lean-check`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, formalization_id: formalizationId }),
   });
   if (!response.ok) {
     throw new Error(await detailMessage(response, `lean_check failed: ${response.statusText}`));
@@ -456,11 +970,12 @@ export async function leanCheckSession(
 export async function verifySession(
   sessionId: string,
   path?: string,
+  formalizationId?: string,
 ): Promise<{ path: string; status: SafeVerifyStatus; detail?: string | null }> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, formalization_id: formalizationId }),
   });
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Verify failed: ${response.statusText}`));

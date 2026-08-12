@@ -72,8 +72,8 @@ export function ModelCombobox({
         </button>
       </PopoverTrigger>
       {/* The popover portals to <body>, outside the page's theme scope, so carry the
-          warm shadcn palette on the content itself (the `.settings-scope` class
-          defines the vars). Without this the dropdown renders in the cold default theme. */}
+          Lea shadcn palette on the content itself (`.settings-scope` defines the
+          vars). Without this the dropdown falls back to the generic theme. */}
       <PopoverContent className="settings-scope w-[var(--radix-popover-trigger-width)] p-0" align="start">
         <Command shouldFilter={false}>
           <CommandInput

@@ -94,7 +94,7 @@ function makeRepairFetch(calls, { sessionDetails = {}, rebuildResponses = {}, on
     if (u.includes("/api/runs/") && u.endsWith("/events")) {
       return sseResponse([
         { type: "status", data: { status: "tool_call", turn: 1 } },
-        { type: "done", data: { status: "success" } }
+        { type: "done", data: { status: "proved" } }
       ]);
     }
     const match = u.match(/\/api\/sessions\/([^/]+)(?:\/(file|lean-check|rebuild))?$/);

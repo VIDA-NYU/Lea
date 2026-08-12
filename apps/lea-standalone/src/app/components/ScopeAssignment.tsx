@@ -28,8 +28,19 @@ export function ScopeAssignment({
     });
   };
 
+  const nowhere = !value.is_global && value.project_ids.length === 0;
+
   return (
     <div className="scope">
+      {/* The positive assertion, at the Library layer: nothing raises when a capability
+          resolves nowhere, so something has to say so. Same reasoning as G3's run-time
+          assertions — an absence has no exception to catch. */}
+      {nowhere && (
+        <div className="scope-nowhere">
+          Not in use yet — pick <b>All projects</b> or at least one project below, or Lea
+          will never load this.
+        </div>
+      )}
       <label className={`scope-global ${disabled ? 'is-disabled' : ''}`}>
         <input
           type="checkbox"
@@ -73,5 +84,9 @@ export function ScopeAssignment({
 export function ScopeBadge({ isGlobal, count }: { isGlobal: boolean; count: number }) {
   if (isGlobal) return <span className="scope-badge is-global">All projects</span>;
   if (count > 0) return <span className="scope-badge">{count} project{count === 1 ? '' : 's'}</span>;
-  return <span className="scope-badge is-none">Unassigned</span>;
+  // "Unassigned" was accurate and useless: styled muted, it read as neutral metadata
+  // rather than as "this does nothing". Three separate items — a skill, an MCP server and
+  // a tool — were each installed, left unscoped, and silently never used, with the person
+  // testing them unable to tell why. The badge now states the CONSEQUENCE, in amber.
+  return <span className="scope-badge is-none">Not in use</span>;
 }

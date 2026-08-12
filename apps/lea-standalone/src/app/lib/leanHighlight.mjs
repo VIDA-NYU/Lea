@@ -15,8 +15,7 @@
 // `ensureHighlighter`, so it code-splits into its own chunk and stays entirely off
 // the app's initial load — it's fetched only when the canvas first shows Lean code.
 
-// A warm light theme that reads well on the canvas's cream code background
-// (--code-bg #fbfaf7) and sits beside the terracotta accent.
+// A restrained light theme that reads well on the neutral code surface.
 export const LEAN_THEME = 'vitesse-light';
 const LEAN_LANG = 'lean';
 

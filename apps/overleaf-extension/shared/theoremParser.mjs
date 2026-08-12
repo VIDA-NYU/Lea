@@ -15,6 +15,34 @@ export function hashTargetText(text) {
   return createHash("sha256").update(normalizeTargetText(text)).digest("hex");
 }
 
+// Versioned fingerprint of every LaTeX-controlled input that changes the
+// formalization prompt or dependency context. `targetTextHash` remains for
+// backward compatibility with jobs created before activation metadata was part
+// of freshness; new jobs persist both hashes.
+export function normalizeFormalizationInput({
+  targetKind = "theorem",
+  targetText = "",
+  targetTextHash = "",
+  targetUses = [],
+  targetContext = ""
+} = {}) {
+  return JSON.stringify({
+    version: 1,
+    targetKind: String(targetKind || "theorem").trim().toLowerCase(),
+    // Compose around the existing text hash so persisted pre-upgrade jobs can
+    // be upgraded in memory from their stored targetTextHash + metadata.
+    targetTextHash: String(targetTextHash || hashTargetText(targetText)),
+    targetUses: (Array.isArray(targetUses) ? targetUses : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+    targetContext: normalizeTargetText(targetContext)
+  });
+}
+
+export function hashFormalizationInput(input) {
+  return createHash("sha256").update(normalizeFormalizationInput(input)).digest("hex");
+}
+
 export function inferLeanDeclarationName(text) {
   const source = String(text || "");
   const declaration = source.match(

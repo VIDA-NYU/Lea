@@ -36,10 +36,16 @@ class FilesystemError(ValueError):
         self.code = code
 
 
-def _safe_abs(repo: Path, rel: str) -> Path:
+def safe_abs(repo: Path, rel: str) -> Path:
     """Resolve a repo-relative path to an absolute path under ``repo``, rejecting
     escapes (``..``, absolute paths) and any path into a hidden dir. Mirrors the v2
-    canvas-edit guard in ``sessions.write_file_session``."""
+    canvas-edit guard in ``sessions.write_file_session``.
+
+    Public (it was ``_safe_abs``) because it is the one containment check the whole
+    adapter should share. It had been re-implemented per call site, and the copy that
+    was simply *missing* — ``routes/sessions._resolve_proof_path`` — was
+    AUDIT-2026-07-24 S3. New code that joins caller-supplied path onto a repo should
+    call this rather than write a fourth version of it."""
     if not rel or not str(rel).strip():
         raise FilesystemError("path is required", code="bad_path")
     abs_path = (repo / rel).resolve()
@@ -94,7 +100,7 @@ def read_text_file(repo: Path, rel: str) -> str:
     """The text of one repo file (path-guarded). A missing file raises
     ``FilesystemError(code="not_found")``; a binary/undecodable file raises
     ``code="binary"`` so the route can steer the user to download instead."""
-    abs_path = _safe_abs(repo, rel)
+    abs_path = safe_abs(repo, rel)
     if not abs_path.is_file():
         raise FilesystemError("file not found", code="not_found")
     try:
@@ -108,10 +114,11 @@ def write_text_file(project: dict, proofs_root: Path, rel: str, content: str) ->
     new SHA. The project-wide generalization of the v2 canvas write — same path-guard
     + commit-on-write, any file in the repo. Parent dirs are created as needed."""
     repo = project_repo_dir(project, proofs_root)
-    abs_path = _safe_abs(repo, rel)
+    abs_path = safe_abs(repo, rel)
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     abs_path.write_text(content)
-    return GitStore(proofs_root).commit_all(repo, f"edit {rel}")
+    # Scoped to the edited file (X2) — this repo is shared across a project's sessions.
+    return GitStore(proofs_root).commit_all(repo, f"edit {rel}", paths=[rel])
 
 
 def export_zip(repo: Path) -> bytes:

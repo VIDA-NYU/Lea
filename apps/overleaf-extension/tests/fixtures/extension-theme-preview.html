@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Lea extension visual fixture</title>
+    <link rel="stylesheet" href="../../extension/lea-theme.css">
+    <link rel="stylesheet" href="../../extension/content.css">
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: #222;
+        background: #eceeef;
+        font: 14px/1.55 Arial, sans-serif;
+      }
+      .fixture-document {
+        width: min(650px, calc(100vw - 600px));
+        margin: 64px 0 0 52px;
+        padding: 40px 48px;
+        background: white;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+      }
+      .fixture-document h1 { margin-top: 0; font: 600 24px Georgia, serif; }
+      .fixture-document p { margin: 18px 0; }
+      .ol-lean-theorem-popover { left: 74px; top: 310px; }
+      .ol-lean-status { position: static; display: inline-flex; margin-left: 8px; vertical-align: middle; }
+    </style>
+  </head>
+  <body>
+    <article class="fixture-document">
+      <h1>Compactness in metric spaces</h1>
+      <p>
+        We will formalize the following result. A subset is
+        <span class="ol-lean-theorem">compact when every open cover has a finite subcover</span>
+        <button class="ol-lean-status ol-lean-status-formalized">proved</button>.
+      </p>
+      <p>
+        The converse direction is currently being checked
+        <button class="ol-lean-status ol-lean-status-in_progress">running</button>.
+      </p>
+    </article>
+
+    <div class="ol-lean-theorem-popover">
+      <p class="ol-lean-popover-title">compactness_criterion</p>
+      <p class="ol-lean-popover-meta">theorem · main.tex</p>
+      <div class="ol-lean-popover-actions">
+        <button data-primary="true">Formalize</button>
+        <button>Show in pane</button>
+      </div>
+    </div>
+
+    <button class="ol-lean-pane-trigger" aria-label="Open Lean project pane">
+      <span class="ol-lean-trigger-mark">L</span>
+    </button>
+    <button class="ol-lean-settings-trigger" aria-label="Open Lea settings">
+      <span class="ol-lean-trigger-mark">⚙</span>
+    </button>
+
+    <aside class="ol-lean-project-pane" aria-label="Lean project pane">
+      <header class="ol-lean-project-pane-header">
+        <div class="ol-lean-project-pane-titlewrap">
+          <p class="ol-lean-project-pane-kicker">Lea project</p>
+          <h2><span class="ol-lean-project-pane-sigma">∑</span><span>Compactness</span></h2>
+          <p class="ol-lean-project-pane-namespace">Lea.Compactness</p>
+        </div>
+        <div class="ol-lean-project-pane-controls">
+          <button class="ol-lean-pane-action">Share</button>
+          <button class="ol-lean-pane-action">Rename</button>
+          <button class="ol-lean-icon-button" aria-label="Refresh">↻</button>
+          <button class="ol-lean-icon-button" aria-label="Close">×</button>
+        </div>
+      </header>
+      <div class="ol-lean-pane-viewtabs">
+        <button class="ol-lean-pane-viewtab is-active">Items</button>
+        <button class="ol-lean-pane-viewtab">Blueprint</button>
+      </div>
+      <p class="ol-lean-project-pane-status">3 items · 1 run active</p>
+      <div class="ol-lean-project-pane-body">
+        <div class="ol-lean-project-tree">
+          <button class="ol-lean-project-tree-row ol-lean-project-tree-row-file">
+            <span class="ol-lean-project-tree-disclosure">⌄</span>
+            <span class="ol-lean-project-tree-name">main.tex</span>
+            <span class="ol-lean-project-tree-count">3 items</span>
+            <span class="ol-lean-project-progress">
+              <span class="ol-lean-project-progress-segment ol-lean-project-progress-segment-success" style="width: 66%"></span>
+              <span class="ol-lean-project-progress-segment ol-lean-project-progress-segment-sorry-stubbed" style="width: 34%"></span>
+            </span>
+          </button>
+          <div class="ol-lean-project-tree-items">
+            <article class="ol-lean-project-item">
+              <button class="ol-lean-project-item-header">
+                <span class="ol-lean-project-item-title">compactness_criterion</span>
+                <span class="ol-lean-project-item-meta">theorem · line 42</span>
+                <span class="ol-lean-project-status ol-lean-project-status-valid">valid</span>
+              </button>
+              <p class="ol-lean-project-natural">A metric space is compact exactly when it is complete and totally bounded.</p>
+              <div class="ol-lean-project-detail">
+                <div class="ol-lean-code-block">
+                  <pre class="ol-lean-project-code"><span class="ol-lean-project-lean-kw">theorem</span> compactness_criterion :
+  IsCompact s ↔ CompleteSpace s ∧ TotallyBounded s := by
+  exact compact_iff_complete_totallyBounded</pre>
+                </div>
+                <div class="ol-lean-project-detail-actions">
+                  <button class="ol-lean-pane-action ol-lean-item-primary-action">Ask Lea</button>
+                  <span class="ol-lean-icon-rail">
+                    <button class="ol-lean-icon-action" aria-label="Edit">✎</button>
+                    <button class="ol-lean-icon-action" aria-label="Copy">⧉</button>
+                  </span>
+                </div>
+              </div>
+            </article>
+            <article class="ol-lean-project-item">
+              <button class="ol-lean-project-item-header">
+                <span class="ol-lean-project-item-title">heine_borel_application</span>
+                <span class="ol-lean-project-item-meta">theorem · line 57</span>
+                <span class="ol-lean-project-status ol-lean-project-status-in-progress">running</span>
+              </button>
+            </article>
+            <article class="ol-lean-project-item">
+              <button class="ol-lean-project-item-header">
+                <span class="ol-lean-project-item-title">finite_subcover</span>
+                <span class="ol-lean-project-item-meta">lemma · line 68</span>
+                <span class="ol-lean-project-status ol-lean-project-status-needs-review">review</span>
+              </button>
+            </article>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </body>
+</html>

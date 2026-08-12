@@ -10,7 +10,8 @@ from there to whatever provider the model name selects (`gemini/…`,
 import json
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import litellm
 
@@ -43,6 +44,10 @@ class _ToolMeta:
 class Done:
     usage: Usage
     cost: float = 0.0
+    # Responses reasoning items must be replayed with the assistant tool call on
+    # the next turn.  They stay internal to Lea's transcript and are never exposed
+    # as assistant text.
+    reasoning_items: list[dict[str, Any]] = field(default_factory=list)
 
 
 _WARNED_MODELS: set[str] = set()
@@ -63,7 +68,7 @@ def _to_openai_tools(tools: list) -> list:
     ]
 
 
-def _to_openai_messages(system: str, messages: list) -> list:
+def _to_openai_messages(system: str, messages: list, *, include_reasoning: bool = False) -> list:
     """Convert Lea's neutral message format to OpenAI chat messages."""
     out = [{"role": "system", "content": system}]
     for msg in messages:
@@ -80,10 +85,12 @@ def _to_openai_messages(system: str, messages: list) -> list:
                         })
         elif msg["role"] == "assistant":
             oai = {"role": "assistant", "content": None}
-            text_parts, tool_calls = [], []
+            text_parts, tool_calls, reasoning_items = [], [], []
             for item in msg["content"]:
                 if item.get("type") == "text":
                     text_parts.append(item["text"])
+                elif include_reasoning and item.get("type") == "reasoning":
+                    reasoning_items.extend(item.get("items") or [])
                 elif item.get("type") == "tool_call":
                     tool_calls.append({
                         "id": item["id"],
@@ -94,8 +101,102 @@ def _to_openai_messages(system: str, messages: list) -> list:
                 oai["content"] = "\n".join(text_parts)
             if tool_calls:
                 oai["tool_calls"] = tool_calls
+            if reasoning_items:
+                # LiteLLM's Chat→Responses bridge recognizes this extension and
+                # restores each encrypted reasoning item before the function call.
+                oai["reasoning_items"] = reasoning_items
             out.append(oai)
     return out
+
+
+def _is_openai_gpt_5_6(model: str) -> bool:
+    """Whether ``model`` is a GPT-5.6 family ID routed directly to OpenAI."""
+    normalized = model.lower()
+    if normalized.startswith("openai/"):
+        normalized = normalized.removeprefix("openai/")
+    if normalized.startswith("responses/"):
+        normalized = normalized.removeprefix("responses/")
+    return normalized == "gpt-5.6" or normalized.startswith("gpt-5.6-")
+
+
+def _litellm_model(model: str) -> str:
+    """Make GPT-5.6 provider resolution independent of LiteLLM's remote model map."""
+    if _is_openai_gpt_5_6(model) and "/" not in model:
+        return f"openai/{model}"
+    return model
+
+
+def _gpt_5_6_kwargs(tools: list, model_kwargs: dict) -> dict:
+    """Return the smallest Responses-compatible request policy for GPT-5.6.
+
+    Lea's flagship formalization route historically used GPT-5.5's effective
+    ``medium`` reasoning.  Making that explicit both preserves the behavior and
+    tells LiteLLM to bridge a tool-bearing GPT-5.6 call to Responses.  Because Lea
+    owns and persists its transcript (rather than a ``previous_response_id``), the
+    encrypted reasoning item is requested for exact manual replay.
+    """
+    out = dict(model_kwargs)
+    effort = out.setdefault("reasoning_effort", "medium")
+    if effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
+        raise ValueError(
+            "reasoning_effort for GPT-5.6 must be one of "
+            "none, low, medium, high, xhigh, or max"
+        )
+    if tools:
+        # LiteLLM's completion() signature is Chat-shaped.  Responses-only
+        # parameters passed at the top level are filtered before its bridge in
+        # 1.88.x; extra_body is the documented bridge escape hatch and the
+        # transformation promotes these supported keys into the Responses request.
+        raw_extra_body = out.get("extra_body") or {}
+        if not isinstance(raw_extra_body, dict):
+            raise ValueError("extra_body must be an object when using GPT-5.6 tools")
+        extra_body = dict(raw_extra_body)
+        if "store" in out:
+            extra_body["store"] = out.pop("store")
+        else:
+            extra_body.setdefault("store", False)
+        if "include" in out:
+            include = out.pop("include")
+        else:
+            include = extra_body.get("include", [])
+        if not isinstance(include, list):
+            raise ValueError("include must be a list when using GPT-5.6 tools")
+        if "reasoning.encrypted_content" not in include:
+            # Copy a caller-owned list before extending it.
+            include = [*include, "reasoning.encrypted_content"]
+        extra_body["include"] = include
+        out["extra_body"] = extra_body
+    return out
+
+
+def _plain_reasoning_item(item: Any) -> dict[str, Any] | None:
+    """Normalize LiteLLM's pydantic/dict reasoning item for transcript storage."""
+    if isinstance(item, dict):
+        raw = dict(item)
+    elif hasattr(item, "model_dump"):
+        raw = item.model_dump(exclude_none=True)
+    else:
+        raw = {
+            key: getattr(item, key)
+            for key in ("id", "type", "encrypted_content", "summary")
+            if getattr(item, key, None) is not None
+        }
+    if not raw.get("id"):
+        return None
+    return {
+        "id": str(raw["id"]),
+        "type": "reasoning",
+        "encrypted_content": raw.get("encrypted_content"),
+        "summary": raw.get("summary") or [],
+    }
+
+
+def _merge_reasoning_items(target: dict[str, dict[str, Any]], items: Any) -> None:
+    """Merge streamed reasoning snapshots by stable Responses item ID."""
+    for item in items or []:
+        normalized = _plain_reasoning_item(item)
+        if normalized is not None:
+            target[normalized["id"]] = normalized
 
 
 def _compute_cost(model: str, usage: Usage) -> float:
@@ -131,12 +232,15 @@ def stream(model: str, system: str, messages: list, tools: list,
     streaming: True → stream tokens live; False → one blocking call. Both modes
         yield the same event types, so the agent loop is identical either way.
     """
-    model_kwargs = model_kwargs or {}
+    model_kwargs = dict(model_kwargs or {})
+    is_gpt_5_6 = _is_openai_gpt_5_6(model)
+    if is_gpt_5_6:
+        model_kwargs = _gpt_5_6_kwargs(tools, model_kwargs)
     # Merge so an explicit model_kwargs api_key wins over the env-derived one,
     # instead of colliding (both supplying api_key raises "got multiple values").
     call = dict(
-        model=model,
-        messages=_to_openai_messages(system, messages),
+        model=_litellm_model(model),
+        messages=_to_openai_messages(system, messages, include_reasoning=is_gpt_5_6),
         tools=_to_openai_tools(tools) or None,
         **{**_api_key_kwargs(model), **model_kwargs},
     )
@@ -150,6 +254,7 @@ def _stream_streaming(model: str, call: dict):
     """Streaming path: parse chunk deltas into events as they arrive."""
     usage = Usage()
     tool_calls_acc: dict[int, dict] = {}  # index -> {id, name, args_json}
+    reasoning_items: dict[str, dict[str, Any]] = {}
 
     def flush_tool_calls():
         for idx in sorted(tool_calls_acc.keys()):
@@ -171,6 +276,8 @@ def _stream_streaming(model: str, call: dict):
         choice = chunk.choices[0]
         delta = choice.delta
 
+        _merge_reasoning_items(reasoning_items, getattr(delta, "reasoning_items", None))
+
         if getattr(delta, "content", None):
             yield TextDelta(delta.content)
 
@@ -189,13 +296,15 @@ def _stream_streaming(model: str, call: dict):
 
     # Flush any tool calls a provider left without a "tool_calls" finish_reason.
     yield from flush_tool_calls()
-    yield Done(usage, _compute_cost(model, usage))
+    yield Done(usage, _compute_cost(model, usage), list(reasoning_items.values()))
 
 
 def _stream_blocking(model: str, call: dict):
     """Blocking path: one completion call, emitted as the same event types."""
     response = litellm.completion(**call)
     message = response.choices[0].message
+    reasoning_items: dict[str, dict[str, Any]] = {}
+    _merge_reasoning_items(reasoning_items, getattr(message, "reasoning_items", None))
 
     if getattr(message, "content", None):
         yield TextDelta(message.content)
@@ -207,4 +316,4 @@ def _stream_blocking(model: str, call: dict):
 
     u = getattr(response, "usage", None)
     usage = Usage(getattr(u, "prompt_tokens", 0) or 0, getattr(u, "completion_tokens", 0) or 0) if u else Usage()
-    yield Done(usage, _compute_cost(model, usage))
+    yield Done(usage, _compute_cost(model, usage), list(reasoning_items.values()))

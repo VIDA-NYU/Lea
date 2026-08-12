@@ -3,6 +3,7 @@ import {
   ChevronRight,
   Download,
   File as FileIcon,
+  FileDown,
   Folder,
   FolderOpen,
   Github,
@@ -20,6 +21,7 @@ import {
   setProjectRemote,
   type TreeEntry,
 } from '../lib/api';
+import { GithubImportDialog } from './GithubImportDialog';
 
 // The Filesystem tab (F8 / D34) — "see everything, edit, download, share." The project
 // is already a git repo, so this exposes it: a tree of the repo (left), a viewer/editor
@@ -42,9 +44,11 @@ function collectDirPaths(entries: TreeEntry[], into: string[] = []): string[] {
 export function FilesystemTab({
   projectId,
   refreshSignal = 0,
+  onProjectChanged,
 }: {
   projectId: string;
   refreshSignal?: number;
+  onProjectChanged?: () => void;
 }) {
   const [tree, setTree] = useState<TreeEntry[] | null>(null);
   const [treeError, setTreeError] = useState<string | null>(null);
@@ -62,6 +66,7 @@ export function FilesystemTab({
   const [sharing, setSharing] = useState(false);
   const [shareMsg, setShareMsg] = useState<string | null>(null);
   const [shareErr, setShareErr] = useState<string | null>(null);
+  const [showImport, setShowImport] = useState(false);
 
   // Load the project's saved remote + whether a GitHub token is configured (drives
   // the Push button's enabled state + the "add a token" hint).
@@ -158,6 +163,13 @@ export function FilesystemTab({
       <div className="fs-bar">
         <span className="fs-bar-hint">The project repo — browse, edit any file, download, share.</span>
         <button
+          className="fs-import-toggle"
+          onClick={() => setShowImport(true)}
+          title="Add non-conflicting Lean files from a GitHub repository"
+        >
+          <FileDown size={13} /> Import
+        </button>
+        <button
           className={`fs-share-toggle${showShare ? ' is-open' : ''}`}
           onClick={() => setShowShare((s) => !s)}
           title="Share this project to GitHub"
@@ -207,6 +219,18 @@ export function FilesystemTab({
           {shareMsg && <div className="fs-share-ok">{shareMsg}</div>}
           {shareErr && <div className="fs-share-err">{shareErr}</div>}
         </div>
+      )}
+
+      {showImport && (
+        <GithubImportDialog
+          projectId={projectId}
+          onClose={() => setShowImport(false)}
+          onCompleted={() => {
+            setTreeBump((value) => value + 1);
+            onProjectChanged?.();
+          }}
+          onSelectPath={(path) => setSelected(path)}
+        />
       )}
 
       <div className="fs-body">

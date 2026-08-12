@@ -20,15 +20,15 @@ def test_init_db_creates_the_authoritative_v2_schema(tmp_path, monkeypatch):
     assert "pending_approval" in columns
     assert "transcript" in columns  # the multi-turn replay conversation (D16)
     with sqlite3.connect(db_path) as conn:
-        code_step_columns = [row[1] for row in conn.execute("pragma table_info(code_steps)").fetchall()]
-    # code_steps is a git pointer + verdict, not file text
-    assert "commit_sha" in code_step_columns
-    assert "author" in code_step_columns
-    assert "check_status" in code_step_columns
-    assert "check_detail" in code_step_columns
-    assert "artifact_kind" in code_step_columns
-    assert "code" not in code_step_columns
-    assert "used_project_formalizations" not in code_step_columns
+        timeline_columns = [row[1] for row in conn.execute("pragma table_info(timeline)").fetchall()]
+    # a code row carries its content (via a blob) + verdict; the git pointer is gone
+    assert "after_blob_id" in timeline_columns
+    assert "author" in timeline_columns
+    assert "check_status" in timeline_columns
+    assert "check_detail" in timeline_columns
+    assert "artifact_kind" in timeline_columns
+    assert "commit_sha" not in timeline_columns
+    assert "used_project_formalizations" not in timeline_columns
     with sqlite3.connect(db_path) as conn:
         usage_columns = [row[1] for row in conn.execute("pragma table_info(run_usage_breakdown)").fetchall()]
     assert "phase" in usage_columns
@@ -46,10 +46,10 @@ def test_session_status_ignores_scratch_files(tmp_path, monkeypatch):
     run = store.create_run(session["id"], "gpt-4o", "openai", 3)
     # The real proof errored…
     store.add_code_step(session["id"], run["id"], "Lea/Misc/Foo.lean",
-                        commit_sha="a" * 40, check_status="error")
+                        content="proof-a", check_status="error")
     # …then a later scratch probe compiled cleanly.
     store.add_code_step(session["id"], run["id"], "Lea/Misc/scratch.lean",
-                        commit_sha="b" * 40, check_status="ok")
+                        content="proof-b", check_status="ok")
 
     detail = store.session_detail(session["id"])
     assert detail["status"] == "error", "scratch 'ok' must not mask the real proof's error"
@@ -66,7 +66,7 @@ def test_safe_verify_persists_on_latest_run(tmp_path, monkeypatch):
     session = store.create_session("Verify me")
     run = store.create_run(session["id"], "gpt-4o", "openai", 3)
     store.add_code_step(session["id"], run["id"], "Lea/Misc/Foo.lean",
-                        commit_sha="a" * 40, check_status="ok")
+                        content="proof-a", check_status="ok")
 
     assert store.session_detail(session["id"])["safe_verify"] is None
     store.set_session_safe_verify(session["id"], "ok", None)
@@ -80,7 +80,7 @@ def test_session_status_scratch_only_is_empty(tmp_path, monkeypatch):
     session = store.create_session("Probes only")
     run = store.create_run(session["id"], "gpt-4o", "openai", 3)
     store.add_code_step(session["id"], run["id"], "Lea/Misc/Scratch.lean",  # capital → case-insensitive
-                        commit_sha="c" * 40, check_status="ok")
+                        content="proof-c", check_status="ok")
     # While the run is active, an in-progress session reads 'running' — an active run
     # with no *real* proof yet still surfaces as in-progress (the 'running' feature).
     assert store.session_detail(session["id"])["status"] == "running"
@@ -115,7 +115,7 @@ def test_session_messages_and_code_steps_persist(tmp_path, monkeypatch):
         session["id"],
         run["id"],
         "workspace/proofs/test.lean",
-        commit_sha="a1b2c3d4" * 5,
+        content="theorem t : True := by trivial",
         summary="Turn 2: wrote the proof skeleton.",
         turn=2,
         check_status="ok",
@@ -136,11 +136,12 @@ def test_session_messages_and_code_steps_persist(tmp_path, monkeypatch):
     assert detail["active_run"]["id"] == run["id"]
     assert detail["active_run"]["pending_approval"]["approval_id"] == "ap-1"
     assert detail["code_steps"][0]["id"] == step["id"]
-    # shared timeline seq (C4): the message took seq 1, the code_step seq 2
-    assert detail["messages"][0]["seq"] == 1
-    assert detail["code_steps"][0]["seq"] == 2
+    # one timeline (C4): the message came first, the code step after it. This used
+    # to assert seq == 1 and 2 — a shared per-session counter. It's now the table's
+    # autoincrement id, so the *order* is the contract and the values are not.
+    assert detail["messages"][0]["seq"] < detail["code_steps"][0]["seq"]
     assert detail["code_steps"][0]["author"] == "agent"
-    assert detail["code_steps"][0]["commit_sha"] == "a1b2c3d4" * 5
+    assert detail["code_steps"][0]["code"] == "theorem t : True := by trivial"
     assert detail["code_steps"][0]["check_status"] == "ok"
     assert detail["code_steps"][0]["summary"].startswith("Turn 2")
     assert detail["code_steps"][0]["turn"] == 2
@@ -532,39 +533,37 @@ def test_latest_agent_code_step_and_edit_notes_since(tmp_path, monkeypatch):
     session = store.create_session("Divergence helpers")
     run = store.create_run(session["id"], "m", None, 3)
     agent_step = store.add_code_step(session["id"], run["id"], "p.lean",
-                                     commit_sha="a" * 40, author="agent", turn=1)
+                                     content="proof-a", author="agent", turn=1)
     # a user edit + note land after the agent's step
-    store.add_code_step(session["id"], None, "p.lean", commit_sha="b" * 40, author="user")
-    store.add_message(session["id"], "user", "swapped a lemma", None,
-                      kind="edit_note", commit_sha="b" * 40)
+    store.add_code_step(session["id"], None, "p.lean", content="proof-b", author="user")
+    store.add_message(session["id"], "user", "swapped a lemma", None, kind="edit_note")
 
     latest_agent = store.latest_agent_code_step(session["id"])
-    assert latest_agent["commit_sha"] == "a" * 40  # the agent step, not the later user one
+    assert latest_agent["code"] == "proof-a"  # the agent step, not the later user one
     # notes recorded after the agent's timeline position
     assert store.edit_notes_since(session["id"], agent_step["seq"]) == ["swapped a lemma"]
     # nothing after a later position
     assert store.edit_notes_since(session["id"], 9999) == []
 
 
-def test_fail_stale_active_runs_reaps_only_active_rows(tmp_path, monkeypatch):
-    """Startup crash recovery: pending/running run rows have no live runner after
-    a restart (or were never started at all — e.g. their client gave up waiting
-    for the single-run slot), so they flip to failed; terminal rows are untouched.
-    Without this, the derived session status shows 'thinking' forever."""
+def test_fail_stale_active_runs_reaps_running_but_keeps_queued(tmp_path, monkeypatch):
+    """Startup crash recovery (Phase 2 semantics): a `running` row has no live
+    worker after a restart → failed. A `pending` row is an honest queue entry
+    that recovery re-enqueues — it must NOT be reaped. Terminal rows untouched."""
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
     db.init_db()
     session = store.create_session("Reap me")
-    orphaned_pending = store.create_run(session["id"], "m", None, 3)
+    queued_pending = store.create_run(session["id"], "m", None, 3)
     interrupted_running = store.create_run(session["id"], "m", None, 3)
     store.update_run(interrupted_running["id"], "running")
     finished = store.create_run(session["id"], "m", None, 3)
     store.update_run(finished["id"], "needs_review", result_kind="needs_review",
                      result_detail="NEEDS_REVIEW")
 
-    assert store.fail_stale_active_runs() == 2
+    assert store.fail_stale_active_runs() == 1
 
-    assert store.get_run(orphaned_pending["id"])["status"] == "failed"
-    assert store.get_run(orphaned_pending["id"])["result_kind"] == "failed"
+    assert store.get_run(queued_pending["id"])["status"] == "pending", \
+        "queued work survives a restart (recovery re-enqueues it)"
     reaped_running = store.get_run(interrupted_running["id"])
     assert reaped_running["status"] == "failed"
     assert "restarted" in reaped_running["result_detail"]
@@ -575,3 +574,383 @@ def test_fail_stale_active_runs_reaps_only_active_rows(tmp_path, monkeypatch):
 
     # idempotent: nothing left to reap
     assert store.fail_stale_active_runs() == 0
+
+
+def test_queue_position_counts_earlier_pending_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    session = store.create_session("Queue me")
+    first = store.create_run(session["id"], "m", None, 3)
+    second = store.create_run(session["id"], "m", None, 3)
+    assert store.queue_position(first["id"]) == 0
+    assert store.queue_position(second["id"]) == 1
+    store.update_run(first["id"], "running")
+    assert store.queue_position(first["id"]) is None
+    assert store.queue_position(second["id"]) == 0
+
+
+def test_session_detail_run_rows_carry_usage(tmp_path, monkeypatch):
+    """The Overleaf companion reads a run's tokens/cost off the session-detail
+    run row (fetchApiRunUsage). These columns were missing from the per-run
+    select, so every companion job recorded $0 — caught by the Phase 1
+    integration harness (PLAN-system-hardening)."""
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    session = store.create_session("Usage on run rows")
+    run = store.create_run(session["id"], "gpt-4o", "openai", 3)
+    store.update_run(run["id"], "proved", input_tokens=11, output_tokens=7, cost_usd=0.002)
+
+    row = store.session_detail(session["id"])["runs"][0]
+    assert row["id"] == run["id"]
+    assert row["input_tokens"] == 11
+    assert row["output_tokens"] == 7
+    assert abs(row["cost_usd"] - 0.002) < 1e-9
+
+
+def test_upsert_artifact_scopes_by_project_then_session(tmp_path, monkeypatch):
+    """PLAN-system-hardening 4.1: one row per (scope, declaration). Project
+    runs share a scope across sessions; loose sessions scope to themselves."""
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    session_a = store.create_session("a")
+    session_b = store.create_session("b")
+    run_a = store.create_run(session_a["id"], "m", None, 3)
+    run_b = store.create_run(session_b["id"], "m", None, 3)
+
+    # Loose sessions: same declaration name in two sessions = two rows.
+    store.upsert_artifact(project_id=None, session_id=session_a["id"], run_id=run_a["id"],
+                          declaration_name="foo", kind="proof", path="foo.lean", module_name=None)
+    store.upsert_artifact(project_id=None, session_id=session_b["id"], run_id=run_b["id"],
+                          declaration_name="foo", kind="proof", path="foo.lean", module_name=None)
+    assert len(store.list_artifacts_for_scope(session_a["id"])) == 1
+    assert len(store.list_artifacts_for_scope(session_b["id"])) == 1
+
+    # Project scope: re-recording the same declaration updates in place, even
+    # from a different session of the same project.
+    store.upsert_artifact(project_id="proj-1", session_id=session_a["id"], run_id=run_a["id"],
+                          declaration_name="bar", kind="proof", path="old.lean", module_name="Lea.P.old")
+    updated = store.upsert_artifact(project_id="proj-1", session_id=session_b["id"], run_id=run_b["id"],
+                                    declaration_name="bar", kind="definition", path="new.lean", module_name="Lea.P.new")
+    rows = store.list_artifacts_for_scope("proj-1")
+    assert len(rows) == 1
+    assert rows[0]["path"] == "new.lean"
+    assert rows[0]["kind"] == "definition"
+    assert rows[0]["session_id"] == session_b["id"]
+    assert updated["created_at"] != updated["updated_at"] or rows[0]["path"] == "new.lean"
+
+
+# --- AUDIT-2026-07-24 C1: global totals must not be a page of sessions ---------
+
+def _seed_sessions_with_spend(count, cost_each, tokens_each=10):
+    """`count` sessions, each with one finished run costing `cost_each`."""
+    for i in range(count):
+        session = store.create_session(f"S{i}")
+        run = store.create_run(session["id"], "gpt-4o", "openai", 3)
+        store.add_message(session["id"], "user", "prove it", run["id"])
+        store.update_run(
+            run["id"], "proved",
+            input_tokens=tokens_each, output_tokens=tokens_each, cost_usd=cost_each,
+        )
+
+
+def test_global_usage_counts_every_session_past_the_list_page(tmp_path, monkeypatch):
+    """`usage_stats()["global"]` summed `list_sessions()`, which ends in `limit 100`.
+    So beyond 100 sessions the reported spend *fell* as older ones aged out of the
+    window — and `max_spend_usd` is enforced against that number."""
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    _seed_sessions_with_spend(120, cost_each=1.0)
+
+    stats = store.usage_stats()
+
+    assert stats["global"]["session_count"] == 120
+    assert stats["global"]["message_count"] == 120
+    assert abs(stats["global"]["cost_usd"] - 120.0) < 1e-9
+    assert stats["global"]["total_tokens"] == 120 * 20
+    # The rendered session table is still a page — that part is intentional.
+    assert len(stats["sessions"]) == 100
+    # ...and the global block must agree with the daily/model rollups beside it,
+    # which were already full-table aggregates and so silently disagreed.
+    assert abs(sum(d["cost_usd"] for d in stats["daily"]) - stats["global"]["cost_usd"]) < 1e-9
+    assert abs(sum(m["cost_usd"] for m in stats["models"]) - stats["global"]["cost_usd"]) < 1e-9
+
+
+def test_total_spend_usd_sees_every_run(tmp_path, monkeypatch):
+    """The scalar the spend cap reads. Same bug, and the one that actually let a
+    capped workspace keep spending."""
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    _seed_sessions_with_spend(150, cost_each=0.5)
+
+    assert abs(store.total_spend_usd() - 75.0) < 1e-9
+
+
+def test_spend_limit_is_reached_past_the_list_page(tmp_path, monkeypatch):
+    """The end-to-end consequence: with 150 sessions at $0.50 and a $100 cap, the
+    old path summed the newest 100 ($50) and reported 'under the limit' forever."""
+    from app import settings as settings_service
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    _seed_sessions_with_spend(150, cost_each=0.5)
+
+    assert settings_service.current_spend_usd() > 50.0
+    assert settings_service.spend_limit_reached(100.0) is False   # $75 < $100
+    assert settings_service.spend_limit_reached(70.0) is True     # $75 >= $70
+
+
+def test_origin_rollup_counts_every_session_and_agrees_with_global(tmp_path, monkeypatch):
+    """The rollup's contract is that it agrees with `global`. Both were folded from
+    the same truncated page, so they agreed while both were wrong."""
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    for i in range(60):
+        for origin in ("ui", "overleaf"):
+            session = store.create_session(f"{origin}-{i}", origin=origin)
+            run = store.create_run(session["id"], "gpt-4o", "openai", 3)
+            store.update_run(run["id"], "proved", input_tokens=5, output_tokens=5, cost_usd=0.25)
+
+    stats = store.usage_stats()
+    by_origin = {row["origin"]: row for row in stats["origins"]}
+
+    assert by_origin["ui"]["session_count"] == 60
+    assert by_origin["overleaf"]["session_count"] == 60
+    total = sum(row["cost_usd"] for row in stats["origins"])
+    assert abs(total - stats["global"]["cost_usd"]) < 1e-9
+    assert abs(total - 30.0) < 1e-9
+
+
+# --- AUDIT-2026-07-24 P3: code steps arrive with their bytes, not N+1 -----------
+# Asserted as CONNECTIONS OPENED rather than elapsed time: the defect was structural
+# (one extra connection + one extra query per step, from building the rows after the
+# connection had closed), so counting the structure is both deterministic and the
+# thing that actually regresses.
+
+def _counting_open(monkeypatch):
+    calls = []
+    real = db._open
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(db, "_open", counted)
+    return calls
+
+
+def _session_with_steps(count, *, project_id=None, path="Lea/Misc/p.lean"):
+    session = store.create_session("Big session", project_id=project_id)
+    run = store.create_run(session["id"], "m", None, 3, project_id=project_id)
+    for i in range(count):
+        store.add_code_step(
+            session["id"], run["id"], path,
+            content=f"theorem t{i} : True := by trivial\n", author="agent", turn=i,
+            check_status="ok",
+        )
+    return session
+
+
+def test_session_detail_does_not_open_a_connection_per_code_step(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    session = _session_with_steps(40)
+
+    opened = _counting_open(monkeypatch)
+    detail = store.session_detail(session["id"])
+
+    assert len(detail["code_steps"]) == 40
+    # Content still arrives in full — the point is how, not whether.
+    assert detail["code_steps"][0]["code"] == "theorem t0 : True := by trivial\n"
+    assert detail["code_steps"][-1]["code"] == "theorem t39 : True := by trivial\n"
+    # Before the fix this was ~40 connections for the blobs alone, on top of the
+    # handful session_detail legitimately makes.
+    assert len(opened) < 15, f"session_detail opened {len(opened)} connections for 40 steps"
+
+
+def test_code_step_reads_carry_their_content_from_one_query(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    session = _session_with_steps(3)
+
+    for read in (
+        lambda: store.latest_code_step_for_path(session["id"], "Lea/Misc/p.lean"),
+        lambda: store.latest_agent_code_step(session["id"]),
+        lambda: store.latest_agent_code_step_for_path(session["id"], "Lea/Misc/p.lean"),
+    ):
+        opened = _counting_open(monkeypatch)
+        step = read()
+        assert step["code"] == "theorem t2 : True := by trivial\n"
+        assert len(opened) == 1, f"{len(opened)} connections for one code-step read"
+
+
+def test_graph_reads_skip_blob_hydration_but_keep_the_verdict(tmp_path, monkeypatch):
+    """`include_content=False` is what makes /graph cheap: it reads only the verdict
+    and the session attribution, across every revision of every file."""
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    project = store.create_project("proj", title="Proj")
+    _session_with_steps(25, project_id=project["id"])
+
+    with_content = store.code_steps_for_project_path(project["id"], "Lea/Misc/p.lean")
+    opened = _counting_open(monkeypatch)
+    without = store.code_steps_for_project_path(
+        project["id"], "Lea/Misc/p.lean", include_content=False
+    )
+
+    assert len(opened) == 1
+    assert len(without) == len(with_content) == 25
+    # Everything the graph actually reads is identical...
+    for lean, full in zip(without, with_content):
+        assert lean["check_status"] == full["check_status"]
+        assert lean["session_id"] == full["session_id"]
+        assert lean["created_at"] == full["created_at"]
+    # ...and only the bytes it never looks at are withheld.
+    assert without[0]["code"] == ""
+    assert with_content[0]["code"] == "theorem t24 : True := by trivial\n"
+
+
+def test_set_code_step_check_returns_the_updated_row_with_its_content(tmp_path, monkeypatch):
+    """The back-fill path re-reads the row it just updated; that read goes through the
+    same join, so a verdict landing on a step must not blank the canvas."""
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    session = store.create_session("S")
+    run = store.create_run(session["id"], "m", None, 3)
+    step = store.add_code_step(session["id"], run["id"], "p.lean", content="proof\n", author="agent")
+
+    updated = store.set_code_step_check(step["id"], "ok", None, artifact_kind="proof")
+
+    assert updated["code"] == "proof\n"
+    assert updated["check_status"] == "ok"
+    assert "blob_content" not in updated
+
+
+# --- AUDIT-2026-07-24 C4: WITHDRAWN — this always worked ----------------------
+# The audit claimed search was truncated to the 100 most-recently-updated sessions,
+# so an older match was unreachable. That was wrong: the LIKE is part of the WHERE
+# clause, and SQL applies WHERE before LIMIT, so the cap has always bounded the number
+# of MATCHES, not the window searched. These tests pin the behaviour that was already
+# correct — they pass against the pre-"fix" code too, which is how the error surfaced.
+
+
+def test_search_finds_a_session_older_than_the_default_page(tmp_path, monkeypatch):
+    """Search reaches an old session regardless of how many newer ones exist. Search is
+    the ONLY path to an in-project session (the sidebar hides them), so this is worth
+    pinning even though it was never broken."""
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    needle = store.create_session("Cauchy completeness")
+    for i in range(140):  # every one of these is newer than the needle
+        store.create_session(f"unrelated {i}")
+
+    hits = store.search_sessions("cauchy")
+
+    assert [h["id"] for h in hits] == [needle["id"]]
+
+
+def test_search_still_honours_its_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    for i in range(40):
+        store.create_session(f"matching {i}")
+
+    assert len(store.search_sessions("matching", limit=5)) == 5
+    assert len(store.search_sessions("matching")) == 30  # the default
+
+
+# --- AUDIT-2026-07-24 C9: the cascade must take the artifact index with it -----
+
+def test_deleting_a_project_removes_its_artifact_rows(tmp_path, monkeypatch):
+    """A stale row survives a re-created slug and makes `_ensure_artifacts_backfilled`
+    think the fresh project is already indexed, so its real proofs never get imported."""
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    project = store.create_project("doomed", title="Doomed")
+    session = store.create_session("s", project_id=project["id"])
+    store.upsert_artifact(
+        project_id=project["id"], session_id=session["id"], run_id=None,
+        declaration_name="Lea.Doomed.thm", kind="proof", path="p.lean",
+        module_name="Lea.Doomed.p",
+    )
+    # ...and one scoped to the SESSION rather than the project (a loose-session artifact).
+    store.upsert_artifact(
+        project_id=None, session_id=session["id"], run_id=None,
+        declaration_name="Lea.Misc.loose", kind="proof", path="q.lean", module_name=None,
+    )
+    assert store.list_artifacts_for_scope(project["id"])
+    assert store.list_artifacts_for_scope(session["id"])
+
+    assert store.delete_project_cascade(project["id"]) is True
+
+    assert store.list_artifacts_for_scope(project["id"]) == []
+    assert store.list_artifacts_for_scope(session["id"]) == []
+
+
+# --- AUDIT-2026-07-24 C7: the pending row is claimed atomically ----------------
+
+def test_only_one_caller_can_claim_a_pending_run(tmp_path, monkeypatch):
+    """`fail_pending_run` and `claim_pending_run` are the same conditional UPDATE from
+    opposite sides — the interrupt endpoint and the run driver. Exactly one wins."""
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    session = store.create_session("race")
+
+    run = store.create_run(session["id"], "m", None, 3)
+    assert store.claim_pending_run(run["id"]) is True
+    assert store.claim_pending_run(run["id"]) is False, "a second claim must lose"
+    assert store.fail_pending_run(run["id"], "too late") is False, "the row is no longer pending"
+    assert store.get_run(run["id"])["status"] == "running"
+
+    other = store.create_run(session["id"], "m", None, 3)
+    assert store.fail_pending_run(other["id"], "interrupted before start") is True
+    assert store.claim_pending_run(other["id"]) is False, "the driver must decline"
+    assert store.get_run(other["id"])["status"] == "failed"
+    assert store.get_run(other["id"])["result_detail"] == "interrupted before start"
+
+
+def test_concurrent_claims_produce_exactly_one_winner(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    session = store.create_session("race")
+    run = store.create_run(session["id"], "m", None, 3)
+
+    results = []
+    start = threading.Barrier(8)
+
+    def contend(n):
+        start.wait(timeout=10)
+        if n % 2:
+            results.append(("claim", store.claim_pending_run(run["id"])))
+        else:
+            results.append(("fail", store.fail_pending_run(run["id"], "interrupted")))
+
+    threads = [threading.Thread(target=contend, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert sum(1 for _kind, won in results if won) == 1, results
+
+
+# --- AUDIT-2026-07-24 P4: an idle client costs no query ------------------------
+
+def test_the_change_token_moves_only_on_a_real_write(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+
+    before = store.sessions_change_token()
+    assert store.sessions_change_token() == before, "reading must not move the token"
+
+    session = store.create_session("moves it")
+    after_create = store.sessions_change_token()
+    assert after_create > before
+
+    run = store.create_run(session["id"], "m", None, 3)
+    assert store.sessions_change_token() > after_create
+    after_run = store.sessions_change_token()
+
+    store.update_run(run["id"], "proved")
+    assert store.sessions_change_token() > after_run

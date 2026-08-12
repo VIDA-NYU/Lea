@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  hashFormalizationInput,
   hashTargetText,
   inferLeanDeclarationName,
   isValidLeanIdentifier,
@@ -35,6 +36,37 @@ test("detects a comment-marked theorem target", () => {
     bodyFrom: source.indexOf("\n"),
     bodyTo: source.lastIndexOf("\\end{theorem}")
   });
+});
+
+test("formalization input hashes include uses and context while normalizing formatting", () => {
+  const base = {
+    targetKind: "theorem",
+    targetText: "Every open cover has a finite subcover.",
+    targetUses: [],
+    targetContext: ""
+  };
+  const baseHash = hashFormalizationInput(base);
+
+  assert.equal(hashFormalizationInput({
+    ...base,
+    targetText: " Every   open cover has a finite subcover. ",
+    targetContext: "   "
+  }), baseHash);
+  assert.notEqual(hashFormalizationInput({
+    ...base,
+    targetUses: ["finite_subcover"]
+  }), baseHash);
+  assert.notEqual(hashFormalizationInput({
+    ...base,
+    targetContext: "Apply compactness first."
+  }), baseHash);
+  assert.notEqual(hashFormalizationInput({
+    ...base,
+    targetUses: ["a", "b"]
+  }), hashFormalizationInput({
+    ...base,
+    targetUses: ["b", "a"]
+  }));
 });
 
 test("detects a definition target using lea define", () => {

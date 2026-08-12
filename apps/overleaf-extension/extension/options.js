@@ -5,9 +5,9 @@ const MODEL_FAMILY_LABELS = {
   google: "Google AI",
   anthropic: "Anthropic"
 };
-// Placeholder only, used before the first successful /settings fetch; the
-// companion (backed by packages/lea-model-catalog) is authoritative. Keep in
-// sync with the catalog default and content.js (AUDIT L9).
+// Placeholder only, used before the first successful companion fetch. The
+// adapter's LiteLLM catalog is authoritative; the shared package supplies the
+// offline featured fallback. Keep the default in sync with content.js (AUDIT L9).
 const DEFAULT_LEA_MODEL = "o4-mini";
 const DEFAULT_MODEL_OPTIONS = [
   { value: DEFAULT_LEA_MODEL, label: DEFAULT_LEA_MODEL, family: "openai" }
@@ -18,6 +18,8 @@ const companionUrlInput = document.querySelector("#companion-url");
 const leaRepoPathInput = document.querySelector("#lea-repo-path");
 const leaApiBaseUrlInput = document.querySelector("#lea-api-base-url");
 const leaModelInput = document.querySelector("#lea-model");
+const modelCatalogStatus = document.querySelector("#model-catalog-status");
+const modelRequirementsContainer = document.querySelector("#model-requirements");
 const leaMaxTurnsInput = document.querySelector("#lea-max-turns");
 const leaTexMirrorInput = document.querySelector("#lea-tex-mirror");
 const providerStatusList = document.querySelector("#provider-key-status");
@@ -29,7 +31,10 @@ const providerKeyInputs = {
 const loadCompanionSettingsButton = document.querySelector("#load-companion-settings");
 const statusEl = document.querySelector("#status");
 let latestModelOptions = DEFAULT_MODEL_OPTIONS;
+let latestModelCatalog = DEFAULT_MODEL_OPTIONS;
 let latestProviderKeys = {};
+let latestApiKeys = {};
+let latestModelRequirements = null;
 
 chrome.storage.sync.get(
   {
@@ -44,7 +49,7 @@ chrome.storage.sync.get(
     companionUrlInput.value = settings.companionUrl;
     leaRepoPathInput.value = settings.leaRepoPath;
     leaApiBaseUrlInput.value = settings.leaApiBaseUrl;
-    renderModelOptions(DEFAULT_MODEL_OPTIONS, settings.leaModel || DEFAULT_LEA_MODEL, latestProviderKeys);
+    renderModelOptions(DEFAULT_MODEL_OPTIONS, DEFAULT_MODEL_OPTIONS, settings.leaModel || DEFAULT_LEA_MODEL);
     renderProviderKeyStatus(latestProviderKeys);
     leaMaxTurnsInput.value = settings.leaMaxTurns;
     if (leaTexMirrorInput) leaTexMirrorInput.checked = settings.leaTexMirrorEnabled !== false;
@@ -77,7 +82,8 @@ form.addEventListener("submit", async (event) => {
         leaModel,
         leaMaxTurns,
         leaTexMirrorEnabled,
-        leaProviderApiKeys
+        leaProviderApiKeys,
+        leaApiKeys: collectDynamicApiKeyPatch()
       })
     });
     const leaPayload = await leaResponse.json().catch(() => ({}));
@@ -94,8 +100,11 @@ form.addEventListener("submit", async (event) => {
       leaTexMirrorEnabled: leaPayload.leaTexMirrorEnabled
     });
     latestProviderKeys = leaPayload.leaProviderKeys || latestProviderKeys;
+    latestApiKeys = leaPayload.leaApiKeys || latestApiKeys;
     renderProviderKeyStatus(latestProviderKeys);
     clearProviderKeyInputs();
+    clearDynamicApiKeyInputs();
+    await loadModelRequirements(leaPayload.leaModel || leaModel);
     statusEl.textContent = "Settings saved.";
   } catch (error) {
     statusEl.textContent = error instanceof Error ? error.message : String(error);
@@ -117,8 +126,16 @@ async function loadCompanionSettings({ silent }) {
     leaApiBaseUrlInput.value = payload.leaApiBaseUrl || leaApiBaseUrlInput.value || "http://127.0.0.1:8001";
     latestModelOptions = payload.leaModelOptions || DEFAULT_MODEL_OPTIONS;
     latestProviderKeys = payload.leaProviderKeys || {};
+    latestApiKeys = payload.leaApiKeys || {};
     renderProviderKeyStatus(latestProviderKeys);
-    renderModelOptions(latestModelOptions, payload.leaModel || leaModelInput.value || DEFAULT_LEA_MODEL, latestProviderKeys);
+    const catalogPayload = await loadModelCatalog(companionUrl);
+    latestModelCatalog = catalogPayload.models;
+    renderModelOptions(
+      latestModelCatalog,
+      latestModelOptions,
+      payload.leaModel || leaModelInput.value || DEFAULT_LEA_MODEL
+    );
+    await loadModelRequirements(payload.leaModel || leaModelInput.value || DEFAULT_LEA_MODEL);
     leaMaxTurnsInput.value = payload.leaMaxTurns || leaMaxTurnsInput.value || 20;
     if (leaTexMirrorInput) leaTexMirrorInput.checked = payload.leaTexMirrorEnabled !== false;
 
@@ -143,46 +160,137 @@ async function loadCompanionSettings({ silent }) {
 
 for (const input of Object.values(providerKeyInputs)) {
   input.addEventListener("input", () => {
-    renderModelOptions(latestModelOptions, leaModelInput.value || DEFAULT_LEA_MODEL, getEffectiveProviderKeyStatus());
+    updateRequirementSummary(latestModelRequirements);
   });
 }
 
-function renderModelOptions(options, selectedModel, providerKeys = {}) {
-  leaModelInput.replaceChildren();
-  const byFamily = new Map();
-  for (const model of options) {
-    const family = normalizeFamily(model.family || "openai");
-    if (!byFamily.has(family)) byFamily.set(family, []);
-    byFamily.get(family).push(model);
-  }
-  for (const [family, models] of byFamily) {
-    const group = document.createElement("optgroup");
-    group.label = MODEL_FAMILY_LABELS[family] || family;
-    const familyConfigured = Boolean(providerKeys[family]?.configured);
-    for (const model of models) {
-      const option = document.createElement("option");
-      option.value = model.value || model.id;
-      option.textContent = model.tag ? `${model.label} - ${model.tag}` : model.label;
-      option.disabled = !familyConfigured && option.value !== selectedModel;
-      group.appendChild(option);
+function renderModelOptions(catalog, featured, selectedModel) {
+  globalThis.LeaModelPicker.createModelPicker({
+    root: leaModelInput,
+    value: selectedModel,
+    catalog,
+    featured,
+    onChange: (model) => {
+      void loadModelRequirements(model);
     }
-    leaModelInput.appendChild(group);
-  }
-  leaModelInput.value = [...leaModelInput.options].some((option) => option.value === selectedModel)
-    ? selectedModel
-    : DEFAULT_LEA_MODEL;
+  });
 }
 
-function getEffectiveProviderKeyStatus() {
-  const status = { ...latestProviderKeys };
-  for (const [family, input] of Object.entries(providerKeyInputs)) {
-    if (!input.value.trim()) continue;
-    status[family] = {
-      ...(status[family] || {}),
-      configured: true
-    };
+async function loadModelCatalog(companionUrl) {
+  try {
+    const response = await fetch(`${companionUrl}/settings/models`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
+    const models = Array.isArray(payload.models) && payload.models.length > 0
+      ? payload.models
+      : latestModelOptions;
+    if (modelCatalogStatus) {
+      modelCatalogStatus.textContent = payload.degraded
+        ? "The adapter catalog is unavailable; showing the offline fallback and current model."
+        : `${models.length.toLocaleString()} models available. Search by model ID or provider.`;
+    }
+    return { models, degraded: Boolean(payload.degraded) };
+  } catch {
+    if (modelCatalogStatus) {
+      modelCatalogStatus.textContent = "The adapter catalog is unavailable; showing the offline fallback.";
+    }
+    return { models: latestModelOptions, degraded: true };
   }
-  return status;
+}
+
+async function loadModelRequirements(model) {
+  const companionUrl = companionUrlInput.value.trim().replace(/\/+$/, "") || DEFAULT_COMPANION_URL;
+  try {
+    const response = await fetch(
+      `${companionUrl}/settings/models/requirements?model=${encodeURIComponent(model)}`
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
+    latestModelRequirements = payload;
+    renderModelRequirements(payload);
+  } catch {
+    latestModelRequirements = null;
+    renderModelRequirements(null);
+  }
+}
+
+function staticProviderInputForEnv(env) {
+  if (env === "OPENAI_API_KEY") return providerKeyInputs.openai;
+  if (env === "GOOGLE_API_KEY" || env === "GEMINI_API_KEY") return providerKeyInputs.google;
+  if (env === "ANTHROPIC_API_KEY" || env === "ANTHROPIC_AUTH_TOKEN") return providerKeyInputs.anthropic;
+  return null;
+}
+
+function requirementConfigured(requirement) {
+  if (requirement?.configured || latestApiKeys?.[requirement?.env]?.configured) return true;
+  const staticInput = staticProviderInputForEnv(requirement?.env);
+  if (staticInput?.value.trim()) return true;
+  return [...modelRequirementsContainer?.querySelectorAll("input[data-env]") || []]
+    .some((input) => input.dataset.env === requirement?.env && Boolean(input.value.trim()));
+}
+
+function updateRequirementSummary(requirements) {
+  const note = modelRequirementsContainer?.querySelector(".lea-model-requirement-note");
+  if (!note || !requirements) return;
+  const required = Array.isArray(requirements.required_keys) ? requirements.required_keys : [];
+  const satisfied = required.length === 0 || required.some(requirementConfigured);
+  note.dataset.satisfied = satisfied ? "true" : "false";
+  if (required.length === 0) {
+    note.textContent = requirements.degraded
+      ? "Provider requirements are unavailable while the adapter is offline."
+      : "This model does not require a single API-key credential.";
+  } else if (satisfied) {
+    note.textContent = `${requirements.provider || "Model"} credentials are configured.`;
+  } else {
+    note.textContent = `Add one of the required credentials: ${required.map((key) => key.env).join(" or ")}.`;
+  }
+}
+
+function renderModelRequirements(requirements) {
+  if (!modelRequirementsContainer) return;
+  modelRequirementsContainer.replaceChildren();
+  if (!requirements) {
+    const unavailable = document.createElement("p");
+    unavailable.className = "lea-model-requirement-note";
+    unavailable.textContent = "Model credential requirements are currently unavailable.";
+    modelRequirementsContainer.appendChild(unavailable);
+    return;
+  }
+  const note = document.createElement("p");
+  note.className = "lea-model-requirement-note";
+  modelRequirementsContainer.appendChild(note);
+  for (const requirement of requirements.required_keys || []) {
+    if (staticProviderInputForEnv(requirement.env)) continue;
+    const label = document.createElement("label");
+    label.className = "lea-model-requirement-field";
+    label.textContent = requirement.label || requirement.env;
+    const input = document.createElement("input");
+    input.type = "password";
+    input.autocomplete = "off";
+    input.dataset.env = requirement.env;
+    input.placeholder = requirement.configured || latestApiKeys?.[requirement.env]?.configured
+      ? "Configured — leave blank to keep"
+      : requirement.env;
+    input.addEventListener("input", () => updateRequirementSummary(requirements));
+    label.appendChild(input);
+    modelRequirementsContainer.appendChild(label);
+  }
+  updateRequirementSummary(requirements);
+}
+
+function collectDynamicApiKeyPatch() {
+  const patch = {};
+  for (const input of modelRequirementsContainer?.querySelectorAll("input[data-env]") || []) {
+    const value = input.value.trim();
+    if (value) patch[input.dataset.env] = value;
+  }
+  return patch;
+}
+
+function clearDynamicApiKeyInputs() {
+  for (const input of modelRequirementsContainer?.querySelectorAll("input[data-env]") || []) {
+    input.value = "";
+  }
 }
 
 function collectProviderApiKeyPatch() {
@@ -192,10 +300,6 @@ function collectProviderApiKeyPatch() {
     if (value) patch[family] = value;
   }
   return patch;
-}
-
-function normalizeFamily(family) {
-  return family === "gemini" ? "google" : family;
 }
 
 function clearProviderKeyInputs() {

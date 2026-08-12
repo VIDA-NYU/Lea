@@ -1,4 +1,4 @@
-// Minimal, dependency-free ZIP reader for extracting `.tex` sources from an
+// Minimal, dependency-free ZIP reader for extracting LaTeX sources from an
 // Overleaf project download (`GET /project/<id>/download/zip`).
 //
 // Why hand-rolled: the content script must stay bundler-free, and we only need the
@@ -34,11 +34,11 @@ async function inflateRaw(bytes) {
 }
 
 /**
- * Extract every `.tex` entry from a ZIP archive.
+ * Extract every `.tex`, `.sty`, and `.cls` entry from a ZIP archive.
  * @param {ArrayBuffer|Uint8Array} input - the raw zip bytes
  * @returns {Promise<Array<{path: string, content: string}>>} sorted by path
  */
-export async function extractTexFromZip(input) {
+export async function extractLatexSourcesFromZip(input) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const decoder = new TextDecoder("utf-8");
@@ -60,7 +60,7 @@ export async function extractTexFromZip(input) {
     const name = decoder.decode(bytes.subarray(cursor + 46, cursor + 46 + nameLen));
     cursor += 46 + nameLen + extraLen + commentLen;
 
-    if (name.endsWith("/") || !name.toLowerCase().endsWith(".tex")) continue;
+    if (name.endsWith("/") || !/\.(?:tex|sty|cls)$/i.test(name)) continue;
 
     // Local header: data begins after its own (possibly different) name/extra fields.
     if (view.getUint32(localOffset, true) !== SIG_LOCAL) continue;
@@ -83,3 +83,6 @@ export async function extractTexFromZip(input) {
   out.sort((a, b) => a.path.localeCompare(b.path));
   return out;
 }
+
+// Compatibility for older imports and tests.
+export const extractTexFromZip = extractLatexSourcesFromZip;

@@ -9,8 +9,8 @@ import { openOverleafDocument } from '../lib/overleafLink';
 // header `showDirect` is false so direct sessions show nothing.
 //
 // Styled with the shared `.origin-badge` classes in lea-v2.css, which live under
-// `.lea-app` so the same markup reads correctly in both the warm-paper chat header
-// and the (also `.lea-app`-scoped) Stats page.
+// `.lea-app` so the same markup reads correctly in both the chat header and the
+// (also `.lea-app`-scoped) Stats page.
 export function OriginBadge({
   origin,
   originUrl,

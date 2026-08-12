@@ -81,7 +81,25 @@ export async function patchEnvFile(filePath, patch) {
   }
 
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.writeFile(filePath, `${trimTrailingBlankLines(nextLines).join("\n")}\n`, "utf8");
+  await writePrivateFile(filePath, `${trimTrailingBlankLines(nextLines).join("\n")}\n`);
+}
+
+// `.env` holds every provider key. Written atomically and owner-only, for the same
+// reasons as the adapter's `config.write_private_text` (AUDIT-2026-07-24 S6): a plain
+// writeFile truncates first, so an interrupted save left the file empty with the keys
+// gone, and the default mode is world-readable for a file that is entirely secrets.
+// The temp file is created 0600 in the SAME directory, because rename is only atomic
+// within a filesystem.
+export async function writePrivateFile(filePath, contents) {
+  const dir = path.dirname(filePath);
+  const tmp = path.join(dir, `.${path.basename(filePath)}.${process.pid}.tmp`);
+  try {
+    await fsp.writeFile(tmp, contents, { encoding: "utf8", mode: 0o600 });
+    await fsp.rename(tmp, filePath);
+  } catch (error) {
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 export function formatEnvValue(value) {

@@ -20,10 +20,12 @@ export function SearchOverlay({
   open,
   onClose,
   onOpenSession,
+  onOpenFormalization,
 }: {
   open: boolean;
   onClose: () => void;
   onOpenSession: (sessionId: string) => void;
+  onOpenFormalization: (formalizationId: string) => void;
 }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -70,14 +72,26 @@ export function SearchOverlay({
   }, [query, open]);
 
   // Loose chats first, then in-project — the flat order keyboard nav indexes into.
-  const loose = useMemo(() => results.filter((r) => !r.project_id), [results]);
-  const inProject = useMemo(() => results.filter((r) => r.project_id), [results]);
-  const ordered = useMemo(() => [...loose, ...inProject], [loose, inProject]);
+  const formalizations = useMemo(
+    () => results.filter((r) => r.result_type === 'formalization'),
+    [results],
+  );
+  const sessions = useMemo(
+    () => results.filter((r) => r.result_type !== 'formalization'),
+    [results],
+  );
+  const loose = useMemo(() => sessions.filter((r) => !r.project_id), [sessions]);
+  const inProject = useMemo(() => sessions.filter((r) => r.project_id), [sessions]);
+  const ordered = useMemo(
+    () => [...formalizations, ...loose, ...inProject],
+    [formalizations, loose, inProject],
+  );
 
   if (!open) return null;
 
   const choose = (r: SearchResult) => {
-    onOpenSession(r.id);
+    if (r.result_type === 'formalization') onOpenFormalization(r.id);
+    else onOpenSession(r.id);
     onClose();
   };
 
@@ -112,7 +126,12 @@ export function SearchOverlay({
         onClick={() => choose(r)}
       >
         <span className={`dot ${statusDot(r.status)}`} />
-        <span className="search-row-title">{r.title}</span>
+        <span className="search-row-title">
+          {r.declaration_name || r.title}
+          {r.result_type === 'formalization' && (
+            <small>{r.formalization_kind} · {r.status}</small>
+          )}
+        </span>
         {r.project_id && <span className="search-tag" title={r.project_namespace ?? undefined}>{r.project_title}</span>}
         <span className="search-row-when">{new Date(r.updated_at).toLocaleDateString()}</span>
       </button>
@@ -128,7 +147,7 @@ export function SearchOverlay({
           <input
             ref={inputRef}
             className="search-input"
-            placeholder="Search chats and project sessions…"
+            placeholder="Search formalizations, declarations, files, and conversations…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             spellCheck={false}
@@ -138,13 +157,19 @@ export function SearchOverlay({
 
         <div className="search-results">
           {!q ? (
-            <div className="search-hint">Type to search across loose chats and every project’s sessions.</div>
+            <div className="search-hint">Type to search across formalizations and conversations.</div>
           ) : loading && results.length === 0 ? (
             <div className="search-hint">Searching…</div>
           ) : ordered.length === 0 ? (
-            <div className="search-hint">No sessions match “{q}”.</div>
+            <div className="search-hint">Nothing matches “{q}”.</div>
           ) : (
             <>
+              {formalizations.length > 0 && (
+                <div className="search-section">
+                  <div className="search-section-label">Formalizations</div>
+                  {formalizations.map(renderRow)}
+                </div>
+              )}
               {loose.length > 0 && (
                 <div className="search-section">
                   <div className="search-section-label">Loose chats</div>

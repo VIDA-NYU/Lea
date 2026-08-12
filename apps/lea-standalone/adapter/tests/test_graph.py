@@ -52,11 +52,11 @@ def test_status_derivation_covers_all_kinds(tmp_path, monkeypatch):
 
     # helper: checked ok, no sorry → proved.
     sess = store.create_session("work", project_id=pid)["id"]
-    store.add_code_step(sess, None, "helper.lean", commit_sha="a" * 40, check_status="ok")
+    store.add_code_step(sess, None, "helper.lean", content="proof-a", check_status="ok")
     # main: latest check errored → failed (even though the body is trivial).
-    store.add_code_step(sess, None, "main.lean", commit_sha="b" * 40, check_status="error")
+    store.add_code_step(sess, None, "main.lean", content="proof-b", check_status="error")
     # sketch: has a `sorry` in its decl span → stated (regardless of any verdict).
-    store.add_code_step(sess, None, "sketch.lean", commit_sha="c" * 40, check_status="ok")
+    store.add_code_step(sess, None, "sketch.lean", content="proof-c", check_status="ok")
 
     nodes = _nodes_by_key(graph.build_graph(project, proofs))
     assert nodes["helper"]["status"] == "proved"
@@ -86,8 +86,8 @@ def test_session_attribution_newest_first(tmp_path, monkeypatch):
     older = store.create_session("first pass", project_id=pid)["id"]
     newer = store.create_session("second pass", project_id=pid)["id"]
     # Two sessions both touch helper.lean; the newer insert is the latest verdict.
-    store.add_code_step(older, None, "helper.lean", commit_sha="a" * 40, check_status="error")
-    store.add_code_step(newer, None, "helper.lean", commit_sha="d" * 40, check_status="ok")
+    store.add_code_step(older, None, "helper.lean", content="proof-a", check_status="error")
+    store.add_code_step(newer, None, "helper.lean", content="proof-d", check_status="ok")
 
     nodes = _nodes_by_key(graph.build_graph(project, proofs))
     helper = nodes["helper"]
@@ -112,7 +112,7 @@ def test_verified_true_when_safeverify_ok(tmp_path, monkeypatch):
     project, proofs = _setup_demo(tmp_path, monkeypatch)
     pid = project["id"]
     sess = store.create_session("work", project_id=pid)["id"]
-    store.add_code_step(sess, None, "helper.lean", commit_sha="a" * 40, check_status="ok")
+    store.add_code_step(sess, None, "helper.lean", content="proof-a", check_status="ok")
     _verify_ok(sess, pid)
 
     nodes = _nodes_by_key(graph.build_graph(project, proofs))
@@ -130,7 +130,7 @@ def test_verified_false_when_only_lean_checked(tmp_path, monkeypatch):
     pid = project["id"]
     sess = store.create_session("work", project_id=pid)["id"]
     # Lean check passes, but SafeVerify was never run → proved but audit pending.
-    store.add_code_step(sess, None, "helper.lean", commit_sha="a" * 40, check_status="ok")
+    store.add_code_step(sess, None, "helper.lean", content="proof-a", check_status="ok")
 
     nodes = _nodes_by_key(graph.build_graph(project, proofs))
     assert nodes["helper"]["status"] == "proved"
@@ -141,7 +141,7 @@ def test_verified_false_when_newer_run_supersedes_verdict(tmp_path, monkeypatch)
     project, proofs = _setup_demo(tmp_path, monkeypatch)
     pid = project["id"]
     sess = store.create_session("work", project_id=pid)["id"]
-    store.add_code_step(sess, None, "helper.lean", commit_sha="a" * 40, check_status="ok")
+    store.add_code_step(sess, None, "helper.lean", content="proof-a", check_status="ok")
     _verify_ok(sess, pid)
     # A fresh run (e.g. the agent ran again) becomes the latest and carries no verdict,
     # so the audit no longer applies — verified reverts to False until re-verified.
@@ -160,9 +160,9 @@ def test_verified_follows_latest_touching_session(tmp_path, monkeypatch):
     # The older session audited the file; a newer session then re-touched it (still a
     # clean check) but never ran SafeVerify. The verdict belongs to the older state,
     # so the node — now owned by the newer session — is not audited.
-    store.add_code_step(older, None, "helper.lean", commit_sha="a" * 40, check_status="ok")
+    store.add_code_step(older, None, "helper.lean", content="proof-a", check_status="ok")
     _verify_ok(older, pid)
-    store.add_code_step(newer, None, "helper.lean", commit_sha="d" * 40, check_status="ok")
+    store.add_code_step(newer, None, "helper.lean", content="proof-d", check_status="ok")
 
     nodes = _nodes_by_key(graph.build_graph(project, proofs))
     assert nodes["helper"]["status"] == "proved"

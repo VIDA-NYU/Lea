@@ -22,6 +22,8 @@ repos and scrubbed from any error — public repos need none.
 
 from __future__ import annotations
 
+import logging
+import json
 import shutil
 import subprocess
 import tempfile
@@ -29,13 +31,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .gitstore import _inject_token, _scrub
+import yaml
+
+from . import tool_names as _tool_names
+from .github_source import GitHubSourceError, clone_repository, head_sha
+
+logger = logging.getLogger("lea-interface.ghimport")
 
 # Guards (D56): a shallow clone shouldn't hang or drag in a giant file.
 CLONE_TIMEOUT_SECONDS = 60
 MAX_BODY_BYTES = 256 * 1024  # a skill is prose; 256 KB is already generous
+# A whole skill DIRECTORY (v2.5 H1/H2): the entry point plus its references. Real ones
+# are large — `lean4-skills` ships a 29 KB SKILL.md beside 41 reference files totalling
+# ~690 KB — so the cap is generous but finite, and per-file so one runaway asset can't
+# consume the whole budget.
+MAX_SKILL_BYTES = 4 * 1024 * 1024
+MAX_SKILL_FILES = 200
 
 _PRIORITY_MD = ("SKILL.md", "README.md")
+# Directories the AgentSkills standard defines beside SKILL.md. Everything else in the
+# skill folder is ignored: an import should carry the skill, not the repository.
+_RESOURCE_DIRS = ("references", "scripts", "assets")
 
 
 class GitHubImportError(RuntimeError):
@@ -62,6 +78,28 @@ class ImportedSkill:
     body: str
     source_url: str
     source_ref: str | None
+    # H4: from the SKILL.md frontmatter when present — `description` is exactly the
+    # "when to use this" the authoring form asks for, already written by the author.
+    description: str | None = None
+    # H2: (relative path, text) for every reference/script/asset beside the entry point.
+    # Empty for a single-file skill, which keeps that path byte-identical to before.
+    files: list[tuple[str, str]] = None  # type: ignore[assignment]
+    # H5: sub-agent roles bundled beside the skill (`agents/*.md`), already translated to
+    # Lea's tool names. H8: MCP servers the skill declares in its `.mcp.json`.
+    roles: list[dict] = None  # type: ignore[assignment]
+    mcp_servers: dict = None  # type: ignore[assignment]
+    # H8: the AgentSkills standard fields worth keeping.
+    version: str | None = None
+    license: str | None = None
+    allowed_tools: list[str] | None = None
+
+    def __post_init__(self):
+        if self.files is None:
+            self.files = []
+        if self.roles is None:
+            self.roles = []
+        if self.mcp_servers is None:
+            self.mcp_servers = {}
 
 
 def normalize_github_url(url: str) -> ImportTarget:
@@ -142,12 +180,33 @@ def fetch_skill(url: str, token: str | None = None) -> ImportedSkill:
         md_path = _locate_md(dest, target)
         if md_path.stat().st_size > MAX_BODY_BYTES:
             raise GitHubImportError("That markdown file is too large to import as a skill.")
-        body = md_path.read_text(encoding="utf-8", errors="replace").strip()
+        raw = md_path.read_text(encoding="utf-8", errors="replace")
+        meta, body = split_frontmatter(raw)
+        body = body.strip()
         if not body:
             raise GitHubImportError("The skill markdown file is empty.")
+        # A SKILL.md carries its own name/description; prefer them over anything derived
+        # from the path, because the author wrote them for exactly this purpose.
+        name = str(meta.get("name") or "").strip() or _derive_name(md_path, dest, target)
+        is_skill_md = md_path.name.lower() == "skill.md"
+        files = _collect_resources(md_path.parent) if is_skill_md else []
+        # Roles live beside the *plugin*, not inside the skill folder
+        # (`plugins/lean4/agents/` next to `plugins/lean4/skills/lean4/`), so search from
+        # the repo root — bounded by the clone, which is already shallow.
+        roles = _collect_roles(dest) if is_skill_md else []
+        allowed = meta.get("allowed_tools")
+        if isinstance(allowed, str):
+            allowed = allowed.split()
         return ImportedSkill(
-            name=_derive_name(md_path, dest, target),
+            name=name,
             body=body,
+            description=(str(meta.get("description")).strip() if meta.get("description") else None),
+            files=files,
+            roles=roles,
+            mcp_servers=_collect_mcp(md_path.parent) if is_skill_md else {},
+            version=(str(meta.get("version")).strip() if meta.get("version") else None),
+            license=(str(meta.get("license")).strip() if meta.get("license") else None),
+            allowed_tools=[str(a) for a in allowed] if isinstance(allowed, list) else None,
             source_url=target.source_url,
             source_ref=target.ref or _head_sha(dest),
         )
@@ -159,32 +218,31 @@ def _clone(target: ImportTarget, dest: Path, token: str | None) -> None:
     """Shallow-clone `target` into `dest`. Tries the pinned ref first (branch/tag),
     then falls back to the default branch (a commit-SHA ref can't be `--branch`ed on
     a shallow clone). The token is injected for the clone only; errors are scrubbed."""
-    clone_url = _inject_token(target.clone_url, token) if token else target.clone_url
-    attempts: list[list[str]] = []
-    if target.ref:
-        attempts.append(["clone", "--depth", "1", "--branch", target.ref, clone_url, str(dest)])
-    attempts.append(["clone", "--depth", "1", clone_url, str(dest)])
-
-    last_err = "clone failed"
-    for args in attempts:
-        # Each attempt needs an empty dest (git refuses a non-empty target).
-        if dest.exists():
-            shutil.rmtree(dest, ignore_errors=True)
-        try:
-            proc = subprocess.run(
-                ["git", *args], capture_output=True, text=True, timeout=CLONE_TIMEOUT_SECONDS
-            )
-        except subprocess.TimeoutExpired:
-            raise GitHubImportError("Timed out cloning the repository.") from None
-        if proc.returncode == 0:
-            return
-        last_err = _scrub(proc.stderr.strip() or "clone failed", token)
-    raise GitHubImportError(f"Could not clone the repository: {last_err}")
+    try:
+        clone_repository(
+            target.clone_url,
+            dest,
+            ref=target.ref,
+            token=token,
+            timeout=CLONE_TIMEOUT_SECONDS,
+        )
+    except GitHubSourceError as exc:
+        raise GitHubImportError(str(exc)) from None
 
 
 def _locate_md(dest: Path, target: ImportTarget) -> Path:
-    """Find the skill markdown (D56). An explicit file wins; otherwise search the
-    subdir for SKILL.md → README.md → the first *.md."""
+    """Find the skill markdown (D56, fixed in v2.5 H1).
+
+    An explicit file wins. Otherwise look for **SKILL.md anywhere in the tree**,
+    shallowest first — that is where the AgentSkills standard puts a skill, and it is
+    routinely several levels down (`plugins/lean4/skills/lean4/SKILL.md`). Only if there
+    is none do we fall back to a root README, then to the first markdown found.
+
+    This ordering is the fix: the old code looked for SKILL.md among the *direct children*
+    only, so any repo with a root README silently imported its README — documentation
+    ABOUT the skill — instead of the skill. Observed on `cameronfreer/lean4-skills`:
+    8.9 KB of repo docs imported, a 29 KB SKILL.md and 41 references ignored.
+    """
     if target.explicit_file:
         f = dest / target.explicit_file
         if not f.is_file():
@@ -193,14 +251,125 @@ def _locate_md(dest: Path, target: ImportTarget) -> Path:
     base = dest / target.subdir if target.subdir else dest
     if not base.is_dir():
         raise GitHubImportError(f"Path not found in the repo: {target.subdir}")
-    for name in _PRIORITY_MD:
-        cand = _find_ci(base, name)
-        if cand:
-            return cand
+
+    skills = [p for p in base.rglob("*") if _in_repo(p) and p.is_file()
+              and p.name.lower() == "skill.md"]
+    if skills:
+        # Shallowest wins, then alphabetical, so the choice is stable across clones.
+        return sorted(skills, key=lambda p: (len(p.relative_to(base).parts), str(p)))[0]
+
+    readme = _find_ci(base, "README.md")
+    if readme:
+        return readme
     mds = sorted(p for p in base.rglob("*.md") if _in_repo(p))
     if mds:
         return mds[0]
     raise GitHubImportError("No markdown (.md) file found to import as a skill.")
+
+
+def split_frontmatter(text: str) -> tuple[dict, str]:
+    """`(metadata, body)` for a markdown file that may open with YAML frontmatter (H4).
+
+    Without this the `---` block lands verbatim in the system prompt as literal YAML —
+    and its `description:` is precisely the "when to use this" the authoring form asks
+    for, already written by the skill's author. Malformed frontmatter is treated as
+    ordinary text rather than failing the import.
+    """
+    if not text.startswith("---"):
+        return {}, text
+    lines = text.splitlines()
+    for i in range(1, len(lines)):
+        if lines[i].strip() in ("---", "..."):
+            try:
+                meta = yaml.safe_load("\n".join(lines[1:i])) or {}
+            except yaml.YAMLError:
+                return {}, text
+            if not isinstance(meta, dict):
+                return {}, text
+            return meta, "\n".join(lines[i + 1:]).lstrip("\n")
+    return {}, text
+
+
+def _collect_roles(plugin_dir: Path) -> list[dict]:
+    """Sub-agent roles bundled beside a skill (H5).
+
+    The AgentSkills/plugin layout puts them in `agents/*.md`, each a markdown body under
+    frontmatter whose `name`/`description`/`tools`/`model` map almost field-for-field onto
+    Lea's `AgentProfile` — the body IS the role's instructions. `lean4-skills` ships four
+    (`proof-repair`, `proof-golfer`, `axiom-eliminator`, `sorry-filler-deep`).
+
+    Tool lists are translated here (H6) rather than at spawn: the author wrote them for a
+    different harness, and a name that survives to run time is silently dropped by B4
+    instead of being visible to whoever is importing.
+    """
+    roles: list[dict] = []
+    for agents_dir in sorted(p for p in plugin_dir.rglob("agents") if p.is_dir() and _in_repo(p)):
+        for path in sorted(p for p in agents_dir.glob("*.md") if p.is_file()):
+            try:
+                meta, body = split_frontmatter(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError):
+                continue
+            if not body.strip():
+                continue
+            tools, unmapped = _tool_names.translate(meta.get("tools") if isinstance(
+                meta.get("tools"), list) else str(meta.get("tools") or "").split(","))
+            roles.append({
+                "name": str(meta.get("name") or path.stem).strip(),
+                "description": (str(meta.get("description")).strip()
+                                if meta.get("description") else None),
+                "system_prompt": body.strip(),
+                "tools": tools or None,
+                "unmapped_tools": unmapped,
+            })
+    return roles
+
+
+def _collect_mcp(skill_dir: Path) -> dict:
+    """MCP servers a skill declares in its own `.mcp.json` (H8).
+
+    This is the AgentSkills standard's own bundling mechanism, and the reason "one-click
+    MCP" is really "install the skill". Parsed here; the caller decides what to do with
+    it — and creates the servers DISABLED, because starting third-party commands must
+    stay an explicit human act.
+    """
+    for candidate in (skill_dir / ".mcp.json", skill_dir.parent / ".mcp.json"):
+        if not candidate.is_file():
+            continue
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        servers = data.get("mcpServers") if isinstance(data, dict) else None
+        if isinstance(servers, dict):
+            return servers
+    return {}
+
+
+def _collect_resources(skill_dir: Path) -> list[tuple[str, str]]:
+    """Every text file under the skill's `references/`, `scripts/`, `assets/` (H2).
+
+    These are the substance of a real skill — the entry point links them and expects them
+    to be readable on demand. Binary/unreadable files are skipped rather than failing the
+    import; a skill missing one asset is far better than no skill.
+    """
+    out: list[tuple[str, str]] = []
+    budget = MAX_SKILL_BYTES
+    for sub in _RESOURCE_DIRS:
+        root = skill_dir / sub
+        if not root.is_dir():
+            continue
+        for path in sorted(p for p in root.rglob("*") if p.is_file() and _in_repo(p)):
+            if len(out) >= MAX_SKILL_FILES or budget <= 0:
+                return out
+            try:
+                if path.stat().st_size > MAX_BODY_BYTES:
+                    continue
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            budget -= len(text)
+            out.append((str(path.relative_to(skill_dir)), text))
+    return out
 
 
 def _find_ci(base: Path, name: str) -> Path | None:
@@ -233,10 +402,10 @@ def _derive_name(md_path: Path, dest: Path, target: ImportTarget) -> str:
 
 def _head_sha(dest: Path) -> str | None:
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(dest), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except subprocess.SubprocessError:
+        return head_sha(dest)
+    except (subprocess.SubprocessError, GitHubSourceError):
+        # F1: the import still succeeded — this is only the provenance sha recorded
+        # against it. Logged rather than silently None so "imported from an unknown
+        # commit" is diagnosable instead of looking like it was never recorded.
+        logger.warning("Could not read HEAD sha of %s", dest, exc_info=True)
         return None
-    return proc.stdout.strip() or None if proc.returncode == 0 else None

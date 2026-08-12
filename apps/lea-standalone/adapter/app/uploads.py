@@ -21,12 +21,16 @@ testable against a scratch dir; it never imports config itself.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from pathlib import Path
 
+from . import diagnostics
 from . import store
 from .gitstore import GitStore
 from .projects import project_repo_dir
+
+logger = logging.getLogger("lea-interface.uploads")
 
 
 class UploadError(ValueError):
@@ -48,6 +52,8 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 ALLOWED_EXT: dict[str, str] = {
     ".pdf": "application/pdf",
     ".tex": "text/x-tex",
+    ".sty": "text/x-tex",
+    ".cls": "text/x-tex",
     ".md": "text/markdown",
     ".txt": "text/plain",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -56,7 +62,7 @@ ALLOWED_EXT: dict[str, str] = {
     ".jpeg": "image/jpeg",
 }
 
-_NATIVE_TEXT = {".tex", ".md", ".txt"}  # Tier 1 — readable as-is
+_NATIVE_TEXT = {".tex", ".sty", ".cls", ".md", ".txt"}  # Tier 1 — readable as-is
 _EXTRACTABLE = {".pdf", ".docx"}        # Tier 2 — extract a .txt sidecar
 # everything else allowed (images) is Tier 3 — stored only
 
@@ -127,18 +133,38 @@ def _extract_docx(path: Path) -> str:
     return "\n".join(p.text for p in document.paragraphs)
 
 
-def extract_text(stored: Path, ext: str) -> Path | None:
+def extract_text(stored: Path, ext: str, warnings: list | None = None) -> Path | None:
     """Tier-2 extraction: for ``.pdf/.docx`` write a ``<name>.txt`` sidecar next to the
     stored file and return its path; for Tier-1/3 return None (nothing to extract).
-    A failed extraction (corrupt/encrypted PDF) is swallowed — the upload still
-    succeeds, just without a sidecar."""
+
+    A failed extraction does NOT fail the upload — the file is still stored. But F1:
+    it used to be swallowed entirely, so a user uploading a scanned or encrypted PDF
+    got a successful upload whose contents the agent could never read, with nothing
+    saying so. The failure is appended to `warnings` for the response instead."""
     if ext not in _EXTRACTABLE:
         return None
     try:
         text = _extract_pdf(stored) if ext == ".pdf" else _extract_docx(stored)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — extraction is best-effort by design
+        logger.warning("Text extraction failed for %s", stored.name, exc_info=True)
+        if warnings is not None:
+            warnings.append(diagnostics.resolve(
+                "notice", "asset.read_failed",
+                f"No text could be extracted from {stored.name} "
+                f"({type(exc).__name__}: {exc}); Lea can't read its contents.",
+                source="upload", remedy="Upload a text-based version if Lea needs to read it.",
+                context={"path": stored.name},
+            ))
         return None
     if not text.strip():
+        if warnings is not None:
+            warnings.append(diagnostics.resolve(
+                "notice", "asset.read_failed",
+                f"{stored.name} contains no extractable text (it may be a scan); "
+                "Lea can't read its contents.",
+                source="upload", remedy="Upload a text-based version if Lea needs to read it.",
+                context={"path": stored.name},
+            ))
         return None
     sidecar = stored.with_name(stored.name + ".txt")
     sidecar.write_text(text)
@@ -166,14 +192,17 @@ def save_upload(
     stored = target_dir / name
     stored.write_bytes(data)
 
-    sidecar = extract_text(stored, ext)
+    warnings: list[dict] = []
+    sidecar = extract_text(stored, ext, warnings)
 
     repo = project_repo_dir(project, proofs_root)
-    GitStore(proofs_root).commit_all(repo, f"upload .lea/files/{name}")
+    # The upload and (when extracted) its .txt sidecar — nothing else (X2).
+    uploaded = [f".lea/files/{name}"] + ([f".lea/files/{sidecar.name}"] if sidecar else [])
+    GitStore(proofs_root).commit_all(repo, f"upload .lea/files/{name}", paths=uploaded)
 
     rel_stored = f".lea/files/{name}"
     rel_extracted = f".lea/files/{sidecar.name}" if sidecar else None
-    return store.create_project_file(
+    row = store.create_project_file(
         project["id"],
         filename=name,
         stored_path=rel_stored,
@@ -181,6 +210,9 @@ def save_upload(
         kind="upload",
         extracted_path=rel_extracted,
     )
+    # F1: the row plus anything that silently didn't work about it. Empty on the
+    # happy path, so the response shape is unchanged for every existing consumer.
+    return {**row, "warnings": warnings}
 
 
 def file_disk_path(project: dict, proofs_root: Path, file_row: dict) -> Path:
@@ -198,12 +230,13 @@ def delete_file(project: dict, proofs_root: Path, file_row: dict) -> bool:
             p = repo / rel
             if p.exists():
                 p.unlink()
-    GitStore(proofs_root).commit_all(repo, f"delete {file_row['stored_path']}")
+    removed = [rel for rel in (file_row.get("stored_path"), file_row.get("extracted_path")) if rel]
+    GitStore(proofs_root).commit_all(repo, f"delete {file_row['stored_path']}", paths=removed)
     return store.delete_project_file(file_row["id"])
 
 
-# ── Overleaf .tex mirror (background sync, D27 extended) ───────────────────────────
-# The Overleaf extension mirrors the project's .tex sources into a dedicated subtree
+# ── Overleaf LaTeX-source mirror (background sync, D27 extended) ──────────────────
+# The extension mirrors the project's .tex/.sty/.cls sources into a dedicated subtree
 # of `.lea/files/` so they surface to the prover exactly like an uploaded reference
 # doc — but with UPDATE-by-path semantics (not the `-2`/`-3` collision rename a fresh
 # upload gets) and tagged `kind="overleaf"` so they can never clobber a user upload
@@ -213,6 +246,7 @@ def delete_file(project: dict, proofs_root: Path, file_row: dict) -> bool:
 
 OVERLEAF_KIND = "overleaf"
 OVERLEAF_SUBDIR = "overleaf"  # under .lea/files/
+OVERLEAF_SOURCE_EXTS = {".tex", ".sty", ".cls"}
 
 
 def overleaf_dir(project: dict, proofs_root: Path) -> Path:
@@ -220,12 +254,12 @@ def overleaf_dir(project: dict, proofs_root: Path) -> Path:
     return files_dir(project, proofs_root) / OVERLEAF_SUBDIR
 
 
-# Only mirrored `.tex` sources (and this `.gitignore`) belong in the overleaf subtree.
-# `*` ignores everything; `!*/` lets git descend into nested folders; `!*.tex` re-includes
-# the sources at any depth. This stops commit-on-write (D8, ``git add -A``) from ever
+# Only mirrored LaTeX sources (and this `.gitignore`) belong in the subtree.
+# The allow rules re-include `.tex`, `.sty`, and `.cls` at any depth. This stops
+# commit-on-write (D8, ``git add -A``) from ever
 # capturing LaTeX build artifacts (`.pdf`/`.synctex.gz`/`.aux`/`.log`/`.fls`/`.fdb_latexmk`)
 # that the agent may generate by compiling the mirrored document.
-OVERLEAF_GITIGNORE = "*\n!*/\n!*.tex\n!.gitignore\n"
+OVERLEAF_GITIGNORE = "*\n!*/\n!*.tex\n!*.sty\n!*.cls\n!.gitignore\n"
 
 
 def _gitignore_ok(base: Path) -> bool:
@@ -265,12 +299,14 @@ def _prune_empty_dirs(base: Path) -> None:
 
 
 def _normalize_tex_relpath(path: str) -> str:
-    """An Overleaf-relative path → a safe POSIX subpath under the mirror dir. Rejects
-    absolutes/escapes and non-``.tex``; folds unsafe characters per path segment.
-    Raises :class:`UploadError` on a bad or non-``.tex`` path."""
+    """An Overleaf-relative path → a safe POSIX subpath under the mirror dir."""
     raw = str(path or "").strip().replace("\\", "/").lstrip("/")
-    if not raw.lower().endswith(".tex"):
-        raise UploadError(f"not a .tex path: {path!r}", code="unsupported")
+    if Path(raw).suffix.lower() not in OVERLEAF_SOURCE_EXTS:
+        allowed = ", ".join(sorted(OVERLEAF_SOURCE_EXTS))
+        raise UploadError(
+            f"not a supported LaTeX source path: {path!r} (allowed: {allowed})",
+            code="unsupported",
+        )
     parts: list[str] = []
     for seg in raw.split("/"):
         if seg in ("", "."):
@@ -279,7 +315,7 @@ def _normalize_tex_relpath(path: str) -> str:
             raise UploadError("path escapes the project", code="invalid")
         parts.append(re.sub(r"[^A-Za-z0-9._-]+", "-", seg).strip("-._") or "file")
     if not parts:
-        raise UploadError("empty .tex path", code="invalid")
+        raise UploadError("empty LaTeX source path", code="invalid")
     return "/".join(parts)
 
 
@@ -300,11 +336,16 @@ def _current_mirror(project: dict, proofs_root: Path) -> dict[str, str]:
     base = overleaf_dir(project, proofs_root)
     out: dict[str, str] = {}
     if base.is_dir():
-        for p in sorted(base.rglob("*.tex")):
-            if p.is_file():
+        for p in sorted(base.rglob("*")):
+            if p.is_file() and p.suffix.lower() in OVERLEAF_SOURCE_EXTS:
                 try:
                     out[p.relative_to(base).as_posix()] = p.read_text()
                 except OSError:
+                    # F1: an unreadable mirrored .tex is omitted from the "current"
+                    # state, so the next sync sees it as absent and rewrites it. Not
+                    # data loss (the incoming copy is authoritative), but it must be
+                    # visible in the log rather than a silent `continue`.
+                    logger.warning("Overleaf mirror: could not read %s", p, exc_info=True)
                     continue
     return out
 
@@ -326,7 +367,10 @@ def commit_mirror(project: dict, proofs_root: Path) -> str:
     """Commit the project repo after a mirror reconcile (run as a deferred background
     task by the route, so the request returns before git runs)."""
     repo = project_repo_dir(project, proofs_root)
-    return GitStore(proofs_root).commit_all(repo, "overleaf: mirror .tex sources")
+    # The whole mirror subtree is this operation's unit of work, but nothing outside it.
+    return GitStore(proofs_root).commit_all(
+        repo, "overleaf: mirror LaTeX sources", paths=[f".lea/files/{OVERLEAF_SUBDIR}"],
+    )
 
 
 def sync_overleaf_tex(
@@ -335,18 +379,24 @@ def sync_overleaf_tex(
     files: list[dict],
     *,
     commit: bool = True,
+    mode: str = "reconcile",
 ) -> dict:
     """Reconcile the project's mirrored ``.lea/files/overleaf/**`` against the incoming
-    ``.tex`` set: upsert changed files, index new rows (``kind="overleaf"``), drop rows
+    LaTeX-source set: upsert changed files, index new rows (``kind="overleaf"``), drop rows
     for removed ones. The subtree is treated as **exclusively mirror-owned** — only the
-    incoming ``.tex`` (plus a ``.gitignore``) survive, so any LaTeX build artifacts the
+    incoming sources (plus a ``.gitignore``) survive, so any LaTeX build artifacts the
     agent generated by compiling the document are pruned, and the ``.gitignore`` stops
     commit-on-write from capturing new ones. Idempotent and order-independent.
 
-    Short-circuits to a no-op only when the ``.tex`` are byte-identical to disk AND the
+    Short-circuits to a no-op only when the sources are byte-identical to disk AND the
     subtree is already clean (nothing to prune, ``.gitignore`` present). When
     ``commit=False`` the git commit is deferred to the caller; the returned ``changed``
-    flag says whether a commit is needed. Returns a summary dict."""
+    flag says whether a commit is needed. Returns a summary dict.
+
+    ``mode="upsert"`` (PLAN-system-hardening 3.2) writes/updates only the incoming
+    files and deletes **nothing** — the active-buffer tier of the tex mirror sends
+    just the file being edited, so absence must not mean removal. Full reconcile
+    (the default) remains the truth-sync used on activation and periodic refresh."""
     # Normalize + validate incoming (last write wins on a normalized-path clash).
     incoming: dict[str, str] = {}
     for f in files or []:
@@ -357,16 +407,25 @@ def sync_overleaf_tex(
             raise UploadError(f"{rel} is too large (cap {MAX_UPLOAD_BYTES // (1024 * 1024)} MB).", code="too_large")
         incoming[rel] = content
 
+    reconcile = mode != "upsert"
     base = overleaf_dir(project, proofs_root)
     desired_abs = {base / rel for rel in incoming}
-    stray = [p for p in _subtree_files(base) if p not in desired_abs]
+    stray = [p for p in _subtree_files(base) if p not in desired_abs] if reconcile else []
 
-    # Fast path: .tex unchanged AND nothing to prune AND the .gitignore is in place.
-    if (
-        _mirror_signature(incoming) == _mirror_signature(_current_mirror(project, proofs_root))
-        and not stray
-        and _gitignore_ok(base)
-    ):
+    # Fast path: incoming unchanged on disk (and, for reconcile, nothing to
+    # prune and the .gitignore in place). Upsert compares only its own files.
+    if reconcile:
+        current_clean = (
+            _mirror_signature(incoming) == _mirror_signature(_current_mirror(project, proofs_root))
+            and not stray
+            and _gitignore_ok(base)
+        )
+    else:
+        current_clean = _gitignore_ok(base) and all(
+            (base / rel).is_file() and (base / rel).read_text() == content
+            for rel, content in incoming.items()
+        )
+    if current_clean:
         return {"written": 0, "updated": 0, "deleted": 0, "pruned": 0,
                 "unchanged": len(incoming), "changed": False, "committed": False}
 
@@ -396,26 +455,33 @@ def sync_overleaf_tex(
         if stored_rel not in existing:
             store.create_project_file(
                 project["id"], filename=rel, stored_path=stored_rel,
-                mime="text/x-tex", kind=OVERLEAF_KIND, extracted_path=None,
+                mime=ALLOWED_EXT.get(Path(rel).suffix.lower(), "text/plain"),
+                kind=OVERLEAF_KIND,
+                extracted_path=None,
             )
 
-    # Prune everything in the subtree that isn't a desired .tex — build artifacts the
-    # agent produced by compiling, plus any .tex removed from Overleaf. (.gitignore kept.)
+    # Reconcile only: prune everything that isn't a desired LaTeX source —
+    # build artifacts the agent produced by compiling, plus any source removed from
+    # Overleaf (.gitignore kept) — and drop index rows for .tex no longer present.
+    # Upsert must never delete: absence just means "not the active buffer".
     pruned = 0
-    for p in _subtree_files(base):
-        if p not in desired_abs:
-            try:
-                p.unlink()
-                pruned += 1
-            except OSError:
-                pass
-    _prune_empty_dirs(base)
+    if reconcile:
+        for p in _subtree_files(base):
+            if p not in desired_abs:
+                try:
+                    p.unlink()
+                    pruned += 1
+                except OSError:
+                    # F1: a build artifact we failed to remove stays in the repo and
+                    # gets committed on the next write. Logged rather than silently
+                    # passed, so a mirror that never gets clean is diagnosable.
+                    logger.warning("Overleaf mirror: could not prune %s", p, exc_info=True)
+        _prune_empty_dirs(base)
 
-    # Drop index rows for .tex no longer present.
-    for stored_rel, row in existing.items():
-        if stored_rel not in desired_stored:
-            store.delete_project_file(row["id"])
-            deleted += 1
+        for stored_rel, row in existing.items():
+            if stored_rel not in desired_stored:
+                store.delete_project_file(row["id"])
+                deleted += 1
 
     changed = bool(written or updated or deleted or pruned or gitignore_written)
     committed = False

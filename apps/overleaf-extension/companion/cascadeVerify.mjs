@@ -227,6 +227,7 @@ export async function runCascadeVerification({ state, deps, upstream }) {
       sessionId: dependentSession.leaSessionId,
       path: file.stepPath,
       author: "cascade",
+      formalizationId: dependentSession.linkedJob?.formalizationId || null,
       // The post-edit name: for a rename, the NEW identifier is what the
       // dependent's import now fails (or succeeds) against.
       summary: `Re-checked after edit to ${classification.kind === "renamed" ? classification.to : effectiveName}`

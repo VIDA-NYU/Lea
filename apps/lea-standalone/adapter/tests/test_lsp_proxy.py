@@ -107,3 +107,97 @@ def test_resolve_target_raises_without_lakefile(tmp_path):
     proof.write_text("x")
     with pytest.raises(FileNotFoundError):
         lsp_proxy.resolve_target(str(proof))
+
+
+# --- AUDIT-2026-07-24 S1: the URI rewrite is a blind prefix --------------------
+
+def test_a_traversing_uri_is_not_redirected_at_a_real_file(tmp_path):
+    """`rewrite_client_to_server` prefixes `file://` with the Lake root and nothing
+    else, so a client-supplied `..` resolved to a real file anywhere on the host — and
+    the Lean server would then read it and report its contents back through
+    diagnostics and hover. The client controls this string; nothing else validated it.
+    """
+    lake_root = tmp_path / "workspace"
+    lake_root.mkdir()
+    prefix = str(lake_root)
+
+    message = {
+        "method": "textDocument/didOpen",
+        "params": {"textDocument": {"uri": "file:///../../../../etc/passwd"}},
+    }
+    lsp_proxy.rewrite_client_to_server(message, prefix)
+
+    uri = message["params"]["textDocument"]["uri"]
+    assert "/etc/passwd" not in uri or not uri.startswith(f"file://{prefix}")
+    assert uri == "file:///../../../../etc/passwd", "the escaping uri must be left unprefixed"
+
+
+def test_a_rootpath_that_escapes_the_root_is_refused(tmp_path):
+    lake_root = tmp_path / "workspace"
+    lake_root.mkdir()
+    (tmp_path / "secrets").mkdir()
+
+    escaping = "/../secrets"          # resolves to tmp_path/secrets — outside the root
+    message = {"params": {"rootPath": escaping}}
+    lsp_proxy.rewrite_client_to_server(message, str(lake_root))
+    assert message["params"]["rootPath"] == escaping, "an escaping rootPath must stay unprefixed"
+
+
+def test_a_rootpath_that_normalizes_back_inside_is_allowed(tmp_path):
+    """`..` is not itself the test — containment after normalization is. A path that
+    detours and comes back is legitimate, and refusing it would be a false positive."""
+    lake_root = tmp_path / "workspace"
+    (lake_root / "proofs").mkdir(parents=True)
+
+    message = {"params": {"rootPath": "/proofs/../proofs"}}
+    lsp_proxy.rewrite_client_to_server(message, str(lake_root))
+    assert message["params"]["rootPath"] == str(lake_root / "proofs/../proofs")
+
+
+def test_a_normal_uri_is_still_rewritten(tmp_path):
+    """The rewrite has to keep working — this is how the browser's virtual path
+    becomes the real file (D60/D64)."""
+    lake_root = tmp_path / "workspace"
+    (lake_root / "proofs" / "s1").mkdir(parents=True)
+    prefix = str(lake_root)
+
+    message = {"params": {"textDocument": {"uri": "file:///proofs/s1/p.lean"}}}
+    lsp_proxy.rewrite_client_to_server(message, prefix)
+
+    assert message["params"]["textDocument"]["uri"] == f"file://{prefix}/proofs/s1/p.lean"
+
+
+# --- AUDIT-2026-07-24 X3: bound the `lake serve` processes --------------------
+
+def test_session_slots_are_bounded_and_released(monkeypatch):
+    """Every WebSocket connection spawned a `lake serve` — an 8 MiB-buffered process
+    that loads Mathlib and is multi-GB resident — with nothing capping them."""
+    import threading
+
+    monkeypatch.setattr(lsp_proxy, "MAX_SESSIONS", 3)
+    monkeypatch.setattr(lsp_proxy, "_session_slots", threading.BoundedSemaphore(3))
+
+    assert [lsp_proxy.acquire_session_slot() for _ in range(3)] == [True, True, True]
+    assert lsp_proxy.acquire_session_slot() is False, "the cap must hold"
+
+    lsp_proxy.release_session_slot()
+    assert lsp_proxy.acquire_session_slot() is True, "a freed slot is reusable"
+
+
+def test_releasing_more_than_was_acquired_is_harmless(monkeypatch):
+    """The route's `finally` runs unconditionally, including on paths that never
+    acquired — an over-release must not raise out of teardown."""
+    import threading
+
+    monkeypatch.setattr(lsp_proxy, "_session_slots", threading.BoundedSemaphore(1))
+    lsp_proxy.release_session_slot()
+    lsp_proxy.release_session_slot()
+    assert lsp_proxy.acquire_session_slot() is True
+
+
+def test_stop_is_idempotent(tmp_path):
+    """The route calls `stop()` in a `finally` even though `pump` also stops the
+    process, so that an error between `start()` and `pump()` cannot orphan it."""
+    proxy = lsp_proxy.LspProxy(tmp_path, str(tmp_path))
+    asyncio.run(proxy.stop())   # never started
+    asyncio.run(proxy.stop())   # and again

@@ -27,6 +27,8 @@ test("paneItemToChatTarget shapes the companion chat payload", () => {
     sourceEndLine: 5,
     sourceHash: "h1",
     naturalLanguageLatex: "Every open cover has a finite subcover.",
+    targetUses: ["finite_subcover"],
+    targetContext: "Use compactness.",
     leanArtifactPath: "workspace/proofs/Lea/Project/compactness.lean",
     status: "invalid"
   };
@@ -41,6 +43,8 @@ test("paneItemToChatTarget shapes the companion chat payload", () => {
     sourceEndLine: 5,
     sourceHash: "h1",
     naturalLanguageLatex: "Every open cover has a finite subcover.",
+    targetUses: ["finite_subcover"],
+    targetContext: "Use compactness.",
     leanDeclarationName: "compactness_criterion",
     recordedProofPath: "workspace/proofs/Lea/Project/compactness.lean",
     status: "invalid"

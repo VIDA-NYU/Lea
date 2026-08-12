@@ -42,10 +42,55 @@ function jsonResponse(status, body) {
 // Routes GET/POST /api/sessions/{id}[/file|/lean-check] against per-session
 // fixtures, and records every call for assertions on exactly what the
 // cascade logic did/didn't touch.
+//
+// It also emulates the adapter's LEDGER (PLAN 4.4): the real adapter records
+// every manual write and every check/rebuild verdict as code_steps and serves
+// them back per-declaration through GET .../target-status — which is what the
+// status engine (and therefore every pane chip) reads. The maps below track
+// the same facts from the calls this stub serves, so a save that posts an
+// "error" verdict is reflected in the next manifest exactly like production.
 function makeEditFetch(calls, { sessionDetails = {}, writeResponses = {}, checkResponses = {}, rebuildResponses = {} } = {}) {
+  const ledgerFiles = new Map(); // repo-relative path -> newest written content
+  const ledgerChecks = new Map(); // repo-relative path -> { status, detail }
+  const declarationPattern = (name) => new RegExp(`\\b(?:theorem|lemma|def|abbrev)\\s+${name}\\b`);
   return async (url, requestOptions = {}) => {
     const method = requestOptions.method || "GET";
     const body = requestOptions.body ? JSON.parse(requestOptions.body) : null;
+    if (String(url).includes("/target-status")) {
+      const requested = decodeURIComponent(String(url).split("declarations=")[1] || "").split(",").filter(Boolean);
+      const targets = requested.map((name) => {
+        // A declaration's recorded file: the newest written content that
+        // contains it (covers renames), else its conventional "<name>.lean"
+        // when a write or verdict touched that path. Nothing known → the
+        // index has never seen it, same as a fresh adapter.
+        let recordedPath = null;
+        for (const [candidate, content] of ledgerFiles) {
+          if (declarationPattern(name).test(content)) recordedPath = candidate;
+        }
+        if (!recordedPath) {
+          const conventional = `${name}.lean`;
+          if (ledgerFiles.has(conventional) || ledgerChecks.has(conventional)) recordedPath = conventional;
+        }
+        if (!recordedPath) return { declaration_name: name, recorded: false };
+        const content = ledgerFiles.get(recordedPath) ?? "";
+        const check = ledgerChecks.get(recordedPath) || null;
+        return {
+          declaration_name: name,
+          recorded: true,
+          path: recordedPath,
+          module_name: `${NAMESPACE}.${recordedPath.replace(/\.lean$/, "")}`,
+          kind: "proof",
+          exists: true,
+          declaration_present: true,
+          has_sorry: /\b(?:sorry|admit)\b/.test(content),
+          check_status: check ? check.status : "ok",
+          check_detail: check ? check.detail : null,
+          check_author: "user",
+          content
+        };
+      });
+      return jsonResponse(200, { project_id: "adapter-project-1", slug: "project-1", targets });
+    }
     calls.push({ url: String(url), method, body });
     const match = String(url).match(/\/api\/sessions\/([^/]+)(?:\/(file|lean-check|rebuild))?$/);
     if (!match) return jsonResponse(404, { detail: "unmapped url in test fetch stub" });
@@ -55,12 +100,16 @@ function makeEditFetch(calls, { sessionDetails = {}, writeResponses = {}, checkR
       return jsonResponse(200, sessionDetails[sessionId] || { code_steps: [] });
     }
     if (kind === "file") {
+      if (body?.path) ledgerFiles.set(body.path, String(body.content ?? ""));
       const response = writeResponses[sessionId];
       return jsonResponse(200, typeof response === "function" ? response(body) : (response || { unchanged: false, code_step: null, note: null }));
     }
     if (kind === "lean-check") {
       const response = checkResponses[sessionId];
-      return jsonResponse(200, typeof response === "function" ? response(body) : (response || { path: body?.path, status: "ok", detail: null }));
+      const resolved = typeof response === "function" ? response(body) : (response || { path: body?.path, status: "ok", detail: null });
+      const verdictPath = resolved?.path || body?.path;
+      if (verdictPath) ledgerChecks.set(verdictPath, { status: resolved.status, detail: resolved.detail ?? null });
+      return jsonResponse(200, resolved);
     }
     if (kind === "rebuild") {
       // Defaults to a successful rebuild so every existing test (none of which
@@ -68,7 +117,10 @@ function makeEditFetch(calls, { sessionDetails = {}, writeResponses = {}, checkR
       // this step was introduced -- only tests that care about a *failed*
       // rebuild need to override it.
       const response = rebuildResponses[sessionId];
-      return jsonResponse(200, typeof response === "function" ? response(body) : (response || { path: body?.path, status: "ok", detail: null }));
+      const resolved = typeof response === "function" ? response(body) : (response || { path: body?.path, status: "ok", detail: null });
+      const verdictPath = resolved?.path || body?.path;
+      if (verdictPath) ledgerChecks.set(verdictPath, { status: resolved.status, detail: resolved.detail ?? null });
+      return jsonResponse(200, resolved);
     }
     return jsonResponse(404, { detail: "unmapped kind" });
   };
@@ -155,6 +207,88 @@ test("edit start resolves the session's current content and pre-save dependents"
   assert.equal(res.body.path, "compactness_criterion.lean");
   assert.match(res.body.content, /theorem compactness_criterion : True/);
   assert.deepEqual(res.body.dependents.map((d) => d.targetLabel), ["compactness_corollary"]);
+});
+
+test("project namespace rename makes the pane and editor read the migrated working file", async () => {
+  const leaRepo = await makeLeaRepo();
+  const oldContent = "namespace Lea.Project1\n\ntheorem compactness_criterion : True := by\n  sorry\n\nend Lea.Project1\n";
+  const newContent = "namespace Lea.RenamedProject\n\ntheorem compactness_criterion : True := by\n  trivial\n\nend Lea.RenamedProject\n";
+  await writeProof(leaRepo, "Lea/RenamedProject/compactness_criterion.lean", newContent);
+  const state = makeState({
+    leaRepo,
+    jobs: {
+      a: editedJob({
+        declarationName: "compactness_criterion",
+        projectNamespace: "Lea.Project1",
+        recordedProofPath: "workspace/proofs/Lea/Project1/compactness_criterion.lean",
+        moduleName: "Lea.Project1.compactness_criterion",
+        finishedAt: "2026-08-01T00:00:00.000Z"
+      })
+    },
+    fetchImpl: async (url) => {
+      const value = String(url);
+      if (value.endsWith("/api/projects/by-slug/project-1/identity")) {
+        return jsonResponse(200, {
+          projectId: "adapter-project-1",
+          slug: "project-1",
+          projectName: "Renamed Project",
+          namespace: "Lea.RenamedProject",
+          repoPath: "proofs/Lea/RenamedProject",
+          exists: true
+        });
+      }
+      if (value.includes("/api/projects/by-slug/project-1/target-status")) {
+        return jsonResponse(200, {
+          project_id: "adapter-project-1",
+          slug: "project-1",
+          targets: [{
+            declaration_name: "compactness_criterion",
+            recorded: true,
+            path: "compactness_criterion.lean",
+            module_name: "Lea.RenamedProject.compactness_criterion",
+            kind: "proof",
+            exists: true,
+            declaration_present: true,
+            has_sorry: false,
+            check_status: "ok",
+            content: newContent
+          }]
+        });
+      }
+      if (value.endsWith("/api/sessions/sess-a")) {
+        return jsonResponse(200, {
+          project_namespace: "Lea.RenamedProject",
+          code_steps: [{ path: "compactness_criterion.lean", seq: 1, code: oldContent }]
+        });
+      }
+      return jsonResponse(404, { detail: "unmapped url" });
+    }
+  });
+  const files = [{
+    path: "main.tex",
+    content: [
+      "\\begin{theorem}\\label{thm:x}",
+      "% lea: formalize label=compactness_criterion",
+      "Every open cover has a finite subcover.",
+      "\\end{theorem}"
+    ].join("\n")
+  }];
+
+  const manifest = await handleLeanPaneManifest({ overleafProjectId: "project-1", files }, state);
+  assert.equal(manifest.statusCode, 200);
+  assert.equal(manifest.body.items[0].leanArtifactContent, newContent);
+  assert.equal(
+    manifest.body.items[0].leanArtifactPath,
+    "workspace/proofs/Lea/RenamedProject/compactness_criterion.lean"
+  );
+  assert.doesNotMatch(manifest.body.items[0].leanArtifactContent, /namespace Lea\.Project1/);
+
+  const edit = await handleLeanPaneEditStart(
+    { overleafProjectId: "project-1", targetKind: "theorem", targetLabel: "compactness_criterion" },
+    state
+  );
+  assert.equal(edit.statusCode, 200);
+  assert.equal(edit.body.content, newContent);
 });
 
 test("edit save: a proof-body-only edit never triggers a cascade re-check", async () => {

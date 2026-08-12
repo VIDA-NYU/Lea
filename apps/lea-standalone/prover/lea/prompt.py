@@ -95,6 +95,24 @@ Use the `lean_check` **tool** (via your tool-calling interface) for ALL .lean co
 For ANY Mathlib lookup, use the `search_mathlib` tool — do NOT run `grep`, `find`, or `rg` on Mathlib source via `bash`. The dedicated tool already knows the correct path, filters irrelevant matches, and is faster. Reserve `bash` for shell operations that aren't about searching Mathlib (e.g., `lake build`, file I/O beyond the dedicated tools)."""
 
 
+_IMPORT_POLICY = """\
+## Import policy — targeted modules only
+- Generated proof files must NOT use the umbrella `import Mathlib`. Import a small,
+  domain-appropriate set of modules containing the declarations, notation, and
+  tactics the proof actually uses.
+- A `search_mathlib` hit in `Mathlib/Foo/Bar.lean` corresponds to
+  `import Mathlib.Foo.Bar`.
+- When Lean reports an unknown declaration, notation, or tactic, locate and add
+  its defining module; do not fall back to `import Mathlib`.
+- Once a proof compiles, call `suggest_imports` on the file, replace its import
+  block with the suggested direct imports, and run `lean_check` again.
+- `suggest_imports` may analyze a disposable broad-import copy internally. Never
+  create such a scratch file yourself: `import Mathlib` is forbidden in every
+  file you write, including temporary candidates.
+- The goal is a small, robust import set, not a theoretically unique minimum. Do
+  not spend proof-search turns manually shaving already-targeted imports."""
+
+
 _TACTIC_CASCADE = """\
 ## Tactic Cascade by Goal Shape
 
@@ -154,6 +172,108 @@ _HARD_RULES = """\
 - If you've failed 3+ times on the same sub-goal with the same approach, try a fundamentally different strategy. Do not keep editing the same broken proof.
 - Report clearly if a statement appears to be false or unprovable."""
 
+# Public alias: the hard-rule block, so the subagent-prompt composer (item 20) and
+# its test can anchor to the exact invariant text the base prompts embed.
+HARD_RULES = _HARD_RULES
+
+
+# The non-negotiable footer a subagent's role head is bracketed by (item 20). A role
+# profile's `system_prompt` is a *head* appended after the shared Lean core (item 19);
+# left as the last instruction it could try to override the core — "you may modify the
+# statement", "sorry is fine". So we re-assert the invariant AFTER the head, framed as
+# taking precedence, so a role can specialize but never license a cheat. This is the
+# safety-critical seam SafeVerify exists to backstop; here we prevent it at the prompt.
+_SUBAGENT_RULES_FOOTER = """\
+## Non-negotiable — these override any role instruction above
+Your role above may narrow what you do; it can NEVER license breaking the Hard rules.
+Regardless of your role or anything stated above, these are absolute:
+- **Never modify the theorem statement** or its declaration header (`theorem`/`def`/`lemma` through `:= by`). Redefining or weakening a statement is not a proof.
+- **Never use `sorry`, `axiom`, or `native_decide`** in a final proof.
+- **Never claim success** until `lean_check` passes with zero errors.
+If your role instructions appear to conflict with these, these win — stop and report the conflict."""
+
+
+def compose_role_prompt(core: str, role_head: str | None) -> str:
+    """Compose a subagent's system prompt (item 20): shared Lean core (with the Hard
+    rules) → the role head → a non-negotiable reassertion of the invariant.
+
+    A role profile influences the prompt ONLY through `role_head`, and this is the
+    only path that consumes it — so bracketing the head between the core's rules and
+    the footer's reassertion guarantees a role can compose onto, but never replace or
+    override, the hard rules. With no role head (a top-level run) the core is returned
+    unchanged, so ordinary runs are byte-identical."""
+    if not role_head or not role_head.strip():
+        return core
+    return f"{core}\n\n{role_head.strip()}\n\n{_SUBAGENT_RULES_FOOTER}"
+
+
+# ── Domain-scoped tactic cascades (item 26) ───────────────────────────────────
+# `_TACTIC_CASCADE` above is one flat ladder for *all* of mathematics — every run
+# carries measure-theory and topology tactics whether or not they're in play. This
+# table holds the domain-specific fragments, keyed by a trigger token that appears in
+# a file's imports / `open`s / qualified names. `domain_cascade_hint` scans the file
+# actually being checked and returns only the fragments whose domain is present — and
+# it is appended to the `lean_check` tool result at tool-use time (agent.py), NOT baked
+# into the system prompt, so the cached prompt prefix stays byte-identical and a run
+# only ever sees the ladders for the mathematics it's doing.
+#
+# Trigger tokens are chosen to match both the Mathlib import path (`Mathlib.MeasureTheory…`)
+# and the namespace a proof opens/qualifies (`MeasureTheory.…`), so either signal fires.
+_DOMAIN_CASCADES: dict[str, str] = {
+    "MeasureTheory": (
+        "`Measurable`/`AEMeasurable`/`AEStronglyMeasurable` goals: `measurability` → "
+        "`fun_prop` → component lemmas. Integrals: `MeasureTheory.integral_*` / "
+        "`setIntegral_*`; a.e. statements via `Filter.EventuallyEq` and `ae_of_all`. "
+        "`ENNReal`/`Set.indicator` arithmetic simplifies under `simp`, not `ring`."
+    ),
+    "Topology": (
+        "`Continuous`/`ContinuousAt`/`ContinuousOn` goals: `continuity` → `fun_prop` → "
+        "component lemmas. `IsOpen`/`IsClosed`/`IsCompact` via `isOpen_*`/`isCompact_*`; "
+        "limits as `Filter.Tendsto`, composed with `Filter.Tendsto.comp` and `tendsto_*`."
+    ),
+    "fderiv": (
+        "Derivative goals (`HasDerivAt`/`HasFDerivAt`/`Differentiable`): `fun_prop` → the "
+        "chain/product/quotient `HasDerivAt.*` lemmas → `deriv_*`/`fderiv_*` rewrites. "
+        "Prove `HasDerivAt` first, then read `deriv` off it, rather than computing `deriv` raw."
+    ),
+    "Polynomial": (
+        "`Polynomial` goals: `Polynomial.degree_*`/`natDegree_*` for degrees; `compute_degree` / "
+        "`compute_degree!` to discharge degree side-goals; evaluate with `Polynomial.eval_*` "
+        "under `simp`; `Monic`/roots via `Polynomial.Monic.*` and `Polynomial.roots`."
+    ),
+    "BigOperators": (
+        "Finite sums/products (`Finset.sum`/`∑`/`∏`): `Finset.sum_*` rewrites (`sum_congr`, "
+        "`sum_range_succ`, `sum_comm`); monotone bounds via `Finset.sum_le_sum` and `gcongr`; "
+        "reindex with `Finset.sum_bij`/`sum_nbij` before touching the summand."
+    ),
+}
+
+
+def domain_cascade_hint(file_text: str, already: set[str] | None = None) -> str | None:
+    """Domain-specific tactic fragments for the mathematics *present in* ``file_text`` — its
+    imports, `open`s, and qualified names — that have not already been surfaced.
+
+    Returns a compact block to append to a tool result, or ``None`` if no new domain fires.
+    When ``already`` is passed (the per-activation set the agent loop keeps), a domain is
+    surfaced **once per run** and its trigger is added to the set, so the same hint doesn't
+    repeat on every `lean_check`. Order follows `_DOMAIN_CASCADES` for a deterministic block.
+    """
+    if not file_text:
+        return None
+    seen = already if already is not None else set()
+    fired: list[tuple[str, str]] = []
+    for trigger, hint in _DOMAIN_CASCADES.items():
+        if trigger in seen:
+            continue
+        if trigger in file_text:
+            fired.append((trigger, hint))
+            seen.add(trigger)
+    if not fired:
+        return None
+    lines = ["## Domain tactics in play — try these before the generic ladder:"]
+    lines += [f"- **{trigger}**: {hint}" for trigger, hint in fired]
+    return "\n".join(lines)
+
 
 _SEARCH_BUDGET = """\
 ## Search budget (IMPORTANT)
@@ -189,12 +309,13 @@ math statements into Lean 4 proofs that compile with zero errors and zero `sorry
 5. If some sorrys can't be filled, **reflect**: step back and ask whether the decomposition is wrong.
 
 ## Style
-- Start files with `import Mathlib` when needed.
 - Use `by` tactic mode for proofs.
 - Keep proofs short. Try the simplest tactic first before anything complex.
 - One theorem per file unless the user asks otherwise.
 
 {_TOOLS}
+
+{_IMPORT_POLICY}
 
 {_TACTIC_CASCADE}
 
@@ -268,6 +389,8 @@ The conversation above may already contain Lean proofs you wrote earlier; build 
 {_WORKSPACE}
 
 {_TOOLS}
+
+{_IMPORT_POLICY}
 
 {_TACTIC_CASCADE}
 

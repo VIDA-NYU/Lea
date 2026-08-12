@@ -1,0 +1,63 @@
+name: Publish website
+
+# Builds public/ and deploys it to GitHub Pages.
+# Enable once under Settings → Pages → Source → GitHub Actions.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "public/**"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a newer push cancel an in-flight build, but never a running deployment.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The site has no dependencies, so there is nothing to install.
+      - name: Test the Markdown renderer
+        working-directory: public
+        run: node --test "tests/*.test.mjs"
+
+      - name: Build
+        working-directory: public
+        run: node build.mjs
+
+      # Requires Pages to be enabled once, by hand:
+      #   Settings → Pages → Source → GitHub Actions
+      # `enablement: true` cannot substitute for that — creating a Pages site
+      # over the API is not something GITHUB_TOKEN is allowed to do
+      # ("Resource not accessible by integration"), so it only replaces a clear
+      # error with a confusing one.
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

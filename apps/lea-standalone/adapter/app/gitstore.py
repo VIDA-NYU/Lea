@@ -19,6 +19,7 @@ tests without monkeypatching. The adapter constructs one at startup:
 from __future__ import annotations
 
 import subprocess
+import threading
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
@@ -37,20 +38,62 @@ class GitStoreError(RuntimeError):
     """A git invocation failed. Carries the failing command's stderr."""
 
 
+# One lock per repo path, so writers to the SAME repo serialize while unrelated repos
+# still commit in parallel (AUDIT-2026-07-24 X2). Keyed by the resolved path rather
+# than by `GitStore` instance: callers construct a fresh `GitStore(proofs_root)` per
+# operation, so an instance-level lock would guard nothing.
+#
+# In-process only, and that is the honest scope: the adapter is one uvicorn process and
+# its runs are threads inside it. It does NOT cover the agent running `git` through the
+# `bash` tool against the same repo — nothing can, short of taking git's own lock — so
+# that remains a (pre-existing, unbounded) race.
+_repo_locks: dict[str, threading.Lock] = {}
+_repo_locks_guard = threading.Lock()
+
+
+def _repo_lock(repo: Path) -> threading.Lock:
+    key = str(Path(repo).resolve())
+    with _repo_locks_guard:
+        lock = _repo_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _repo_locks[key] = lock
+        return lock
+
+
 def commit_message(subject: str) -> str:
     """A commit subject plus the Lea co-author trailer (blank line between)."""
     return f"{subject}\n\n{CO_AUTHOR_TRAILER}"
 
 
+# The only hosts the GitHub token may be embedded in a URL for (AUDIT-2026-07-24 S2).
+# `_inject_token` puts the credential *in the URL*, which git sends on the very first
+# request — so this set IS the blast radius of the token, and it belongs here, at the
+# credential boundary, not only in whatever route happened to build the URL. Callers
+# construct these hosts themselves (`ghimport` clones github.com/gist.github.com; the
+# project push target is validated at the route), so nothing legitimate is excluded.
+GITHUB_CREDENTIAL_HOSTS = frozenset({"github.com", "www.github.com", "gist.github.com"})
+
+
 def _inject_token(remote_url: str, token: str) -> str:
-    """Embed the token into an https remote URL for a single push (D34).
+    """Embed the token into an https GitHub URL for a single push/clone (D34).
 
     `https://github.com/owner/repo(.git)` → `https://x-access-token:<token>@github.com/owner/repo`.
-    Only https/http URLs are rewritten; ssh/other schemes are returned unchanged
-    (the token can't help there). The result is used as a one-shot push target and
-    is never written to `.git/config`, so the token never lands on disk."""
+
+    The URL is returned **unchanged** — i.e. the token is not sent at all — unless it
+    is `https` *and* its host is in :data:`GITHUB_CREDENTIAL_HOSTS`. ssh/local-path
+    remotes were always left alone (the token can't help there); the host check is
+    the part that was missing (AUDIT-2026-07-24 S2): a remote pointing at any other
+    server turned "push this project" into handing that server the user's PAT, since
+    git offers URL credentials to the host before it knows whether the repo exists.
+    `http` is excluded too — the credential must not travel in cleartext.
+
+    The result is used as a one-shot push/clone target and is never written to
+    `.git/config`, so the token never lands on disk."""
     parsed = urlparse(remote_url)
-    if parsed.scheme not in ("https", "http") or not parsed.hostname:
+    if parsed.scheme != "https" or not parsed.hostname:
+        return remote_url
+    if parsed.hostname.lower() not in GITHUB_CREDENTIAL_HOSTS:
         return remote_url
     netloc = f"x-access-token:{token}@{parsed.hostname}"
     if parsed.port:
@@ -93,30 +136,63 @@ class GitStore:
         self._git(repo, "commit", "--allow-empty", "-q", "-m", commit_message(subject))
         return repo
 
-    def commit_all(self, repo: Path, subject: str) -> str:
-        """Stage everything under ``repo`` and commit it with ``subject``; return the
-        new SHA (or the unchanged HEAD when nothing is staged). The single commit
-        primitive every write path funnels through (D8: commit on every write)."""
-        self._git(repo, "add", "-A")
-        staged = self._git(repo, "diff", "--cached", "--name-only").strip()
-        if not staged:
+    def commit_all(self, repo: Path, subject: str, paths: list[str] | None = None) -> str:
+        """Stage changes under ``repo`` and commit them with ``subject``; return the new
+        SHA (or the unchanged HEAD when nothing is staged). The single commit primitive
+        every write path funnels through (D8: commit on every write).
+
+        ``paths`` limits what is staged to those repo-relative pathspecs. Pass it
+        whenever the caller knows what it wrote (AUDIT-2026-07-24 X2): project sessions
+        SHARE one repo (D24) and up to ``LEA_MAX_CONCURRENT_RUNS`` of them write at
+        once, so an unscoped ``git add -A`` swept a *concurrent* run's half-written
+        proof into this run's commit, under this run's message. Harmless for
+        correctness — SQL owns proof content — but it makes ``git log`` useless as an
+        audit trail, and it is what made the `.gitignore` guard in
+        ``uploads.ensure_overleaf_gitignore`` load-bearing rather than belt-and-braces.
+        Omit it only where the whole tree really is the unit of work (provisioning, a
+        namespace migration).
+
+        Serialized per repo. Git takes ``.git/index.lock`` for the duration of an
+        ``add``/``commit``, and a second one arriving meanwhile does not queue — it
+        fails outright, which surfaced as a ``GitStoreError`` out of an otherwise
+        healthy run. The lock is per resolved repo path, so unrelated repos still
+        commit in parallel.
+        """
+        with _repo_lock(repo):
+            # `-A` *with* a pathspec means "all changes under these paths, including
+            # deletions" — without it a deleted file's removal would not be staged.
+            add_args = ["add", "-A"] + (["--", *paths] if paths else [])
+            self._git(repo, *add_args)
+            staged = self._git(repo, "diff", "--cached", "--name-only").strip()
+            if not staged:
+                return self._git(repo, "rev-parse", "HEAD").strip()
+            self._git(repo, "commit", "-q", "-m", commit_message(subject))
             return self._git(repo, "rev-parse", "HEAD").strip()
-        self._git(repo, "commit", "-q", "-m", commit_message(subject))
-        return self._git(repo, "rev-parse", "HEAD").strip()
 
     def commit_write(self, session_id: str, *, turn, author: str = "agent", tool: str) -> str:
-        """Commit the current state of the session repo and return the new SHA.
+        """DEPRECATED — dead as of v2.3; scheduled for deletion with the contract step.
 
-        Called after the agent's `write_file`/`edit_file` lands a file (D8: commit
-        on *every* write — including failed/non-compiling states; git doesn't care
-        whether the Lean compiles). `turn`/`author`/`tool` are passed through to the
-        caller's `code_steps` DB insert, which is the query surface for them — they
-        are NOT baked into git as machine-readable fields (that would duplicate the
-        DB). The commit subject is a human-readable label for `git log`; the only
-        real git metadata is the `Co-authored-by: Lea` attribution trailer.
+        No application code calls this any more: SQL owns proof content, so a write
+        stores its bytes (`store.add_code_step`) instead of committing and keeping a
+        sha. Only `test_gitstore.py` still exercises it. **Do not reintroduce it as a
+        write path.**
 
-        An identical write (nothing staged) makes no commit and returns the current
-        HEAD — an unchanged file is not a new state.
+        It is kept only until the contract revision drops the old tables, because the
+        rows it produced are still readable until then. The reason it should not come
+        back is below.
+
+        Commits the current state of the session repo and returns the new SHA. An
+        identical write (nothing staged) makes no commit and returns the current HEAD.
+
+        **That early return is the bug that motivated the migration.** The caller
+        stored the returned sha as a pointer to the file it had just written — but
+        when nothing was staged, the sha returned is whatever HEAD happens to be,
+        an *unrelated* commit. Nothing verified that the sha's tree contained the
+        path, so the pointer was wrong the moment it was written. One row in the real
+        database says `RealLeAbsSelf.lean @ 51b6adf`, where 51b6adf is a commit
+        subject "edit .lea/memory.md" whose tree does not contain that file — the one
+        code step 0004's backfill could not recover. No amount of locking would have
+        caught it: it was never a race, it was a pointer nobody checked.
         """
         repo = self.session_repo(session_id)
         # Build the subject first; commit_all formats files generically, but the

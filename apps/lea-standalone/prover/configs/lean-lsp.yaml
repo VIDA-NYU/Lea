@@ -10,7 +10,7 @@
 agent:
   # Inject procedural knowledge on how to drive the Lean LSP tools.
   skills: [skills/lean_lsp_proving.md]
-  # tools: null  → the six built-ins PLUS every lean-lsp tool (default).
+  # tools: null  → all built-ins PLUS every lean-lsp tool (default).
   # To hand the model a focused set, list names, e.g.:
   #   tools: [write_file, lean_run_code, lean_goal, lean_loogle, lean_local_search]
 

@@ -229,3 +229,149 @@ def test_uncommitted_diff_empty_after_its_commit(tmp_path):
     store.commit_write("s1", turn=None, author="user", tool="edit_file")  # then commit
     assert captured != ""
     assert store.uncommitted_diff("s1") == ""
+
+
+# --- D34 / AUDIT-2026-07-24 S2: the token only ever goes to GitHub -------------
+
+def test_inject_token_embeds_the_credential_for_github(tmp_path):
+    from app.gitstore import _inject_token
+
+    assert _inject_token("https://github.com/me/repo", "ghp_secret") == (
+        "https://x-access-token:ghp_secret@github.com/me/repo"
+    )
+    # gist clones (ghimport's private-gist path) are the same credential domain
+    assert "x-access-token:ghp_secret@gist.github.com" in _inject_token(
+        "https://gist.github.com/abc123.git", "ghp_secret"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://evil.example.com/me/repo",          # the S2 exfiltration target
+        "https://github.com.evil.example.com/a/b",   # suffix-lookalike host
+        "https://raw.githubusercontent.com/a/b",     # GitHub-owned, but not a clone host
+        "http://github.com/me/repo",                 # cleartext: never send the token
+        "git@github.com:me/repo.git",                # ssh: URL credentials don't apply
+    ],
+)
+def test_inject_token_refuses_every_non_github_https_target(url):
+    """The token is embedded in the URL, which git sends on its FIRST request — so a
+    remote pointing anywhere else must come back untouched rather than authenticated."""
+    from app.gitstore import _inject_token
+
+    assert _inject_token(url, "ghp_secret") == url
+    assert "ghp_secret" not in _inject_token(url, "ghp_secret")
+
+
+def test_push_to_a_non_github_remote_sends_no_credential(tmp_path):
+    """End-to-end at the gitstore seam: pushing to a non-GitHub https remote fails
+    (nothing is listening), and the token appears nowhere in the attempted URL."""
+    store, repo = _init_with_file(tmp_path)
+    store.commit_write("s1", turn=1, tool="write_file")
+    with pytest.raises(GitStoreError) as ei:
+        store.push_to_github(repo, "https://127.0.0.1:9/steal/me", "ghp_secret")
+    assert "ghp_secret" not in str(ei.value)
+
+
+# --- AUDIT-2026-07-24 X2: one repo, many concurrent writers -------------------
+
+def test_concurrent_commits_to_one_repo_all_succeed(tmp_path):
+    """Project sessions SHARE a repo (D24) and up to LEA_MAX_CONCURRENT_RUNS write at
+    once. Git takes .git/index.lock for an add/commit and a second arrival does not
+    queue — it fails outright, surfacing as a GitStoreError out of a healthy run."""
+    import threading
+
+    store = GitStore(tmp_path)
+    repo = tmp_path / "shared"
+    store.init_repo(repo)
+
+    errors: list[Exception] = []
+    start = threading.Barrier(8)
+
+    def writer(n: int) -> None:
+        path = f"file{n}.txt"
+        (repo / path).write_text(f"content {n}\n")
+        start.wait(timeout=10)
+        try:
+            store.commit_all(repo, f"write {path}", paths=[path])
+        except Exception as exc:  # noqa: BLE001 — the point of the test
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not errors, f"concurrent commits failed: {errors[0]}"
+    for n in range(8):
+        assert (repo / f"file{n}.txt").read_text() == f"content {n}\n"
+    log = store._git(repo, "log", "--oneline")
+    assert log.count("\n") >= 8, "every writer should have produced a commit"
+
+
+def test_a_scoped_commit_does_not_sweep_up_a_concurrent_run_s_file(tmp_path):
+    """`git add -A` staged everything, so one run's commit carried another run's
+    half-written proof under its message — which is what made `git log` useless as an
+    audit trail."""
+    store = GitStore(tmp_path)
+    repo = tmp_path / "shared"
+    store.init_repo(repo)
+
+    (repo / "mine.lean").write_text("theorem mine : True := trivial\n")
+    (repo / "theirs.lean").write_text("half written, another run is mid-write\n")
+
+    store.commit_all(repo, "agent write_file: mine.lean", paths=["mine.lean"])
+
+    committed = store._git(repo, "show", "--name-only", "--format=", "HEAD").split()
+    assert committed == ["mine.lean"]
+    # The other run's file is untouched on disk and still uncommitted — its own
+    # commit_all will pick it up.
+    assert (repo / "theirs.lean").exists()
+    assert "theirs.lean" in store._git(repo, "status", "--porcelain")
+
+
+def test_a_scoped_commit_stages_a_deletion(tmp_path):
+    """Pathspec-scoped staging must still record removals — `git add` without `-A`
+    would skip them, so a delete would silently never be committed."""
+    store = GitStore(tmp_path)
+    repo = tmp_path / "shared"
+    store.init_repo(repo)
+    (repo / "gone.txt").write_text("here\n")
+    store.commit_all(repo, "add", paths=["gone.txt"])
+
+    (repo / "gone.txt").unlink()
+    store.commit_all(repo, "delete gone.txt", paths=["gone.txt"])
+
+    assert "gone.txt" not in store._git(repo, "ls-files")
+    assert store._git(repo, "status", "--porcelain").strip() == ""
+
+
+def test_unscoped_commit_all_still_takes_the_whole_tree(tmp_path):
+    """Provisioning and namespace migration genuinely mean 'everything'."""
+    store = GitStore(tmp_path)
+    repo = tmp_path / "shared"
+    store.init_repo(repo)
+    (repo / "a.txt").write_text("a\n")
+    (repo / "b.txt").write_text("b\n")
+
+    store.commit_all(repo, "seed everything")
+
+    committed = set(store._git(repo, "show", "--name-only", "--format=", "HEAD").split())
+    assert committed == {"a.txt", "b.txt"}
+
+
+def test_different_repos_are_not_serialized_against_each_other(tmp_path):
+    """The lock is per repo path, so unrelated repos still commit in parallel."""
+    from app.gitstore import _repo_lock
+
+    store = GitStore(tmp_path)
+    one, two = tmp_path / "one", tmp_path / "two"
+    store.init_repo(one)
+    store.init_repo(two)
+
+    assert _repo_lock(one) is _repo_lock(one), "same repo shares one lock"
+    assert _repo_lock(one) is not _repo_lock(two), "different repos must not share a lock"
+    # ...and the identity survives a differently-spelled path for the same repo.
+    assert _repo_lock(one) is _repo_lock(tmp_path / "." / "one")

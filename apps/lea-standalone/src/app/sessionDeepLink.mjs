@@ -11,6 +11,20 @@ export function readDeepLinkSessionId(search) {
   return id || null;
 }
 
+export function readDeepLinkFormalizationId(search) {
+  const params = new URLSearchParams(search || '');
+  const id = (params.get('formalization') || '').trim();
+  return id || null;
+}
+
+export function stripNavigationParams(search) {
+  const params = new URLSearchParams(search || '');
+  params.delete('session');
+  params.delete('formalization');
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
 // Returns the search string (e.g. "?view=stats" or "") with the `session` param
 // removed, so a later reload falls back to the normal saved-session restore.
 export function stripSessionParam(search) {

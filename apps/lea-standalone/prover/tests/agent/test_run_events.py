@@ -132,6 +132,17 @@ def install_final_gate_fake(*, check_outputs, final_texts=None):
     return calls, proof_path
 
 
+def _res(path: str) -> str:
+    """The resolved form of a path, which is what the loop now records.
+
+    `_meaning_events` and `ProofVerificationState` report the path the TOOL resolved,
+    not the string the model typed — without that, a relative name crossing into the
+    adapter resolved against a different directory and a sub-agent's compiling proof
+    was silently dropped. On macOS a tempdir's `/var/...` normalises to
+    `/private/var/...`, so these comparisons have to resolve too."""
+    return str(Path(path).resolve())
+
+
 def install_final_gate_repair_fake():
     calls = {"n": 0, "messages": [], "checks": [], "tmpdir": tempfile.TemporaryDirectory()}
     proof_path = str(Path(calls["tmpdir"].name) / "Repair.lean")
@@ -298,6 +309,38 @@ def test_max_turns():
     check("max_turns Finished turns", fin.turns == 1)
 
 
+def test_max_turns_hands_back_a_summary():
+    # On hitting the turn budget the run spends ONE tool-less turn to summarize its
+    # findings + next step, and returns THAT as the result — not a discarded "max turns"
+    # error. This is what makes a capped sub-agent scout still useful to the coordinator.
+    tmp = tempfile.TemporaryDirectory()
+    proof_path = str(Path(tmp.name) / "Work.lean")
+    n = {"real": 0}
+
+    def fake_stream(model, system, messages, tools, model_kwargs=None, streaming=True):
+        if not tools:  # the tool-less summary turn
+            yield TextDelta("FINDINGS: Finset.sum_le_sum applies; next, try gcongr.")
+            yield Done(Usage(9, 4), 0.001)
+            return
+        n["real"] += 1  # every real turn just calls a tool → never finishes on its own
+        yield ToolCall("read_file", {"path": proof_path})
+        yield _ToolMeta(f"c{n['real']}")
+        yield Done(Usage(20, 8), 0.002)
+
+    agent.stream = fake_stream
+    agent.load_system_prompt = lambda variant, skills=None, workspace=None, namespace=None: "SYS"
+    events = list(agent.run_events(cfg(max_turns=2, tools=["read_file"]), msgs("scout lemmas")))
+    fin = events[-1]
+    check("finished on max_turns", isinstance(fin, Finished) and fin.reason == "max_turns")
+    check("result is the SUMMARY, not an error",
+          "FINDINGS" in fin.text and "Error: max turns" not in fin.text)
+    check("only the budgeted tool turns ran (2), then the summary", n["real"] == 2)
+    check("summary streamed as assistant text",
+          any(isinstance(e, AssistantTextDelta) and "FINDINGS" in e.text for e in events))
+    check("summary folded into the returned transcript",
+          any("FINDINGS" in str(m.get("content")) for m in fin.transcript["messages"]))
+
+
 def test_should_stop_interrupts_before_first_turn():
     # Cooperative interrupt (D18): should_stop True from the start → a clean
     # terminal Finished("interrupted") with no turns run. (Real asserts so pytest
@@ -363,7 +406,7 @@ def test_final_gate_failed_check_resumes_loop():
     events = list(agent.run_events(cfg(max_turns=4), msgs("prove it")))
     fin = events[-1]
     check("failed final gate eventually completes", isinstance(fin, Finished) and fin.reason == "completed")
-    check("final gate checked before and after repair", calls["checks"] == [proof_path, proof_path])
+    check("final gate checked before and after repair", calls["checks"] == [_res(proof_path), _res(proof_path)])
     check("failed gate resumed the model loop", calls["n"] == 4)
     saw_failure_prompt = any(
         isinstance(message.get("content"), str)
@@ -379,6 +422,7 @@ def test_no_proof_artifact_resumes_loop():
     events = list(agent.run_events(cfg(max_turns=3), msgs("prove it")))
     fin = events[-1]
     check("no-artifact run eventually completes", isinstance(fin, Finished) and fin.reason == "completed")
+    # model-invoked → the stub sees the raw args path
     check("no-artifact recovery used lean_check", calls["checks"] == [proof_path])
     check("no-artifact recovery resumed the model loop", calls["n"] == 3)
     saw_no_artifact_prompt = any(
@@ -399,8 +443,10 @@ def test_failed_final_gate_respects_max_turns():
     events = list(agent.run_events(cfg(max_turns=2), msgs("prove it")))
     fin = events[-1]
     check("failed final gate hits max_turns next", isinstance(fin, Finished) and fin.reason == "max_turns")
-    check("no extra model turn beyond max_turns", calls["n"] == 2)
-    check("failed final gate checked once with max_turns", calls["checks"] == [proof_path])
+    # The gate loop stops at max_turns (2 model turns); then exactly ONE tool-less summary
+    # turn runs on the max_turns branch (item: summarize-on-cap). No runaway beyond that.
+    check("gate loop stops at max_turns, plus one summary turn", calls["n"] == 3)
+    check("failed final gate checked once with max_turns", calls["checks"] == [_res(proof_path)])
 
 
 def test_final_gate_success_allows_completion():
@@ -408,7 +454,7 @@ def test_final_gate_success_allows_completion():
     events = list(agent.run_events(cfg(), msgs("prove it")))
     fin = events[-1]
     check("passing final gate completes", isinstance(fin, Finished) and fin.reason == "completed")
-    check("passing final gate checked latest proof", calls["checks"] == [proof_path])
+    check("passing final gate checked latest proof", calls["checks"] == [_res(proof_path)])
 
 
 def test_successful_explicit_check_skips_duplicate_final_gate():
@@ -416,6 +462,7 @@ def test_successful_explicit_check_skips_duplicate_final_gate():
     events = list(agent.run_events(cfg(), msgs("prove it")))
     fin = events[-1]
     check("explicit check completes", isinstance(fin, Finished) and fin.reason == "completed")
+    # model-invoked only; the gate must NOT add a second check
     check("explicit successful check not duplicated", calls["checks"] == [proof_path])
 
 
@@ -424,7 +471,9 @@ def test_edit_after_successful_check_rechecks_final_gate():
     events = list(agent.run_events(cfg(), msgs("prove it")))
     fin = events[-1]
     check("edit after check completes", isinstance(fin, Finished) and fin.reason == "completed")
-    check("edit after check rechecked", calls["checks"] == [proof_path, proof_path])
+    # the model checked (raw path), then edited, so the gate re-checks — and the gate
+    # passes `latest_proof_path`, which is resolved.
+    check("edit after check rechecked", calls["checks"] == [proof_path, _res(proof_path)])
 
 
 def install_result_classifier_fake(classifier_text):
@@ -597,6 +646,54 @@ def test_text_only_history_serializes_for_provider():
     )
 
 
+def test_reasoning_items_are_persisted_with_the_tool_turn():
+    """Responses continuation state survives agent execution and transcript storage."""
+    temp = tempfile.TemporaryDirectory()
+    source_path = Path(temp.name) / "Source.txt"
+    source_path.write_text("context")
+    calls = {"n": 0}
+    reasoning_item = {
+        "id": "rs_agent_1",
+        "type": "reasoning",
+        "encrypted_content": "encrypted-agent-state",
+        "summary": [],
+    }
+
+    def fake_stream(model, system, messages, tools, model_kwargs=None, streaming=True):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            yield ToolCall("read_file", {"path": str(source_path)})
+            yield _ToolMeta("call_read")
+            yield Done(Usage(5, 2), 0.0001, [reasoning_item])
+            return
+        yield TextDelta("The requested context is available.")
+        yield Done(Usage(4, 2), 0.0001)
+
+    agent.stream = fake_stream
+    agent.load_system_prompt = lambda variant, skills=None, workspace=None, namespace=None: "SYS"
+    config = dataclasses.replace(cfg(tools=["read_file"]), prompt_variant="interactive")
+    events = list(agent.run_events(config, msgs("inspect this context")))
+    finished = events[-1]
+    first_assistant = next(
+        message
+        for message in finished.transcript["messages"]
+        if message.get("role") == "assistant"
+        and any(part.get("type") == "tool_call" for part in message.get("content", []))
+    )
+    check(
+        "reasoning item persisted beside originating tool call",
+        {"type": "reasoning", "items": [reasoning_item]} in first_assistant["content"],
+    )
+    check(
+        "reasoning item remains internal",
+        not any(
+            isinstance(event, AssistantTextDelta) and "encrypted-agent-state" in event.text
+            for event in events
+        ),
+    )
+    temp.cleanup()
+
+
 def test_run_events_uses_caller_messages_verbatim():
     # A9/D16: run_events is messages-in. It does NOT build or inject anything
     # (project context, etc.) — the caller (adapter) assembles the transcript and
@@ -620,6 +717,7 @@ def main():
     print("agent (run_events + run) tests:")
     test_run_events_sequence()
     test_max_turns()
+    test_max_turns_hands_back_a_summary()
     test_narrate_tool_steps_instruction()
     test_narrate_tool_steps_forces_text_before_silent_tool_call()
     test_final_gate_failed_check_resumes_loop()
@@ -634,6 +732,7 @@ def main():
     test_interactive_sorry_skeleton_is_not_proved()
     test_interactive_assistant_turn_routes_to_chat_and_keeps_tools()
     test_text_only_history_serializes_for_provider()
+    test_reasoning_items_are_persisted_with_the_tool_turn()
     test_run_events_uses_caller_messages_verbatim()
     print()
     if _FAILURES:

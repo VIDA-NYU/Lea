@@ -45,7 +45,9 @@ Lea runs a simple loop:
 3. If it compiles — done. If not — read the errors, edit, retry.
 4. If stuck, search Mathlib for relevant lemmas, or use `bash` to explore.
 
-Six tools: `read_file`, `write_file`, `edit_file`, `lean_check`, `search_mathlib`, `bash`. Supports Gemini, Anthropic, and OpenAI models. See [USAGE.md](USAGE.md) for full CLI reference.
+Built-in tools: `read_file`, `write_file`, `edit_file`, `lean_check`,
+`search_mathlib`, `suggest_imports`, and `bash`. Supports Gemini, Anthropic,
+and OpenAI models. See [USAGE.md](USAGE.md) for full CLI reference.
 
 ## Eval results
 

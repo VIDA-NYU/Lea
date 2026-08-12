@@ -6,6 +6,8 @@
 // this module lazily via `import(chrome.runtime.getURL("leanPaneView.mjs"))` (the
 // same web-accessible-resource pattern as zipTex.mjs / targetParserCore.mjs).
 
+export { renderPaneMath } from "./leanPaneMath.mjs";
+
 const PANE_STATUS_LABELS = {
   "missing-stub": "missing stub",
   "stub-generated": "stub generated",
@@ -16,7 +18,7 @@ const PANE_STATUS_LABELS = {
   disproved: "counterexample",
   "in-progress": "in progress",
   invalid: "invalid",
-  stale: "stale",
+  stale: "out of date",
   error: "error",
   mixed: "mixed",
   unknown: "unknown"
@@ -52,6 +54,7 @@ const MATH_COMMANDS = new Map([
   ["Rightarrow", "⇒"], ["implies", "⇒"], ["iff", "⇔"], ["leftrightarrow", "↔"],
   ["le", "≤"], ["leq", "≤"], ["ge", "≥"], ["geq", "≥"], ["neq", "≠"],
   ["ne", "≠"], ["approx", "≈"], ["equiv", "≡"], ["sim", "∼"],
+  ["triangleq", "≜"], ["coloneqq", "≔"], ["coloneq", "≔"],
   ["cdot", "·"], ["times", "×"], ["pm", "±"], ["setminus", "∖"],
   ["partial", "∂"], ["nabla", "∇"], ["infty", "∞"], ["infinity", "∞"],
   ["land", "∧"], ["lor", "∨"], ["neg", "¬"], ["bot", "⊥"], ["top", "⊤"],
@@ -65,6 +68,27 @@ const DOUBLE_STRUCK = {
   Y: "𝕐", Z: "ℤ"
 };
 
+const PANE_TEXT_COMMAND_MARKS = new Map([
+  ["emph", "em"],
+  ["textit", "em"],
+  ["textbf", "strong"],
+  ["texttt", "code"],
+  ["textrm", ""],
+  ["textnormal", ""],
+  ["mbox", ""]
+]);
+
+const PANE_REFERENCE_COMMANDS = new Set(["ref", "eqref", "autoref", "cite"]);
+const PANE_TEXT_ESCAPES = new Map([
+  ["%", "%"],
+  ["&", "&"],
+  ["#", "#"],
+  ["_", "_"],
+  ["{", "{"],
+  ["}", "}"],
+  ["$", "$"]
+]);
+
 const SUCCESS_PANE_STATUSES = new Set(["valid", "defined", "disproved"]);
 const PROGRESS_SUCCESS_STATUSES = new Set(["valid", "formalized", "defined", "disproved"]);
 const PROGRESS_STUB_STATUSES = new Set(["stub-generated", "sorry_stub"]);
@@ -74,6 +98,7 @@ const PROGRESS_SEGMENT_DEFS = [
   { id: "success", label: "Successful", countKey: "success" },
   { id: "sorry-stubbed", label: "Sorry-stubbed", countKey: "sorryStubbed" },
   { id: "failed", label: "Failed", countKey: "failed" },
+  { id: "out-of-date", label: "Out of date", countKey: "outOfDate" },
   { id: "unformalized", label: "Unformalized", countKey: "unformalized" }
 ];
 
@@ -110,7 +135,9 @@ export function parsePaneLatex(source) {
 
     appendPaneLatexSegment(segments, {
       type: "math",
-      text: text.slice(contentStart, closeIndex),
+      text: next.includeDelimiters
+        ? text.slice(next.index, closeIndex + next.close.length)
+        : text.slice(contentStart, closeIndex),
       display: next.display
     });
     cursor = closeIndex + next.close.length;
@@ -142,6 +169,17 @@ export function formatLiteMath(source) {
   }
 
   return segments.filter((segment) => segment.text);
+}
+
+// Render the non-math portions of theorem text conservatively. This is not a
+// TeX interpreter: it handles the small set of prose commands that commonly
+// occur in theorem statements and preserves unknown commands verbatim. Keeping
+// the result structured lets content.js build DOM nodes without injecting the
+// original LaTeX as HTML.
+export function formatLiteLatexText(source) {
+  const parts = [];
+  appendLiteLatexText(parts, String(source || ""), []);
+  return parts;
 }
 
 export function highlightLeanLine(line) {
@@ -226,6 +264,64 @@ export function buildLeanPaneTree(items) {
   return { children: root.children, files: [...files.values()] };
 }
 
+// Build the source-declared dependency edges (`uses=`) and their inverse for
+// Lean-pane display. The marker label is the stable source-side identity: a
+// manual Lean rename may change leanDeclarationName, but it must not retarget
+// the relationship recorded in LaTeX. Missing labels are not errors here -- a
+// dependency may be a valid recorded artifact that simply is not marked in the
+// current project inventory.
+export function buildPaneUseRelationships(items) {
+  const list = Array.isArray(items) ? items : [];
+  const itemsByLabel = new Map();
+  const usesByItem = new Map();
+  const usedByItem = new Map();
+
+  for (const item of list) {
+    usesByItem.set(item, []);
+    usedByItem.set(item, []);
+    const label = String(item?.label || "").trim();
+    if (!label) continue;
+    const matches = itemsByLabel.get(label) || [];
+    matches.push(item);
+    itemsByLabel.set(label, matches);
+  }
+
+  for (const sourceItem of list) {
+    const uses = (Array.isArray(sourceItem?.targetUses) ? sourceItem.targetUses : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+    const relationships = [];
+
+    for (const label of uses) {
+      const matches = itemsByLabel.get(label) || [];
+      const targetItem = matches.length === 1 ? matches[0] : null;
+      const resolution = matches.length === 1
+        ? "resolved"
+        : matches.length > 1
+          ? "ambiguous"
+          : "not-in-inventory";
+      relationships.push({
+        label,
+        item: targetItem,
+        status: targetItem?.status || "unknown",
+        resolution
+      });
+
+      if (targetItem) {
+        usedByItem.get(targetItem).push({
+          label: String(sourceItem?.label || sourceItem?.leanDeclarationName || "").trim(),
+          item: sourceItem,
+          status: sourceItem?.status || "unknown",
+          resolution: "resolved"
+        });
+      }
+    }
+    usesByItem.set(sourceItem, relationships);
+  }
+
+  return { usesByItem, usedByItem };
+}
+
 export function aggregatePaneStatus(items) {
   const statuses = (Array.isArray(items) ? items : [])
     .map((item) => String(item?.status || "unknown"))
@@ -250,6 +346,7 @@ export function paneProgressBucketForItem(item) {
   if (PROGRESS_SUCCESS_STATUSES.has(status)) return "success";
   if (PROGRESS_STUB_STATUSES.has(status)) return "sorryStubbed";
   if (PROGRESS_FAILED_STATUSES.has(status)) return "failed";
+  if (status === "stale") return "outOfDate";
   return "unformalized";
 }
 
@@ -259,6 +356,7 @@ export function summarizePaneProgress(items) {
     success: 0,
     sorryStubbed: 0,
     failed: 0,
+    outOfDate: 0,
     unformalized: 0,
     inProgress: 0
   };
@@ -298,6 +396,7 @@ export function formatPaneProgressLabel(path, summary) {
   appendProgressLabelPart(parts, summary?.success, "successful");
   appendProgressLabelPart(parts, summary?.sorryStubbed, "sorry-stubbed");
   appendProgressLabelPart(parts, summary?.failed, "failed");
+  appendProgressLabelPart(parts, summary?.outOfDate, "out of date");
   appendProgressLabelPart(parts, summary?.unformalized, "unformalized");
   appendProgressLabelPart(parts, summary?.inProgress, "in progress");
   return `${parts.join(", ")}.`;
@@ -345,17 +444,19 @@ export function hasInProgressItems(items) {
   return Array.isArray(items) && items.some((item) => item && item.inProgress);
 }
 
-// Pane statuses where starting (or restarting) a formalization run is meaningful.
-// Terminal-good states (valid / defined / disproved) and a running job are excluded.
-const FORMALIZABLE_PANE_STATUSES = new Set([
+// Pane statuses included by the project-level "Formalize all" action. Completed
+// work stays out of a batch even though its per-item Re-formalize action remains
+// available.
+const BATCH_FORMALIZABLE_PANE_STATUSES = new Set([
   "missing-stub", "stub-generated", "stale", "invalid", "unknown", "error"
 ]);
 
-// Whether the pane should offer a Formalize action for an item: it must be a valid
-// marker target, not already running, and in an actionable state.
+// Whether the pane should offer a Formalize / Re-formalize action for an item.
+// Any valid marker target can be rerun, including a settled valid, defined, or
+// disproved item; only an active run suppresses the action.
 export function canFormalizePaneItem(item) {
   if (!item || !item.formalizable || item.inProgress) return false;
-  return FORMALIZABLE_PANE_STATUSES.has(item.status);
+  return item.status !== "in-progress";
 }
 
 // Whether the pane should offer a sorry-stub action for an item. Mirrors the
@@ -383,8 +484,76 @@ export function paneItemToFormalizeTarget(item) {
     targetLabel: item?.label || item?.leanDeclarationName || "",
     targetText: item?.naturalLanguageLatex || "",
     targetUses: Array.isArray(item?.targetUses) ? item.targetUses : [],
-    targetContext: item?.targetContext || ""
+    targetContext: item?.targetContext || "",
+    sourceFile: item?.sourceFile || "",
+    sourceStartLine: item?.sourceStartLine,
+    sourceEndLine: item?.sourceEndLine,
+    sourceHash: item?.sourceHash || "",
+    syntax: item?.syntax || "comment"
   };
+}
+
+// Shape a current tagged item for the additive GitHub import flow. The stable
+// LaTeX marker label remains the identity anchor; the current Lean declaration
+// name is the exact code-match key. The companion, not the page, computes the
+// origin key so import/formalize/chat always use identical identity semantics.
+export function paneItemToGithubImportTarget(item) {
+  const targetLabel = item?.label || item?.leanDeclarationName || "";
+  const declarationName = item?.leanDeclarationName || item?.label || "";
+  return {
+    targetKind: item?.leanKind === "def" ? "definition" : "theorem",
+    targetLabel,
+    declarationName,
+    displayTitle: declarationName || targetLabel,
+    statement: item?.naturalLanguageLatex || "",
+    sourceHash: item?.sourceHash || ""
+  };
+}
+
+// Return the document targets whose declarations will be populated by a
+// confirmed GitHub import.  The preview is authoritative here: files skipped
+// for either a path or declaration conflict must not make an unrelated item
+// look busy.  Prefer the stable origin key emitted by the companion, with the
+// declaration name as a compatibility fallback for older formalization rows
+// that predate origin keys.
+export function githubImportMatchedTargets(preview, targets) {
+  const candidates = Array.isArray(targets) ? targets : [];
+  const matched = new Map();
+  for (const file of preview?.plan?.files || []) {
+    if (!file || !["add", "already_present"].includes(file.disposition)) continue;
+    for (const declaration of file.declarations || []) {
+      const match = declaration?.match;
+      if (!match) continue;
+      for (const target of candidates) {
+        const kind = target?.targetKind === "definition" ? "definition" : "theorem";
+        const label = String(target?.targetLabel || "").trim();
+        const declarationName = String(target?.declarationName || label).trim();
+        const originKey = String(match.origin_key || "");
+        const originMatches = label
+          && originKey.endsWith(`:${kind}:${label}`);
+        const declarationMatches = !originKey && declarationName
+          && String(match.declaration_name || "") === declarationName;
+        if (originMatches || declarationMatches) {
+          const key = `${kind}:${label}`;
+          if (!matched.has(key)) {
+            matched.set(key, {
+              key,
+              targetKind: kind,
+              targetLabel: label,
+              declarationName,
+              displayTitle: String(target?.displayTitle || match.display_title || declarationName || label),
+              destinationPath: String(file.destination_path || ""),
+            });
+          }
+        }
+      }
+    }
+  }
+  return [...matched.values()];
+}
+
+export function githubImportMatchedTargetKeys(preview, targets) {
+  return githubImportMatchedTargets(preview, targets).map((target) => target.key);
 }
 
 // Pane statuses that correspond to a real Lea run or saved proof artifact.
@@ -428,6 +597,8 @@ export function paneItemToChatTarget(item, overleafProjectId) {
     sourceEndLine: item?.sourceEndLine,
     sourceHash: item?.sourceHash || "",
     naturalLanguageLatex: item?.naturalLanguageLatex || "",
+    targetUses: Array.isArray(item?.targetUses) ? item.targetUses : [],
+    targetContext: item?.targetContext || "",
     leanDeclarationName: item?.leanDeclarationName || "",
     recordedProofPath: item?.leanArtifactPath || "",
     status: item?.status || ""
@@ -682,18 +853,42 @@ export function formatBreakageAttribution(breakage) {
 }
 
 // One line per item for the batch progress / outcome list.
-export function formatRepairOutcome(entry) {
+// The eligible sets the project-level "Stub all" / "Formalize all" launchers
+// operate over. The batch intentionally skips completed work: users can rerun a
+// settled item explicitly without making "Formalize all" restart every proof.
+export function stubbableItems(items) {
+  return (Array.isArray(items) ? items : []).filter(canStubPaneItem);
+}
+
+export function formalizableItems(items) {
+  return (Array.isArray(items) ? items : []).filter(
+    (item) => canFormalizePaneItem(item) && BATCH_FORMALIZABLE_PANE_STATUSES.has(item.status)
+  );
+}
+
+// One line per batch item. Wording depends on the batch `operation` only for
+// the in-flight ("running") verb and the "already done" skip note; terminal
+// states carry their own vocabulary (stubbed / formalized / repaired).
+export function formatRepairOutcome(entry, operation = "repair") {
   if (!entry) return "";
   const label = entry.targetLabel || "";
+  const runningVerb = operation === "stub" ? "stubbing" : operation === "formalize" ? "formalizing" : "repairing";
   switch (entry.state) {
     case "pending": return `${label}: waiting.`;
-    case "running": return `${label}: repairing...`;
+    case "running": return `${label}: ${runningVerb}...`;
     case "repaired": return `${label}: repaired and verified.`;
+    case "stubbed": return `${label}: stub created.`;
+    case "formalized": return `${label}: formalized and verified.`;
+    case "disproved": return `${label}: counterexample found.`;
     case "needs_review": return `${label}: repaired, but the statement changed -- review required.`;
-    case "failed": return `${label}: repair failed${entry.reason ? ` -- ${entry.reason}` : "."}`;
+    case "canceled": return `${label}: stopped.`;
+    case "failed": {
+      const verb = operation === "stub" ? "stub failed" : operation === "formalize" ? "formalization failed" : "repair failed";
+      return `${label}: ${verb}${entry.reason ? ` -- ${entry.reason}` : "."}`;
+    }
     case "skipped":
       if (String(entry.reason || "").startsWith("depends_on_failed:")) {
-        return `${label}: skipped -- depends on failed repair of ${String(entry.reason).slice("depends_on_failed:".length)}.`;
+        return `${label}: skipped -- depends on failed ${operation === "formalize" ? "formalization" : "repair"} of ${String(entry.reason).slice("depends_on_failed:".length)}.`;
       }
       return `${label}: skipped${entry.reason === "already_fixed" ? " -- already compiles." : entry.reason ? ` (${entry.reason})` : "."}`;
     default: return `${label}: ${entry.state || "unknown"}.`;
@@ -752,6 +947,12 @@ function formatProgressPercent(value) {
 
 function findNextMathDelimiter(text, cursor) {
   const delimiters = [
+    { open: "\\begin{equation*}", close: "\\end{equation*}", display: true, includeDelimiters: true },
+    { open: "\\begin{equation}", close: "\\end{equation}", display: true, includeDelimiters: true },
+    { open: "\\begin{align*}", close: "\\end{align*}", display: true, includeDelimiters: true },
+    { open: "\\begin{align}", close: "\\end{align}", display: true, includeDelimiters: true },
+    { open: "\\begin{gather*}", close: "\\end{gather*}", display: true, includeDelimiters: true },
+    { open: "\\begin{gather}", close: "\\end{gather}", display: true, includeDelimiters: true },
     { open: "$$", close: "$$", display: true },
     { open: "\\[", close: "\\]", display: true },
     { open: "\\(", close: "\\)", display: false },
@@ -824,9 +1025,114 @@ function normalizeLiteMath(source) {
 
   return text
     .replace(/\\([{}])/g, "$1")
-    .replace(/\\([A-Za-z]+)\b/g, (_match, command) => MATH_COMMANDS.get(command) || command)
+    .replace(/\\([A-Za-z]+)\b/g, (_match, command) => (
+      MATH_COMMANDS.has(command) ? MATH_COMMANDS.get(command) : `\\${command}`
+    ))
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function appendLiteLatexText(parts, text, inheritedMarks) {
+  for (let index = 0; index < text.length;) {
+    const char = text[index];
+    if (char === "~") {
+      appendLiteLatexPart(parts, "\u00a0", inheritedMarks);
+      index += 1;
+      continue;
+    }
+    if (char !== "\\") {
+      appendLiteLatexPart(parts, char, inheritedMarks);
+      index += 1;
+      continue;
+    }
+
+    const escaped = text[index + 1];
+    if (PANE_TEXT_ESCAPES.has(escaped)) {
+      appendLiteLatexPart(parts, PANE_TEXT_ESCAPES.get(escaped), inheritedMarks);
+      index += 2;
+      continue;
+    }
+    if (escaped === "\\") {
+      appendLiteLatexPart(parts, "\n", inheritedMarks);
+      index += 2;
+      continue;
+    }
+    if (escaped === " ") {
+      appendLiteLatexPart(parts, " ", inheritedMarks);
+      index += 2;
+      continue;
+    }
+
+    const commandMatch = text.slice(index).match(/^\\([A-Za-z]+)\b/);
+    if (!commandMatch) {
+      appendLiteLatexPart(parts, "\\", inheritedMarks);
+      index += 1;
+      continue;
+    }
+
+    const command = commandMatch[1];
+    const commandEnd = index + commandMatch[0].length;
+    const groupStart = skipLiteLatexWhitespace(text, commandEnd);
+    const group = parseLiteLatexGroup(text, groupStart);
+
+    if (command === "label" && group) {
+      index = group.end;
+      continue;
+    }
+
+    if (PANE_TEXT_COMMAND_MARKS.has(command) && group) {
+      const mark = PANE_TEXT_COMMAND_MARKS.get(command);
+      const marks = mark ? [...inheritedMarks, mark] : inheritedMarks;
+      appendLiteLatexText(parts, group.text, marks);
+      index = group.end;
+      continue;
+    }
+
+    if (PANE_REFERENCE_COMMANDS.has(command) && group) {
+      const referenceText = command === "eqref" ? `(${group.text})` : group.text;
+      appendLiteLatexPart(parts, referenceText, [...inheritedMarks, "ref"]);
+      index = group.end;
+      continue;
+    }
+
+    // Unknown commands stay source-visible. In particular, never turn \Spec
+    // into "Spec" merely because this lightweight prose path does not know it.
+    appendLiteLatexPart(parts, commandMatch[0], inheritedMarks);
+    index = commandEnd;
+  }
+}
+
+function appendLiteLatexPart(parts, text, marks) {
+  if (!text) return;
+  const normalizedMarks = [...new Set(marks)].sort();
+  const previous = parts[parts.length - 1];
+  if (previous && previous.marks.join("\u0000") === normalizedMarks.join("\u0000")) {
+    previous.text += text;
+    return;
+  }
+  parts.push({ type: "text", text, marks: normalizedMarks });
+}
+
+function skipLiteLatexWhitespace(text, cursor) {
+  let index = cursor;
+  while (index < text.length && /[ \t]/.test(text[index])) index += 1;
+  return index;
+}
+
+function parseLiteLatexGroup(text, cursor) {
+  if (text[cursor] !== "{") return null;
+  let depth = 1;
+  for (let index = cursor + 1; index < text.length; index += 1) {
+    if (text[index] === "{" && !isEscaped(text, index)) {
+      depth += 1;
+    } else if (text[index] === "}" && !isEscaped(text, index)) {
+      depth -= 1;
+      if (depth === 0) {
+        return { text: text.slice(cursor + 1, index), end: index + 1 };
+      }
+    }
+  }
+  return null;
 }
 
 function parseMathScriptArgument(text, cursor) {

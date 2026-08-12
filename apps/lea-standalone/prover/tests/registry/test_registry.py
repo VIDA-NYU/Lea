@@ -10,7 +10,7 @@ Exits 0 if every check passes, 1 otherwise.
 
 import sys
 
-import lea.tools  # noqa: F401 — registers the six built-ins
+import lea.tools  # noqa: F401 — registers the built-ins
 from lea.registry import (
     REGISTRY,
     Tool,
@@ -43,7 +43,10 @@ def expect_raises(name: str, err_type: type, fn) -> None:
         _FAILURES.append(name)
 
 
-BUILTINS = ["read_file", "write_file", "edit_file", "lean_check", "bash", "search_mathlib"]
+BUILTINS = [
+    "read_file", "write_file", "edit_file", "lean_check", "bash",
+    "search_mathlib", "suggest_imports",
+]
 
 
 def test_builtins_registered():
@@ -54,8 +57,8 @@ def test_builtins_registered():
 def test_none_selects_all_in_order():
     schemas, handlers = build_toolset(None)
     names = [s["name"] for s in schemas]
-    # The six built-ins come first, in TOOLS_SCHEMA order.
-    check("None: built-ins present in order", names[:6] == BUILTINS)
+    # The built-ins come first, in TOOLS_SCHEMA order.
+    check("None: built-ins present in order", names[:len(BUILTINS)] == BUILTINS)
     check("None: handlers cover schemas", set(handlers) == set(names))
     check("None: a handler is callable", callable(handlers["bash"]))
 

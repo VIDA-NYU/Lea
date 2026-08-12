@@ -84,3 +84,26 @@ def test_route_returns_results_envelope(tmp_path, monkeypatch):
     payload = search("sqrt")
     assert [r["title"] for r in payload["results"]] == ["Irrationality of sqrt 2"]
     assert search("")["results"] == []
+
+
+def test_route_unions_formalizations_with_conversations(tmp_path, monkeypatch):
+    _fresh_db(tmp_path, monkeypatch)
+    project = _project("topology", "Topology")
+    session = store.create_session("A conversation", project_id=project["id"])
+    item = store.create_formalization(
+        project_id=project["id"],
+        loose_session_id=None,
+        display_title="Compact image",
+        declaration_name="compact_image",
+    )
+    store.link_session_formalization(session["id"], item["id"])
+    store.link_formalization_file(item["id"], "compact_image.lean", "primary")
+
+    payload = search("compact")
+
+    assert len(payload["results"]) == 1
+    hit = payload["results"][0]
+    assert hit["result_type"] == "formalization"
+    assert hit["id"] == item["id"]
+    assert hit["session_id"] == session["id"]
+    assert hit["primary_path"] == "compact_image.lean"

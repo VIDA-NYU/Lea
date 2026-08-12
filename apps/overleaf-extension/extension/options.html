@@ -4,75 +4,122 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Overleaf Lea Formalizer Settings</title>
+    <link rel="stylesheet" href="lea-theme.css">
+    <link rel="stylesheet" href="modelPicker.css">
     <link rel="stylesheet" href="options.css">
   </head>
   <body>
     <main>
-      <h1><span class="brand-mark" aria-hidden="true">L</span>Overleaf Lea Formalizer</h1>
+      <header class="options-header">
+        <span class="brand-mark" aria-hidden="true">L</span>
+        <div>
+          <h1>Overleaf Lea Formalizer</h1>
+          <p>Configure the local companion, model access, and project synchronization.</p>
+        </div>
+      </header>
       <form id="settings-form">
-        <label>
-          Companion URL
-          <input id="companion-url" name="companionUrl" type="url" required>
-        </label>
-        <label>
-          Local Lea repo path
-          <input id="lea-repo-path" name="leaRepoPath" type="text" required placeholder="/absolute/path/to/this-repo/apps/lea-standalone/prover">
-        </label>
-        <label>
-          Lea API URL
-          <input id="lea-api-base-url" name="leaApiBaseUrl" type="url" required placeholder="http://127.0.0.1:8001">
-        </label>
-        <label>
-          Lea model
-          <select id="lea-model" name="leaModel" required></select>
-        </label>
-        <fieldset>
-          <legend>Model family API keys</legend>
-          <p>Keys are saved to the root .env by the companion. They are not stored in Chrome or companion settings.</p>
-          <ul id="provider-key-status" class="provider-key-status" aria-live="polite"></ul>
-          <label>
-            OpenAI API key
-            <input id="openai-api-key" name="openaiApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep current key">
-          </label>
-          <label>
-            Google AI API key
-            <input id="gemini-api-key" name="geminiApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep current key">
-          </label>
-          <label>
-            Anthropic API key
-            <input id="anthropic-api-key" name="anthropicApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep current key">
-          </label>
-        </fieldset>
-        <label>
-          Lea max turns
-          <input id="lea-max-turns" name="leaMaxTurns" type="number" min="1" max="200" required>
-        </label>
-        <label class="checkbox-label">
-          <input id="lea-tex-mirror" name="leaTexMirrorEnabled" type="checkbox">
-          Mirror Overleaf .tex into the project
-          <small class="field-hint">Keeps the project's LaTeX sources in sync with Lea so it can read them.</small>
-        </label>
-        <button type="button" id="load-companion-settings">Load from companion</button>
-        <button type="submit">Save settings</button>
+        <section class="settings-section">
+          <div class="section-intro">
+            <h2>Connection</h2>
+            <p>Local services used by the extension. These normally come from the repository setup.</p>
+          </div>
+          <div class="section-controls">
+            <label>
+              Companion URL
+              <input id="companion-url" name="companionUrl" type="url" required>
+            </label>
+            <label>
+              Local Lea repo path
+              <input id="lea-repo-path" name="leaRepoPath" type="text" required placeholder="/absolute/path/to/this-repo/apps/lea-standalone/prover">
+            </label>
+            <label>
+              Lea API URL
+              <input id="lea-api-base-url" name="leaApiBaseUrl" type="url" required placeholder="http://127.0.0.1:8001">
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="section-intro">
+            <h2>Model</h2>
+            <p>Select the model used for formalization and set a maximum number of agent turns.</p>
+          </div>
+          <div class="section-controls">
+            <div class="model-field">
+              <span>Lea model</span>
+              <div id="lea-model" name="leaModel"></div>
+              <span id="model-catalog-status" class="field-hint" aria-live="polite"></span>
+            </div>
+            <div id="model-requirements" class="lea-model-requirements" aria-live="polite"></div>
+            <label>
+              Lea max turns
+              <input id="lea-max-turns" name="leaMaxTurns" type="number" min="1" max="200" required>
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="section-intro">
+            <h2>API keys</h2>
+            <p>Keys are written to the root <code>.env</code> by the companion and are never stored in Chrome.</p>
+          </div>
+          <fieldset class="section-controls">
+            <legend class="ol-lean-sr-only">Model family API keys</legend>
+            <ul id="provider-key-status" class="provider-key-status" aria-live="polite"></ul>
+            <label>
+              OpenAI
+              <input id="openai-api-key" name="openaiApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep current key">
+            </label>
+            <label>
+              Google AI
+              <input id="gemini-api-key" name="geminiApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep current key">
+            </label>
+            <label>
+              Anthropic
+              <input id="anthropic-api-key" name="anthropicApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep current key">
+            </label>
+          </fieldset>
+        </section>
+
+        <section class="settings-section">
+          <div class="section-intro">
+            <h2>Project sync</h2>
+            <p>Keep the project’s LaTeX sources available to Lea while it formalizes your document.</p>
+          </div>
+          <div class="section-controls">
+            <label class="checkbox-label">
+              <input id="lea-tex-mirror" name="leaTexMirrorEnabled" type="checkbox">
+              <span>
+                Mirror Overleaf <code>.tex</code> into the project
+                <small class="field-hint">Keeps source files synchronized with the local Lea project.</small>
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <footer class="form-actions">
+          <button type="button" class="secondary-button" id="load-companion-settings">Load from companion</button>
+          <button type="submit">Save settings</button>
+        </footer>
       </form>
       <p id="status" role="status"></p>
       <section id="lea-tags-section" class="lea-tags-section">
-        <h2>Inline Lea tags (advanced)</h2>
-        <p>
-          An alternative to <code>% lea:</code> comments: invisible LaTeX commands
-          (<code>\leatheorem{...}</code>, <code>\leadefinition{...}</code>, ...) that work
-          inside any environment, not just <code>theorem</code>/<code>lemma</code>/
-          <code>proposition</code>/<code>corollary</code>/<code>definition</code>. Requires
-          loading <code>lea-tags.sty</code> in your Overleaf project's preamble.
-        </p>
-        <p>
-          <a id="lea-tags-download" href="assets/lea-tags.sty" download="lea-tags.sty">Download lea-tags.sty</a>
-          &middot;
-          <button type="button" id="lea-tags-copy-snippet">Copy preamble snippet</button>
-        </p>
+        <div>
+          <h2>Inline Lea tags</h2>
+          <p>Advanced alternative to <code>% lea:</code> comments for theorem-like content inside any LaTeX environment.</p>
+          <p class="advanced-detail">
+            Load <code>lea-tags.sty</code>, then use commands such as
+            <code>\leatheorem{...}</code> or <code>\leadefinition{...}</code>.
+          </p>
+        </div>
+        <div class="advanced-actions">
+          <a id="lea-tags-download" href="assets/lea-tags.sty" download="lea-tags.sty">Download style</a>
+          <button type="button" class="secondary-button" id="lea-tags-copy-snippet">Copy preamble</button>
+        </div>
         <p id="lea-tags-copy-status" role="status" class="field-hint"></p>
       </section>
     </main>
+    <script src="modelPicker.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

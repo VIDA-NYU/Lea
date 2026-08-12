@@ -333,6 +333,23 @@ This is off by default and can be enabled from extension settings.
 The mirror currently tracks the active editor file, not the full Overleaf file
 tree.
 
+## Lean Pane Math Rendering
+
+The Lean pane renders inline and display mathematics with a locally packaged
+KaTeX build. Standard KaTeX notation such as `\triangleq`, fractions, roots,
+matrices, and aligned equations is supported without a CDN. The pane also
+defines the common `\RR`, `\CC`, `\NN`, `\QQ`, and `\ZZ` aliases. If an
+expression uses an unsupported project-specific command, the pane falls back to
+readable source text instead of failing the whole item.
+
+The unpacked extension owns a synchronized copy of KaTeX's browser assets. After
+changing the KaTeX dependency, refresh and verify that copy with:
+
+```sh
+npm run sync:katex-assets -w apps/overleaf-extension
+npm run check:katex-assets -w apps/overleaf-extension
+```
+
 ## Tests
 
 Run the Overleaf test suite:

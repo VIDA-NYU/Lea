@@ -83,6 +83,8 @@ test("page bridge positions target badges from badgeFrom", async () => {
     assert.ok(visibleMessage);
     assert.equal(visibleMessage.targets.length, 1);
     assert.equal(visibleMessage.targets[0].badgeFrom, expectedBadgeFrom);
+    assert.equal(visibleMessage.targets[0].sourceStartLine, 1);
+    assert.equal(visibleMessage.targets[0].sourceEndLine, 4);
     assert.equal(coordPositions[0], expectedBadgeFrom);
     assert.deepEqual(visibleMessage.targets[0].coords, {
       left: expectedBadgeFrom + 1,

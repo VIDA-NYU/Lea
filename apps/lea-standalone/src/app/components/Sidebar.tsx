@@ -1,4 +1,5 @@
-import { BarChart3, PanelLeftClose, Plus, Sparkles } from 'lucide-react';
+import { useMemo } from 'react';
+import { BarChart3, Bot, PanelLeftClose, Plug, Plus, Sparkles, Wrench } from 'lucide-react';
 import type { SessionSummary } from '../lib/api';
 import { useSessions } from '../stores/sessions';
 import { useProjects } from '../stores/projects';
@@ -13,7 +14,11 @@ export function Sidebar({
   onNewSession,
   onSelectProject,
   onNewProject,
+  onOpenProjectsHub,
   onOpenSkills,
+  onOpenSubagents,
+  onOpenMcp,
+  onOpenTools,
   onOpenSearch,
   onOpenSettings,
   onOpenStats,
@@ -25,7 +30,11 @@ export function Sidebar({
   onNewSession: () => void;
   onSelectProject: (id: string) => void;
   onNewProject: () => void;
+  onOpenProjectsHub: () => void;
   onOpenSkills: () => void;
+  onOpenSubagents: () => void;
+  onOpenMcp: () => void;
+  onOpenTools: () => void;
   onOpenSearch: () => void;
   onOpenSettings: () => void;
   onOpenStats: () => void;
@@ -35,12 +44,30 @@ export function Sidebar({
   const sessions = useSessions((s) => s.sessions);
   const selectedSessionId = useSessions((s) => s.selectedSessionId);
   // D36: the sidebar's Chats group is loose sessions only — in-project sessions
-  // live in the project window (reachable there or via search), not here.
-  const looseSessions = sessions.filter((s) => !s.project_id);
+  // live in the project window (reachable there or via search), not here. Item 24:
+  // and ROOTS only (`parent_id == null`) — sub-agent children never appear in the
+  // Chats list; they surface in the contextual Sub-agents block below, scoped to the
+  // tree root so it survives clicking into a candidate.
+  const looseSessions = sessions.filter((s) => !s.project_id && !s.parent_id);
   const groups = groupByDate(looseSessions);
+  // The Sub-agents block (item 24): scope to the tree ROOT of the selection, not the
+  // selection itself (`children(parent_id ?? id)`) — so clicking a candidate keeps the
+  // block (siblings + the way back) instead of vanishing (a candidate has no children).
+  const selectedSession = sessions.find((s) => s.id === selectedSessionId);
+  const treeRootId = selectedSession ? selectedSession.parent_id ?? selectedSession.id : undefined;
+  const treeRoot = treeRootId ? sessions.find((s) => s.id === treeRootId) : undefined;
+  const subagents = treeRootId ? sessions.filter((s) => s.parent_id === treeRootId) : [];
+  const subagentsRunning = subagents.filter((s) => dotClass(s, runningSessionId) === 'run').length;
   // F1: projects list + which one is open, from the projects store.
   const projects = useProjects((s) => s.projects);
   const selectedProjectId = useProjects((s) => s.selectedProjectId);
+  // D7: the flat project list doesn't scale — the sidebar shows only the 3
+  // most-recently-updated (latest on top); the rest live in the Projects hub, opened
+  // by clicking the "Projects" header. Same sort idiom the Chats group uses.
+  const topProjects = useMemo(
+    () => [...projects].sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)).slice(0, 3),
+    [projects],
+  );
 
   return (
     <aside className="sidebar">
@@ -62,7 +89,13 @@ export function Sidebar({
       <div className="sb-scroll">
         <div className="proj-group">
           <div className="group-label proj-head">
-            Projects
+            <button
+              className="proj-head-btn"
+              onClick={onOpenProjectsHub}
+              title="Open the Projects hub"
+            >
+              Projects
+            </button>
             <button className="proj-add" onClick={onNewProject} title="New project" aria-label="New project">
               <Plus size={13} />
             </button>
@@ -70,19 +103,26 @@ export function Sidebar({
           {projects.length === 0 ? (
             <div className="proj-empty">No projects yet.</div>
           ) : (
-            projects.map((project) => (
-              <button
-                key={project.id}
-                className={`row ${selectedProjectId === project.id ? 'active' : ''}`}
-                onClick={() => onSelectProject(project.id)}
-              >
-                <span className="picon">∑</span>
-                <span className="rtitle">{project.title}</span>
-                {typeof project.session_count === 'number' && project.session_count > 0 && (
-                  <span className="count">{project.session_count}</span>
-                )}
-              </button>
-            ))
+            <>
+              {topProjects.map((project) => (
+                <button
+                  key={project.id}
+                  className={`row ${selectedProjectId === project.id ? 'active' : ''}`}
+                  onClick={() => onSelectProject(project.id)}
+                >
+                  <span className="picon">∑</span>
+                  <span className="rtitle">{project.title}</span>
+                  {typeof project.session_count === 'number' && project.session_count > 0 && (
+                    <span className="count">{project.session_count}</span>
+                  )}
+                </button>
+              ))}
+              {projects.length > topProjects.length && (
+                <button className="proj-seeall" onClick={onOpenProjectsHub}>
+                  See all {projects.length} projects →
+                </button>
+              )}
+            </>
           )}
         </div>
 
@@ -91,6 +131,18 @@ export function Sidebar({
           <button className="row" onClick={onOpenSkills}>
             <span className="picon"><Sparkles size={13} /></span>
             <span className="rtitle">Skills</span>
+          </button>
+          <button className="row" onClick={onOpenSubagents}>
+            <span className="picon"><Bot size={13} /></span>
+            <span className="rtitle">Sub-agents</span>
+          </button>
+          <button className="row" onClick={onOpenMcp}>
+            <span className="picon"><Plug size={13} /></span>
+            <span className="rtitle">MCP servers</span>
+          </button>
+          <button className="row" onClick={onOpenTools}>
+            <span className="picon"><Wrench size={13} /></span>
+            <span className="rtitle">Tools</span>
           </button>
         </div>
 
@@ -115,6 +167,39 @@ export function Sidebar({
             ))}
           </div>
         ))}
+
+        {treeRoot && subagents.length > 0 && (
+          <div className="sa-group">
+            <div className="group-label">
+              Sub-agents
+              <span className="sa-count">
+                {subagentsRunning ? `${subagentsRunning} running` : `${subagents.length} done`}
+              </span>
+            </div>
+            <button className="sa-parent" onClick={() => onSelectSession(treeRoot.id)}>
+              <span className="chev">◂</span>
+              <span className="ptitle">{treeRoot.title}</span>
+            </button>
+            {subagents.map((child) => {
+              const running = dotClass(child, runningSessionId) === 'run';
+              return (
+                <button
+                  key={child.id}
+                  className={`row ${selectedSessionId === child.id ? 'active' : ''}`}
+                  onClick={() => onSelectSession(child.id)}
+                >
+                  {running ? (
+                    <span className="sa-spin" />
+                  ) : (
+                    <span className={`dot ${dotClass(child, runningSessionId)}`} />
+                  )}
+                  <span className="rtitle">{child.title}</span>
+                  {child.role && <span className="role">{child.role.split('-')[0]}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="sidebar-foot">
@@ -136,7 +221,12 @@ export function Sidebar({
 }
 
 function dotClass(session: SessionSummary, runningSessionId?: string): string {
+  // The open session's live run shows instantly via runningSessionId; background
+  // runs (a different chat, incl. an Overleaf-driven one) surface through
+  // active_run_count, which the sessions_changed feed refreshes on every run
+  // start/finish. Either one lights the running dot (v2.3 item 13).
   if (session.id === runningSessionId) return 'run';
+  if ((session.active_run_count ?? 0) > 0) return 'run';
   if (session.status === 'ok' || session.status === 'proved' || session.status === 'defined') return 'ok';
   if (session.status === 'disproved') return 'run';
   if (session.status === 'error') return 'fail';
