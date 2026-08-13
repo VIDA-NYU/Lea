@@ -1,15 +1,15 @@
 ---
 title: Install Lea
 description: Run Lea from VIDA's prebuilt Docker image, or use a local development install. Includes the Overleaf extension, first-proof walkthrough, and troubleshooting.
-updated: 2026-08-11
+updated: 2026-08-13
 ---
 
 Lea runs on your own machine: the web client, adapter, companion, prover, Lean, and Mathlib.
 VIDA hosts the downloadable container image, but there is no Lea account or hosted runtime.
 The only runtime data that leaves your computer is the prompt sent to your chosen model provider.
 
-Pick **Docker** for both applications with no toolchain to install. Pick the **local install**
-if you plan to develop Lea itself.
+Pick **Docker** for both applications without installing Lea's local toolchains. Pick the
+**local install** if you plan to develop Lea itself.
 
 > **Note.** The Docker image downloads about 3.7 GB and occupies about 10.7 GB after extraction.
 > Keep at least 20 GB free in Docker's storage for extraction. It happens once.
@@ -31,10 +31,25 @@ Both work; the Settings pane is the simpler path.
 **Supported platforms.** macOS (Apple Silicon and Intel) and Linux for the local install; Docker
 works anywhere Docker Desktop does. Windows users should use Docker or WSL2.
 
+> **Note.** If `git clone` reports that Git or command-line developer tools are missing, install
+> them with the command for your system, let the installer finish, and then retry the clone step.
+
+```bash
+# macOS — installs Apple's Command Line Tools, including Git
+xcode-select --install
+
+# Ubuntu, Debian, or WSL2
+sudo apt-get update
+sudo apt-get install -y git
+```
+
+Run `git --version` to confirm that Git is available before continuing.
+
 ## Option A — Docker, no toolchain
 
 The standalone UI, adapter, Overleaf companion, Lean, and a baked Mathlib cache run in one
-container. The only thing you install is Docker itself.
+container. There is no Node, Python, Lean, or Mathlib toolchain to install locally; after cloning
+the repository, Docker handles the rest.
 
 1. **Install Docker Desktop** from [docker.com](https://www.docker.com/products/docker-desktop/)
    and open it once. Wait until it reports *running*, then check:
@@ -53,7 +68,7 @@ cd LeaUIOverleafEcosystem/apps/lea-standalone
 3. **Download and start:**
 
 ```bash
-docker compose pull     # downloads ghcr.io/vida-nyu/leaui:main
+docker compose pull
 docker compose up
 ```
 
