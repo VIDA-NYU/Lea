@@ -46,7 +46,7 @@ RUN npm run build   # -> /web/apps/lea-standalone/dist
 # -----------------------------------------------------------------------------
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS runtime
 
-LABEL org.opencontainers.image.source="https://github.com/VIDA-NYU/LeaUIOverleafEcosystem" \
+LABEL org.opencontainers.image.source="https://github.com/VIDA-NYU/Lea" \
       org.opencontainers.image.description="Lea theorem-proving UI, adapter, Overleaf companion, Lean, and Mathlib"
 
 # System packages: git (lake fetches Mathlib), curl/ca-certificates (elan +

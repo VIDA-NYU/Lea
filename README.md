@@ -59,8 +59,8 @@ one prebuilt container published by VIDA. The only thing you install is Docker.
    extraction because Lean and Mathlib are included.
 2. **Clone this repo and enter the app folder:**
    ```sh
-   git clone https://github.com/VIDA-NYU/LeaUIOverleafEcosystem.git
-   cd LeaUIOverleafEcosystem/apps/lea-standalone
+   git clone https://github.com/VIDA-NYU/Lea.git
+   cd Lea/apps/lea-standalone
    ```
 3. **Download and start it:**
    ```sh
@@ -91,8 +91,8 @@ bootstrap installs the missing ones for you.
    Check with `node --version`.
 2. **Clone this repo:**
    ```sh
-   git clone https://github.com/VIDA-NYU/LeaUIOverleafEcosystem.git
-   cd LeaUIOverleafEcosystem
+   git clone https://github.com/VIDA-NYU/Lea.git
+   cd Lea
    ```
 3. **Bootstrap + provision** (installs `uv` and `elan` if absent, then sets
    everything up). For the leanest test install, use the UI-only, no-SafeVerify

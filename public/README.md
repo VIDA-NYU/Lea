@@ -115,8 +115,9 @@ Source → GitHub Actions**. Until then the workflow fails at `configure-pages` 
 *"Get Pages site failed … Not Found"*. The workflow cannot do this for you — creating
 a Pages site over the API is outside what `GITHUB_TOKEN` is permitted to do.
 
-The site is built for a project page at `/LeaUIOverleafEcosystem/`. If you move it to a
-custom domain, set `origin` in `site.config.mjs` and build with `--base=/`:
+The site is built for a project page at `/Lea/`. If the repository is renamed, update
+`base` and `links.github` in `site.config.mjs` to match. If you move it to a custom
+domain, set `origin` in `site.config.mjs` and build with `--base=/`:
 
 ```sh
 node build.mjs --base=/ --origin=https://lea.example.org

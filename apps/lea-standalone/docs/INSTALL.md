@@ -15,8 +15,8 @@ No Node, Python, `uv`, Lean, or Mathlib installation is required.
 ## Download and start
 
 ```sh
-git clone https://github.com/VIDA-NYU/LeaUIOverleafEcosystem.git
-cd LeaUIOverleafEcosystem/apps/lea-standalone
+git clone https://github.com/VIDA-NYU/Lea.git
+cd Lea/apps/lea-standalone
 docker compose pull
 docker compose up
 ```

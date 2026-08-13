@@ -13,8 +13,8 @@ repository checkout.
 ## Start the VIDA image
 
 ```sh
-git clone https://github.com/VIDA-NYU/LeaUIOverleafEcosystem.git
-cd LeaUIOverleafEcosystem/apps/lea-standalone
+git clone https://github.com/VIDA-NYU/Lea.git
+cd Lea/apps/lea-standalone
 docker compose pull
 docker compose up
 ```

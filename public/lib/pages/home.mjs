@@ -290,12 +290,16 @@ function diagram() {
 export function homePage(ctx) {
   const { site } = ctx;
 
+  // The directory `git clone` creates — derived so a repo rename only needs
+  // `links.github` updated in site.config.mjs.
+  const repoDir = site.links.github.split("/").pop();
+
   const dockerSnippet = `git clone ${site.links.github}.git
-cd LeaUIOverleafEcosystem/apps/lea-standalone
+cd ${repoDir}/apps/lea-standalone
 docker compose pull && docker compose up`;
 
   const localSnippet = `git clone ${site.links.github}.git
-cd LeaUIOverleafEcosystem
+cd ${repoDir}
 ./install.sh --target ui --skip-verify
 ./start-dev.sh`;
 

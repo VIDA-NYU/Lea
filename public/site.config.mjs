@@ -19,13 +19,13 @@ export const site = {
   // Path the site is served under. GitHub Pages project sites live under
   // /<repo>/; a custom domain or user site would use "/".
   // Can be overridden at build time: `node build.mjs --base=/`
-  base: "/LeaUIOverleafEcosystem/",
+  base: "/Lea/",
 
   links: {
-    github: "https://github.com/VIDA-NYU/LeaUIOverleafEcosystem",
+    github: "https://github.com/VIDA-NYU/Lea",
     githubProver: "https://github.com/darturi/lea-prover",
     discord: "https://discord.gg/CtEJvUTjm",
-    issues: "https://github.com/VIDA-NYU/LeaUIOverleafEcosystem/issues",
+    issues: "https://github.com/VIDA-NYU/Lea/issues",
   },
 
   // Shown in the footer and on the about strip. Fill these in.
@@ -39,7 +39,7 @@ export const site = {
   nav: [
     { label: "install", href: "/install/" },
     { label: "blog", href: "/blog/" },
-    { label: "github", href: "https://github.com/VIDA-NYU/LeaUIOverleafEcosystem", external: true },
+    { label: "github", href: "https://github.com/VIDA-NYU/Lea", external: true },
     { label: "discord", href: "https://discord.gg/CtEJvUTjm", external: true },
   ],
 

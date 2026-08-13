@@ -46,8 +46,8 @@ docker --version
 2. **Clone the repo and enter the app folder:**
 
 ```bash
-git clone https://github.com/VIDA-NYU/LeaUIOverleafEcosystem.git
-cd LeaUIOverleafEcosystem/apps/lea-standalone
+git clone https://github.com/VIDA-NYU/Lea.git
+cd Lea/apps/lea-standalone
 ```
 
 3. **Download and start:**
@@ -91,8 +91,8 @@ node --version   # want v22 or newer
 2. **Clone the repo:**
 
 ```bash
-git clone https://github.com/VIDA-NYU/LeaUIOverleafEcosystem.git
-cd LeaUIOverleafEcosystem
+git clone https://github.com/VIDA-NYU/Lea.git
+cd Lea
 ```
 
 3. **Bootstrap and provision.** For the leanest install — web client only, skipping the
@@ -305,7 +305,7 @@ fix that before compiling, since an undefined command fails the whole Overleaf b
 named theorem is not formalized yet. Do it first, or drop it from `uses`.
 
 Still stuck? Ask in [Discord](https://discord.gg/CtEJvUTjm) or
-[open an issue](https://github.com/VIDA-NYU/LeaUIOverleafEcosystem/issues) — a transcript link and the
+[open an issue](https://github.com/VIDA-NYU/Lea/issues) — a transcript link and the
 output of `npm run doctor` make it much faster to help.
 
 ## Where things live
