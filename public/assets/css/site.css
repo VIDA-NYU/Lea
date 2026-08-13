@@ -638,27 +638,6 @@ blockquote.callout-caution {
   align-items: center;
 }
 
-.hero-eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  color: var(--ink-muted);
-  background: var(--paper-raised);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 0.3rem 0.8rem;
-  margin-bottom: 1.6rem;
-}
-
-.hero-eyebrow .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--accent);
-}
-
 .hero h1 {
   margin-bottom: 1rem;
   font-size: clamp(2rem, 1.2rem + 2.2vw, 2.85rem);
@@ -1490,48 +1469,6 @@ blockquote.callout-caution {
   fill: var(--line-strong);
 }
 
-/* --------------------------------------------------------------- community */
-
-.community {
-  display: grid;
-  grid-template-columns: 1.1fr 1fr;
-  gap: 3rem;
-  align-items: center;
-}
-
-.discord-card {
-  border: 1px solid var(--accent-line);
-  background: var(--accent-soft);
-  border-radius: var(--radius-lg);
-  padding: 1.75rem;
-}
-
-.discord-card h3 {
-  margin-bottom: 0.4rem;
-}
-
-.discord-card p {
-  color: var(--ink-muted);
-  font-size: 0.97rem;
-}
-
-.channel-list {
-  list-style: none;
-  margin: 0 0 1.4rem;
-  padding: 0;
-  display: grid;
-  gap: 0.4rem;
-  font-family: var(--font-mono);
-  font-size: 0.83rem;
-  color: var(--ink-muted);
-}
-
-.channel-list li::before {
-  content: "#";
-  color: var(--accent);
-  margin-right: 0.35rem;
-}
-
 /* -------------------------------------------------------------------- blog */
 
 .post-list {
@@ -1859,7 +1796,6 @@ h3:hover .anchor,
 
 @media (max-width: 900px) {
   .thesis,
-  .community,
   .footer-inner {
     grid-template-columns: 1fr;
     gap: 2rem;

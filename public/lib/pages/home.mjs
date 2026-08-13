@@ -1,6 +1,6 @@
 /**
  * The home page. Hand-written HTML rather than markdown, because the layout is
- * the argument: hero + feature carousel → why → how it works → community.
+ * the argument: hero + feature carousel → why → how it works.
  *
  * The carousel carries what used to be three separate sections (the two
  * applications, the proved/verified distinction, the extension points). Each
@@ -257,11 +257,11 @@ function diagram() {
       </marker>
     </defs>
 
-    ${box(150, 8, 220, 52, "LeaChat", ["standalone web client"])}
-    ${box(510, 8, 220, 52, "LeaOverleaf", ["Chrome extension + companion"])}
+    ${box(150, 8, 220, 76, "LeaChat", ["standalone web client"])}
+    ${box(510, 8, 220, 76, "LeaOverleaf", ["Chrome extension + companion"])}
 
-    <path class="d-edge" d="M 260 60 L 260 104" marker-end="url(#arrow)"/>
-    <path class="d-edge" d="M 620 60 L 620 104" marker-end="url(#arrow)"/>
+    <path class="d-edge" d="M 260 84 L 260 104" marker-end="url(#arrow)"/>
+    <path class="d-edge" d="M 620 84 L 620 104" marker-end="url(#arrow)"/>
 
     <rect class="d-box-accent" x="150" y="106" width="580" height="46" rx="10"/>
     <text class="d-label" x="440" y="128" text-anchor="middle">One application-neutral API</text>
@@ -307,7 +307,6 @@ cd ${repoDir}
 <section class="hero">
   <div class="wrap hero-grid">
     <div class="hero-copy">
-      <span class="hero-eyebrow"><span class="dot"></span>Lean 4 · Mathlib · open source · runs on your machine</span>
       <h1>Formalization that keeps the <em>mathematician</em> in the loop.</h1>
       <p class="hero-sub">
         Lea is an agent backbone for Lean&nbsp;4, driving two applications: a standalone web
@@ -388,7 +387,7 @@ cd ${repoDir}
       <h2>One run, three moving parts</h2>
       <p>
         The prover runs in-process behind a single API. There is no separate prover service to
-        start, and applications react to meaning-level facts — a file changed, a check returned —
+        start, and applications react to meaning-level facts, a file changed, a check returned,
         rather than decoding prover-specific tool output.
       </p>
     </div>
@@ -411,9 +410,9 @@ cd ${repoDir}
         <h3>Lean project runtime</h3>
         <p>
           Executes each action inside your Lake workspace with a deliberately small tool
-          surface: read, write, edit, <code>lean_check</code>, shell, Mathlib search, import
-          suggestion. It keeps the Lean language server warm so a re-check costs a fraction of
-          a cold start.
+          surface: read, write, edit, <code>lean_check</code>, shell, Mathlib search. Your own
+          tools plug into that surface with a URL and a note on when to use them. Loogle
+          search, for example, takes a few fields in the UI and no code changes.
         </p>
       </div>
       <div class="stage">
@@ -424,43 +423,6 @@ cd ${repoDir}
           and a page reload read the same bytes, and a client that drops off replays from its
           last cursor. Statuses are derived from the latest Lean verdict, never stored.
         </p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="section">
-  <div class="wrap">
-    <div class="community">
-      <div>
-        <p class="kicker">Community</p>
-        <h2>Come build with us</h2>
-        <p class="lead">
-          Lea is research software in the open. Whether you are formalizing a paper, writing a
-          skill pack for your subfield, or building a front end we have not thought of, the
-          Discord is where that conversation happens.
-        </p>
-        <ul class="channel-list">
-          <li>introductions — tell us what you are formalizing</li>
-          <li>help — installs, Lean errors, model choice</li>
-          <li>showcase — proofs Lea helped you land</li>
-          <li>dev — the backbone, the applications, the roadmap</li>
-        </ul>
-        <div class="hero-actions">
-          <a class="btn btn-primary" href="${site.links.discord}" target="_blank" rel="noopener">Join the Discord</a>
-          <a class="btn btn-ghost" href="${site.links.issues}" target="_blank" rel="noopener">Open an issue</a>
-        </div>
-      </div>
-      <div class="discord-card">
-        <h3>Good first contributions</h3>
-        <p>Things that help immediately and do not require knowing the whole system:</p>
-        <ul>
-          <li>A skill pack for a subfield you know well</li>
-          <li>A blueprint for a paper you would like formalized</li>
-          <li>An install report from an OS we have not tried</li>
-          <li>A failing proof with the transcript attached</li>
-        </ul>
-        <a class="btn btn-ghost" href="${ctx.url("/blog/")}">Read the blog →</a>
       </div>
     </div>
   </div>
