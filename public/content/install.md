@@ -16,8 +16,8 @@ Pick **Docker** for both applications without installing Lea's local toolchains.
 
 ## Before you start
 
-You need one API key from a model provider. Lea ships with 13 models across three families and
-you can switch between them at any time from the Settings pane.
+You need one API key from a model provider. You can select any model provider and model in the
+Settings pane, and switch at any time.
 
 | Provider | Where to get a key | Env var |
 | --- | --- | --- |
@@ -25,8 +25,22 @@ you can switch between them at any time from the Settings pane.
 | Anthropic | [console.anthropic.com](https://console.anthropic.com/settings/keys) | `ANTHROPIC_API_KEY` |
 | Google Gemini | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `GEMINI_API_KEY` |
 
+> **Note.** These three are the common ones, but you can use any model provider and model from
+> the Settings pane. [LiteLLM's provider pages](https://docs.litellm.ai/docs/providers) give the
+> model ID and env var for the rest — DeepSeek, for example, is `deepseek/deepseek-v4-flash`
+> with `DEEPSEEK_API_KEY`.
+
 You do not need to set the environment variable if you would rather paste the key into the app.
 Both work; the Settings pane is the simpler path.
+
+You can even use open-weight models you host yourself. For example, for a model served by vLLM,
+point Lea at your server on the way in:
+
+```bash
+export HOSTED_VLLM_API_BASE=http://localhost:<PORT>/v1 && ./start-dev.sh
+```
+
+Then add the model `hosted_vllm/<your-model>` and its key in the Settings pane.
 
 **Supported platforms.** macOS (Apple Silicon and Intel) and Linux for the local install; Docker
 works anywhere Docker Desktop does. Windows users should use Docker or WSL2.

@@ -38,20 +38,6 @@ messages, usage, and code-step metadata; git stores proof content under the
 prover workspace. Overleaf-created formalizations go through the same adapter, so
 they appear in the standalone UI and can be opened with a `?session=<id>` link.
 
-## Website
-
-The public site (landing page, install guide, blog) lives in
-[`public/`](public/README.md) and is a dependency-free static site.
-
-```sh
-npm run site:dev     # preview at http://localhost:4321, rebuilding on save
-npm run site:build   # write public/dist
-npm run site:test    # unit tests for the Markdown renderer
-```
-
-Adding a blog post means adding one Markdown file to `public/content/blog/`.
-Pushing to `main` publishes to GitHub Pages via `.github/workflows/site.yml`.
-
 ## Quick start
 
 You supply one provider API key; everything else is provisioned for you. Get a
@@ -60,6 +46,20 @@ key from whichever provider you'll use, then keep it handy for the last step:
 - **OpenAI** (default) — https://platform.openai.com/api-keys
 - **Anthropic** — https://console.anthropic.com/settings/keys
 - **Gemini** — https://aistudio.google.com/apikey
+
+These three are the common ones, but you can use any model provider and model from
+the Settings pane. [LiteLLM's provider pages](https://docs.litellm.ai/docs/providers)
+give the model ID and env var for the rest — DeepSeek, for example, is
+`deepseek/deepseek-v4-flash` with `DEEPSEEK_API_KEY`.
+
+You can even use open-weight models you host yourself. For example, for a model
+served by vLLM, point Lea at your server on the way in:
+
+```sh
+export HOSTED_VLLM_API_BASE=http://localhost:<PORT>/v1 && ./start-dev.sh
+```
+
+Then add the model `hosted_vllm/<your-model>` and its key in the Settings pane.
 
 Then pick one of the two paths below.
 
