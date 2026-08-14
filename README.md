@@ -1,3 +1,18 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)"
+            srcset="public/assets/img/lea-wordmark-dark.svg">
+    <img src="public/assets/img/lea-wordmark-light.svg" alt="Lea" width="220">
+  </picture>
+</p>
+
+<p align="center">
+  <a href="https://discord.com/invite/CtEJvUTjm">
+    <img alt="Join the Lea Discord"
+         src="https://img.shields.io/badge/Discord-5865F2?style=flat-square&logo=discord&logoColor=white">
+  </a>
+</p>
+
 # LeaEcosystem
 
 LeaEcosystem is an npm-workspaces monorepo that wraps

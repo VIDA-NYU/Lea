@@ -31,11 +31,6 @@ export function makeCtx(overrides = {}) {
   };
 }
 
-export const LOGO = `<svg class="mark" viewBox="0 0 40 40" aria-hidden="true" focusable="false">
-  <circle cx="20" cy="20" r="20"/>
-  <text x="20" y="20" text-anchor="middle" dominant-baseline="central">Lea</text>
-</svg>`;
-
 function head(ctx, opts) {
   const title = opts.title
     ? `${opts.title} — ${ctx.site.name}`
@@ -89,7 +84,6 @@ function header(ctx, currentPath) {
   return `<header class="site-header">
   <div class="wrap header-inner">
     <a class="brand" href="${ctx.url("/")}">
-      ${LOGO}
       <span class="brand-text">${ctx.site.name}</span>
     </a>
     ${nav(ctx, currentPath)}
@@ -109,7 +103,7 @@ function footer(ctx) {
   return `<footer class="site-footer">
   <div class="wrap footer-inner">
     <div class="footer-brand">
-      <a class="brand" href="${ctx.url("/")}">${LOGO}<span class="brand-text">${ctx.site.name}</span></a>
+      <a class="brand" href="${ctx.url("/")}"><span class="brand-text">${ctx.site.name}</span></a>
       <p class="footer-tagline">${escapeHtml(ctx.site.tagline)}</p>
       ${labLine}
     </div>
