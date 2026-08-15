@@ -77,7 +77,7 @@ def _to_openai_messages(system: str, messages: list, *, include_reasoning: bool 
                 out.append({"role": "user", "content": msg["content"]})
             elif isinstance(msg["content"], list):
                 for item in msg["content"]:
-                    if item.get("type") == "tool_result":
+                    if isinstance(item, dict) and item.get("type") == "tool_result":
                         out.append({
                             "role": "tool",
                             "tool_call_id": item.get("tool_call_id") or item.get("tool_use_id"),
@@ -86,7 +86,17 @@ def _to_openai_messages(system: str, messages: list, *, include_reasoning: bool 
         elif msg["role"] == "assistant":
             oai = {"role": "assistant", "content": None}
             text_parts, tool_calls, reasoning_items = [], [], []
-            for item in msg["content"]:
+            content = msg["content"]
+            if isinstance(content, str):
+                # Transcripts persisted before assistant turns were normalized to
+                # parts (e.g. a max-turns summary) may still carry a bare string.
+                # Replay it as a single text part instead of iterating its characters.
+                content = [{"type": "text", "text": content}]
+            elif not isinstance(content, list):
+                content = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
                 if item.get("type") == "text":
                     text_parts.append(item["text"])
                 elif include_reasoning and item.get("type") == "reasoning":

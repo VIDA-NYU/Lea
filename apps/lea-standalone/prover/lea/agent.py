@@ -806,7 +806,10 @@ def _run_events_inner(
                 # Surface it live + fold it into the transcript, so both the UI and the
                 # materialized sub-agent view carry the findings as the final message.
                 yield AssistantTextDelta(summary)
-                messages.append({"role": "assistant", "content": summary})
+                # Parts shape, like every other assistant turn: the transcript is
+                # persisted and replayed on the next activation, where
+                # _to_openai_messages iterates assistant content as a list of blocks.
+                messages.append({"role": "assistant", "content": [{"type": "text", "text": summary}]})
             final_text = summary or (
                 "Reached the cost budget without completing the task." if cost_capped
                 else "Reached the turn budget without completing the task."

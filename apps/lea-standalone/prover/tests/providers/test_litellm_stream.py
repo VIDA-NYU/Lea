@@ -164,6 +164,37 @@ def test_gpt_5_6_responses_compatibility():
     check("legacy: provider-specific reasoning omitted", "reasoning_items" not in legacy_sent[2])
 
 
+def test_string_content_assistant_replay():
+    """A transcript persisted before assistant turns were normalized to parts may
+    carry a bare string as assistant content (e.g. a max-turns summary). Replaying
+    it must convert to a text message, not crash iterating the string's characters."""
+    legacy_transcript = [
+        {"role": "user", "content": "prove it"},
+        {"role": "assistant", "content": "Reached the turn budget without completing the task."},
+        {"role": "user", "content": "keep going"},
+    ]
+    sent = providers._to_openai_messages("SYS", legacy_transcript)
+    check("legacy transcript: no crash, 4 messages", len(sent) == 4)
+    check(
+        "legacy transcript: string assistant content becomes text",
+        sent[2] == {"role": "assistant",
+                    "content": "Reached the turn budget without completing the task."},
+    )
+    # Mixed: a parts-shaped turn and a non-dict stray in a user list must not crash either.
+    mixed = [
+        {"role": "assistant", "content": [
+            {"type": "text", "text": "hi"},
+            {"type": "tool_call", "name": "lean_check", "args": {"path": "/x.lean"}, "id": "call_9"},
+        ]},
+        {"role": "user", "content": ["stray", {"type": "tool_result", "tool_call_id": "call_9", "content": "OK"}]},
+    ]
+    sent = providers._to_openai_messages("SYS", mixed)
+    check("mixed: assistant text + tool call", sent[1]["content"] == "hi"
+          and sent[1]["tool_calls"][0]["id"] == "call_9")
+    check("mixed: stray non-dict user item skipped", sent[2]["role"] == "tool"
+          and sent[2]["tool_call_id"] == "call_9")
+
+
 def main():
     print("providers (LiteLLM stream) tests:")
     providers.litellm.completion = fake_completion
@@ -198,6 +229,7 @@ def main():
 
     test_blocking_mode()
     test_gpt_5_6_responses_compatibility()
+    test_string_content_assistant_replay()
 
     print()
     if _FAILURES:
