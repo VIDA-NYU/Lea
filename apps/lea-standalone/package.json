@@ -14,7 +14,7 @@
     "dev:web": "vite",
     "start:api": "cd adapter && ./.venv/bin/python run_api.py",
     "dev:api": "cd adapter && ./.venv/bin/python run_api.py",
-    "dev:api:venv": "cd adapter && ./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --loop asyncio --http h11 --log-level debug",
+    "dev:api:venv": "cd adapter && ./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port ${LEA_ADAPTER_PORT:-8001} --loop asyncio --http h11 --log-level debug",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

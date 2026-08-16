@@ -89,10 +89,12 @@ const apiImport = command(["./.venv/bin/python", "-c", "from app.main import app
 });
 checks.push(check("API imports", apiImport.status === 0, commandDetail(apiImport)));
 
+// Keep in step with LEA_ADAPTER_PORT (adapter/run_api.py, scripts/dev.mjs).
+const adapterPortNumber = Number(process.env.LEA_ADAPTER_PORT) || 8001;
 const frontendPort = await portOpen(5173);
-const adapterPort = await portOpen(8001);
+const adapterPort = await portOpen(adapterPortNumber);
 console.log(`[INFO] frontend port 5173 - ${frontendPort ? "already running" : "not running"}`);
-console.log(`[INFO] UI adapter API port 8001 - ${adapterPort ? "already running" : "not running"}`);
+console.log(`[INFO] UI adapter API port ${adapterPortNumber} - ${adapterPort ? "already running" : "not running"}`);
 
 if (!checks.every(Boolean)) {
   process.exitCode = 1;

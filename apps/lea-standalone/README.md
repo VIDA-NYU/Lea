@@ -76,6 +76,15 @@ The launcher:
 - starts Vite with `--host 0.0.0.0` on `http://localhost:5173`;
 - stops both child processes on `Ctrl+C`.
 
+If `:8001` is already taken on your machine, set `LEA_ADAPTER_PORT` to move the
+adapter; the launcher's preflight, the health probe, the Vite `/api` proxy and
+`npm run doctor` all follow it. Point the Overleaf companion at the new port with
+`LEA_API_BASE_URL` in the root `.env`.
+
+```sh
+LEA_ADAPTER_PORT=8011 npm run dev
+```
+
 To start only one process:
 
 ```sh
