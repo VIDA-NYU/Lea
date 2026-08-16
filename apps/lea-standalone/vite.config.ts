@@ -23,6 +23,10 @@ function pkgDir(pkg: string): string {
 const infoviewDist = path.join(pkgDir('@leanprover/infoview'), 'dist')
 const lean4monacoDist = path.join(pkgDir('lean4monaco'), 'dist')
 
+// Must match the adapter's bind port (adapter/run_api.py reads the same variable);
+// scripts/dev.mjs passes its environment through to this dev server.
+const adapterPort = Number(process.env.LEA_ADAPTER_PORT) || 8001
+
 function figmaAssetResolver() {
   return {
     name: 'figma-asset-resolver',
@@ -86,7 +90,7 @@ export default defineConfig({
     proxy: {
       // `ws: true` upgrades the live-editor LSP WebSocket (/api/sessions/:id/lsp,
       // v2.2 · D60) to the adapter; plain /api HTTP + SSE proxy unchanged.
-      '/api': { target: 'http://localhost:8001', ws: true },
+      '/api': { target: `http://localhost:${adapterPort}`, ws: true },
     },
     // The vendored prover holds huge Lean build trees (workspace + SafeVerify
     // .lake/ oleans, the ~189MB safe_verify binary). The frontend never imports
