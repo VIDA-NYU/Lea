@@ -4015,6 +4015,7 @@ function inferProviderValidationFamily(url) {
   if (text.startsWith("https://api.openai.com/")) return "openai";
   if (text.startsWith("https://generativelanguage.googleapis.com/")) return "google";
   if (text.startsWith("https://api.anthropic.com/")) return "anthropic";
+  if (text.startsWith("https://api.portkey.ai/") || text.startsWith("https://gateway.example.edu/")) return "portkey";
   return "";
 }
 
@@ -5940,4 +5941,59 @@ test("ledger engine: unrecorded declaration with no jobs reads unformalized; a f
   const preIndex = await ledgerStatusFor(state, "ledger_preindex");
   assert.equal(preIndex.status, "formalized",
     "an index that never saw the declaration defers to the job record");
+});
+
+test("settings verify a Portkey key against the configured gateway", async () => {
+  const leaRepo = await makeLeaRepo();
+  const calls = [];
+  const state = await makeState({
+    leaRepoPath: leaRepo,
+    env: { PORTKEY_BASE_URL: "https://gateway.example.edu/v1/" },
+    fetchImpl: makeProviderValidationFetch(calls)
+  });
+
+  const result = await handleUpdateLeaSettings({
+    leaRepoPath: leaRepo,
+    leaApiBaseUrl: "http://127.0.0.1:8001",
+    leaModel: "portkey/@vertexai-jdoe/anthropic.claude-opus-4-8",
+    leaMaxTurns: 20,
+    leaProviderApiKeys: { portkey: "pk-live" }
+  }, state);
+
+  assert.equal(result.statusCode, 200, JSON.stringify(result.body));
+  assert.equal(result.body.leaProvider, "portkey");
+  assert.equal(result.body.leaProviderKeys.portkey.configured, true);
+  assert.equal(state.env.PORTKEY_API_KEY, "pk-live");
+  // Verified at the gateway's own model listing (trailing slash folded), with the
+  // same auth the prover sends — not at api.portkey.ai.
+  assert.deepEqual(calls.map((call) => call.family), ["portkey"]);
+  assert.equal(calls[0].url, "https://gateway.example.edu/v1/models");
+  assert.equal(calls[0].options.headers["x-portkey-api-key"], "pk-live");
+
+  const envFile = await fs.readFile(state.envPath, "utf8");
+  assert.match(envFile, /PORTKEY_API_KEY=pk-live/);
+  assert.match(envFile, /LEA_MODEL=portkey\/@vertexai-jdoe\/anthropic\.claude-opus-4-8/);
+});
+
+test("settings reject a Portkey key the gateway turns away", async () => {
+  const leaRepo = await makeLeaRepo();
+  const calls = [];
+  const state = await makeState({
+    leaRepoPath: leaRepo,
+    env: {},
+    fetchImpl: makeProviderValidationFetch(calls, { portkey: 401 })
+  });
+
+  const result = await handleUpdateLeaSettings({
+    leaRepoPath: leaRepo,
+    leaApiBaseUrl: "http://127.0.0.1:8001",
+    leaModel: "portkey/@vertexai-jdoe/anthropic.claude-opus-4-8",
+    leaMaxTurns: 20,
+    leaProviderApiKeys: { portkey: "pk-bad" }
+  }, state);
+
+  assert.equal(result.statusCode, 400);
+  assert.equal(result.body.error, "invalid_portkey_key");
+  assert.equal(calls[0].url, "https://api.portkey.ai/v1/models"); // no override → hosted default
+  assert.equal(state.env.PORTKEY_API_KEY, undefined);
 });

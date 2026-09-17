@@ -164,6 +164,82 @@ def test_gpt_5_6_responses_compatibility():
     check("legacy: provider-specific reasoning omitted", "reasoning_items" not in legacy_sent[2])
 
 
+def test_portkey_gateway_routing():
+    """`portkey/<catalog-name>` rides LiteLLM's openai/ path, pointed at the gateway."""
+    import os
+
+    saved_env = {k: os.environ.get(k) for k in (
+        "PORTKEY_API_KEY", "PORTKEY_BASE_URL", "PORTKEY_VIRTUAL_KEY", "PORTKEY_CONFIG", "PORTKEY_PROVIDER",
+    )}
+    priced: list[str] = []
+
+    def fake_cost(model, prompt_tokens, completion_tokens):
+        priced.append(model)
+        if model == "claude-opus-4-8":
+            return (0.005, 0.025)
+        raise Exception(f"no price for {model}")
+
+    try:
+        for k in saved_env:
+            os.environ.pop(k, None)
+        os.environ["PORTKEY_API_KEY"] = "pk-test"
+        os.environ["PORTKEY_BASE_URL"] = "https://gateway.example/v1/"
+        providers.litellm.completion = fake_completion
+        providers.litellm.cost_per_token = fake_cost
+        _CAPTURED.clear()
+        caller_kwargs = {"max_tokens": 100, "extra_headers": {"x-portkey-trace-id": "t1"}}
+        catalog = "@vertexai-jdoe/anthropic.claude-opus-4-8"
+        events = list(providers.stream(f"portkey/{catalog}", "SYS", MESSAGES, TOOLS, caller_kwargs))
+
+        check("portkey: openai-compatible route", _CAPTURED.get("model") == f"openai/{catalog}")
+        check("portkey: gateway is api_base (trailing slash trimmed)",
+              _CAPTURED.get("api_base") == "https://gateway.example/v1")
+        check("portkey: key as bearer", _CAPTURED.get("api_key") == "pk-test")
+        headers = _CAPTURED.get("extra_headers") or {}
+        check("portkey: x-portkey-api-key header", headers.get("x-portkey-api-key") == "pk-test")
+        check("portkey: strict OpenAI compliance requested",
+              headers.get("x-portkey-strict-open-ai-compliance") == "true")
+        check("portkey: caller headers preserved", headers.get("x-portkey-trace-id") == "t1")
+        check("portkey: no routing header without env", "x-portkey-provider" not in headers)
+        check("portkey: caller kwargs not mutated",
+              caller_kwargs == {"max_tokens": 100, "extra_headers": {"x-portkey-trace-id": "t1"}})
+        check("portkey: tool call still assembled", ToolCall("lean_check", {"path": "/x.lean"}) in events)
+        check("portkey: cost from the bare upstream model",
+              isinstance(events[-1], Done) and abs(events[-1].cost - 0.03) < 1e-9)
+        check("portkey: price lookup tried vendor-prefixed then bare name",
+              priced == ["anthropic.claude-opus-4-8", "claude-opus-4-8"])
+
+        # A bare catalog name (already in gateway syntax) is Portkey too, and the
+        # hosted service is the default gateway.
+        os.environ.pop("PORTKEY_BASE_URL", None)
+        os.environ["PORTKEY_PROVIDER"] = "@vertexai-jdoe"
+        _CAPTURED.clear()
+        list(providers.stream(catalog, "SYS", MESSAGES, TOOLS))
+        check("portkey: bare @slug/model recognised", _CAPTURED.get("model") == f"openai/{catalog}")
+        check("portkey: hosted default base url", _CAPTURED.get("api_base") == providers.PORTKEY_DEFAULT_BASE_URL)
+        check("portkey: optional routing header from env",
+              (_CAPTURED.get("extra_headers") or {}).get("x-portkey-provider") == "@vertexai-jdoe")
+
+        os.environ.pop("PORTKEY_API_KEY", None)
+        try:
+            list(providers.stream(f"portkey/{catalog}", "SYS", MESSAGES, TOOLS))
+            check("portkey: missing key raises", False)
+        except RuntimeError as e:
+            check("portkey: missing key raises", "PORTKEY_API_KEY" in str(e))
+
+        providers.litellm.completion = fake_completion
+        _CAPTURED.clear()
+        list(providers.stream("gemini/test-model", "SYS", MESSAGES, TOOLS))
+        check("portkey: other providers untouched",
+              _CAPTURED.get("model") == "gemini/test-model" and "api_base" not in _CAPTURED)
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def main():
     print("providers (LiteLLM stream) tests:")
     providers.litellm.completion = fake_completion
@@ -198,6 +274,7 @@ def main():
 
     test_blocking_mode()
     test_gpt_5_6_responses_compatibility()
+    test_portkey_gateway_routing()
 
     print()
     if _FAILURES:

@@ -4096,21 +4096,25 @@ async function validateProviderApiKeys({ fetchImpl, providerEnvPatch, selectedFa
   }
 
   for (const request of requests.values()) {
-    const result = await validateProviderApiKey(fetchImpl, request);
+    const result = await validateProviderApiKey(fetchImpl, request, state);
     if (!result.ok) return result;
   }
   return { ok: true };
 }
 
-async function validateProviderApiKey(fetchImpl, { familyId, apiKey }) {
+async function validateProviderApiKey(fetchImpl, { familyId, apiKey }, state = null) {
   familyId = normalizeProviderFamilyId(familyId);
   const family = LEA_MODEL_FAMILY_BY_ID.get(familyId);
   const label = family?.label || familyId;
+  const url = providerValidationUrl(familyId, apiKey, state);
+  // A family with no verification endpoint (none today) is accepted as-is rather
+  // than failing a fetch of "" and blocking the save.
+  if (!url) return { ok: true };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROVIDER_KEY_VALIDATION_TIMEOUT_MS);
 
   try {
-    const response = await fetchImpl(providerValidationUrl(familyId, apiKey), {
+    const response = await fetchImpl(url, {
       method: "GET",
       headers: providerValidationHeaders(familyId, apiKey),
       signal: controller.signal
@@ -4141,9 +4145,11 @@ async function validateProviderApiKey(fetchImpl, { familyId, apiKey }) {
   }
 }
 
-function providerValidationUrl(familyId, apiKey) {
+function providerValidationUrl(familyId, apiKey, state = null) {
   familyId = normalizeProviderFamilyId(familyId);
   if (familyId === "openai") return "https://api.openai.com/v1/models";
+  // The gateway's OpenAI-compatible model listing; a bad Portkey key gets a 401.
+  if (familyId === "portkey") return `${portkeyBaseUrl(state)}/models`;
   if (familyId === "google") {
     return `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
   }
@@ -4161,6 +4167,10 @@ function providerValidationHeaders(familyId, apiKey) {
       "anthropic-version": "2023-06-01",
       "x-api-key": apiKey
     };
+  }
+  if (familyId === "portkey") {
+    // Same auth the prover sends on every completion.
+    return { "x-portkey-api-key": apiKey, Authorization: `Bearer ${apiKey}` };
   }
   return {};
 }
@@ -4180,8 +4190,19 @@ function providerKeyVerificationError(familyId, label) {
 const ADAPTER_KEY_ENV_BY_FAMILY = {
   openai: "OPENAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
-  google: "GOOGLE_API_KEY"
+  google: "GOOGLE_API_KEY",
+  portkey: "PORTKEY_API_KEY"
 };
+
+// A Portkey gateway's `/v1` root. Per-institution (NYU runs its own), so it is a
+// setting, not a constant: the adapter's saved override wins (it is what the prover
+// will actually call), then the companion's env, then Portkey's hosted service.
+const PORTKEY_DEFAULT_BASE_URL = "https://api.portkey.ai/v1";
+function portkeyBaseUrl(state) {
+  const fromAdapter = state?.adapterSettings?.provider_endpoints?.PORTKEY_BASE_URL?.value;
+  const candidate = String(fromAdapter || state?.env?.PORTKEY_BASE_URL || "").trim();
+  return (candidate || PORTKEY_DEFAULT_BASE_URL).replace(/\/+$/, "");
+}
 
 // Build the `api_keys` patch for the adapter's PUT /api/settings from the keys a
 // user just entered in the Overleaf options form, plus (if available) the raw key

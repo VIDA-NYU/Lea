@@ -212,6 +212,8 @@ OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 GEMINI_API_KEY=
 GOOGLE_API_KEY=
+PORTKEY_API_KEY=          # Portkey AI gateway; models are portkey/@provider-slug/model
+PORTKEY_BASE_URL=         # the gateway's /v1 root (blank = Portkey's hosted service)
 LEA_JOB_TIMEOUT_SECONDS=900
 ```
 

@@ -1,3 +1,4 @@
+import os
 import json
 from io import BytesIO
 import urllib.error
@@ -554,3 +555,165 @@ def test_a_null_byte_in_a_key_is_refused_rather_than_saved(tmp_path, monkeypatch
     # Nothing was written, and the file still loads.
     assert "MISTRAL_API_KEY" not in settings_service.configured_provider_keys(config_path)
     assert settings_service.load_config(config_path).model == "gpt-4o"
+
+
+# ── Portkey AI gateway ─────────────────────────────────────────────────────────
+# LiteLLM has no Portkey provider; the prover routes `portkey/<catalog-name>` through
+# its openai-compatible path at PORTKEY_BASE_URL. Settings has to recognise the
+# provider itself, prompt for PORTKEY_API_KEY, and own the gateway URL.
+
+PORTKEY_MODEL = "portkey/@vertexai-jdoe/anthropic.claude-opus-4-8"
+HOSTED_GATEWAY = "https://api.portkey.ai/v1"
+
+
+def _init_db(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    # Every update re-validates the CURRENT model's key; a blank config defaults to a
+    # Gemini model, so give it one or unrelated updates would be refused.
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test-key")
+
+
+def test_portkey_models_require_the_portkey_key(tmp_path, monkeypatch):
+    config_path = _blank_config(tmp_path)
+    monkeypatch.delenv("PORTKEY_API_KEY", raising=False)
+
+    # Both spellings: Lea's `portkey/` prefix and Portkey's bare catalog syntax.
+    for model in (PORTKEY_MODEL, "@vertexai-jdoe/anthropic.claude-opus-4-8"):
+        requirements = settings_service.model_requirements(model, config_path)
+        assert requirements["provider"] == "portkey", model
+        assert [key["env"] for key in requirements["required_keys"]] == ["PORTKEY_API_KEY"], model
+        assert requirements["required_keys"][0]["label"] == "Portkey"
+        assert requirements["satisfied"] is False, model
+
+    config_path.write_text('PORTKEY_API_KEY = "pk-saved"\n')
+    assert settings_service.model_requirements(PORTKEY_MODEL, config_path)["satisfied"] is True
+
+
+def test_settings_payload_reports_the_portkey_gateway_url_and_its_source(tmp_path, monkeypatch):
+    _init_db(tmp_path, monkeypatch)
+    config_path = _blank_config(tmp_path)
+    monkeypatch.delenv("PORTKEY_BASE_URL", raising=False)
+
+    def endpoint():
+        return settings_service.settings_payload(config_path)["provider_endpoints"]["PORTKEY_BASE_URL"]
+
+    assert endpoint() == {"value": HOSTED_GATEWAY, "source": "default", "default": HOSTED_GATEWAY}
+
+    monkeypatch.setenv("PORTKEY_BASE_URL", "https://shell.example/v1")
+    assert endpoint() == {"value": "https://shell.example/v1", "source": "env", "default": HOSTED_GATEWAY}
+
+    config_path.write_text('PORTKEY_BASE_URL = "https://gateway.example.edu/v1"\n')
+    assert endpoint() == {"value": "https://gateway.example.edu/v1", "source": "config", "default": HOSTED_GATEWAY}
+
+
+def test_update_settings_saves_and_clears_the_portkey_gateway_url(tmp_path, monkeypatch):
+    _init_db(tmp_path, monkeypatch)
+    config_path = _blank_config(tmp_path)
+    monkeypatch.delenv("PORTKEY_BASE_URL", raising=False)
+
+    payload = settings_service.update_settings(
+        {"provider_endpoints": {"PORTKEY_BASE_URL": {"value": "https://gateway.example.edu/v1/"}}},
+        config_path,
+    )
+    # Trailing slash dropped so the prover's `{base}/chat/completions` join is unambiguous.
+    assert payload["provider_endpoints"]["PORTKEY_BASE_URL"]["value"] == "https://gateway.example.edu/v1"
+    assert payload["provider_endpoints"]["PORTKEY_BASE_URL"]["source"] == "config"
+    assert 'PORTKEY_BASE_URL = "https://gateway.example.edu/v1"' in config_path.read_text()
+    # …and exported for the prover, which reads it from the environment.
+    from app.config import load_config
+    load_config(config_path)
+    assert os.environ["PORTKEY_BASE_URL"] == "https://gateway.example.edu/v1"
+
+    payload = settings_service.update_settings(
+        {"provider_endpoints": {"PORTKEY_BASE_URL": {"clear": True}}}, config_path,
+    )
+    assert payload["provider_endpoints"]["PORTKEY_BASE_URL"]["source"] == "default"
+    assert "PORTKEY_BASE_URL" not in config_path.read_text()
+    load_config(config_path)
+    assert "PORTKEY_BASE_URL" not in os.environ
+
+
+def test_update_settings_rejects_a_malformed_gateway_url_or_unknown_endpoint(tmp_path, monkeypatch):
+    _init_db(tmp_path, monkeypatch)
+    config_path = _blank_config(tmp_path)
+
+    with pytest.raises(settings_service.SettingsValidationError) as exc:
+        settings_service.update_settings(
+            {"provider_endpoints": {"PORTKEY_BASE_URL": {"value": "gateway.example.edu/v1"}}}, config_path,
+        )
+    assert exc.value.field == "provider_endpoints.PORTKEY_BASE_URL"
+
+    with pytest.raises(settings_service.SettingsValidationError) as exc:
+        settings_service.update_settings(
+            {"provider_endpoints": {"OPENAI_BASE_URL": {"value": "https://x.example/v1"}}}, config_path,
+        )
+    assert exc.value.field == "provider_endpoints.OPENAI_BASE_URL"
+    assert config_path.read_text() == ""
+
+
+def _capture_urlopen(monkeypatch, seen, *, error=None):
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout=None, context=None):
+        seen.append(request)
+        if error is not None:
+            raise error
+        return _Response()
+
+    monkeypatch.setattr(settings_service.urllib.request, "urlopen", fake_urlopen)
+
+
+def test_a_portkey_key_is_verified_against_the_gateway_saved_with_it(tmp_path, monkeypatch):
+    _init_db(tmp_path, monkeypatch)
+    config_path = _blank_config(tmp_path)
+    monkeypatch.delenv("PORTKEY_BASE_URL", raising=False)
+    monkeypatch.delenv("PORTKEY_API_KEY", raising=False)
+    seen: list = []
+    _capture_urlopen(monkeypatch, seen)
+
+    payload = settings_service.update_settings(
+        {
+            "model": PORTKEY_MODEL,
+            "provider_endpoints": {"PORTKEY_BASE_URL": {"value": "https://gateway.example.edu/v1"}},
+            "api_keys": {"PORTKEY_API_KEY": {"value": "pk-live-1234"}},
+        },
+        config_path,
+    )
+
+    assert len(seen) == 1
+    assert seen[0].full_url == "https://gateway.example.edu/v1/models"
+    headers = {name.lower(): value for name, value in seen[0].header_items()}
+    assert headers["x-portkey-api-key"] == "pk-live-1234"
+    assert headers["authorization"] == "Bearer pk-live-1234"
+    assert payload["model"] == PORTKEY_MODEL
+    assert payload["api_keys"]["PORTKEY_API_KEY"] == {"configured": True, "last4": "1234", "label": "Portkey"}
+    assert 'PORTKEY_API_KEY = "pk-live-1234"' in config_path.read_text()
+
+
+def test_a_portkey_key_the_gateway_rejects_is_not_saved(tmp_path, monkeypatch):
+    _init_db(tmp_path, monkeypatch)
+    config_path = _blank_config(tmp_path)
+    monkeypatch.delenv("PORTKEY_BASE_URL", raising=False)
+    seen: list = []
+    # The gateway's real 401 shape (observed on a self-hosted Portkey).
+    body = b'{"status":"failure","error":{"message":"Portkey Error: Invalid API Key. Error Code: 03","code":"03"}}'
+    _capture_urlopen(
+        monkeypatch, seen,
+        error=urllib.error.HTTPError(HOSTED_GATEWAY + "/models", 401, "Unauthorized", {}, BytesIO(body)),
+    )
+
+    with pytest.raises(settings_service.SettingsValidationError) as exc:
+        settings_service.update_settings({"api_keys": {"PORTKEY_API_KEY": {"value": "pk-bad"}}}, config_path)
+
+    assert seen[0].full_url == HOSTED_GATEWAY + "/models"  # no override → hosted default
+    assert "Invalid API Key" in str(exc.value)
+    assert exc.value.field == "api_keys.portkey"
+    assert "PORTKEY_API_KEY" not in config_path.read_text()

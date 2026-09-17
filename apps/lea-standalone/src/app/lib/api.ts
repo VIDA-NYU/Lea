@@ -1013,9 +1013,18 @@ export interface AppSettings {
   max_spend_usd?: number | null;
   current_spend_usd?: number;
   api_keys?: Record<string, ApiKeyStatus>;
+  // Provider endpoint overrides (e.g. PORTKEY_BASE_URL): the effective value and
+  // whether it was saved in Settings, exported in the shell, or is the default.
+  provider_endpoints?: Record<string, ProviderEndpoint>;
   github_token?: { configured: boolean; last4?: string | null };
   model_options?: { value: string; label: string; family?: string }[];
   [key: string]: unknown;
+}
+
+export interface ProviderEndpoint {
+  value: string;
+  source: 'config' | 'env' | 'default';
+  default: string;
 }
 
 export interface SettingsUpdate {
@@ -1024,6 +1033,7 @@ export interface SettingsUpdate {
   max_turns?: number | null;
   max_spend_usd?: number | null;
   api_keys?: Record<string, { value?: string; clear?: boolean }>;
+  provider_endpoints?: Record<string, { value?: string; clear?: boolean }>;
   github_token?: { value?: string; clear?: boolean };
 }
 

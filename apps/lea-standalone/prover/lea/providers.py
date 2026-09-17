@@ -5,6 +5,8 @@ unified event stream (`TextDelta | ToolCall | _ToolMeta | Done`). Messages use
 Lea's neutral format and are converted to OpenAI shape here; LiteLLM translates
 from there to whatever provider the model name selects (`gemini/…`,
 `anthropic/…`, `openai/…`, `openrouter/…`, …). Cost comes from LiteLLM.
+Models behind a Portkey AI gateway (`portkey/…`) take the `openai/` path pointed
+at the gateway — see the Portkey section below.
 """
 
 import json
@@ -119,8 +121,101 @@ def _is_openai_gpt_5_6(model: str) -> bool:
     return normalized == "gpt-5.6" or normalized.startswith("gpt-5.6-")
 
 
+# --- Portkey AI gateway -------------------------------------------------------
+# A Portkey gateway (hosted, or self-hosted like NYU's) fronts many providers behind
+# ONE OpenAI-compatible endpoint. LiteLLM has no native Portkey provider, so Lea
+# routes these through LiteLLM's `openai/` path with the gateway as `api_base`.
+#
+# Model IDs: `portkey/<catalog-name>`, where the catalog name is whatever the
+# gateway expects — typically Portkey's model-catalog syntax `@provider-slug/model`
+# (e.g. `portkey/@vertexai-jdoe/anthropic.claude-opus-4-8`). Only the leading
+# `portkey/` is stripped; the rest reaches the gateway verbatim. A bare `@slug/model`
+# (already in gateway syntax) is recognised as Portkey too.
+#
+# Auth/endpoint come from the environment, like every other provider's key:
+#   PORTKEY_API_KEY      required — sent as `x-portkey-api-key` (and as the Bearer
+#                        token, which Portkey's OpenAI-compat mode also accepts)
+#   PORTKEY_BASE_URL     the gateway's `/v1` root; unset → Portkey's hosted service
+#   PORTKEY_VIRTUAL_KEY / PORTKEY_CONFIG / PORTKEY_PROVIDER
+#                        optional routing headers for gateways that need them
+PORTKEY_PREFIX = "portkey/"
+PORTKEY_DEFAULT_BASE_URL = "https://api.portkey.ai/v1"
+_PORTKEY_OPTIONAL_HEADERS = {
+    "PORTKEY_VIRTUAL_KEY": "x-portkey-virtual-key",
+    "PORTKEY_CONFIG": "x-portkey-config",
+    "PORTKEY_PROVIDER": "x-portkey-provider",
+}
+
+
+def is_portkey_model(model: str) -> bool:
+    """Whether ``model`` is served through a Portkey gateway."""
+    return model.startswith(PORTKEY_PREFIX) or model.startswith("@")
+
+
+def portkey_model_name(model: str) -> str:
+    """The model name the gateway expects: the `portkey/` prefix (if any) stripped,
+    everything else untouched — `portkey/@vertexai-x/anthropic.claude-opus-4-8`
+    becomes `@vertexai-x/anthropic.claude-opus-4-8`."""
+    return model[len(PORTKEY_PREFIX):] if model.startswith(PORTKEY_PREFIX) else model
+
+
+def portkey_base_url(env: dict | None = None) -> str:
+    env = os.environ if env is None else env
+    return (env.get("PORTKEY_BASE_URL") or "").strip().rstrip("/") or PORTKEY_DEFAULT_BASE_URL
+
+
+def _portkey_kwargs(model_kwargs: dict) -> dict:
+    """LiteLLM kwargs that point an `openai/` call at the Portkey gateway.
+
+    Caller-supplied `extra_headers` win over ours, so a run can still override a
+    routing header explicitly. `strict-open-ai-compliance` asks the gateway to
+    normalise provider-native finish reasons (Anthropic's `tool_use`) to the OpenAI
+    vocabulary; the stream parser tolerates the raw label anyway, but ask for the
+    dialect we parse against.
+    """
+    out = dict(model_kwargs)
+    api_key = os.environ.get("PORTKEY_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "Portkey models need the PORTKEY_API_KEY environment variable "
+            "(add the Portkey key in Settings → API keys)."
+        )
+    headers = {
+        "x-portkey-api-key": api_key,
+        "x-portkey-strict-open-ai-compliance": "true",
+    }
+    for env_name, header in _PORTKEY_OPTIONAL_HEADERS.items():
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            headers[header] = value
+    headers.update(out.get("extra_headers") or {})
+    out["extra_headers"] = headers
+    out.setdefault("api_key", api_key)
+    out.setdefault("api_base", portkey_base_url())
+    return out
+
+
+def _portkey_cost_candidates(model: str) -> list[str]:
+    """Model names to try in LiteLLM's price map for a gateway model.
+
+    The gateway name carries a provider slug and often a vendor prefix
+    (`@vertexai-x/anthropic.claude-opus-4-8`); the price map knows the model as
+    `claude-opus-4-8`. Try the bare name, then the name after its first `.`.
+    """
+    name = portkey_model_name(model)
+    if name.startswith("@") and "/" in name:
+        name = name.split("/", 1)[1]
+    candidates = [name]
+    if "." in name:
+        candidates.append(name.split(".", 1)[1])
+    return [c for c in candidates if c]
+
+
 def _litellm_model(model: str) -> str:
-    """Make GPT-5.6 provider resolution independent of LiteLLM's remote model map."""
+    """Make GPT-5.6 provider resolution independent of LiteLLM's remote model map,
+    and send Portkey models down LiteLLM's OpenAI-compatible path."""
+    if is_portkey_model(model):
+        return f"openai/{portkey_model_name(model)}"
     if _is_openai_gpt_5_6(model) and "/" not in model:
         return f"openai/{model}"
     return model
@@ -200,19 +295,28 @@ def _merge_reasoning_items(target: dict[str, dict[str, Any]], items: Any) -> Non
 
 
 def _compute_cost(model: str, usage: Usage) -> float:
-    """Cost via LiteLLM; falls back to 0.0 (with a one-time warning) for unmapped models."""
-    try:
-        prompt_cost, completion_cost = litellm.cost_per_token(
-            model=model,
-            prompt_tokens=usage.input_tokens,
-            completion_tokens=usage.output_tokens,
-        )
-        return (prompt_cost or 0.0) + (completion_cost or 0.0)
-    except Exception as e:
-        if model not in _WARNED_MODELS:
-            _WARNED_MODELS.add(model)
-            print(f"[lea] cost unavailable for model '{model}' ({e}); reporting $0.00", file=sys.stderr)
-        return 0.0
+    """Cost via LiteLLM; falls back to 0.0 (with a one-time warning) for unmapped models.
+
+    A Portkey gateway name is not in LiteLLM's price map as written, so the bare
+    model buried inside it is tried instead (`_portkey_cost_candidates`) — the
+    gateway bills the same upstream model.
+    """
+    candidates = _portkey_cost_candidates(model) if is_portkey_model(model) else [model]
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            prompt_cost, completion_cost = litellm.cost_per_token(
+                model=candidate,
+                prompt_tokens=usage.input_tokens,
+                completion_tokens=usage.output_tokens,
+            )
+            return (prompt_cost or 0.0) + (completion_cost or 0.0)
+        except Exception as e:  # noqa: BLE001 — try the next name
+            last_error = e
+    if model not in _WARNED_MODELS:
+        _WARNED_MODELS.add(model)
+        print(f"[lea] cost unavailable for model '{model}' ({last_error}); reporting $0.00", file=sys.stderr)
+    return 0.0
 
 
 def _api_key_kwargs(model: str) -> dict:
@@ -236,6 +340,8 @@ def stream(model: str, system: str, messages: list, tools: list,
     is_gpt_5_6 = _is_openai_gpt_5_6(model)
     if is_gpt_5_6:
         model_kwargs = _gpt_5_6_kwargs(tools, model_kwargs)
+    if is_portkey_model(model):
+        model_kwargs = _portkey_kwargs(model_kwargs)
     # Merge so an explicit model_kwargs api_key wins over the env-derived one,
     # instead of colliding (both supplying api_key raises "got multiple values").
     call = dict(

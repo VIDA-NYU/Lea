@@ -3,7 +3,8 @@ const DEFAULT_LEA_TEX_MIRROR_ENABLED = true;
 const MODEL_FAMILY_LABELS = {
   openai: "OpenAI",
   google: "Google AI",
-  anthropic: "Anthropic"
+  anthropic: "Anthropic",
+  portkey: "Portkey gateway"
 };
 // Placeholder only, used before the first successful companion fetch. The
 // adapter's LiteLLM catalog is authoritative; the shared package supplies the
@@ -26,7 +27,8 @@ const providerStatusList = document.querySelector("#provider-key-status");
 const providerKeyInputs = {
   openai: document.querySelector("#openai-api-key"),
   google: document.querySelector("#gemini-api-key"),
-  anthropic: document.querySelector("#anthropic-api-key")
+  anthropic: document.querySelector("#anthropic-api-key"),
+  portkey: document.querySelector("#portkey-api-key")
 };
 const loadCompanionSettingsButton = document.querySelector("#load-companion-settings");
 const statusEl = document.querySelector("#status");
@@ -218,6 +220,7 @@ function staticProviderInputForEnv(env) {
   if (env === "OPENAI_API_KEY") return providerKeyInputs.openai;
   if (env === "GOOGLE_API_KEY" || env === "GEMINI_API_KEY") return providerKeyInputs.google;
   if (env === "ANTHROPIC_API_KEY" || env === "ANTHROPIC_AUTH_TOKEN") return providerKeyInputs.anthropic;
+  if (env === "PORTKEY_API_KEY") return providerKeyInputs.portkey;
   return null;
 }
 

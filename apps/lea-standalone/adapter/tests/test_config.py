@@ -201,3 +201,29 @@ def test_a_rotated_key_replaces_the_old_value(tmp_path, monkeypatch):
     load_config(config_path)
 
     assert os.environ["MISTRAL_API_KEY"] == "sk-new"
+
+
+def test_provider_endpoint_overrides_are_exported_and_retracted(tmp_path, monkeypatch):
+    """A Portkey gateway URL is not a secret, but the prover reads it from the
+    environment exactly like a key — so it is exported with them, and clearing it
+    must retract it, or a removed gateway would keep receiving requests."""
+    from app.config import configured_provider_endpoints, provider_endpoint
+
+    config_path = tmp_path / "lea.local.toml"
+    monkeypatch.delenv("PORTKEY_BASE_URL", raising=False)
+    config_path.write_text('PORTKEY_BASE_URL = "https://gateway.example.edu/v1"\n')
+
+    load_config(config_path)
+
+    assert os.environ["PORTKEY_BASE_URL"] == "https://gateway.example.edu/v1"
+    assert configured_provider_endpoints(config_path) == {"PORTKEY_BASE_URL": "https://gateway.example.edu/v1"}
+    assert configured_provider_keys(config_path) == {}  # a URL is not a key: never masked as one
+    assert provider_endpoint("PORTKEY_BASE_URL", config_path)["source"] == "config"
+
+    config_path.write_text("")
+    load_config(config_path)
+
+    assert "PORTKEY_BASE_URL" not in os.environ
+    assert provider_endpoint("PORTKEY_BASE_URL", config_path) == {
+        "value": "https://api.portkey.ai/v1", "source": "default", "default": "https://api.portkey.ai/v1",
+    }

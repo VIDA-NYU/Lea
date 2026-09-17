@@ -46,6 +46,8 @@ key from whichever provider you'll use, then keep it handy for the last step:
 - **OpenAI** (default) — https://platform.openai.com/api-keys
 - **Anthropic** — https://console.anthropic.com/settings/keys
 - **Gemini** — https://aistudio.google.com/apikey
+- **Portkey gateway** — a Portkey API key from your institution's (or Portkey's
+  hosted) AI gateway; see [Portkey gateways](#portkey-gateways) below
 
 These three are the common ones, but you can use any model provider and model from
 the Settings pane. [LiteLLM's provider pages](https://docs.litellm.ai/docs/providers)
@@ -118,8 +120,8 @@ bootstrap installs the missing ones for you.
    Or `./install.sh` alone for the full stack (UI + Overleaf, with SafeVerify).
    The first run downloads Mathlib and can take several minutes.
 4. **Add your key** to the root `.env` file (set `OPENAI_API_KEY=...`, or the
-   matching `ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) — or skip this and paste it
-   into the app's Settings pane after it starts.
+   matching `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `PORTKEY_API_KEY`) — or skip
+   this and paste it into the app's Settings pane after it starts.
 5. **Start the app:**
    ```sh
    ./start-dev.sh
@@ -171,6 +173,28 @@ LEA_API_FLAVOR=api
 LEA_UI_BASE_URL=http://localhost:5173
 OVERLEAF_COMPANION_URL=http://127.0.0.1:31245
 ```
+
+### Portkey gateways
+
+Models served through a [Portkey](https://portkey.ai) AI gateway — Portkey's
+hosted service, or a self-hosted one such as a university's — are a first-class
+provider. Portkey's endpoint is OpenAI-compatible, and Lea drives it through the
+same LiteLLM layer as every other provider.
+
+1. Save your **Portkey API key** (`PORTKEY_API_KEY`) in Settings → API keys, and
+   the gateway's `/v1` root as the **Gateway URL** (`PORTKEY_BASE_URL`, e.g.
+   `https://ai-gateway.example.edu/v1`). Leave the URL blank for Portkey's hosted
+   service. Both can also go in the root `.env`.
+2. Pick the model as `portkey/<catalog-name>`, where the catalog name is exactly
+   the model string your gateway expects — usually Portkey's model-catalog form
+   `@provider-slug/model`, for example
+   `portkey/@vertexai-jdoe/anthropic.claude-opus-4-8`. Type it into the model
+   picker; only the leading `portkey/` is stripped before the request.
+
+Optional routing headers a gateway may require can be supplied as environment
+variables: `PORTKEY_VIRTUAL_KEY`, `PORTKEY_CONFIG`, `PORTKEY_PROVIDER`. Cost is
+estimated from the upstream model named inside the catalog string; a model LiteLLM
+cannot price reports `$0.00`.
 
 ## Running
 
