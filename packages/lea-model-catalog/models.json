@@ -16,6 +16,14 @@
       "id": "anthropic",
       "label": "Anthropic",
       "env_vars": ["ANTHROPIC_API_KEY"]
+    },
+    {
+      "id": "portkey",
+      "label": "Portkey gateway",
+      "env_vars": ["PORTKEY_API_KEY"],
+      "endpoint_env": "PORTKEY_BASE_URL",
+      "model_prefix": "portkey/",
+      "model_hint": "portkey/@provider-slug/model — the catalog name your gateway expects"
     }
   ],
   "models": [

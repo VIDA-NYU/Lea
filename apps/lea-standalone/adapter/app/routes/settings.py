@@ -25,6 +25,8 @@ class SettingsRequest(BaseModel):
     max_turns: int | None = None
     max_spend_usd: float | None = None
     api_keys: dict[str, ApiKeyUpdateRequest] | None = None
+    # Provider endpoint overrides (e.g. PORTKEY_BASE_URL), same {value, clear} shape.
+    provider_endpoints: dict[str, ApiKeyUpdateRequest] | None = None
     # D3: acknowledge the "this key is still in use" warning and clear it regardless.
     force_clear_keys: bool = False
     # Same {value, clear} shape as a provider key; redacted on read (D34).

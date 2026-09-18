@@ -102,6 +102,9 @@ narrate_tool_steps = true
 openai_api_key = ""
 anthropic_api_key = ""
 google_api_key = ""
+# Portkey AI gateway: model = "portkey/@provider-slug/model"
+PORTKEY_API_KEY = ""
+PORTKEY_BASE_URL = "https://your-gateway.example.edu/v1"   # omit for Portkey's hosted service
 ```
 
 Provider keys are exported into the adapter process environment when config is

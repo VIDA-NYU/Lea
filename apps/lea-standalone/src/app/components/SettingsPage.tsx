@@ -30,7 +30,12 @@ const KEY_PLACEHOLDERS: Record<string, string> = {
   OPENAI_API_KEY: 'sk-...',
   ANTHROPIC_API_KEY: 'sk-ant-...',
   GOOGLE_API_KEY: 'AIza...',
+  PORTKEY_API_KEY: 'Portkey API key',
 };
+// The Portkey gateway URL lives next to the Portkey key: it is the one provider
+// whose endpoint is per-institution (a self-hosted gateway) rather than fixed.
+const PORTKEY_KEY_ENV = 'PORTKEY_API_KEY';
+const PORTKEY_BASE_URL_ENV = 'PORTKEY_BASE_URL';
 
 interface KeyField {
   env: string;
@@ -49,6 +54,9 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   // User-added providers beyond the first-class three (e.g. OPENROUTER_API_KEY):
   // editable {name, value} rows, saved as any `*_API_KEY` the backend accepts.
   const [customKeys, setCustomKeys] = useState<{ env: string; value: string }[]>([]);
+  // Portkey gateway URL override. '' means "not saved in Settings" — the effective
+  // value (shell export or the hosted default) is shown as the placeholder.
+  const [portkeyBaseUrl, setPortkeyBaseUrl] = useState('');
   // GitHub token (D34) — redacted like a provider key; used by project "Push to GitHub".
   const [githubToken, setGithubToken] = useState('');
   const [githubVisible, setGithubVisible] = useState(false);
@@ -73,6 +81,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
       setApiKeys({});
       setClearedKeys({});
       setCustomKeys([]);
+      setPortkeyBaseUrl(savedEndpointValue(loaded));
       setGithubToken('');
       setClearGithub(false);
       setFieldErrors({});
@@ -195,11 +204,22 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
         : clearGithub
         ? { clear: true }
         : undefined;
+      // Only send the gateway URL when it changed: a saved value is replaced or
+      // cleared, an inherited one is left alone.
+      const savedGateway = savedEndpointValue(settings);
+      const nextGateway = portkeyBaseUrl.trim();
+      const endpointUpdate =
+        nextGateway === savedGateway
+          ? undefined
+          : nextGateway
+          ? { value: nextGateway }
+          : { clear: true };
       const update: SettingsUpdate = {
         model,
         permission_tier: permissionTier,
         max_spend_usd: maxSpend.trim() ? Number(maxSpend) : null,
         api_keys: Object.keys(apiKeyUpdates).length ? apiKeyUpdates : undefined,
+        provider_endpoints: endpointUpdate ? { [PORTKEY_BASE_URL_ENV]: endpointUpdate } : undefined,
         github_token: githubUpdate,
       };
       const savedSettings = await saveSettings(update);
@@ -210,6 +230,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
       setApiKeys({});
       setClearedKeys({});
       setCustomKeys([]);
+      setPortkeyBaseUrl(savedEndpointValue(savedSettings));
       setGithubToken('');
       setClearGithub(false);
       setFieldErrors({});
@@ -349,6 +370,37 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                       )}
                       {clearedKeys[field.env] && (
                         <p className="text-xs text-destructive">This saved key will be removed on save.</p>
+                      )}
+                      {field.env === PORTKEY_KEY_ENV && (
+                        <div className="space-y-1.5 pt-1">
+                          <Label htmlFor="portkey-base-url" className="text-xs text-muted-foreground">
+                            Gateway URL
+                          </Label>
+                          <Input
+                            id="portkey-base-url"
+                            type="url"
+                            value={portkeyBaseUrl}
+                            placeholder={
+                              settings?.provider_endpoints?.[PORTKEY_BASE_URL_ENV]?.value ||
+                              'https://api.portkey.ai/v1'
+                            }
+                            onChange={(event) => setPortkeyBaseUrl(event.target.value)}
+                            className="font-mono"
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            Your Portkey gateway&apos;s <code>/v1</code> root — a self-hosted gateway such as
+                            your institution&apos;s, or Portkey&apos;s hosted service when blank.
+                            {settings?.provider_endpoints?.[PORTKEY_BASE_URL_ENV]?.source === 'env' &&
+                              !portkeyBaseUrl.trim() &&
+                              ' Currently taken from the PORTKEY_BASE_URL environment variable.'}{' '}
+                            Model IDs look like <code>portkey/@provider-slug/model</code>.
+                          </p>
+                          {fieldErrors[`provider_endpoints.${PORTKEY_BASE_URL_ENV}`] && (
+                            <p className="text-xs text-destructive">
+                              {fieldErrors[`provider_endpoints.${PORTKEY_BASE_URL_ENV}`]}
+                            </p>
+                          )}
+                        </div>
                       )}
                     </div>
                   );
@@ -579,6 +631,13 @@ function Section({
       <div className="min-w-0">{children}</div>
     </section>
   );
+}
+
+// The gateway URL as saved in Settings ('' when the effective value is inherited
+// from the shell or the default), so the field starts out matching the file.
+function savedEndpointValue(settings: AppSettings | undefined): string {
+  const endpoint = settings?.provider_endpoints?.[PORTKEY_BASE_URL_ENV];
+  return endpoint?.source === 'config' ? endpoint.value : '';
 }
 
 function validateBeforeSave(

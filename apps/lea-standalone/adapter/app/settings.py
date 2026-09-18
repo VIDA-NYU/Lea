@@ -17,6 +17,7 @@ from .config import (
     ROOT, LEGACY_KEY_ENV, configured_provider_keys, load_config,
     permission_tier as config_permission_tier, PERMISSION_TIERS,
     github_token as config_github_token, write_private_text,
+    PROVIDER_ENDPOINT_ENV, provider_endpoint,
 )
 from . import models_catalog
 from . import store
@@ -32,7 +33,13 @@ PROVIDER_LABELS = {
     "openai": "OpenAI",
     "anthropic": "Anthropic",
     "google": "Google",
+    "portkey": "Portkey",
 }
+# Portkey AI gateway: not a legacy flat-TOML provider (its key is stored under the
+# env var name like any other extra provider), but it DOES get live verification —
+# against the configured gateway, whose `/v1/models` rejects a bad key with a 401.
+PORTKEY_KEY_ENV = "PORTKEY_API_KEY"
+PORTKEY_BASE_URL_ENV = "PORTKEY_BASE_URL"
 # Display metadata for the approval tiers the live system actually supports
 # (the gate vs. autonomous axis). Keyed by config.PERMISSION_TIERS.
 PERMISSION_TIER_DETAILS = {
@@ -94,6 +101,7 @@ KNOWN_KEY_LABELS = {
     "TOGETHERAI_API_KEY": "Together AI",
     "XAI_API_KEY": "xAI",
     "PERPLEXITYAI_API_KEY": "Perplexity",
+    "PORTKEY_API_KEY": "Portkey",
 }
 
 
@@ -123,6 +131,11 @@ def settings_payload(path: Path | None = None) -> dict[str, Any]:
         "max_spend_usd": config.max_spend_usd,
         "current_spend_usd": current_spend_usd(),
         "api_keys": _api_keys_payload(configured_provider_keys(path)),
+        # Endpoint overrides (a Portkey gateway URL): effective value + where it came
+        # from, so the UI can show an inherited value as a placeholder.
+        "provider_endpoints": {
+            env: provider_endpoint(env, path) for env in PROVIDER_ENDPOINT_ENV
+        },
         "model_options": MODEL_OPTIONS,
         "permission_tier": config_permission_tier(path),
         "permission_tiers": [
@@ -188,6 +201,8 @@ def _required_env_keys(model: str) -> list[str]:
     family = _model_family(model)
     if family and family in FAMILY_ENV:
         return [FAMILY_ENV[family]]
+    if family == "portkey":
+        return [PORTKEY_KEY_ENV]
     return []
 
 
@@ -301,6 +316,34 @@ def update_settings(values: dict[str, Any], path: Path | None = None) -> dict[st
                 raise ValueError("max_spend_usd must be greater than or equal to 0")
             updates["max_spend_usd"] = max_spend_float
 
+    # Provider endpoint overrides, same {value, clear} shape as a key. Handled BEFORE
+    # the keys so a Portkey key saved in the same request is verified against the
+    # gateway URL saved with it, not the previous one.
+    endpoint_updates = values.get("provider_endpoints") or {}
+    if not isinstance(endpoint_updates, dict):
+        raise ValueError("provider_endpoints must be an object")
+    for env_name, raw_update in endpoint_updates.items():
+        if raw_update is None:
+            continue
+        env_name = str(env_name)
+        if env_name not in PROVIDER_ENDPOINT_ENV:
+            raise SettingsValidationError(
+                f"{env_name} is not a recognized provider endpoint setting.",
+                f"provider_endpoints.{env_name}",
+            )
+        if not isinstance(raw_update, dict):
+            raise ValueError(f"provider_endpoints.{env_name} must be an object")
+        if raw_update.get("clear"):
+            updates[env_name] = None
+            continue
+        value = raw_update.get("value")
+        if value is None:
+            continue
+        value = str(value).strip()
+        if not value:
+            continue
+        updates[env_name] = _validated_endpoint_url(env_name, value)
+
     # api_keys is keyed by LiteLLM env var name (OPENAI_API_KEY, MISTRAL_API_KEY,
     # …). The three first-class providers route to their legacy flat TOML keys
     # and get live verification; any other provider is saved under its env var
@@ -356,6 +399,16 @@ def update_settings(values: dict[str, Any], path: Path | None = None) -> dict[st
         if family:
             _validate_api_key_format(family, value)
             _verify_api_key_credentials(family, value, selected_model)
+        elif env_name == PORTKEY_KEY_ENV:
+            # Verified against the gateway this request will leave configured: an
+            # override saved above, else the effective (file / shell / default) one.
+            if PORTKEY_BASE_URL_ENV in updates and updates[PORTKEY_BASE_URL_ENV]:
+                base_url = str(updates[PORTKEY_BASE_URL_ENV])
+            elif updates.get(PORTKEY_BASE_URL_ENV, "") is None:
+                base_url = PROVIDER_ENDPOINT_ENV[PORTKEY_BASE_URL_ENV]
+            else:
+                base_url = str(provider_endpoint(PORTKEY_BASE_URL_ENV, config_path)["value"])
+            _verify_api_key_credentials("portkey", value, base_url=base_url)
         elif not re.fullmatch(r"[A-Z][A-Z0-9_]*_API_KEY", env_name):
             raise SettingsValidationError(
                 f"{env_name} is not a recognized API key name.",
@@ -423,6 +476,8 @@ def _validate_selected_model_has_key(
 def _model_family(model: str) -> str | None:
     if model in MODEL_FAMILY_BY_VALUE:
         return MODEL_FAMILY_BY_VALUE[model]
+    if models_catalog.is_portkey_model(model):
+        return "portkey"
     normalized = model.lower()
     if normalized.startswith(("gpt-", "openai/")) or re.match(r"^o\d", normalized):
         return "openai"
@@ -442,12 +497,32 @@ def _validate_api_key_format(family: str, value: str) -> None:
         )
 
 
+def _validated_endpoint_url(env_name: str, value: str) -> str:
+    """A provider endpoint must be an absolute http(s) URL. The trailing slash is
+    dropped so the prover's `{base}/chat/completions` join is unambiguous."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(value)
+    if parts.scheme not in {"http", "https"} or not parts.netloc or any(c.isspace() for c in value):
+        raise SettingsValidationError(
+            f"{_endpoint_label(env_name)} must be an http(s) URL such as https://gateway.example.edu/v1.",
+            f"provider_endpoints.{env_name}",
+        )
+    return value.rstrip("/")
+
+
+def _endpoint_label(env_name: str) -> str:
+    return {"PORTKEY_BASE_URL": "The Portkey gateway URL"}.get(env_name, env_name)
+
+
 def _verify_api_key_credentials(
     family: str,
     value: str,
     model: str | None = None,
+    *,
+    base_url: str | None = None,
 ) -> None:
-    request = _provider_verification_request(family, value, model)
+    request = _provider_verification_request(family, value, model, base_url=base_url)
     if request is None:
         return
     try:
@@ -484,7 +559,19 @@ def _provider_verification_request(
     family: str,
     value: str,
     model: str | None = None,
+    *,
+    base_url: str | None = None,
 ) -> urllib.request.Request | None:
+    if family == "portkey":
+        # The gateway's OpenAI-compatible model listing. Auth mirrors what the prover
+        # sends on every completion: the Portkey key in `x-portkey-api-key` (and as
+        # the Bearer token, which Portkey's OpenAI-compat mode also accepts).
+        root = (base_url or PROVIDER_ENDPOINT_ENV[PORTKEY_BASE_URL_ENV]).rstrip("/")
+        return urllib.request.Request(
+            f"{root}/models",
+            headers={"x-portkey-api-key": value, "Authorization": f"Bearer {value}"},
+            method="GET",
+        )
     if family == "openai":
         return urllib.request.Request(
             "https://api.openai.com/v1/models",
