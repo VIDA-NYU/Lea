@@ -191,10 +191,18 @@ same LiteLLM layer as every other provider.
    `portkey/@vertexai-jdoe/anthropic.claude-opus-4-8`. Type it into the model
    picker; only the leading `portkey/` is stripped before the request.
 
+Claude models take the gateway's native Anthropic Messages route rather than
+its OpenAI-compatible one, so Anthropic prompt caching works through the gateway
+exactly as it does against Anthropic directly (the system prompt and tool schemas
+are cached once per run, and each turn re-reads the conversation so far at the
+cached rate). A gateway that lacks that route falls back to the OpenAI-compatible
+dialect with a warning; caching is unavailable there.
+
 Optional routing headers a gateway may require can be supplied as environment
-variables: `PORTKEY_VIRTUAL_KEY`, `PORTKEY_CONFIG`, `PORTKEY_PROVIDER`. Cost is
-estimated from the upstream model named inside the catalog string; a model LiteLLM
-cannot price reports `$0.00`.
+variables: `PORTKEY_VIRTUAL_KEY`, `PORTKEY_CONFIG`, `PORTKEY_PROVIDER` (the last
+defaults to the `@provider-slug` from the catalog name on the native route). Cost
+is estimated from the upstream model named inside the catalog string, cache reads
+and writes priced at their own rates; a model LiteLLM cannot price reports `$0.00`.
 
 ## Running
 
