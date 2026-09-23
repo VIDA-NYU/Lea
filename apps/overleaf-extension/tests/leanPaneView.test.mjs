@@ -260,6 +260,8 @@ test("paneItemToFormalizeTarget shapes the /formalize payload from a pane item",
   assert.deepEqual(target, {
     targetKind: "definition",
     targetLabel: "even_nat",
+    labelSource: "explicit",
+    latexLabel: "",
     targetText: "A natural number is even...",
     targetUses: ["parity"],
     targetContext: "Use Nat parity.",

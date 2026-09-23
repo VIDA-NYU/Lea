@@ -500,6 +500,8 @@ export function paneItemToFormalizeTarget(item) {
   return {
     targetKind: item?.leanKind === "def" ? "definition" : "theorem",
     targetLabel: item?.label || item?.leanDeclarationName || "",
+    labelSource: item?.labelSource || "explicit",
+    latexLabel: item?.latexLabel || "",
     targetText: item?.naturalLanguageLatex || "",
     targetUses: Array.isArray(item?.targetUses) ? item.targetUses : [],
     targetContext: item?.targetContext || "",

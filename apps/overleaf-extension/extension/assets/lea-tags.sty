@@ -4,12 +4,12 @@
 % corollary, or definition for the Lea Overleaf extension, without requiring
 % the enclosing environment to have a recognized name (theorem, lemma, ...).
 %
-% Each command takes a required metadata argument (never typeset, only ever
-% read by the extension) and an optional second argument: the statement
+% Each command takes a metadata argument (which may be empty and is never
+% typeset) and an optional second argument: the statement
 % itself. If you supply the second argument, it IS typeset (so it renders
 % normally in the PDF) and no enclosing environment is needed at all:
 %
-%   \leatheorem{label=pythagorean, uses={right_triangle}}
+%   \leatheorem{uses={right_triangle}}
 %   {In a right triangle, the square of the hypotenuse equals the sum of
 %   the squares of the other two sides.}
 %
@@ -17,7 +17,7 @@
 % from the smallest enclosing LaTeX environment instead:
 %
 %   \begin{claim}\label{clm:foo}
-%   \leatheorem{label=foo_claim, uses={bar}, context={Treat foo as a Nat predicate.}}
+%   \leatheorem{uses={bar}, context={Treat foo as a Nat predicate.}}
 %   Statement text...
 %   \end{claim}
 %
@@ -45,10 +45,10 @@
 % Finally, `leacode` is a code-block variant of the tags above: its body is
 % typeset verbatim as a Lean code listing (via the `listings` package) instead
 % of as prose, and that same code text is what gets sent to Lea -- exactly as
-% the other tags' statements are. Its one required argument is the usual
-% metadata argument; it is never typeset, only read by the extension:
+% the other tags' statements are. Its required metadata argument may be empty
+% (write {}); it is never typeset, only read by the extension:
 %
-%   \begin{leacode}{label=add_zero, uses={my_lemma}}
+%   \begin{leacode}{uses={my_lemma}}
 %   theorem add_zero (n : Nat) : n + 0 = n := by simp
 %   \end{leacode}
 %

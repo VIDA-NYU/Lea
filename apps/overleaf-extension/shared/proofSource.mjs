@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { findEnvironments } from "../extension/targetParserCore.mjs";
+import { findEnvironments, parseTargets } from "../extension/targetParserCore.mjs";
 
 const PROOF_ENVIRONMENTS = new Set(["proof", "proof*"]);
 const EXPLICIT_ASSOCIATION = /^[ \t]*%\s*lea:\s*proof-for\s*=\s*(?:\{([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))[ \t]*(?:\r?\n|$)/im;
@@ -93,6 +93,13 @@ export function associateProofSources({ targets = [], files = [] } = {}) {
     matches.push(candidate);
     explicitByLabel.set(candidate.explicitLabel, matches);
   }
+  const latexLabelCounts = new Map();
+  for (const file of normalizedFiles) {
+    for (const target of parseTargets(file.content)) {
+      const label = String(target.latexLabel || "").trim();
+      if (label) latexLabelCounts.set(label, (latexLabelCounts.get(label) || 0) + 1);
+    }
+  }
 
   const associatedTargets = (Array.isArray(targets) ? targets : []).map((original) => {
     const identity = targetIdentity(original);
@@ -101,7 +108,10 @@ export function associateProofSources({ targets = [], files = [] } = {}) {
       || original?.kind
       || (original?.leanKind === "def" ? "definition" : "theorem")
     ).toLowerCase();
-    const explicit = explicitByLabel.get(identity.label) || [];
+    const latexAlias = String(original?.latexLabel || "").trim();
+    const explicit = explicitByLabel.get(identity.label)
+      || (latexLabelCounts.get(latexAlias) === 1 ? explicitByLabel.get(latexAlias) : null)
+      || [];
     let proofAssociation;
     if (targetKind === "definition" || targetKind === "def") {
       proofAssociation = association("not_applicable", "none", null, []);
@@ -130,6 +140,10 @@ export function associateProofSources({ targets = [], files = [] } = {}) {
   });
 
   const targetLabels = new Set(associatedTargets.map((target) => targetIdentity(target).label).filter(Boolean));
+  for (const target of associatedTargets) {
+    const label = String(target?.latexLabel || "").trim();
+    if (latexLabelCounts.get(label) === 1) targetLabels.add(label);
+  }
   const unresolvedExplicit = candidates
     .filter((candidate) => candidate.explicitLabel && !targetLabels.has(candidate.explicitLabel))
     .map((candidate) => ({

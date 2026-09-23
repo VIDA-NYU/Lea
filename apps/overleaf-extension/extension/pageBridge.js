@@ -25,7 +25,7 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
     function buildDecorations(view) {
       const builder = [];
       const source = view.state.doc.toString();
-      const documentResult = parseTargetDocument(source);
+      const documentResult = parseTargetDocument(source, { sourcePath: getActiveDocPath() });
       for (const target of [...documentResult.targets, ...documentResult.diagnostics]) {
         builder.push(targetMark.range(target.from, target.to));
       }
@@ -136,7 +136,10 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
     const activePath = getActiveDocPath();
     const source = activeView ? activeView.state.doc.toString() : "";
     const anchorIndex = findAnchorIndex(source, message);
-    const hasAnchor = Boolean(String(message?.leanLabel || "").trim() || String(message?.latexLabel || "").trim());
+    const hasAnchor = Boolean(
+      (message?.labelSource !== "generated" && String(message?.leanLabel || "").trim())
+      || String(message?.latexLabel || "").trim()
+    );
     // A selected editor tab can update just before CodeMirror hands the bridge its
     // new view. When an anchor is available, require it as proof that `activeView`
     // belongs to the selected target file before applying that file's offsets.
@@ -199,7 +202,7 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
   function findAnchorIndex(source, message) {
     const text = String(source || "");
     const leanLabel = String(message?.leanLabel || "").trim();
-    if (leanLabel) {
+    if (leanLabel && message?.labelSource !== "generated") {
       const markerRe = new RegExp(
         `%[ \\t]*lea:[^\\n]*\\blabel[ \\t]*=[ \\t]*\\{?${escapeRegExp(leanLabel)}\\b`,
         "i"
@@ -507,7 +510,7 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
 
   function publishTargets(view) {
     const source = view.state.doc.toString();
-    const documentResult = parseTargetDocument(source);
+    const documentResult = parseTargetDocument(source, { sourcePath: getActiveDocPath() });
     window.postMessage({
       type: "OL_LEAN_TARGETS_VISIBLE",
       activeTex: source,
@@ -518,7 +521,7 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
   }
 
   function findTargetAtPosition(source, position) {
-    const documentResult = parseTargetDocument(source);
+    const documentResult = parseTargetDocument(source, { sourcePath: getActiveDocPath() });
     return [...documentResult.targets, ...documentResult.diagnostics]
       .find((target) => target.from <= position && position <= target.to);
   }
@@ -536,6 +539,8 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
     return {
       targetKind: target.targetKind,
       targetLabel: target.targetLabel,
+      labelSource: target.labelSource,
+      displayTitle: target.displayTitle,
       targetText: target.targetText,
       targetUses: target.targetUses,
       targetContext: target.targetContext,

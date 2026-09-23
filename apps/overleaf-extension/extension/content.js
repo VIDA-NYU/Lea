@@ -64,6 +64,9 @@
   let statusRefreshTimer = null;
   let usageRefreshTimer = null;
   let latestTargets = [];
+  let resolvedTargetsRevision = "";
+  let resolvedTargetsMap = new Map();
+  let resolvingTargets = null;
   let latestDiagnostics = [];
   let latestActiveTex = "";
   let latestActiveTexPath = "";
@@ -217,8 +220,21 @@
       return;
     }
     if (event.data?.type === "OL_LEAN_TARGET_CLICK") {
-      rememberTarget(event.data.target);
-      showTargetPopover(event.data.clientX, event.data.clientY, event.data.target);
+      const clicked = latestTargets.find((target) => (
+        target.from === event.data.target?.from && target.to === event.data.target?.to
+      )) || event.data.target;
+      if (clicked === event.data.target) {
+        rememberTarget(clicked);
+        resolvedTargetsRevision = "";
+      }
+      if (clicked.labelSource !== "generated"
+        && !(clicked.targetUses || []).some((use) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(use))) {
+        showTargetPopover(event.data.clientX, event.data.clientY, clicked);
+      } else {
+        resolveVisibleTargets().then(() => {
+          showTargetPopover(event.data.clientX, event.data.clientY, clicked);
+        }).catch(postStatusError);
+      }
       return;
     }
     if (event.data?.type === "OL_LEAN_DIAGNOSTIC_CLICK") {
@@ -241,6 +257,16 @@
       latestActiveTex = nextActiveTex;
       latestActiveTexPath = typeof event.data.activePath === "string" ? event.data.activePath : latestActiveTexPath;
       latestActiveTexProjectId = nextProjectId;
+      const revision = `${nextProjectId}\0${normalizeDocPath(latestActiveTexPath)}\0${nextActiveTex}`;
+      if (resolvedTargetsRevision === revision) {
+        for (const target of latestTargets) {
+          const resolved = resolvedTargetsMap.get(`${target.from}:${target.to}:${target.targetKind}`);
+          if (resolved) {
+            target.targetLabel = resolved.targetLabel;
+            target.targetUses = resolved.targetUses;
+          }
+        }
+      }
       renderStatusBadges();
       if (activeTexChanged) {
         texMirrorDirty = true;
@@ -1999,6 +2025,28 @@
     if (!response.ok) {
       throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
     }
+    // The pane may load more files than the live editor resolver knew about.
+    // If that inventory disambiguates a generated ID, update the badge's key
+    // before its next status request so both UI surfaces keep one identity.
+    let identityChanged = false;
+    for (const target of latestTargets) {
+      if (target.labelSource !== "generated") continue;
+      const item = (payload.items || []).find((candidate) => (
+        normalizeDocPath(candidate.sourceFile) === normalizeDocPath(latestActiveTexPath)
+        && candidate.sourceStartOffset === target.from
+        && candidate.sourceEndOffset === target.to
+      ));
+      if (item && item.label !== target.targetLabel) {
+        target.targetLabel = item.label;
+        target.targetUses = item.targetUses || target.targetUses;
+        identityChanged = true;
+      }
+    }
+    if (identityChanged) {
+      resolvedTargetsRevision = "";
+      renderStatusBadges();
+      scheduleStatusRefresh();
+    }
     // Personal-approval storage is presentation metadata, not project
     // inventory. Chrome storage can occasionally be slow to wake after an
     // extension reload; never hold the entire pane behind it. Reconcile and
@@ -2816,7 +2864,9 @@
     renderLeanPaneTitle(text, item);
     const meta = document.createElement("span");
     meta.className = "ol-lean-project-item-meta";
-    meta.textContent = item.label;
+    meta.textContent = item.labelSource === "generated"
+      ? item.latexLabel || "Auto-named"
+      : item.label;
     header.appendChild(text);
     header.appendChild(meta);
     const checks = document.createElement("span");
@@ -2978,12 +3028,15 @@
     ].filter(Boolean).join(" ");
     element.dataset.relationshipDirection = direction;
     element.dataset.targetLabel = relationship?.label || "";
-    element.textContent = relationship?.label || "";
+    const relationshipName = relationship?.item?.labelSource === "generated"
+      ? relationship.item.title || relationship.item.latexLabel || "Auto-named theorem"
+      : relationship?.label || "";
+    element.textContent = relationshipName;
 
     if (navigable) {
       const role = direction === "uses" ? "dependency" : "dependent";
       const state = leanPaneView.formatPaneStatus(relationship.status || "unknown");
-      const accessibleLabel = `Open ${role} ${relationship.label}, currently ${state}`;
+      const accessibleLabel = `Open ${role} ${relationshipName}, currently ${state}`;
       element.setAttribute("aria-label", accessibleLabel);
       element.title = accessibleLabel;
       element.addEventListener("click", (event) => {
@@ -4270,6 +4323,7 @@
       // Text anchors let pageBridge locate the block even when byte offsets have
       // drifted (edits) or the file path can't be matched exactly.
       leanLabel: item.label || item.leanDeclarationName || "",
+      labelSource: item.labelSource || "explicit",
       latexLabel: item.latexLabel || ""
     }, "*");
   }
@@ -5014,7 +5068,12 @@
 
     const key = targetKey(target);
     popover.dataset.targetKey = key;
-    popover.querySelector("strong").textContent = target.targetLabel;
+    const nameElement = popover.querySelector("strong");
+    nameElement.textContent = targetDisplayName(target);
+    if (target.labelSource === "generated") {
+      popover.querySelector(".ol-lean-popover-meta")
+        .replaceChildren(document.createTextNode("Source: "), nameElement);
+    }
     const actions = popover.querySelector("[data-role='theorem-actions']");
     const status = popover.querySelector(".ol-lean-popover-status");
     const leanStatement = popover.querySelector(".ol-lean-popover-lean");
@@ -5871,6 +5930,8 @@
         overleafProjectId: extractOverleafProjectId(),
         targetKind: target.targetKind,
         targetLabel: target.targetLabel,
+        labelSource: target.labelSource || "explicit",
+        latexLabel: target.latexLabel || "",
         targetText: target.targetText,
         targetUses: target.targetUses || [],
         targetContext: target.targetContext || "",
@@ -5908,6 +5969,8 @@
         overleafProjectId: extractOverleafProjectId(),
         targetKind: target.targetKind,
         targetLabel: target.targetLabel,
+        labelSource: target.labelSource || "explicit",
+        latexLabel: target.latexLabel || "",
         targetText: target.targetText,
         targetUses: target.targetUses || [],
         targetContext: target.targetContext || "",
@@ -6017,6 +6080,8 @@
       return;
     }
 
+    await resolveVisibleTargets();
+
     const settings = await getSettings();
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
     const targets = await Promise.all(latestTargets.map(async (target) => {
@@ -6057,6 +6122,67 @@
       status.status === "in_progress" && !status.githubImportPending
     ))) {
       scheduleStatusRefresh(pushConnected ? STATUS_REFRESH_RECONCILE_MS : STATUS_REFRESH_IN_PROGRESS_MS);
+    }
+  }
+
+  async function resolveVisibleTargets() {
+    if (!latestTargets.some((target) => target.labelSource === "generated"
+      || (target.targetUses || []).some((use) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(use)))) return;
+    const projectId = extractOverleafProjectId();
+    const sourceFile = normalizeDocPath(latestActiveTexPath);
+    if (!sourceFile) throw new Error("Waiting for Overleaf to identify the active .tex file.");
+    const source = latestActiveTex;
+    const revision = `${projectId}\0${sourceFile}\0${source}`;
+    if (resolvedTargetsRevision === revision) return;
+    if (resolvingTargets?.revision === revision) return resolvingTargets.promise;
+    const promise = (async () => {
+      const settings = await getSettings();
+      const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
+      const hasLatexUse = latestTargets.some((target) =>
+        (target.targetUses || []).some((use) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(use)));
+      let files = [];
+      if (hasLatexUse) {
+        await ensureLeanPaneView();
+        files = await getLeanPaneProjectFiles({ projectId, forceFetch: false });
+      }
+      const response = await fetch(`${baseUrl}/targets/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overleafProjectId: projectId, sourceFile, source, files })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+      if (source !== latestActiveTex || sourceFile !== normalizeDocPath(latestActiveTexPath)) return;
+      const mapping = new Map();
+      for (const target of latestTargets) {
+        const resolved = (payload.targets || []).find((item) => (
+          item.from === target.from && item.to === target.to && item.targetKind === target.targetKind
+        ));
+        if (resolved) {
+          target.targetLabel = resolved.targetLabel;
+          target.targetUses = resolved.targetUses || target.targetUses;
+          mapping.set(`${target.from}:${target.to}:${target.targetKind}`, {
+            targetLabel: resolved.targetLabel,
+            targetUses: resolved.targetUses || target.targetUses
+          });
+        }
+      }
+      if (latestTargets.some((target) => target.labelSource === "generated"
+        && !mapping.has(`${target.from}:${target.to}:${target.targetKind}`))) {
+        throw new Error("The companion could not resolve every generated Lea target.");
+      }
+      const unresolvedUses = latestTargets.flatMap((target) =>
+        (target.targetUses || []).filter((use) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(use)));
+      if (unresolvedUses.length) {
+        throw new Error(`Could not resolve LaTeX dependency label: ${unresolvedUses.join(", ")}.`);
+      }
+      resolvedTargetsMap = mapping;
+      resolvedTargetsRevision = revision;
+      renderStatusBadges();
+    })();
+    resolvingTargets = { revision, promise };
+    try { await promise; } finally {
+      if (resolvingTargets?.promise === promise) resolvingTargets = null;
     }
   }
 
@@ -6453,8 +6579,8 @@
       badge.title = statusInfo.sourceFreshness === "stale"
         ? statusInfo.sourceFreshnessMessage
           || "The LaTeX source changed after this Lean artifact was generated. Re-formalize to synchronize it."
-        : statusInfo.message || `Lean status for ${target.targetLabel}: ${statusLabel}`;
-      badge.setAttribute("aria-label", `Open Lea popover for ${target.targetLabel}. Status: ${statusLabel}.`);
+        : statusInfo.message || `Lean status for ${targetDisplayName(target)}: ${statusLabel}`;
+      badge.setAttribute("aria-label", `Open Lea popover for ${targetDisplayName(target)}. Status: ${statusLabel}.`);
       badge.style.left = `${Math.min(coords.left + 8, window.innerWidth - 140)}px`;
       badge.style.top = `${coords.top}px`;
       badge.addEventListener("click", (event) => {
@@ -7193,6 +7319,12 @@
 
   function targetKey(target) {
     return `${target?.targetKind || "theorem"}:${target?.targetLabel || ""}`;
+  }
+
+  function targetDisplayName(target) {
+    return target?.labelSource === "generated"
+      ? target?.displayTitle || target?.latexLabel || "this statement"
+      : target?.targetLabel || "this statement";
   }
 
   function isDefinitionTarget(target) {

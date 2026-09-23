@@ -468,6 +468,7 @@ test("page bridge opens a different file and selects the block on cross-file nav
     assert.deepEqual(dispatched[0].selection, { anchor: markerIndex, head: markerIndex });
     const result = posted.find((message) => message.type === "OL_LEAN_NAVIGATE_RESULT");
     assert.ok(result && result.ok === true);
+
   } finally {
     delete globalThis.window;
   }
@@ -800,6 +801,24 @@ test("page bridge resolves nested file-tree entities and opens by doc id", async
     assert.deepEqual(dispatched[0].selection, { anchor: markerIndex, head: markerIndex });
     const result = posted.find((message) => message.type === "OL_LEAN_NAVIGATE_RESULT");
     assert.ok(result && result.ok === true);
+
+    // A generated label has no text anchor. Once the requested file is active,
+    // its recorded range still lets the pane navigate to the statement.
+    currentDocId = "doc-main";
+    onMessage({
+      source: globalThis.window,
+      data: {
+        type: "OL_LEAN_NAVIGATE",
+        sourceFile: "sections/supp.tex",
+        line: 2,
+        from: 0,
+        to: source.length,
+        leanLabel: "lea_auto_theorem_1234",
+        labelSource: "generated",
+        latexLabel: ""
+      }
+    });
+    assert.deepEqual(dispatched.at(-1)?.selection, { anchor: 0, head: source.length });
   } finally {
     delete globalThis.window;
   }

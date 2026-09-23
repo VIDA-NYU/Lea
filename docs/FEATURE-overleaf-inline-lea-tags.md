@@ -285,8 +285,8 @@ shipped v1 package only defines the six no-op tag commands
 
 ## Metadata Fields
 
-Identical semantics to the existing comment marker — `label` (required, valid
-Lean identifier), `uses` (optional braced comma list of prior Lea labels),
+Identical semantics to the existing comment marker — `label` (deprecated and
+optional, valid Lean identifier when supplied), `uses` (optional braced comma list of prior Lea labels or unique LaTeX labels),
 `context` (optional free text), `kind` (only meaningful with the generic
 `\lea{...}` form; implied by the named wrappers). See
 `docs/FEATURE-overleaf-comment-marked-theorems.md` and

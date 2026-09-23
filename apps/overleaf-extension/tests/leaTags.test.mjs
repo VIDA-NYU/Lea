@@ -384,14 +384,38 @@ test("a leacode block with an unterminated \\end is a malformed_tag diagnostic",
   assert.equal(result.diagnostics.some((d) => d.code === "malformed_tag"), true);
 });
 
-test("a leacode block with no metadata argument is a missing_label diagnostic", () => {
+test("a leacode block without its required metadata argument is malformed", () => {
   const result = parseTargetDocument(wrapDocument([
     "\\begin{leacode}",
     "theorem foo : True := trivial",
     "\\end{leacode}"
   ].join("\n")));
   assert.equal(result.targets.length, 0);
-  assert.equal(result.diagnostics.some((d) => d.code === "missing_label"), true);
+  assert.equal(result.diagnostics.some((d) => d.code === "malformed_tag"), true);
+});
+
+test("empty metadata on a leacode block generates a label", () => {
+  const result = parseTargetDocument(wrapDocument([
+    "\\begin{leacode}{}",
+    "theorem foo : True := trivial",
+    "\\end{leacode}"
+  ].join("\n")));
+  assert.equal(result.targets.length, 1);
+  assert.equal(result.targets[0].labelSource, "generated");
+  assert.equal(result.diagnostics.some((d) => d.code === "missing_label"), false);
+});
+
+test("label-free inline and standalone tags are valid targets", () => {
+  const result = parseTargetDocument(wrapDocument([
+    "\\begin{claim}\\label{clm:first}",
+    "\\leatheorem{}",
+    "First statement.",
+    "\\end{claim}",
+    "\\leadefinition{}{Second statement.}"
+  ].join("\n")));
+  assert.equal(result.targets.length, 2);
+  assert.deepEqual(result.targets.map((target) => target.labelSource), ["generated", "generated"]);
+  assert.deepEqual(result.targets.map((target) => target.targetKind), ["theorem", "definition"]);
 });
 
 test("leacode triggers tag_package_not_loaded, and an inline lstnewenvironment suppresses it", () => {

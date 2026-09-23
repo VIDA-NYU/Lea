@@ -109,13 +109,14 @@ Open an Overleaf project and write theorem blocks like this:
 
 ```tex
 \begin{theorem}\label{thm:finite-tree-leaves}
-% lea: formalize label=finite_tree_leaves
+% lea: formalize
 Every finite tree has at least two leaves.
 \end{theorem}
 ```
 
-The `label=...` value is required and should be a valid Lean identifier: letters,
-digits, and underscores, with no leading digit.
+Lea creates a stable internal label automatically. The `label=...` field is
+deprecated but remains supported for existing documents. If used, it must be
+a valid Lean identifier: letters, digits, and underscores, with no leading digit.
 
 You can add dependencies and guidance on the same marker line:
 

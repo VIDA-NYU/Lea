@@ -42,6 +42,35 @@ for (const [name, statusInfo, shouldShow] of CASES) {
   });
 }
 
+test("a label-free editor badge resolves its job key and shows a readable source name", async () => {
+  const harness = createContentHarness(
+    { status: "unformalized" },
+    {
+      targetLabel: "lea_auto_theorem_candidate",
+      labelSource: "generated",
+      displayTitle: "thm:even-square",
+      latexLabel: "thm:even-square",
+      from: 0,
+      to: 70
+    },
+    {
+      resolveTargets: {
+        targets: [{ from: 0, to: 70, targetKind: "theorem", targetLabel: "lea_auto_theorem_stable", targetUses: [] }]
+      }
+    }
+  );
+  await harness.loadVisibleTheorems({
+    activeTex: "\\begin{theorem}\\label{thm:even-square}\n% lea: formalize\nA theorem.\n\\end{theorem}"
+  });
+  assert.equal(harness.target.targetLabel, "lea_auto_theorem_stable");
+  const statusCall = harness.fetchCalls.find((call) => call.url.endsWith("/statuses"));
+  assert.equal(JSON.parse(statusCall.options.body).targets[0].targetLabel, "lea_auto_theorem_stable");
+  harness.openTargetPopover();
+  await flushPromises();
+  assert.match(harness.bodyText(), /Source: thm:even-square/);
+  assert.equal(harness.hasButtonText("Formalize"), true);
+});
+
 test("diagnostic markers render a non-runnable fix badge and popover", async () => {
   const harness = createContentHarness({ status: "unformalized" });
   const diagnostic = {
@@ -2576,6 +2605,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
         status: failingRepairStart ? 400 : failingFormalize ? formalizeFailure.status || 400 : 200,
         async json() {
           if (String(url).includes("/lea-status/updates")) return options.leaStatusHistory || { updates: [], has_more: false };
+          if (String(url).endsWith("/targets/resolve")) return options.resolveTargets || { targets: [] };
           if (failingRepairStart) {
             return { ok: false, error: "repair_start_failed", message: options.failRepairStart };
           }

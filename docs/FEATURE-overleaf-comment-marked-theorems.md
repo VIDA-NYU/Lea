@@ -100,7 +100,9 @@ metadata for the same target.
 
 ### `label`
 
-Required stable identifier for the theorem inside Lea.
+Deprecated optional stable identifier for the theorem inside Lea. When omitted,
+Lea assigns and persists an internal identifier. An existing LaTeX `\label{...}`
+can serve as a readable reference in `uses={...}` or `proof-for={...}`.
 
 The label should remain a valid Lean identifier:
 

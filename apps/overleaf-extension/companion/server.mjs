@@ -29,9 +29,11 @@ import {
   hashFormalizationInput,
   hashTargetText,
   inferLeanDeclarationName,
-  isValidLeanIdentifier
+  isValidLeanIdentifier,
+  parseTargetDocument
 } from "../shared/theoremParser.mjs";
 import { buildLeanPaneManifest } from "../shared/leanPaneManifest.mjs";
+import { reconcileGeneratedItems } from "./generatedTargetRegistry.mjs";
 import { normalizeLeaCheck, projectLeanCheck } from "../shared/checkState.mjs";
 import { buildChatPrompt, buildRepairPrompt, chatTargetKey, projectIdentityPreambleLines, toChatSessionResponse } from "./chatPrompt.mjs";
 import { applyEnvDefaults, loadDotEnv, normalizeBoolean } from "./config.mjs";
@@ -170,6 +172,8 @@ export async function createServer({
     env,
     settings: applyEnvDefaults(await readJson(settingsPath, {}), env),
     jobs: await readJson(jobsPath, {}),
+    generatedTargetsPath: path.join(path.dirname(jobsPath), "generated-targets.json"),
+    generatedTargets: await readJson(path.join(path.dirname(jobsPath), "generated-targets.json"), { version: 1, projects: {} }),
     chatSessions: await readJson(chatSessionsPath, {}),
     texMirrorSnapshots: {},
     // Push channel (PLAN 3.1): mutation sites publish here; GET /events
@@ -319,6 +323,8 @@ export async function handleFormalize(payload, state) {
     overleafProjectId,
     targetKind,
     targetLabel,
+    labelSource,
+    latexLabel,
     targetText,
     targetUses,
     targetContext,
@@ -439,6 +445,8 @@ export async function handleFormalize(payload, state) {
     targetText,
     targetContext,
     targetSyntax,
+    labelSource,
+    latexLabel,
     sourceContext: { ...sourceContext, mirrorRevision: mirrorValidation.mirrorRevision || null },
     sourceUses: targetUses,
     resolvedUses: usesResolution.resolvedUses,
@@ -497,6 +505,8 @@ export async function handleStub(payload, state) {
     overleafProjectId,
     targetKind,
     targetLabel,
+    labelSource,
+    latexLabel,
     targetText,
     targetUses,
     targetContext,
@@ -563,6 +573,8 @@ export async function handleStub(payload, state) {
     targetText,
     targetContext,
     targetSyntax,
+    labelSource,
+    latexLabel,
     sourceContext: { ...sourceContext, mirrorRevision: mirrorValidation.mirrorRevision || null },
     sourceUses: targetUses,
     resolvedUses: usesResolution.resolvedUses,
@@ -1164,11 +1176,21 @@ export async function handleGithubTokenUpdate(payload, state) {
 }
 
 export async function handleLeanPaneManifest(payload, state) {
+  const overleafProjectId = payload.overleafProjectId || "unknown";
+  const reservedLabels = legacyExplicitJobLabels(state, overleafProjectId);
+  let generatedChanged = false;
   const manifest = buildLeanPaneManifest({
-    overleafProjectId: payload.overleafProjectId || "unknown",
+    overleafProjectId,
     files: Array.isArray(payload.files) ? payload.files : [],
-    activePath: payload.activePath || ""
+    activePath: payload.activePath || "",
+    resolveGeneratedItems(items) {
+      const result = reconcileGeneratedItems(items, state.generatedTargets, overleafProjectId, { reservedLabels });
+      state.generatedTargets = result.registry;
+      generatedChanged = result.changed;
+      return result.items;
+    }
   });
+  if (generatedChanged) await persistGeneratedTargets(state);
 
   const leaValidation = validateLeaRuntime(state, { requireApiKey: false });
   if (!leaValidation.ok) {
@@ -1192,7 +1214,6 @@ export async function handleLeanPaneManifest(payload, state) {
     };
   }
 
-  const overleafProjectId = payload.overleafProjectId || "unknown";
   const identity = await resolveRunProjectIdentity({
     state,
     overleafProjectId,
@@ -1250,6 +1271,86 @@ export async function handleLeanPaneManifest(payload, state) {
         ? [...manifest.diagnostics, { code: "target_sync_failed", message: targetSyncWarning }]
         : manifest.diagnostics,
       items
+    }
+  };
+}
+
+async function persistGeneratedTargets(state) {
+  if (!state.generatedTargetsPath) return;
+  const snapshot = JSON.parse(JSON.stringify(state.generatedTargets));
+  state.generatedTargetWrite = (state.generatedTargetWrite || Promise.resolve()).catch(() => {})
+    .then(() => atomicWriteJson(state.generatedTargetsPath, snapshot));
+  await state.generatedTargetWrite;
+}
+
+function legacyExplicitJobLabels(state, projectId) {
+  const generatedIds = new Set((state.generatedTargets?.projects?.[projectId]?.entries || [])
+    .map((entry) => entry.id));
+  return Object.values(state.jobs || {})
+    .filter((job) => job?.overleafProjectId === projectId && job?.labelSource !== "generated"
+      && !generatedIds.has(job.targetLabel))
+    .map((job) => String(job.targetLabel || ""))
+    .filter(Boolean);
+}
+
+// Resolve live-editor candidates through the same registry the pane uses.
+// The editor remains a pure, synchronous parser; content.js applies these
+// canonical IDs before status lookup or starting a run.
+export async function handleResolveTargets(payload, state) {
+  const overleafProjectId = String(payload?.overleafProjectId || "").trim();
+  const sourceFile = String(payload?.sourceFile || "").replace(/\\/g, "/").replace(/^\/+/, "").trim();
+  const source = String(payload?.source || "");
+  if (!overleafProjectId || !sourceFile || !sourceFile.toLowerCase().endsWith(".tex")) {
+    return errorResponse(400, "invalid_source", "A project ID and .tex source file are required.");
+  }
+  const reservedLabels = legacyExplicitJobLabels(state, overleafProjectId);
+  let changed = false;
+  if (Array.isArray(payload?.files) && payload.files.length > 0) {
+    const files = payload.files.map((file) => ({
+      path: file.path,
+      content: String(file.path || "").replace(/\\/g, "/").replace(/^\/+/, "") === sourceFile
+        ? source : file.content
+    }));
+    buildLeanPaneManifest({
+      overleafProjectId,
+      files,
+      resolveGeneratedItems(items) {
+        const result = reconcileGeneratedItems(items, state.generatedTargets, overleafProjectId, { reservedLabels });
+        state.generatedTargets = result.registry;
+        changed ||= result.changed;
+        return result.items;
+      }
+    });
+  }
+  const targets = parseTargetDocument(source, { sourcePath: sourceFile }).targets;
+  const items = targets.map((target) => ({
+    label: target.targetLabel,
+    labelSource: target.labelSource,
+    targetKind: target.targetKind,
+    sourceFile,
+    sourceStartOffset: target.from,
+    sourceEndOffset: target.to,
+    sourceStartLine: source.slice(0, target.from).split(/\r?\n/).length,
+    sourceHash: target.sourceHash,
+    latexLabel: target.latexLabel,
+    targetUses: target.targetUses,
+    naturalLanguageLatex: target.targetText,
+    leanDeclarationName: target.targetLabel
+  }));
+  const result = reconcileGeneratedItems(items, state.generatedTargets, overleafProjectId, { reservedLabels });
+  state.generatedTargets = result.registry;
+  if (changed || result.changed) await persistGeneratedTargets(state);
+  return {
+    statusCode: 200,
+    body: {
+      targets: targets.map((target, index) => ({
+        from: target.from,
+        to: target.to,
+        targetKind: target.targetKind,
+        targetLabel: result.items[index].label,
+        targetUses: result.items[index].targetUses,
+        labelSource: target.labelSource
+      }))
     }
   };
 }
@@ -3941,6 +4042,12 @@ async function routeRequest(request, response, state) {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/targets/resolve") {
+    const result = await handleResolveTargets(await readBodyJson(request), state);
+    sendJson(response, result.statusCode, result.body);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/lean-pane/lea-status/updates") {
     const result = await handleLeaStatusHistory(Object.fromEntries(url.searchParams), state);
     sendJson(response, result.statusCode, result.body);
@@ -4647,6 +4754,8 @@ function validateTargetPayload(payload) {
   const overleafProjectId = String(payload.overleafProjectId || "");
   const targetKind = normalizeTargetKind(payload.targetKind);
   const targetLabel = String(payload.targetLabel || "");
+  const labelSource = payload.labelSource === "generated" ? "generated" : "explicit";
+  const latexLabel = String(payload.latexLabel || "").trim();
   const targetText = String(payload.targetText || "");
   const targetContext = String(payload.targetContext || "").trim();
   const projectName = String(payload.projectName || "").trim();
@@ -4683,6 +4792,8 @@ function validateTargetPayload(payload) {
     overleafProjectId,
     targetKind,
     targetLabel,
+    labelSource,
+    latexLabel,
     targetText,
     targetUses,
     targetContext,
@@ -4890,12 +5001,26 @@ function validateLeaRuntime(state, { requireApiKey }) {
   return { ok: true };
 }
 
+function suggestLeanNameFromLatexLabel(label) {
+  const withoutPrefix = String(label || "").trim()
+    .replace(/^(?:thm|theorem|lem|lemma|prop|proposition|cor|corollary|def|definition):/i, "");
+  let name = withoutPrefix.replace(/[^A-Za-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "").slice(0, 80);
+  if (!name) return "";
+  if (/^[0-9]/.test(name) || /^(?:theorem|lemma|def|by|where|if|then|else|match)$/.test(name)) {
+    name = `lea_${name}`;
+  }
+  return isValidLeanIdentifier(name) ? name : "";
+}
+
 async function createLeaJob({
   state,
   target,
   targetText,
   targetContext = "",
   targetSyntax = "comment",
+  labelSource = "explicit",
+  latexLabel = "",
   sourceContext = {},
   sourceUses = [],
   resolvedUses = [],
@@ -4905,7 +5030,8 @@ async function createLeaJob({
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const jobId = `${target.targetKind}-${target.targetLabel}-${timestamp}`;
   const logPath = path.join(JOB_LOG_DIR, `${jobId}.log`);
-  const declarationNameHint = inferLeanDeclarationName(targetText);
+  const declarationNameHint = inferLeanDeclarationName(targetText)
+    || (labelSource === "generated" ? suggestLeanNameFromLatexLabel(latexLabel) : "");
   const previousSessionJob = findLatestJobWithLeaSession(state.jobs || {}, target.jobKey);
   const previousFormalizationJob = jobsByRecencyDesc(state.jobs || {}, () => true)
     .find((item) => item?.jobKey === target.jobKey && item?.formalizationId);
@@ -4922,6 +5048,7 @@ async function createLeaJob({
     bestEffort: bestEffort === true,
     targetKind: target.targetKind,
     targetLabel: target.targetLabel,
+    labelSource,
     // Debugging/telemetry only -- see validateTargetPayload. Never read by
     // buildLeaPrompt, jobKey construction, or dependency resolution.
     targetSyntax,
@@ -6018,7 +6145,7 @@ function buildLeaTheoremPrompt({
   const projectIdentity = buildProjectIdentityBlock({ projectSlug, projectName, projectNamespace });
   const latexContext = buildLatexContextBlock(sourceContext);
   const naming = declarationNameHint
-    ? `The theorem text appears to specify Lean declaration name ${declarationNameHint}; use that name.`
+    ? `The preferred Lean declaration name is ${declarationNameHint}; use that name for the primary theorem.`
     : `If the theorem text does not specify a Lean declaration name, use ${theoremLabel}.`;
   const proofTarget = declarationNameHint || theoremLabel;
   const usesGuidance = resolvedUses.length === 0
@@ -6083,7 +6210,7 @@ function buildLeaDefinitionPrompt({
   const projectIdentity = buildProjectIdentityBlock({ projectSlug, projectName, projectNamespace });
   const latexContext = buildLatexContextBlock(sourceContext);
   const naming = declarationNameHint
-    ? `The definition text appears to specify Lean declaration name ${declarationNameHint}; use that name for the primary declaration.`
+    ? `The preferred Lean declaration name is ${declarationNameHint}; use that name for the primary definition.`
     : `Use the declaration name ${targetLabel} for the primary declaration unless the text explicitly specifies a better Lean name.`;
   const usesGuidance = resolvedUses.length === 0
     ? ""

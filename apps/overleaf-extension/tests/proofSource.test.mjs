@@ -39,6 +39,47 @@ The source argument.
   assert.doesNotMatch(result.targets[0].sourceProof, /proof-for/);
 });
 
+test("a generated target can associate a proof by its unique LaTeX label", () => {
+  const statement = String.raw`\begin{theorem}\label{thm:base}
+% lea: formalize
+Statement.
+\end{theorem}`;
+  const proof = String.raw`\begin{proof}
+% lea: proof-for={thm:base}
+The source argument.
+\end{proof}`;
+  const result = associateProofSources({
+    targets: targetsIn(statement, "statement.tex"),
+    files: [{ path: "statement.tex", content: statement }, { path: "proofs.tex", content: proof }]
+  });
+  assert.equal(result.targets[0].proofAssociation.method, "explicit");
+  assert.equal(result.targets[0].sourceProof, "The source argument.");
+});
+
+test("duplicate LaTeX labels cannot claim an explicit proof", () => {
+  const statement = String.raw`\begin{theorem}\label{thm:duplicate}
+% lea: formalize
+Statement.
+\end{theorem}`;
+  const proof = String.raw`\begin{proof}
+% lea: proof-for={thm:duplicate}
+An argument.
+\end{proof}`;
+  const result = associateProofSources({
+    targets: [
+      ...targetsIn(statement, "a.tex"),
+      ...targetsIn(statement, "b.tex")
+    ],
+    files: [
+      { path: "a.tex", content: statement },
+      { path: "b.tex", content: statement },
+      { path: "proof.tex", content: proof }
+    ]
+  });
+  assert.deepEqual(result.targets.map((target) => target.proofAssociation.status), ["missing", "missing"]);
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "unresolved_proof_association"));
+});
+
 test("does not infer adjacency across an intervening target", () => {
   const content = String.raw`\begin{theorem}
 % lea: formalize label=first

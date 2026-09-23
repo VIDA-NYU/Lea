@@ -145,6 +145,26 @@ test("carries marker metadata so pane items can be formalized", () => {
   assert.equal(item.targetContext, "Start from the cover.");
 });
 
+test("label-free theorem and definition appear as runnable pane items", () => {
+  const source = [
+    "\\begin{theorem}\\label{thm:base}",
+    "% lea: formalize",
+    "Base statement.",
+    "\\end{theorem}",
+    "\\begin{definition}",
+    "% lea: define",
+    "A useful definition.",
+    "\\end{definition}"
+  ].join("\n");
+  const manifest = buildLeanPaneManifest({ files: [{ path: "main.tex", content: source }] });
+  assert.equal(manifest.items.length, 2);
+  assert.deepEqual(manifest.items.map((item) => item.formalizable), [true, true]);
+  assert.deepEqual(manifest.items.map((item) => item.labelSource), ["generated", "generated"]);
+  assert.equal(manifest.items[0].title, "thm:base");
+  assert.equal(manifest.items[1].title, "A useful definition.");
+  assert.deepEqual(manifest.diagnostics, []);
+});
+
 test("marks items with a malformed marker as not formalizable", () => {
   const manifest = buildLeanPaneManifest({
     files: [{

@@ -1,4 +1,4 @@
-import { findEnvironments } from "./targetParserCore.mjs";
+import { findEnvironments, parseTargets } from "./targetParserCore.mjs";
 
 const PROOF_ENVIRONMENTS = new Set(["proof", "proof*"]);
 const EXPLICIT_ASSOCIATION = /^[ \t]*%\s*lea:\s*proof-for\s*=\s*(?:\{([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))[ \t]*(?:\r?\n|$)/im;
@@ -61,6 +61,13 @@ export function associateProofSourcesCore({ targets = [], files = [] } = {}) {
     matches.push(candidate);
     explicitByLabel.set(candidate.explicitLabel, matches);
   }
+  const latexLabelCounts = new Map();
+  for (const file of normalizedFiles) {
+    for (const target of parseTargets(file.content)) {
+      const label = String(target.latexLabel || "").trim();
+      if (label) latexLabelCounts.set(label, (latexLabelCounts.get(label) || 0) + 1);
+    }
+  }
   return (Array.isArray(targets) ? targets : []).map((target) => {
     const identity = targetIdentity(target);
     const targetKind = String(
@@ -68,7 +75,10 @@ export function associateProofSourcesCore({ targets = [], files = [] } = {}) {
       || target?.kind
       || (target?.leanKind === "def" ? "definition" : "theorem")
     ).toLowerCase();
-    const explicit = explicitByLabel.get(identity.label) || [];
+    const latexAlias = String(target?.latexLabel || "").trim();
+    const explicit = explicitByLabel.get(identity.label)
+      || (latexLabelCounts.get(latexAlias) === 1 ? explicitByLabel.get(latexAlias) : null)
+      || [];
     let proofAssociation;
     if (targetKind === "definition" || targetKind === "def") {
       proofAssociation = asAssociation("not_applicable", "none", null, []);

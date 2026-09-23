@@ -1,7 +1,7 @@
 # Overleaf Lea Formalizer
 
 This app is the Overleaf side of the LeaEcosystem monorepo. It provides a Chrome
-extension plus a local Node companion that sends labeled theorem blocks from
+extension plus a local Node companion that sends marked theorem blocks from
 Overleaf to the shared Lea adapter.
 
 The default path is:
@@ -37,14 +37,17 @@ environments. Mark only the blocks you want Lea to formalize:
 
 ```tex
 \begin{theorem}\label{thm:finite-tree-leaves}
-% lea: formalize label=finite_tree_leaves
+% lea: formalize
 Every finite tree has at least two leaves.
 \end{theorem}
 ```
 
-The `label=...` value is required. It is used as the Overleaf theorem identifier
-and fallback Lean declaration name. It must be a valid Lean identifier: letters,
-digits, and underscores, with no leading digit.
+Lea assigns a stable internal label automatically. An existing LaTeX
+`\label{...}` helps Lea keep that identity and choose a Lean declaration name;
+neither label is required to start formalizing. The older `label=...` field is
+deprecated but still supported for existing documents and references. If used,
+it must be a valid Lean identifier: letters, digits, and underscores, with no
+leading digit.
 
 Initially supported environments are `theorem`, `lemma`, `proposition`, and
 `corollary`. Unmarked environments are ignored.
@@ -52,7 +55,8 @@ Initially supported environments are `theorem`, `lemma`, `proposition`, and
 ### `uses={...}`
 
 Use `uses={...}` when a theorem should depend on earlier theorems from the same
-Overleaf project. Values are Overleaf labels, not Lean theorem names. Each
+Overleaf project. Values may be existing Lea labels or unique LaTeX labels
+(such as `uses={thm:finite-tree-leaves}`); they are not Lean theorem names. Each
 referenced theorem must already be formalized, or at least have a saved sorry
 stub from an older build, before Lea starts the new run.
 
@@ -74,7 +78,7 @@ interpret the statement.
 
 ```tex
 \begin{theorem}
-% lea: formalize label=even_square context={Use the assumption that n is even, rewrite n as 2 * k, then use ring_nf.}
+% lea: formalize context={Use the assumption that n is even, rewrite n as 2 * k, then use ring_nf.}
 If n is even, then n^2 is even.
 \end{theorem}
 ```
@@ -125,15 +129,15 @@ needed if you use the snippet).
 \usepackage{lea-tags}
 ...
 \begin{claim}\label{clm:even-square}
-\leatheorem{label=even_square, uses={even_def}, context={Use the parity definition first.}}
+\leatheorem{uses={even_def}, context={Use the parity definition first.}}
 If $n$ is even, then $n^2$ is even.
 \end{claim}
 ```
 
 `claim` is not a recognized environment name, but `\leatheorem{...}` states
 its own kind directly, so the extension still finds and formalizes it. The
-`label=`/`uses=`/`context=` fields work exactly like the comment-marker
-fields above.
+`uses=`/`context=` fields work exactly like the comment-marker fields above.
+The deprecated `label=` field remains accepted.
 
 Named tag commands: `\leatheorem`, `\lealemma`, `\leaproposition`,
 `\leacorollary` (all theorem-kind), and `\leadefinition` (definition-kind).
@@ -152,7 +156,7 @@ Give a tag a second argument and it needs no enclosing environment -- the
 argument both renders as the statement and is what's sent to Lea:
 
 ```tex
-\leatheorem{label=pythagorean, uses={right_triangle}}
+\leatheorem{uses={right_triangle}}
 {In a right triangle, the square of the hypotenuse equals the sum of the
 squares of the other two sides.}
 ```

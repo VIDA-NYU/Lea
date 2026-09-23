@@ -29,24 +29,37 @@ const SUSPICIOUS_TAG_ENVIRONMENTS = new Set([
   "equation", "equation*", "align", "align*", "tabular", "tabular*"
 ]);
 
-export function parseTargetDocument(source) {
+export function parseTargetDocument(source, { sourcePath = "" } = {}) {
   const text = String(source || "");
-  const markerResult = parseMarkedTargets(text);
+  const markerResult = parseMarkedTargets(text, sourcePath);
   return {
     targets: markerResult.targets.sort((a, b) => a.from - b.from),
     diagnostics: markerResult.diagnostics.sort((a, b) => a.from - b.from)
   };
 }
 
-export function parseTargets(source) {
-  return parseTargetDocument(source).targets;
+export function parseTargets(source, options) {
+  return parseTargetDocument(source, options).targets;
 }
 
 export function isValidLeanIdentifier(value) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
-function parseMarkedTargets(source) {
+function generatedTargetLabel({ sourcePath, targetKind, latexLabel, ordinal }) {
+  // The companion pins this candidate to a persistent identity. This pure,
+  // browser-safe name also lets the editor draw a badge before that round trip.
+  const seed = `${sourcePath}\0${targetKind}\0${latexLabel || `#${ordinal}`}`;
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = Math.imul(hash ^ seed.charCodeAt(i), 16777619);
+  }
+  const hint = String(latexLabel || targetKind).replace(/[^A-Za-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "").slice(0, 32) || targetKind;
+  return `lea_auto_${hint}_${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function parseMarkedTargets(source, sourcePath) {
   const diagnostics = [];
   const commentEnvironments = findSupportedEnvironments(source);
   let genericEnvironments = null; // computed lazily; only needed if a tag is present
@@ -119,7 +132,10 @@ function parseMarkedTargets(source) {
   }
 
   const targets = [];
-  for (const { groups: environmentGroups } of groupsByEnvironment.values()) {
+  let ordinal = 0;
+  for (const { groups: environmentGroups } of [...groupsByEnvironment.values()]
+    .sort((a, b) => a.groups[0].environment.from - b.groups[0].environment.from)) {
+    ordinal += 1;
     const environment = environmentGroups[0].environment;
     if (environmentGroups.length > 1) {
       diagnostics.push(buildDiagnostic({
@@ -157,16 +173,7 @@ function parseMarkedTargets(source) {
     }
 
     const metadata = group.metadata;
-    if (!metadata.label) {
-      diagnostics.push(buildDiagnostic({
-        code: "missing_label",
-        message: "Lea marker is missing an explicit label=... value.",
-        from: group.from,
-        to: group.to
-      }));
-      continue;
-    }
-    if (!isValidLeanIdentifier(metadata.label)) {
+    if (metadata.label && !isValidLeanIdentifier(metadata.label)) {
       diagnostics.push(buildDiagnostic({
         code: "invalid_label",
         message: "Lea marker label must be a valid Lean identifier.",
@@ -175,11 +182,12 @@ function parseMarkedTargets(source) {
       }));
       continue;
     }
-    const invalidUse = metadata.uses.find((value) => !isValidLeanIdentifier(value));
+    const invalidUse = metadata.uses.find((value) =>
+      !isValidLeanIdentifier(value) && !/^[A-Za-z][A-Za-z0-9_.:-]*$/.test(value));
     if (invalidUse) {
       diagnostics.push(buildDiagnostic({
         code: "invalid_uses",
-        message: `Lea dependency label must be a valid Lean identifier: ${invalidUse}.`,
+        message: `Lea dependency reference is invalid: ${invalidUse}.`,
         from: group.from,
         to: group.to
       }));
@@ -207,9 +215,17 @@ function parseMarkedTargets(source) {
       }));
     }
 
+    const labelSource = metadata.label ? "explicit" : "generated";
+    const targetLabel = metadata.label || generatedTargetLabel({
+      sourcePath, targetKind: markerKind.targetKind, latexLabel, ordinal
+    });
     targets.push({
       targetKind: markerKind.targetKind,
-      targetLabel: metadata.label,
+      targetLabel,
+      labelSource,
+      ...(labelSource === "generated" ? {
+        displayTitle: latexLabel || targetText.replace(/\s+/g, " ").slice(0, 80)
+      } : {}),
       targetText,
       targetUses: metadata.uses,
       targetContext: metadata.context,
@@ -370,9 +386,18 @@ function findLeaCodeEnvironments(source) {
     // same single-line convention the tag commands' metadata argument uses.
     const metaStart = skipInlineWhitespace(source, afterBegin);
     const metaArg = source[metaStart] === "{" ? parseBalancedSuffix(source, metaStart) : { ok: false };
+    if (!metaArg.ok) {
+      diagnostics.push(buildDiagnostic({
+        code: "malformed_tag",
+        message: `\\begin{${LEA_CODE_ENVIRONMENT}} requires a metadata argument; use {} when no metadata is needed.`,
+        from: beginStart,
+        to: afterBegin
+      }));
+      continue;
+    }
 
     const endPattern = new RegExp(`\\\\end\\s*\\{\\s*${LEA_CODE_ENVIRONMENT}\\s*\\}`, "g");
-    endPattern.lastIndex = metaArg.ok ? metaArg.end : afterBegin;
+    endPattern.lastIndex = metaArg.end;
     const endMatch = endPattern.exec(source);
     if (!endMatch) {
       diagnostics.push(buildDiagnostic({
@@ -384,9 +409,9 @@ function findLeaCodeEnvironments(source) {
       continue;
     }
 
-    const bodyFrom = metaArg.ok ? metaArg.end : afterBegin;
+    const bodyFrom = metaArg.end;
     const bodyTo = endMatch.index;
-    const metadata = parseMetadata(metaArg.ok ? source.slice(metaStart + 1, metaArg.end - 1) : "");
+    const metadata = parseMetadata(source.slice(metaStart + 1, metaArg.end - 1));
 
     groups.push({
       from: beginStart,
