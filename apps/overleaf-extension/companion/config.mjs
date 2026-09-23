@@ -41,6 +41,7 @@ export function applyEnvDefaults(settings, env = process.env) {
       env.LEA_TEX_MIRROR !== undefined ? env.LEA_TEX_MIRROR : settings.leaTexMirrorEnabled,
       true
     ),
+    leaPauseOnSourceIssue: settings.leaPauseOnSourceIssue === true,
     leaMaxSpendUsd
   };
 }

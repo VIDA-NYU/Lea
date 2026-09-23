@@ -313,7 +313,7 @@ export async function handleGetStatuses(payload, state) {
   return { statusCode: 200, body: { statuses } };
 }
 
-export async function handleFormalize(payload, state) {
+export async function handleFormalize(payload, state, { batch = false } = {}) {
   const validation = validateTargetPayload(payload);
   if (!validation.ok) {
     return errorResponse(400, validation.error, validation.message);
@@ -367,10 +367,35 @@ export async function handleFormalize(payload, state) {
   });
   const activeJob = findActiveJob(state.jobs || {}, target.jobKey);
   if (activeJob) {
+    if (batch) {
+      return errorResponse(409, "target_already_running", "This target already has an individual formalization in progress.");
+    }
     return {
       statusCode: 200,
       body: buildJobResponse({ job: activeJob, status: "in_progress", target })
     };
+  }
+  if (batch) {
+    // The pane's status snapshot can be stale by the time this item reaches the
+    // front of a long batch. Never turn a completed proof into a destructive
+    // retry simply because the browser queued it earlier.
+    const previousJob = findLatestFinishedJob(state.jobs || {}, target.jobKey);
+    const declarations = [...new Set([
+      previousJob?.declarationName,
+      previousJob?.declarationNameHint,
+      target.targetLabel
+    ].filter(Boolean))];
+    const ledger = await fetchTargetStatusFromAdapter({ state, target, declarations });
+    const completeOnDisk = Object.values(ledger || {}).some((entry) =>
+      entry?.recorded && entry.exists && entry.has_sorry === false);
+    const artifactJob = findLatestArtifactJob(state.jobs || {}, target.jobKey, {
+      declarationName: previousJob?.declarationName
+    });
+    const completedJob = !ledger
+      && ["formalized", "disproved", "repaired"].includes(artifactJob?.status);
+    if (completeOnDisk || completedJob) {
+      return { statusCode: 200, body: { status: "already_formalized" } };
+    }
   }
   const resume = payload.resume === true;
   const bestEffort = payload.bestEffort === true;
@@ -430,15 +455,21 @@ export async function handleFormalize(payload, state) {
         jobs: state.jobs || {}
       })
     : null;
-  const cleanup = resume || reusableStub
-    ? { removedProofPaths: [], removedProjectEntries: [] }
-    : await cleanupPreviousRunArtifacts({
-        state,
-        leaRepoPath: state.settings.leaRepoPath,
-        target,
-        targetText,
-        jobs: state.jobs || {}
-      });
+  let cleanup;
+  try {
+    cleanup = resume || reusableStub
+      ? { removedProofPaths: [], removedProjectEntries: [] }
+      : await cleanupPreviousRunArtifacts({
+          state,
+          leaRepoPath: state.settings.leaRepoPath,
+          target,
+          targetText,
+          jobs: state.jobs || {},
+          requireAdapterRetire: batch
+        });
+  } catch (error) {
+    return errorResponse(409, "artifact_retirement_blocked", error instanceof Error ? error.message : String(error));
+  }
   const job = await createLeaJob({
     state,
     target,
@@ -450,7 +481,8 @@ export async function handleFormalize(payload, state) {
     sourceContext: { ...sourceContext, mirrorRevision: mirrorValidation.mirrorRevision || null },
     sourceUses: targetUses,
     resolvedUses: usesResolution.resolvedUses,
-    bestEffort
+    bestEffort,
+    allowSourcePause: !batch && state.settings.leaPauseOnSourceIssue === true
   });
   // Only the parsed header + module identity ride on the job (persisted with
   // jobs.json); never the full file content -- see snapshotPreRunLeanState.
@@ -2409,6 +2441,7 @@ async function createRepairJob({ state, target, linkedJob, breakage, leaSessionI
     jobKey: target.jobKey,
     status: "in_progress",
     mode: "repair",
+    allowSourcePause: state.settings.leaPauseOnSourceIssue === true,
     targetKind: target.targetKind,
     targetLabel: target.targetLabel,
     overleafProjectId: target.overleafProjectId,
@@ -3039,8 +3072,23 @@ async function startTargetBatch(payload, state, operation) {
   state.repairBatches[batch.batchId] = batch;
 
   runTargetBatch(state, batch).catch((error) => {
-    batch.pausedOn = { targetLabel: null, reason: "batch_error", detail: error instanceof Error ? error.message : String(error) };
+    const detail = error instanceof Error ? error.message : String(error);
+    if (batch.operation === "formalize") {
+      for (const entry of batch.items) {
+        if (entry.state === "pending" || entry.state === "running") {
+          entry.state = "skipped";
+          entry.reason = `batch_error:${detail}`;
+        }
+      }
+      batch.done = true;
+    } else {
+      batch.pausedOn = { targetLabel: null, reason: "batch_error", detail };
+    }
     batch.running = false;
+    publishEvent(state, "repair-batch-updated", {
+      overleafProjectId: batch.overleafProjectId,
+      batchId: batch.batchId
+    });
   });
 
   return { statusCode: 200, body: repairBatchSnapshot(batch) };
@@ -3083,9 +3131,17 @@ async function runStubBatchItem(state, entry) {
 }
 
 async function runFormalizeBatchItem(state, entry, batch) {
-  const result = await handleFormalize(entry.payload, state);
+  let result;
+  try {
+    result = await handleFormalize(entry.payload, state, { batch: true });
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
   const body = result?.body || {};
   if (result?.statusCode === 402 || body.error === "max_spend_reached") return { paused: true };
+  if (result?.statusCode === 200 && body.status === "already_formalized") {
+    return { ok: true, state: "skipped", reason: "already_fixed" };
+  }
   if (result?.statusCode !== 200 || !body.jobId) {
     return { ok: false, reason: body.error || body.message || "formalize_start_failed", jobId: body.jobId || null };
   }
@@ -3119,7 +3175,16 @@ async function runTargetBatch(state, batch) {
       if (batch.cancelRequested || batch.pausedOn) break;
       if (entry.state !== "pending") continue;
       if (await spendLimitReached(state)) {
-        batch.pausedOn = { targetLabel: entry.targetLabel, reason: "max_spend" };
+        if (batch.operation === "formalize") {
+          for (const remaining of batch.items) {
+            if (remaining.state === "pending") {
+              remaining.state = "skipped";
+              remaining.reason = "max_spend";
+            }
+          }
+        } else {
+          batch.pausedOn = { targetLabel: entry.targetLabel, reason: "max_spend" };
+        }
         break;
       }
 
@@ -3138,14 +3203,26 @@ async function runTargetBatch(state, batch) {
         break;
       }
 
-      // A cap reached mid-run pauses (resumable) rather than failing the item.
+      // Stub batches retain their resumable cap; formalize-all finishes incomplete.
       if (outcome.paused) {
-        entry.state = "pending";
-        batch.pausedOn = { targetLabel: entry.targetLabel, reason: "max_spend" };
+        if (batch.operation === "formalize") {
+          entry.state = "skipped";
+          entry.reason = "max_spend";
+          for (const remaining of batch.items) {
+            if (remaining.state === "pending") {
+              remaining.state = "skipped";
+              remaining.reason = "max_spend";
+            }
+          }
+        } else {
+          entry.state = "pending";
+          batch.pausedOn = { targetLabel: entry.targetLabel, reason: "max_spend" };
+        }
         break;
       }
       if (outcome.ok) {
         entry.state = outcome.state;
+        entry.reason = outcome.reason || null;
         entry.runJobId = outcome.jobId || null;
         publishBatch();
         continue;
@@ -3156,8 +3233,7 @@ async function runTargetBatch(state, batch) {
       entry.runJobId = outcome.jobId || null;
 
       // Formalization carries dependency semantics: items that (transitively)
-      // USE this failed one can't formalize against it, so skip them and pause
-      // for the user's continue/stop decision on the independent remainder.
+      // USE this failed one cannot run, but independent items continue.
       // Stubbing is a pure per-statement translation with no such coupling --
       // one failure never blocks the rest, so the loop just continues.
       if (batch.operation === "formalize") {
@@ -3168,10 +3244,8 @@ async function runTargetBatch(state, batch) {
             other.reason = `depends_on_failed:${entry.targetLabel}`;
           }
         }
-        if (batch.items.some((other) => other.state === "pending")) {
-          batch.pausedOn = { targetLabel: entry.targetLabel, reason: entry.reason };
-        }
-        break;
+        publishBatch();
+        continue;
       }
       publishBatch();
     }
@@ -3376,6 +3450,7 @@ function startChatRun({
     autonomous: true,
     purpose: target.sourceBundle ? "overleaf_continuation" : "general",
     sourceBundle: target.sourceBundle || null,
+    allowSourcePause: Boolean(target.sourceBundle) && state.settings.leaPauseOnSourceIssue === true,
     projectSlug: target.projectSlug || null,
     projectTitle: target.projectName || target.projectSlug || null,
     projectNamespace: target.projectNamespace || null,
@@ -3651,6 +3726,12 @@ export async function handleUpdateLeaSettings(payload, state) {
   const leaTexMirrorEnabled = Object.prototype.hasOwnProperty.call(payload, "leaTexMirrorEnabled")
     ? normalizeBoolean(payload.leaTexMirrorEnabled, true)
     : (state.settings.leaTexMirrorEnabled !== false);
+  if (Object.prototype.hasOwnProperty.call(payload, "leaPauseOnSourceIssue")
+    && typeof payload.leaPauseOnSourceIssue !== "boolean") {
+    return errorResponse(400, "invalid_source_pause_setting", "Source pause setting must be true or false.");
+  }
+  const leaPauseOnSourceIssue = Object.prototype.hasOwnProperty.call(payload, "leaPauseOnSourceIssue")
+    ? payload.leaPauseOnSourceIssue : state.settings.leaPauseOnSourceIssue === true;
   const nextSettings = {
     ...state.settings,
     leaRepoPath: path.resolve(leaRepoPath),
@@ -3661,6 +3742,7 @@ export async function handleUpdateLeaSettings(payload, state) {
     leaMaxTurns: normalizeLeaMaxTurns(payload.leaMaxTurns || DEFAULT_LEA_MAX_TURNS),
     leaMaxSpendUsd,
     leaTexMirrorEnabled,
+    leaPauseOnSourceIssue,
     leaJobTimeoutSeconds: Number.parseInt(
     String(payload.leaJobTimeoutSeconds || state.settings.leaJobTimeoutSeconds || DEFAULT_LEA_JOB_TIMEOUT_SECONDS),
     10
@@ -4205,6 +4287,7 @@ export async function buildSettingsResponse(state) {
     // roll-up when reachable, the local job tally otherwise.
     leaCurrentSpendUsd: await currentSpendUsd(state),
     leaTexMirrorEnabled: state.settings.leaTexMirrorEnabled !== false,
+    leaPauseOnSourceIssue: state.settings.leaPauseOnSourceIssue === true,
     leaJobTimeoutSeconds: state.settings.leaJobTimeoutSeconds || DEFAULT_LEA_JOB_TIMEOUT_SECONDS,
     // Presence only (like provider keys): the raw token lives solely in the
     // adapter's lea.local.toml and is set via POST /settings/github-token (D34).
@@ -4558,7 +4641,8 @@ function sanitizeRuntimeSettings(settings) {
   } = settings || {};
   return {
     ...rest,
-    leaTexMirrorEnabled: rest.leaTexMirrorEnabled !== false
+    leaTexMirrorEnabled: rest.leaTexMirrorEnabled !== false,
+    leaPauseOnSourceIssue: rest.leaPauseOnSourceIssue === true
   };
 }
 
@@ -5025,7 +5109,8 @@ async function createLeaJob({
   sourceUses = [],
   resolvedUses = [],
   mode = "formalization",
-  bestEffort = false
+  bestEffort = false,
+  allowSourcePause = false
 }) {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const jobId = `${target.targetKind}-${target.targetLabel}-${timestamp}`;
@@ -5046,6 +5131,7 @@ async function createLeaJob({
     status: "in_progress",
     mode,
     bestEffort: bestEffort === true,
+    allowSourcePause: allowSourcePause === true,
     targetKind: target.targetKind,
     targetLabel: target.targetLabel,
     labelSource,
@@ -5123,7 +5209,7 @@ function repoRelativeProofPath(target, proofPath) {
   return normalized.startsWith(prefix) ? normalized.slice(prefix.length) : null;
 }
 
-async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, targetText, jobs }) {
+async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, targetText, jobs, requireAdapterRetire = false }) {
   const previousJob = findLatestFinishedJob(jobs, target.jobKey);
 
   const declarationHint = inferLeanDeclarationName(targetText);
@@ -5147,6 +5233,16 @@ async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, 
     if (row?.recorded && row.path) {
       candidateProofPaths.add(ledgerProofPath(target, row.path));
     }
+  }
+  // Different candidate declarations can point to different old files. A
+  // single retry cannot safely retire several files before it has a verified
+  // replacement for each of them.
+  const existingProofPaths = [...candidateProofPaths].filter((proofPath) => {
+    const absolute = buildLeaProofPath({ leaRepoPath, proofPath });
+    return absolute && existsSync(absolute);
+  });
+  if (existingProofPaths.length > 1) {
+    throw new Error("This target has artifacts in multiple Lean files; review them before retrying.");
   }
 
   // Back up what is about to be deleted (AUDIT H2): this cleanup runs BEFORE
@@ -5181,6 +5277,9 @@ async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, 
         removedProofPaths.push(proofPath);
         retiredFiles.push({ proofPath, repoRelativePath, retireCommit: retired.body.retire_commit });
         continue;
+      }
+      if (requireAdapterRetire || retired.status === 409 || retired.status === 422) {
+        throw new Error(retired.error || `The adapter refused to retire ${proofPath}.`);
       }
       const absolute = buildLeaProofPath({ leaRepoPath, proofPath });
       if (retired.status === 404 && (!absolute || !existsSync(absolute))) {
@@ -5379,6 +5478,7 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
     },
     purpose: job.mode === "stub" ? "general" : "overleaf_solver",
     sourceBundle: job.mode === "stub" ? null : job.sourceBundle,
+    allowSourcePause: job.allowSourcePause === true,
     appendLog,
     logPath: job.logPath,
     onRunStarted: async (apiRunId, sessionId, startBody = {}) => {
@@ -5850,7 +5950,7 @@ async function applyProofOutcomeToJob({ state, job, target, exit, resolvedUses }
   // run that produced nothing.
   if (["formalized", "disproved"].includes(outcome.jobStatus)) {
     if (job.retryCleanup?.backups) delete job.retryCleanup.backups;
-  } else if (outcome.jobStatus === "failed") {
+  } else {
     await restorePreviousRunArtifacts({ state, job, target });
   }
   await persistJobs(state);
@@ -6183,7 +6283,7 @@ ${bestEffortGuidance}
 
 Work fully autonomously and non-interactively. This run is triggered from Overleaf with no human available to reply, so do not ask for confirmation or pose clarifying questions.
 
-This is faithful translation. Preserve the source statement and, when an associated LaTeX proof exists, its mathematical route: case split, intermediate claims, witnesses, reductions, and dependency use. When no proof is supplied but the statement is precise, disclose the missing method as non-blocking and attempt a standard meaning-preserving proof. Ordinary proof gaps, Lean encoding choices, and equivalent library-lemma substitutions are non-blocking. Administrative Lean scaffolding may differ, but do not replace an explicitly supplied argument with an unrelated shortcut merely because that shortcut compiles. Publish a blocking update_lea_status finding and pause only if continuation requires a changed claim, an additional assumption, a changed domain or quantifier, a choice between materially different meanings, or abandoning an explicitly supplied proof's essential approach. An informative faithful failure is preferable to a silently changed or unrelated successful proof.
+This is faithful translation. Preserve the source statement and, when an associated LaTeX proof exists, its mathematical route: case split, intermediate claims, witnesses, reductions, and dependency use. When no proof is supplied but the statement is precise, disclose the missing method as non-blocking and attempt a standard meaning-preserving proof. Ordinary proof gaps, Lean encoding choices, and equivalent library-lemma substitutions are non-blocking. Administrative Lean scaffolding may differ, but do not replace an explicitly supplied argument with an unrelated shortcut merely because that shortcut compiles. Publish a blocking update_lea_status finding if continuation requires a changed claim, an additional assumption, a changed domain or quantifier, a choice between materially different meanings, or abandoning an explicitly supplied proof's essential approach. The run's pause policy determines whether that report stops work. An informative faithful failure is preferable to a silently changed or unrelated successful proof.
 
 Whenever you notice and repair a source-level issue while formalizing, publish the issue and planned Lean-side repair through update_lea_status before applying it, then publish what was checked. Never silently strengthen assumptions, weaken the conclusion, change the domain, or substitute a different proof strategy.
 
@@ -6238,7 +6338,7 @@ ${naming}
 ${usesGuidance}
 ${bestEffortGuidance}
 
-Work fully autonomously and non-interactively. This run is triggered from Overleaf with no human available to reply, so do NOT ask for confirmation, do NOT pose clarifying questions, and do NOT stop to propose a declaration for approval. Disclose ambiguities through update_lea_status; choose a standard encoding and continue when the alternatives are materially equivalent, and pause only if proceeding would change the mathematical meaning.
+Work fully autonomously and non-interactively. This run is triggered from Overleaf with no human available to reply, so do NOT ask for confirmation, do NOT pose clarifying questions, and do NOT stop to propose a declaration for approval. Disclose ambiguities through update_lea_status; choose a standard encoding and continue when the alternatives are materially equivalent. Report a blocking finding before any semantic change; the run's pause policy determines whether that report stops work.
 
 The final Lean file must compile with no sorry/admit.
 Use the exact Lean namespace shown above and in the project context for imports, declarations, and proof paths.

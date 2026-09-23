@@ -78,7 +78,7 @@ def startup() -> None:
 @app.get("/api/health")
 def health() -> dict:
     from .lea_status import admission_enabled
-    return {"ok": True, "capabilities": {"lea_status": {"version": 1, "admission_enabled": admission_enabled(), "independent_checks": False}}}
+    return {"ok": True, "capabilities": {"lea_status": {"version": 1, "admission_enabled": admission_enabled(), "independent_checks": False, "source_pause_policy": 1}}}
 
 
 app.include_router(sessions.router)

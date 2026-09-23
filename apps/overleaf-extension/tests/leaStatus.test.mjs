@@ -36,7 +36,7 @@ test('companion updates a matching active job and deduplicates replay', () => {
 });
 
 test('reporting run requires capability and complete source admission; no terminal fallback', async () => {
-  for (const capability of [null, { version: 0, admission_enabled: true }, { version: 1, admission_enabled: false }]) {
+  for (const capability of [null, { version: 0, admission_enabled: true }, { version: 1, admission_enabled: false }, { version: 1, admission_enabled: true }]) {
     const urls = [];
     const result = await startApiRun({ baseUrl: 'http://localhost:8001', message: 'formalize', purpose: 'overleaf_solver',
       sourceBundle: { bundleHash: 'hash' }, fetchImpl: async url => { urls.push(url); return response({ capabilities: { lea_status: capability } }); } });
@@ -47,7 +47,7 @@ test('reporting run requires capability and complete source admission; no termin
   const source = { bundleHash: 'hash', proof: 'Author supplied proof' };
   await startApiRun({ baseUrl: 'http://localhost:8001', message: 'formalize', purpose: 'overleaf_solver', sourceBundle: source,
     fetchImpl: async (url, options) => { calls.push([url, options]); return response(url.endsWith('/health')
-      ? { capabilities: { lea_status: { version: 1, admission_enabled: true } } } : { run_id: 'run' }); } });
+      ? { capabilities: { lea_status: { version: 1, admission_enabled: true, source_pause_policy: 1 } } } : { run_id: 'run' }); } });
   const posted = JSON.parse(calls[1][1].body);
   assert.equal(posted.lea_status_version, 1);
   assert.deepEqual(posted.source_bundle, source);

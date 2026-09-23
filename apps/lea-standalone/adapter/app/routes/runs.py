@@ -14,7 +14,7 @@ import sqlite3
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from ..config import load_config, permission_tier
 from .. import bridge
@@ -73,6 +73,7 @@ class RunRequest(BaseModel):
     purpose: str = "general"
     source_bundle: dict | None = None
     lea_status_version: int | None = None
+    allow_source_pause: StrictBool = False
 
 
 class ApprovalDecisionRequest(BaseModel):
@@ -203,6 +204,8 @@ def create_run(request: RunRequest) -> dict:
             raise HTTPException(status_code=422, detail="Update the Overleaf companion: this run requires a source bundle and Lea Status v1")
     elif request.source_bundle is not None:
         raise HTTPException(status_code=422, detail="Source reporting requires an Overleaf run purpose")
+    if request.allow_source_pause and purpose not in {"overleaf_solver", "overleaf_continuation"}:
+        raise HTTPException(status_code=422, detail="Source pauses require an Overleaf run purpose")
     new_formalization = (
         request.new_formalization.model_dump()
         if request.new_formalization is not None else None
@@ -226,6 +229,7 @@ def create_run(request: RunRequest) -> dict:
             new_formalization=new_formalization,
             purpose=purpose,
             source_bundle=request.source_bundle,
+            allow_source_pause=request.allow_source_pause,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

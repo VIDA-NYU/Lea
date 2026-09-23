@@ -48,6 +48,14 @@ def main() -> None:
     check("Overleaf prompt prefers faithful failure",
           "informative partial result is better than a" in overleaf
           and "silently changed or unrelated successful proof" in overleaf)
+    check("Overleaf source pauses are disabled by default",
+          "A blocking Lea Status finding does not pause this run" in overleaf)
+    opted_in = load_system_prompt("overleaf_faithful", allow_source_pause=True)
+    check("Overleaf opt-in permits source pauses",
+          "A blocking Lea Status finding pauses this run" in opted_in)
+    continuation = load_system_prompt("overleaf_continuation")
+    check("Overleaf continuation also defaults to no source pause",
+          "A blocking Lea Status finding does not pause this run" in continuation)
     print()
     if _FAILURES:
         print(f"FAILED ({len(_FAILURES)}): {', '.join(_FAILURES)}")

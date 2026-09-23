@@ -901,6 +901,24 @@ def retire_project_artifact_by_slug(slug: str, request: ArtifactRetireRequest) -
             status_code=422,
             detail="That path is not a recorded proof artifact for this project.",
         )
+    # Retirement deletes a file, while the artifact index is keyed by
+    # declaration. A file may contain several declarations (including ones
+    # the index has not seen yet), so never retire it for a single retry.
+    from .. import artifacts as artifacts_service
+
+    owners = [
+        row for row in store.list_artifacts_for_scope(project["id"])
+        if row["path"] == rel
+    ]
+    try:
+        declarations = artifacts_service.scan_lean_declarations(absolute.read_text())
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not inspect {rel}: {exc}") from exc
+    if len(owners) > 1 or len(declarations) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="This Lean file contains multiple declarations; it cannot be retired for one formalization.",
+        )
     # A code step can be SQL-owned while its materialized project file is still
     # untracked (for example after importing legacy state or a tool that wrote
     # outside the normal FileChanged commit path). Commit the exact bytes at this

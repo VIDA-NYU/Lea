@@ -207,6 +207,7 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
             events=broker,
             autonomous=bool(run.get("autonomous")),
             purpose=str(run.get("purpose") or "general"),
+            allow_source_pause=bool(run.get("allow_source_pause")),
         )
         try:
             Thread(target=run_lea, args=(context,), daemon=True,
@@ -450,6 +451,7 @@ class RunnerContext:
     # autoformalizer or the source-faithful Overleaf translation prompt.
     autonomous: bool = False
     purpose: str = "general"
+    allow_source_pause: bool = False
 
 
 def emit(events: "runbroker.RunBroker | Queue[dict[str, Any]]",
@@ -1861,6 +1863,7 @@ def run_lea(context: RunnerContext) -> None:
         reporting_context = lea_status_store.context(run_id)
         if reporting_context:
             cfg = replace(cfg, status_reporting=True, status_context=lea_status.seed(run_id),
+                          allow_source_pause=context.allow_source_pause,
                           narrate_tool_steps=False,
                           prompt_variant=("overleaf_continuation" if context.purpose == "overleaf_continuation" else "overleaf_faithful"),
                           extra_tools=list(dict.fromkeys([*cfg.extra_tools, "update_lea_status"])),
@@ -1925,7 +1928,8 @@ def run_lea(context: RunnerContext) -> None:
                                 accepted_at - (reporting_last_accepted or reporting_started), update["kind"])
                     reporting_last_accepted = accepted_at
                     to_send = LeaStatusUpdateAck(True, update["id"], update["sequence"], update["assessment"],
-                        stop_reason="source_obstruction" if attention(update["assessment"]) == "needs_author_input" else None)
+                        stop_reason="source_obstruction" if context.allow_source_pause
+                        and attention(update["assessment"]) == "needs_author_input" else None)
                     try:
                         emit(events, "lea_status_updated", public)
                     except Exception:

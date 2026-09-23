@@ -15,6 +15,7 @@ import {
   handleChatPoll,
   handleChatSession,
   handleFormalize,
+  handleFormalizeAll,
   handleGetModelCatalog,
   handleGetModelRequirements,
   handleGetStatuses,
@@ -3605,6 +3606,64 @@ test("formalize cleans previous failed Lea artifacts before retrying", async () 
   }
 });
 
+test("formalize all rechecks completed proofs before starting a queued item", async () => {
+  const leaRepo = await makeLeaRepo();
+  const calls = [];
+  const state = await makeState({
+    leaRepoPath: leaRepo,
+    env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: makeAdapterApiFetch(calls, {
+      targetStatus: { already_proved: ledgerEntry("already_proved") }
+    })
+  });
+
+  const result = await handleFormalize({
+    overleafProjectId: "project-1",
+    targetKind: "theorem",
+    targetLabel: "already_proved",
+    targetText: "A previously proved theorem."
+  }, state, { batch: true });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.status, "already_formalized");
+  assert.ok(!calls.some((call) => String(call.url).endsWith("/api/runs")));
+  assert.ok(!calls.some((call) => String(call.url).endsWith("/artifacts/retire")));
+});
+
+test("formalize all cannot bypass a shared-file retirement refusal", async () => {
+  const leaRepo = await makeLeaRepo();
+  const proofPath = path.join("workspace", "proofs", "Lea", "Project1", "shared.lean");
+  const original = "theorem already_proved : True := by trivial\ntheorem needs_retry : True := by sorry\n";
+  await writeLeaProjectProof(leaRepo, proofPath, original);
+  const calls = [];
+  const adapterFetch = makeAdapterApiFetch(calls, {
+    targetStatus: {
+      needs_retry: ledgerEntry("needs_retry", {
+        path: "shared.lean", has_sorry: true, check_status: "error", content: original
+      })
+    }
+  });
+  const state = await makeState({
+    leaRepoPath: leaRepo,
+    env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: async (url, options) => String(url).endsWith("/artifacts/retire")
+      ? jsonResponse(409, { detail: "This Lean file contains multiple declarations." })
+      : adapterFetch(url, options)
+  });
+
+  const result = await handleFormalize({
+    overleafProjectId: "project-1",
+    targetKind: "theorem",
+    targetLabel: "needs_retry",
+    targetText: "A theorem requiring another attempt."
+  }, state, { batch: true });
+
+  assert.equal(result.statusCode, 409);
+  assert.equal(result.body.error, "artifact_retirement_blocked");
+  assert.equal(await fs.readFile(path.join(leaRepo, proofPath), "utf8"), original);
+  assert.ok(!calls.some((call) => String(call.url).endsWith("/api/runs")));
+});
+
 test("statuses are unformalized when project markdown has no theorem entry", async () => {
   const leaRepo = await makeLeaRepo();
   const state = await makeState({ leaRepoPath: leaRepo });
@@ -3904,7 +3963,7 @@ async function fileExists(filePath) {
 function makeLeaApiFetch(calls, options = {}) {
   let eventHookHandled = false;
   return async (url, requestOptions = {}) => {
-    if (String(url).endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, independent_checks: false } } });
+    if (String(url).endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, independent_checks: false, source_pause_policy: 1 } } });
     if (String(url).endsWith("/api/settings")) {
       return jsonResponse(404, { detail: "not found" });
     }
@@ -4154,7 +4213,7 @@ function adapterSseResponse(frames) {
 
 function makeAdapterApiFetch(calls, options = {}) {
   return async (url, requestOptions = {}) => {
-    if (String(url).endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, independent_checks: false } } });
+    if (String(url).endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, independent_checks: false, source_pause_policy: 1 } } });
     const body = requestOptions.body ? JSON.parse(requestOptions.body) : null;
     calls.push({ url, options: requestOptions, body });
     if (String(url).endsWith("/api/runs") && requestOptions.method === "POST") {
@@ -4243,6 +4302,7 @@ test("formalize on the /api backend posts to /api/runs and runs autonomously (no
   assert.equal(result.body.status, "in_progress");
   await waitFor(() => calls.some((c) => String(c.url).endsWith("/api/runs") && c.options?.method === "POST"));
   const runCall = calls.find((c) => String(c.url).endsWith("/api/runs"));
+  assert.equal(runCall.body.allow_source_pause, false);
   assert.ok(runCall.body.message.includes("Project display name: Renamed Project"));
   assert.ok(runCall.body.message.includes("Lean namespace: Lea.RenamedProject"));
   assert.ok(runCall.body.message.includes("Overleaf binding: project-1"));
@@ -4254,6 +4314,55 @@ test("formalize on the /api backend posts to /api/runs and runs autonomously (no
   assert.equal(runCall.body.project_title, "Renamed Project");
   assert.equal(runCall.body.project_namespace, "Lea.RenamedProject");
   assert.ok(!calls.some((c) => String(c.url).includes("/v1/")));
+});
+
+test("source pause setting is opt-in and persists without changing adapter settings", async () => {
+  const leaRepo = await makeLeaRepo();
+  const state = await makeState({ leaRepoPath: leaRepo, env: { OPENAI_API_KEY: "test-key" } });
+  assert.equal((await buildSettingsResponse(state)).leaPauseOnSourceIssue, false);
+  const update = { leaRepoPath: leaRepo, leaApiBaseUrl: "http://127.0.0.1:8001", leaModel: "o4-mini", leaMaxTurns: 20 };
+  const enabled = await handleUpdateLeaSettings({ ...update, leaPauseOnSourceIssue: true }, state);
+  assert.equal(enabled.statusCode, 200);
+  assert.equal(enabled.body.leaPauseOnSourceIssue, true);
+  assert.equal(JSON.parse(await fs.readFile(state.settingsPath, "utf8")).leaPauseOnSourceIssue, true);
+  assert.equal((await handleUpdateLeaSettings(update, state)).body.leaPauseOnSourceIssue, true);
+  assert.equal((await handleUpdateLeaSettings({ ...update, leaPauseOnSourceIssue: "true" }, state)).statusCode, 400);
+  const calls = [];
+  state.fetchImpl = makeAdapterApiFetch(calls);
+  await handleFormalize({ overleafProjectId: "project-1", targetKind: "theorem", targetLabel: "opted_in", targetText: "A theorem." }, state);
+  await waitFor(() => calls.some((call) => String(call.url).endsWith("/api/runs")));
+  assert.equal(calls.find((call) => String(call.url).endsWith("/api/runs")).body.allow_source_pause, true);
+});
+
+test("formalize all overrides opt-in pauses, skips dependents, and continues independent targets", async () => {
+  const leaRepo = await makeLeaRepo();
+  const calls = [];
+  const state = await makeState({
+    leaRepoPath: leaRepo,
+    env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: makeAdapterApiFetch(calls, { doneStatus: "failed" })
+  });
+  state.settings.leaPauseOnSourceIssue = true;
+  const item = (targetLabel, extra = {}) => ({ targetKind: "theorem", targetLabel, targetText: `Statement of ${targetLabel}.`, ...extra });
+  const result = await handleFormalizeAll({
+    overleafProjectId: "project-1",
+    items: [
+      item("lea_auto_base", { labelSource: "generated", latexLabel: "thm:base" }),
+      item("dependent", { targetUses: ["lea_auto_base"] }),
+      item("independent")
+    ]
+  }, state);
+  assert.equal(result.statusCode, 200);
+  const batch = state.repairBatches[result.body.batchId];
+  await waitFor(() => batch.done);
+  assert.equal(batch.pausedOn, null);
+  assert.deepEqual(Object.fromEntries(batch.items.map((entry) => [entry.targetLabel, entry.state])), {
+    lea_auto_base: "failed", dependent: "skipped", independent: "failed"
+  });
+  const runs = calls.filter((call) => String(call.url).endsWith("/api/runs") && call.options?.method === "POST");
+  assert.equal(runs.length, 2);
+  assert.ok(runs.every((call) => call.body.allow_source_pause === false));
+  assert.match(runs[0].body.message, /preferred Lean declaration name is base/);
 });
 
 test("best-effort continuation is scoped to a proofless source-obstruction pause and changes the resumed prompt", async () => {
@@ -5100,6 +5209,7 @@ test("chat message starts a first-message session with the full context preamble
     "\\end{theorem}"
   ].join("\n");
   const current = sourceBundleItem(source, "compactness_criterion");
+  state.settings.leaPauseOnSourceIssue = true;
 
   const res = await handleChatMessage({
     target: { ...CHAT_TARGET, sourceBundle: current.sourceBundle },
@@ -5112,6 +5222,7 @@ test("chat message starts a first-message session with the full context preamble
   assert.equal(res.body.runId, "api-run-1");
   assert.equal(res.body.userMessage.content, "Why did this fail?");
   const runCall = calls.find((c) => String(c.url).endsWith("/api/runs"));
+  assert.equal(runCall.body.allow_source_pause, true);
   assert.equal(runCall.body.session_id, undefined);
   assert.match(runCall.body.message, /You are helping with this Overleaf item\./);
   assert.match(runCall.body.message, /Project display name: p1/);
@@ -5611,7 +5722,7 @@ test("github token update writes through to adapter settings and reports presenc
 // per-session detail/rebuild/lean-check calls the post-run cascade makes.
 function makeCascadeRunFetch(calls, { runSessionId = "sess-api-1", sessionDetails = {}, rebuildResponses = {} } = {}) {
   return async (url, requestOptions = {}) => {
-    if (String(url).endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, independent_checks: false } } });
+    if (String(url).endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, independent_checks: false, source_pause_policy: 1 } } });
     const u = String(url);
     if (u.endsWith("/api/settings")) return jsonResponse(404, { detail: "not found" });
     const body = requestOptions.body ? JSON.parse(requestOptions.body) : null;

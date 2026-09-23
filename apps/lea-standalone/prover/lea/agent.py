@@ -677,8 +677,12 @@ def _run_events_inner(
 ):
     # `namespace` (e.g. "Lea.Foo") lets the adapter state the active write
     # namespace for a project run (D32); None keeps the default Lea.Misc block.
+    # The prompt builder already defaults to no automatic source pause. Keep the
+    # ordinary call shape unchanged for standalone runs and injected builders.
+    source_pause_policy = {"allow_source_pause": True} if config.allow_source_pause else {}
     system = load_system_prompt(
         config.prompt_variant, config.skills, workspace=working_dir, namespace=namespace,
+        **source_pause_policy,
     )
     if config.narrate_tool_steps:
         system += _NARRATE_TOOL_STEPS_INSTRUCTION

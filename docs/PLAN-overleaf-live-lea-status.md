@@ -12,9 +12,11 @@
 
 Implement this as one integrated solver/reporting flow. Lea calls `update_lea_status` while formalizing; the adapter persists and streams the assessment immediately; the Overleaf pane updates its confidence tag and explanation. Retire every separate Lea Check execution path while retaining historical reports and usage.
 
-The confirmed correction policy is part of the implementation contract: disclose and continue when the theorem and any explicitly supplied proof approach are preserved. A missing proof, ordinary proof gap, Lean encoding choice, or equivalent library lemma is non-blocking for a precise statement. Publish a blocking finding and pause only when continuing requires a semantic change or abandoning an explicitly supplied proof's essential approach. No additional product decision is required before starting this plan.
+The confirmed correction policy is part of the implementation contract: disclose and continue when the theorem and any explicitly supplied proof approach are preserved. A missing proof, ordinary proof gap, Lean encoding choice, or equivalent library lemma is non-blocking for a precise statement. Publish a blocking finding when continuing requires a semantic change or abandoning an explicitly supplied proof's essential approach. Automatic source-obstruction pausing requires a settings opt-in and is always disabled for **Formalize all** runs.
 
 Post-implementation policy addendum: a proofless target that still reaches a structured `source_obstruction` pause exposes a scoped **Continue best effort** action in the Lean pane. The companion validates the prior pause and absent proof, records the override on the resumed job, and supplies an author-authorized prompt section. The normal faithful policy remains unchanged, and **Resume faithfully** remains available.
+
+The pause-policy revision adds a default-off companion setting, a per-run `allow_source_pause` snapshot in the adapter, and a host acknowledgment that requests `source_obstruction` only when the snapshot is true. The prover prompt reports findings under either policy. **Formalize all** passes false for every item and settles failures by skipping dependents while continuing independent items. This amendment supersedes the original pause assumptions in the historical work-package checklist below.
 
 **1. Delivery order and boundaries**
 
@@ -210,7 +212,7 @@ The existing `_classify_final_result` serves `proved`/`disproved`/`needs_review`
 
 For bound chat, use a distinct supported purpose such as `overleaf_continuation` and a shared reporting/fidelity prompt block. Keep general discussion behavior: do not force a pure question into a new formalization or clear its previous status. Activate reporting ownership when formalization work actually begins, using a status call or proof mutation rather than a heuristic that scans user prose. For new proof work the reporting imperative still requires a status before substantive changes. Unbound/general LeaChat stays outside this contract.
 
-When a batch target pauses for source obstruction, settle it as paused with retained findings and prevent dependent work from advancing on that obligation. Use the existing batch pause/continue mechanism for remaining independent items. Do not convert this into the batch Cancel operation, which currently marks remaining entries canceled.
+For **Formalize all**, disable automatic source-obstruction pauses for every item even if the companion setting is on. Retain findings on failed items, skip dependent items, continue independent ones, and settle the batch with a terminal summary. Keep the batch Cancel operation separate.
 
 **P5 completion gate:** fake adapter streams exercise formalization, definitions, repair, chat modification, batch pause, manual edit, and reconnect; a target update reaches `leaStatus` while the run is active; concurrent targets and late old-run events are isolated; a changed LaTeX source does not hide a still-running old-source job.
 
@@ -286,7 +288,8 @@ Acceptance-criterion traceability:
 | AC3: no delay behind slow tool | P2, P3 | Latch-based ordering test |
 | AC4: assessment before artifact | P0–P3 | Source-only publication and no-artifact obstruction |
 | AC5: disclosed correction with retained issue | P0, P4, P6 | Finding-transition test plus reviewed correction case |
-| AC6: material change pauses before later mutation | P2–P5 | Block/cancel ordering and batch test |
+| AC6: material change reports; opted-in individual run pauses before later mutation | P2–P5 | Blocking acknowledgment with policy on/off and tool-ordering test |
+| AC19: default-off setting and Formalize all override | Pause-policy revision | Settings persistence, adapter run snapshot, and batch continuation tests |
 | AC7: confidence does not imply checked/approved | P0, P3, P6 | Projection/compiler independence tests |
 | AC8: final tool update, no evaluator | P4, P7 | Normal-completion integration with evaluator spies |
 | AC9: stops retain state without extra reporting spend | P2–P5, P7 | Stop/cap/crash and provider-call-count tests |

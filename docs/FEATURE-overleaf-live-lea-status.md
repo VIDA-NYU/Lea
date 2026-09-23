@@ -21,7 +21,7 @@ This replaces the separate Lea Check evaluator. The formalizing agent becomes re
 - Remove the separate evaluator entirely, including an optional manual independent-review action.
 - Lea may continue with explicitly disclosed corrections that preserve the theorem and the source proof's mathematical approach.
 - A missing source proof, ordinary proof gap, Lean encoding choice, or equivalent library-lemma substitution is non-blocking when the statement is precise and the claim and any explicitly supplied proof method remain intact.
-- Lea must pause only when continuing would require a semantic change—such as adding an assumption, changing the conclusion/domain/quantifiers, choosing between materially different meanings, or abandoning an explicitly supplied proof's essential approach.
+- Lea reports a blocking finding when continuing would require a semantic change—such as adding an assumption, changing the conclusion/domain/quantifiers, choosing between materially different meanings, or abandoning an explicitly supplied proof's essential approach. Automatic source-obstruction pauses are off by default and require the author's settings opt-in. **Formalize all** suppresses those pauses for every run it starts, regardless of the setting.
 - When a proofless target nevertheless pauses for `source_obstruction`, the Lean pane offers **Continue best effort**. This is an explicit, one-run author override that permits conventional inferred context and assumptions with full disclosure; **Resume faithfully** remains available as the conservative alternative.
 
 Other concrete choices below—tool naming, confidence labels, update cadence, and API names—are proposed implementation defaults. They do not require further product decisions to begin implementation.
@@ -230,7 +230,7 @@ Add this obligation to `OVERLEAF_FAITHFUL_PROMPT`, with corresponding tool docum
 >
 > Publish an initial assessment after reading the supplied statement and proof, before substantial formalization work. Update the author at meaningful milestones, when confidence changes, when you find an issue or ambiguity, when you plan or apply a mathematical correction, and when progress stalls. Explain what is going well, what remains uncertain, and what the author can do next. Do not wait until the end to disclose a finding.
 >
-> Preserve the statement and any explicitly supplied mathematical approach. You may fill gaps or correct intermediate reasoning when the existing assumptions and approach support the correction. Disclose the issue and proposed correction before applying it, then update the finding after checking it. A missing proof alone is non-blocking: when the statement is precise, choose a standard meaning-preserving proof and continue. Ordinary proof gaps, Lean encoding choices, and equivalent library lemmas are also non-blocking. If continuation requires a changed claim, an additional assumption, a changed conclusion/domain/quantifier, a choice between materially different meanings, or abandoning an explicitly supplied proof's essential approach, publish a blocking finding and pause for the author.
+> Preserve the statement and any explicitly supplied mathematical approach. You may fill gaps or correct intermediate reasoning when the existing assumptions and approach support the correction. Disclose the issue and proposed correction before applying it, then update the finding after checking it. A missing proof alone is non-blocking: when the statement is precise, choose a standard meaning-preserving proof and continue. Ordinary proof gaps, Lean encoding choices, and equivalent library lemmas are also non-blocking. If continuation requires a changed claim, an additional assumption, a changed conclusion/domain/quantifier, a choice between materially different meanings, or abandoning an explicitly supplied proof's essential approach, publish a blocking finding. The host-provided run policy decides whether that publication pauses work; otherwise continue faithful work without silently changing the claim.
 >
 > Before normal completion, publish a final status summarizing the result, corrections, remaining source issues, caveats, and limitations. High confidence is an assessment of the stated scope; it is not a claim that unfinished work is complete. Never describe a planned correction as applied, or a conjectured counterexample as verified.
 
@@ -268,12 +268,12 @@ The decision boundary is whether the correction is supported by the existing sta
 | Lean representation choice or substitution of an equivalent library lemma | Continue when the alternatives preserve the same mathematical claim and any explicit source method |
 | Omitted justification derivable from the stated hypotheses | Disclose the gap and proposed repair, continue, then report what was checked |
 | Incorrect intermediate step that can be repaired within the same argument | Disclose before repair; preserve the claim and approach; keep the source issue visible |
-| Essential unstated hypothesis, false target claim, materially ambiguous meaning, or abandonment of an explicitly supplied method required | Publish a blocking finding and pause |
+| Essential unstated hypothesis, false target claim, materially ambiguous meaning, or abandonment of an explicitly supplied method required | Publish a blocking finding; pause only for an opted-in individual run, otherwise retain the finding and finish as faithfully as possible |
 | Proofless `source_obstruction` after the author selects **Continue best effort** | Infer a conventional coherent context and proof strategy, disclose every inference as a formalization choice, downgrade covered blockers to non-blocking warnings, and continue; pause only when no defensible interpretation exists or the interpreted claim is false |
-| Uncertainty about whether a change preserves the claim or approach | Explain the uncertainty; investigate without silently making the material change; pause if unresolved |
+| Uncertainty about whether a change preserves the claim or approach | Explain the uncertainty; investigate without silently making the material change; if unresolved, publish a blocking finding and obey the run pause policy |
 | Verified counterexample | Preserve the existing disproof workflow and evidence; report its consequence for the source claim |
 
-A blocking status is persisted and published before the host requests a cooperative pause. No later proof-mutating tool in the same model response may execute after that blocking update. Use a structured stop reason such as `source_obstruction`; do not detect this by scanning prose. A statement that the theorem is false remains a model finding unless supported by the existing verified-counterexample machinery.
+A blocking status is persisted and published before the host requests a cooperative pause when the run has opted in. Only then does the acknowledgment stop later proof-mutating tools in the same model response. Otherwise Lea may continue meaning-preserving work while the finding stays visible. Snapshot the policy at run admission so a settings change does not alter an active run. Use a structured stop reason such as `source_obstruction`; do not detect this by scanning prose. A statement that the theorem is false remains a model finding unless supported by the existing verified-counterexample machinery.
 
 The source-obstruction path must also work before a proof file exists or when the partial artifact does not compile. It bypasses the ordinary loop's encouragement to keep producing/checking an artifact, while preserving compiler verification requirements for any claimed completed proof. The status tool cannot turn an incomplete artifact into a successful run.
 
@@ -281,7 +281,7 @@ Expose **Pause** beside an active formalization and **Resume** for recoverable s
 
 For a paused item whose structured stop reason is `source_obstruction` and whose current source bundle has no associated proof, make **Continue best effort** the primary Lean-pane action and retain **Resume faithfully** in the overflow menu. The companion must validate the same conditions server-side. The override applies only to that resumed run, remains visible in its prompt/job record, and does not permit choosing between competing explicit proofs or misrepresenting inferred material as source text.
 
-If the proof completed before the pause request won the race, keep the completed outcome. For a batch, pause the target and prevent dependent work from proceeding on an unresolved obligation; retain the existing batch continue/stop decision for the remaining queue. Unrelated user-started runs are unaffected.
+If the proof completed before the pause request won the race, keep the completed outcome. **Formalize all** starts each item with automatic source pauses disabled. A failed item causes its dependents to be skipped, while independent items continue and the batch reaches a terminal summary. Unrelated user-started runs retain their own snapshotted setting.
 
 After editing LaTeX, starting again creates a new run against a newly captured source bundle. Existing Lean work and prior findings can be supplied as context, but Lea must reassess them against the changed source. Never resume an old mathematical contract merely by relabeling its source hash.
 
@@ -432,7 +432,7 @@ Automated tests should focus on behavioral contracts across the existing prover,
 | AC3 | A status call followed by a blocked/slow tool is persisted and visible before that later tool returns. |
 | AC4 | Source-only status can be published before any Lean file exists. |
 | AC5 | A source gap is disclosed before its Lean correction, later marked applied only after checking, and remains a source issue until resolved in the source or explicitly retracted. |
-| AC6 | A required new assumption or materially changed approach produces a visible blocking finding and a recoverable pause; no subsequent proof mutation in the same response runs. |
+| AC6 | A required new assumption or materially changed approach produces a visible blocking finding. An opted-in individual run pauses recoverably before subsequent proof mutation; a default run continues only with faithful work. |
 | AC7 | High confidence on partial work never changes Lean Check to checked, hides obligations, or appears as independent approval. |
 | AC8 | A final status uses the same tool and retains material findings; normal completion launches zero independent evaluator calls. |
 | AC9 | Pause, budget exhaustion, and crashes preserve accepted status and artifacts without spending tokens for a post-stop assessment. |
@@ -445,6 +445,7 @@ Automated tests should focus on behavioral contracts across the existing prover,
 | AC16 | General LeaChat, human approval, compiler checks, verified counterexamples, stub/dependency warnings, and derived session proof status retain their existing contracts. |
 | AC17 | The UI updates accessibly without collapsing inspected findings, stealing focus, or suppressing Pause merely because the source became stale. |
 | AC18 | Concurrent formalizations keep their identities, source bundles, sequences, findings, and current projections isolated. |
+| AC19 | The pause setting defaults off, persists in the companion, and is snapshotted at run admission. **Formalize all** forces it off for each item, continues independent work after a failed item, and never stops on a source finding. |
 
 Relevant test locations include `apps/lea-standalone/prover/tests/agent/`, adapter bridge/routes/alignment tests, and Overleaf companion/check-state/content/pane tests. Replace tests that require post-run evaluation with tests for the new behavior; retain historical-report read coverage.
 

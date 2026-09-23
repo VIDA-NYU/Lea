@@ -16,6 +16,7 @@ def load_system_prompt(
     skills: list[str] | None = None,
     workspace: str | Path | None = None,
     namespace: str | None = None,
+    allow_source_pause: bool = False,
 ) -> str:
     """Build the system prompt: base variant + implicit lea.md + configured skills.
 
@@ -44,6 +45,11 @@ def load_system_prompt(
         "overleaf_continuation": OVERLEAF_CONTINUATION_PROMPT,
     }
     prompt = prompts[variant]
+    if variant in {"overleaf_faithful", "overleaf_continuation"}:
+        prompt += ("\n\n## Source-obstruction pause policy\n"
+                   + ("A blocking Lea Status finding pauses this run after publication."
+                      if allow_source_pause else
+                      "A blocking Lea Status finding does not pause this run. Publish it, continue with faithful work supported by the source, and explain any incomplete result. Never change the claim or invent assumptions to force completion."))
     target_workspace = str(workspace) if workspace is not None else str(WORKSPACE)
     if workspace is not None:
         prompt = prompt.replace(str(WORKSPACE), str(workspace))
@@ -347,10 +353,11 @@ This is not unconstrained proof search. When supplied, the source proof controls
 - Ordinary proof gaps, Lean encoding choices, and equivalent library-lemma
   substitutions are non-blocking when they preserve the claim and any explicit
   source method. Investigate and continue with useful disclosure.
-- Publish a blocking status and pause only when continuation requires an additional
+- Publish a blocking status only when continuation requires an additional
   assumption, a changed conclusion/domain/quantifier, a choice between materially
   different meanings, or abandoning an explicitly supplied proof's essential
-  mathematical approach. A faithful, informative partial result is better than a
+  mathematical approach. The host's run policy determines whether publication
+  pauses the run. A faithful, informative partial result is better than a
   silently changed or unrelated successful proof.
 - Exception: if the run prompt contains an `Author-authorized best-effort
   continuation` section, the author has explicitly authorized conventional

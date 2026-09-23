@@ -76,7 +76,7 @@ function makeRepairFetch(calls, { sessionDetails = {}, rebuildResponses = {}, on
   let runCounter = 0;
   return async (url, requestOptions = {}) => {
     const u = String(url);
-    if (u.endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true } } });
+    if (u.endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, source_pause_policy: 1 } } });
     if (u.endsWith("/api/settings")) return jsonResponse(404, { detail: "not found" });
     const body = requestOptions.body ? JSON.parse(requestOptions.body) : null;
     calls.push({ url: u, method: requestOptions.method || "GET", body });
@@ -269,6 +269,7 @@ test("repair run: dispatches on the item's own session with the repair prompt, v
       onRunStarted: () => { steps.push(REPAIRED_STEP); }
     })
   });
+  state.settings.leaPauseOnSourceIssue = true;
 
   const res = await handleLeanPaneRepairStart(
     { overleafProjectId: "project-1", targetKind: "theorem", targetLabel: "compactness_corollary" },
@@ -284,6 +285,7 @@ test("repair run: dispatches on the item's own session with the repair prompt, v
 
   // ordinary autonomous run against the EXISTING session, repair prompt attached
   const runCall = calls.find((c) => c.url.endsWith("/api/runs"));
+  assert.equal(runCall.body.allow_source_pause, true);
   assert.equal(runCall.body.session_id, "sess-b");
   assert.equal(runCall.body.autonomous, true);
   assert.match(runCall.body.message, /You are repairing a broken Lean formalization/);

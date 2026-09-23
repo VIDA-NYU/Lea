@@ -31,15 +31,17 @@ def test_tool_contract_reserves_blocking_for_semantic_changes():
     description = TOOL_SCHEMA["description"]
     assert "missing source proof" in description
     assert "is not blocking" in description
+    assert "pauses only when this run's pause policy allows it" in description
     assert "Reserve blocking findings for a required semantic change" in description
     assert "Author-authorized best-effort continuation" in description
     assert "non-blocking warning instead of blocking again" in description
 
 
-def admit(source=None, form=None, session=None, purpose="overleaf_solver", project=None):
+def admit(source=None, form=None, session=None, purpose="overleaf_solver", project=None, allow_source_pause=False):
     return store.create_run_bundle(message="Formalize target", session_id=session, project_id=project,
         session_origin="overleaf", session_origin_url=None, model="test", provider=None,
         max_turns=3, autonomous=True, purpose=purpose, source_bundle=source or bundle(),
+        allow_source_pause=allow_source_pause,
         focus_formalization_id=form,
         new_formalization=None if form else dict(origin="overleaf", origin_key="doc:theorem:target", display_title="target", declaration_name="target"))
 
@@ -186,6 +188,34 @@ def test_bridge_acknowledges_committed_update_before_next_effect(fresh, tmp_path
     bridge.run_lea(context)
     assert len(observed) == 1
     assert len(lea_status.history(form)["updates"]) == 2
+
+
+def test_source_obstruction_pause_is_opt_in(fresh, tmp_path, monkeypatch):
+    from queue import Queue
+    from app import bridge
+    from app.config import LeaConfig
+    from lea.interface import Finished
+    from lea.providers import Usage
+    from lea.status_reporting import LeaStatusUpdateRequested
+
+    initial_run, form, session = ids(fresh)
+    observed = []
+
+    def fake(config, messages, **kwargs):
+        ack = yield LeaStatusUpdateRequested(payload(finding_updates=[finding(severity="blocking")]), "blocker")
+        observed.append(ack)
+        yield Finished("interrupted", "Stopped", 1, session, "test", Usage(), 0, {})
+
+    monkeypatch.setattr(bridge, "run_events", fake)
+    for run_id, allowed in ((initial_run, False),
+                            (admit(form=form, session=session, allow_source_pause=True)["run"]["id"], True)):
+        bridge.run_lea(bridge.RunnerContext(
+            session_id=session, run_id=run_id, task="Formalize target",
+            config=LeaConfig(model="test", lea_root=tmp_path, max_turns=3), events=Queue(),
+            autonomous=True, purpose="overleaf_solver", allow_source_pause=allowed))
+    assert observed[0].accepted and observed[0].stop_reason is None
+    assert observed[1].accepted and observed[1].stop_reason == "source_obstruction"
+    assert lea_status.history(form)["updates"][-1]["assessment"]["findings"][0]["severity"] == "blocking"
 
 
 def test_continuation_activates_only_when_it_reports_or_edits(fresh):

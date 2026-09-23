@@ -645,6 +645,7 @@ def create_run_bundle(
     new_formalization: dict | None = None,
     purpose: str = "general",
     source_bundle: dict | None = None,
+    allow_source_pause: bool = False,
 ) -> dict:
     """Atomically create/resolve the conversation scope, run, and user message."""
     if focus_formalization_id and new_formalization:
@@ -785,14 +786,15 @@ def create_run_bundle(
             """
             insert into runs (
                 id, session_id, project_id, status, autonomous, model, provider,
-                max_turns, focus_formalization_id, focus_source_hash, purpose,
+                max_turns, focus_formalization_id, focus_source_hash, purpose, allow_source_pause,
                 created_at, updated_at
-            ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, session_id, project_id, 1 if autonomous else 0,
                 model, provider, max_turns, focus_formalization_id,
-                str(focus_source_hash or "").strip() or None, purpose, now, now,
+                str(focus_source_hash or "").strip() or None, purpose,
+                1 if allow_source_pause else 0, now, now,
             ),
         )
         if source_bundle is not None:

@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from app import db, runbroker, runregistry, store
 from app.config import LeaConfig
@@ -99,6 +100,29 @@ def test_create_run_persists_an_overleaf_solver_purpose(tmp_path, monkeypatch):
         new_formalization=NewFormalizationRequest(display_title="target", origin="overleaf", origin_key="doc:theorem:target"),
     ))
     assert store.get_run(result["run_id"])["purpose"] == "overleaf_solver"
+    assert store.get_run(result["run_id"])["allow_source_pause"] == 0
+
+def test_create_run_persists_source_pause_opt_in(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    opted_in = runs_route.create_run(RunRequest(
+        message="translate with pauses", autonomous=True,
+        purpose="overleaf_solver", source_bundle=__import__("test_lea_status").bundle(), lea_status_version=1,
+        allow_source_pause=True,
+        new_formalization=NewFormalizationRequest(display_title="target", origin="overleaf", origin_key="doc:theorem:target"),
+    ))
+    assert store.get_run(opted_in["run_id"])["allow_source_pause"] == 1
+
+
+def test_source_pause_is_rejected_for_general_runs(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    with pytest.raises(HTTPException) as captured:
+        runs_route.create_run(RunRequest(message="ordinary work", allow_source_pause=True))
+    assert captured.value.status_code == 422
+
+
+def test_source_pause_requires_a_boolean():
+    with pytest.raises(ValidationError):
+        RunRequest(message="translate faithfully", allow_source_pause="true")
 
 
 def test_create_run_rejects_an_unknown_purpose(tmp_path, monkeypatch):

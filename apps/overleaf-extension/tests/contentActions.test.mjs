@@ -447,6 +447,29 @@ test("the API-key nudge stays hidden when the selected model is configured", asy
   assert.equal(harness.countSelector(".ol-lean-settings-trigger-attention"), 0);
 });
 
+test("settings popover defaults source pausing off and saves an explicit opt-in", async () => {
+  const harness = createContentHarness(
+    { status: "unformalized" },
+    {},
+    { companionSettings: { leaModel: "o4-mini", leaMaxTurns: 20, leaPauseOnSourceIssue: false } }
+  );
+  await harness.loadVisibleTheorems();
+  harness.clickButtonLabel("Open Lea settings and usage");
+  await flushPromises();
+  const popover = harness.settingsPopover();
+  const checkbox = popover.querySelector("[data-role='source-pause']");
+  assert.equal(checkbox.checked, false);
+  checkbox.checked = true;
+  checkbox.dispatchEvent({ type: "change" });
+  const save = popover.querySelector("[data-role='save-settings']");
+  assert.equal(save.disabled, false);
+  save.dispatchEvent({ type: "click" });
+  await flushPromises();
+  const request = harness.fetchCalls.find((call) => String(call.url).endsWith("/settings/lea") && call.options?.method === "POST");
+  assert.equal(JSON.parse(request.options.body).leaPauseOnSourceIssue, true);
+  assert.equal(harness.storageState.leaPauseOnSourceIssue, true);
+});
+
 test("settings popover renders an accessible persisted resize handle", async () => {
   const harness = createContentHarness({ status: "unformalized" });
   await harness.loadVisibleTheorems();
@@ -2650,6 +2673,9 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
           if (String(url).endsWith("/settings") && options.companionSettings) {
             return options.companionSettings;
           }
+          if (String(url).endsWith("/settings/lea") && fetchOptions?.method === "POST") {
+            return { ...options.companionSettings, ...JSON.parse(fetchOptions.body || "{}") };
+          }
           if (String(url).endsWith("/settings/github-token")) {
             return options.githubTokenUpdate || { ok: true };
           }
@@ -3412,6 +3438,8 @@ class FakeElement {
       maxSpend.dataset.role = "max-spend";
       const texMirror = this.appendChild(new FakeElement("input"));
       texMirror.dataset.role = "tex-mirror";
+      const sourcePause = this.appendChild(new FakeElement("input"));
+      sourcePause.dataset.role = "source-pause";
       const save = this.appendChild(new FakeElement("button"));
       save.dataset.role = "save-settings";
       const githubPanel = this.appendChild(new FakeElement("section"));

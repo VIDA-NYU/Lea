@@ -5515,6 +5515,11 @@
             <input type="checkbox" data-role="tex-mirror">
             <span>Mirror Overleaf LaTeX sources into the project</span>
           </label>
+          <label class="ol-lean-checkbox-field">
+            <input type="checkbox" data-role="source-pause">
+            <span>Pause formalization when Lea needs author input</span>
+          </label>
+          <p class="ol-lean-provider-note">Lea Status findings remain visible when this is off. Formalize all never pauses for source issues.</p>
           <button type="button" class="ol-lean-save-button" data-role="save-settings" disabled>Save changes</button>
         </section>
       </div>
@@ -5540,6 +5545,7 @@
     const maxTurnsInput = popover.querySelector("[data-role='max-turns']");
     const maxSpendInput = popover.querySelector("[data-role='max-spend']");
     const texMirrorInput = popover.querySelector("[data-role='tex-mirror']");
+    const sourcePauseInput = popover.querySelector("[data-role='source-pause']");
     const saveButton = popover.querySelector("[data-role='save-settings']");
 
     closeButton.addEventListener("click", closePopover);
@@ -5550,6 +5556,7 @@
     maxTurnsInput.addEventListener("input", markSettingsDirty);
     maxSpendInput.addEventListener("input", markSettingsDirty);
     texMirrorInput.addEventListener("change", markSettingsDirty);
+    sourcePauseInput.addEventListener("change", markSettingsDirty);
     for (const button of popover.querySelectorAll("[data-role='provider-key-toggle']")) {
       button.addEventListener("click", () => {
         const input = popover.querySelector(`[data-role='provider-key-input'][data-family='${button.dataset.family}']`);
@@ -5663,6 +5670,7 @@
         popover.dataset.savedMaxTurns = String(settings.leaMaxTurns);
         popover.dataset.savedMaxSpend = settings.leaMaxSpendUsd == null ? "" : String(settings.leaMaxSpendUsd);
         popover.dataset.savedTexMirror = String(settings.leaTexMirrorEnabled !== false);
+        popover.dataset.savedSourcePause = String(settings.leaPauseOnSourceIssue === true);
         popover.leaApiKeys = settings.leaApiKeys || popover.leaApiKeys || {};
         renderProviderKeys(popover, settings.leaProviderKeys || {});
         clearProviderKeyInputs(popover);
@@ -5699,6 +5707,7 @@
         String(Number.parseInt(maxTurnsInput.value, 10) || DEFAULT_LEA_MAX_TURNS) !== popover.dataset.savedMaxTurns ||
         normalizeMaxSpendInput(maxSpendInput.value) !== (popover.dataset.savedMaxSpend || "") ||
         String(texMirrorInput.checked) !== (popover.dataset.savedTexMirror || "true") ||
+        String(sourcePauseInput.checked) !== (popover.dataset.savedSourcePause || "false") ||
         hasProviderKeyInput(popover);
       saveButton.disabled = !dirty;
     }
@@ -6002,6 +6011,8 @@
         overleafProjectId,
         targetKind: target.targetKind,
         targetLabel: target.targetLabel,
+        labelSource: target.labelSource || "explicit",
+        latexLabel: target.latexLabel || "",
         targetText: target.targetText,
         targetUses: target.targetUses || [],
         targetContext: target.targetContext || "",
@@ -6836,7 +6847,8 @@
       leaModel: DEFAULT_LEA_MODEL,
       leaMaxTurns: DEFAULT_LEA_MAX_TURNS,
       leaMaxSpendUsd: null,
-      leaTexMirrorEnabled: DEFAULT_LEA_TEX_MIRROR_ENABLED
+      leaTexMirrorEnabled: DEFAULT_LEA_TEX_MIRROR_ENABLED,
+      leaPauseOnSourceIssue: false
     });
   }
 
@@ -6867,6 +6879,7 @@
         leaMaxSpendUsd: payload.leaMaxSpendUsd ?? stored.leaMaxSpendUsd ?? null,
         leaCurrentSpendUsd: payload.leaCurrentSpendUsd ?? 0,
         leaTexMirrorEnabled: payload.leaTexMirrorEnabled ?? stored.leaTexMirrorEnabled ?? DEFAULT_LEA_TEX_MIRROR_ENABLED,
+        leaPauseOnSourceIssue: payload.leaPauseOnSourceIssue === true,
         leaModelOptions: payload.leaModelOptions || DEFAULT_MODEL_OPTIONS,
         leaModelCatalog: Array.isArray(catalogPayload.models) && catalogPayload.models.length > 0
           ? catalogPayload.models
@@ -6886,7 +6899,8 @@
         leaModel: settings.leaModel,
         leaMaxTurns: settings.leaMaxTurns,
         leaMaxSpendUsd: settings.leaMaxSpendUsd,
-        leaTexMirrorEnabled: settings.leaTexMirrorEnabled
+        leaTexMirrorEnabled: settings.leaTexMirrorEnabled,
+        leaPauseOnSourceIssue: settings.leaPauseOnSourceIssue
       });
       return settings;
     } catch {
@@ -6909,6 +6923,7 @@
     const maxTurnsInput = popover.querySelector("[data-role='max-turns']");
     const maxSpendInput = popover.querySelector("[data-role='max-spend']");
     const texMirrorInput = popover.querySelector("[data-role='tex-mirror']");
+    const sourcePauseInput = popover.querySelector("[data-role='source-pause']");
     popover.dataset.modelOptions = JSON.stringify(settings.leaModelOptions || DEFAULT_MODEL_OPTIONS);
     popover.leaModelCatalog = settings.leaModelCatalog || settings.leaModelOptions || DEFAULT_MODEL_OPTIONS;
     popover.leaApiKeys = settings.leaApiKeys || {};
@@ -6929,11 +6944,13 @@
     maxTurnsInput.value = String(settings.leaMaxTurns || DEFAULT_LEA_MAX_TURNS);
     maxSpendInput.value = settings.leaMaxSpendUsd == null ? "" : String(settings.leaMaxSpendUsd);
     texMirrorInput.checked = settings.leaTexMirrorEnabled !== false;
+    sourcePauseInput.checked = settings.leaPauseOnSourceIssue === true;
     renderGithubTokenStatus(popover, Boolean(settings.githubTokenConfigured));
     popover.dataset.savedModel = modelSelect.value;
     popover.dataset.savedMaxTurns = String(Number.parseInt(maxTurnsInput.value, 10) || DEFAULT_LEA_MAX_TURNS);
     popover.dataset.savedMaxSpend = settings.leaMaxSpendUsd == null ? "" : String(settings.leaMaxSpendUsd);
     popover.dataset.savedTexMirror = String(texMirrorInput.checked);
+    popover.dataset.savedSourcePause = String(sourcePauseInput.checked);
     popover.querySelector("[data-role='save-settings']").disabled = true;
     try {
       const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
@@ -7171,6 +7188,7 @@
     const leaMaxTurns = Number.parseInt(popover.querySelector("[data-role='max-turns']").value, 10) || DEFAULT_LEA_MAX_TURNS;
     const leaMaxSpendUsd = parseMaxSpendInput(popover.querySelector("[data-role='max-spend']").value);
     const leaTexMirrorEnabled = popover.querySelector("[data-role='tex-mirror']").checked;
+    const leaPauseOnSourceIssue = popover.querySelector("[data-role='source-pause']").checked;
     const response = await fetch(`${baseUrl}/settings/lea`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -7181,6 +7199,7 @@
         leaMaxTurns,
         leaMaxSpendUsd,
         leaTexMirrorEnabled,
+        leaPauseOnSourceIssue,
         leaProviderApiKeys: collectProviderApiKeyPatch(popover),
         leaApiKeys: collectDynamicApiKeyPatch(popover)
       })
@@ -7198,7 +7217,8 @@
       leaMaxTurns: payload.leaMaxTurns,
       leaMaxSpendUsd: payload.leaMaxSpendUsd,
       leaTheoremTranslationMaxRetries: payload.leaTheoremTranslationMaxRetries,
-      leaTexMirrorEnabled: payload.leaTexMirrorEnabled
+      leaTexMirrorEnabled: payload.leaTexMirrorEnabled,
+      leaPauseOnSourceIssue: payload.leaPauseOnSourceIssue
     });
     return payload;
   }

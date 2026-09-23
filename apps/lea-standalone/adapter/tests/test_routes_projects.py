@@ -923,6 +923,31 @@ def test_artifact_retire_and_restore_round_trip_through_git(tmp_path, monkeypatc
     assert proof.read_text().startswith("theorem cauchy_bound")
 
 
+def test_artifact_retire_refuses_file_with_multiple_declarations(tmp_path, monkeypatch):
+    """Retrying one declaration must not delete its siblings' proof file."""
+    proofs = _setup(tmp_path, monkeypatch)
+    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    repo = proofs / "Lea" / "Analysis"
+    proof = repo / "shared.lean"
+    original = (
+        "namespace Lea.Analysis\n"
+        "theorem already_proved : True := by trivial\n"
+        "theorem needs_retry : True := by sorry\n"
+        "end Lea.Analysis\n"
+    )
+    proof.write_text(original)
+    from app.gitstore import GitStore
+    GitStore(repo.parent).commit_all(repo, "record shared proof")
+
+    with pytest.raises(HTTPException) as exc:
+        projects_route.retire_project_artifact_by_slug(
+            project["slug"], projects_route.ArtifactRetireRequest(path="shared.lean")
+        )
+
+    assert exc.value.status_code == 409
+    assert proof.read_text() == original
+
+
 def test_artifact_retire_first_records_an_untracked_sql_owned_file(tmp_path, monkeypatch):
     """Retiring an indexed but untracked materialization must not unlink it and
     then fail `git add` before a restore token can be returned."""

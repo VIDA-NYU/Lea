@@ -32,6 +32,7 @@ class LeaConfig:
 
     # --- agent loop knobs (defaulted; the UI omits them) ---
     status_reporting: bool = False
+    allow_source_pause: bool = False
     status_context: dict = field(default_factory=dict)
     narrate_tool_steps: bool = False  # True → ask the model to summarize intent before tool calls
     prompt_variant: str = "interactive"  # the chat variant (formalization vs assistant routing)

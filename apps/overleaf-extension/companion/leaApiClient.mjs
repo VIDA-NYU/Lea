@@ -414,6 +414,7 @@ export async function startApiRun({
   newFormalization = null,
   purpose = "general",
   sourceBundle = null,
+  allowSourcePause = false,
 }) {
   // `autonomous: true` tells the adapter to run with no per-tool approval gate and
   // the non-interactive `default` prompt variant, so the Overleaf job formalizes
@@ -432,12 +433,12 @@ export async function startApiRun({
   if (["overleaf_solver", "overleaf_continuation"].includes(purpose)) {
     const health = await fetchAdapterHealth({ fetchImpl, baseUrl, apiKey });
     const capability = health.body?.capabilities?.lea_status;
-    if (!health.ok || capability?.version !== 1 || !capability.admission_enabled) {
-      return { ok: false, status: 409, error: "Update/start compatible Lea components: live Lea Status v1 is required." };
+    if (!health.ok || capability?.version !== 1 || !capability.admission_enabled || capability.source_pause_policy !== 1) {
+      return { ok: false, status: 409, error: "Update/start compatible Lea components: live Lea Status v1 and source pause policy support are required." };
     }
     if (!sourceBundle?.bundleHash) return { ok: false, status: 422, error: "Current LaTeX source context is required. Refresh the Overleaf pane before continuing." };
   }
-  const body = { message, autonomous, purpose };
+  const body = { message, autonomous, purpose, allow_source_pause: allowSourcePause === true };
   if (sourceBundle) { body.source_bundle = sourceBundle; body.lea_status_version = 1; }
   if (sessionId) body.session_id = sessionId;
   if (projectSlug) {
@@ -738,6 +739,7 @@ export async function runApiProofJob({
   newFormalization = null,
   purpose = "general",
   sourceBundle = null,
+  allowSourcePause = false,
   appendLog = null,
   logPath = null,
   onEvent = null,
@@ -765,6 +767,7 @@ export async function runApiProofJob({
     newFormalization,
     purpose,
     sourceBundle,
+    allowSourcePause,
   });
   if (!start.ok) return { ok: false, timedOut: false, error: start.error };
 
