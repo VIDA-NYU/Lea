@@ -1305,6 +1305,98 @@ test("version-2 source identity keeps a newly formalized definition current on b
   assert.equal(statuses.body.statuses["definition:fresh_definition"].sourceFreshness, "current");
 });
 
+test("an existing canonical lemma artifact stays current and real source edits become stale", async () => {
+  const leaRepo = await makeLeaRepo();
+  const state = await makeState({ leaRepoPath: leaRepo });
+  const proofPath = path.join("workspace", "proofs", "Lea", "Project", "sample_lemma.lean");
+  await writeLeaProjectProof(leaRepo, proofPath, "theorem sample_lemma : True := by\n  trivial\n");
+  const documentFor = ({ statement = "A sample statement.", proof = "By inspection.", uses = "", context = "" } = {}) => [
+    "\\begin{lemma}",
+    `% lea: formalize label=sample_lemma${uses ? ` uses={${uses}}` : ""}${context ? ` context={${context}}` : ""}`,
+    statement,
+    "\\end{lemma}",
+    "\\begin{proof}",
+    proof,
+    "\\end{proof}"
+  ].join("\n");
+  const source = documentFor();
+  const generated = sourceBundleItem(source, "sample_lemma");
+  assert.equal(generated.kind, "lemma");
+  assert.equal(generated.sourceBundle.targetKind, "theorem");
+  state.jobs.sampleLemma = {
+    jobId: "sample-lemma",
+    jobKey: "project-1:theorem:sample_lemma",
+    status: "formalized",
+    targetKind: "theorem",
+    targetLabel: "sample_lemma",
+    declarationName: "sample_lemma",
+    recordedProofPath: proofPath,
+    targetTextHash: generated.sourceHash,
+    sourceBundle: generated.sourceBundle,
+    formalizationInputHash: generated.formalizationInputHash,
+    leaRepoPath: leaRepo,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    finishedAt: "2026-01-01T00:01:00.000Z"
+  };
+  const paneFor = (content) => handleLeanPaneManifest({
+    overleafProjectId: "project-1", files: [{ path: "main.tex", content }]
+  }, state);
+  const statusFor = (item) => handleGetStatuses({
+    overleafProjectId: "project-1",
+    targets: [{
+      targetKind: "theorem", targetLabel: "sample_lemma",
+      targetText: item.naturalLanguageLatex,
+      targetUses: item.targetUses, targetContext: item.targetContext,
+      sourceIdentityHash: item.formalizationInputHash
+    }]
+  }, state);
+  const currentPane = await paneFor(source);
+  assert.equal(currentPane.body.items[0].status, "valid");
+  assert.equal(currentPane.body.items[0].sourceFreshness, "current");
+  const currentStatuses = await statusFor(generated);
+  assert.equal(currentStatuses.body.statuses["theorem:sample_lemma"].sourceFreshness, "current");
+
+  for (const change of [
+    { statement: "A revised statement." },
+    { proof: "A revised proof." },
+    { uses: "another_lemma" },
+    { context: "Work in Nat." }
+  ]) {
+    const changed = documentFor(change);
+    const changedItem = sourceBundleItem(changed, "sample_lemma");
+    const pane = await paneFor(changed);
+    assert.equal(pane.body.items[0].sourceFreshness, "stale", JSON.stringify(change));
+    assert.equal(pane.body.items[0].status, "stale", JSON.stringify(change));
+    const statuses = await statusFor(changedItem);
+    assert.equal(statuses.body.statuses["theorem:sample_lemma"].sourceFreshness, "stale", JSON.stringify(change));
+  }
+  const shiftedPane = await paneFor(`An unrelated heading.\n\n${source}`);
+  assert.equal(shiftedPane.body.items[0].sourceFreshness, "current");
+});
+
+test("companion canonicalizes an older client's raw lemma source-bundle kind", async () => {
+  const leaRepo = await makeLeaRepo();
+  const calls = [];
+  const state = await makeState({
+    leaRepoPath: leaRepo,
+    env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: makeAdapterApiFetch(calls, { doneStatus: "failed" })
+  });
+  const source = "\\begin{lemma}\n% lea: formalize label=sample_lemma\nA sample statement.\n\\end{lemma}";
+  const item = sourceBundleItem(source, "sample_lemma");
+  const result = await handleFormalize({
+    overleafProjectId: "project-1",
+    targetKind: "theorem", targetLabel: "sample_lemma",
+    targetText: item.naturalLanguageLatex,
+    mirrorAvailable: false,
+    sourceBundle: { ...item.sourceBundle, targetKind: "lemma" }
+  }, state);
+  assert.equal(result.statusCode, 200);
+  const recorded = state.jobs[result.body.jobId].sourceBundle;
+  assert.equal(recorded.targetKind, "theorem");
+  assert.equal(recorded.sourceIdentityHash, item.formalizationInputHash);
+});
+
 test("version-2 source identity marks a proof-only LaTeX change stale on both status surfaces", async () => {
   const leaRepo = await makeLeaRepo();
   const state = await makeState({ leaRepoPath: leaRepo });
@@ -3531,43 +3623,50 @@ test("formalize cleans previous failed Lea artifacts before retrying", async () 
     // The retire candidates come from the adapter's ledger (4.3) — the
     // registry markdown is only the agent-facing view the cleanup splices.
     const artifacts = [];
+    const adapterFetch = makeLeaApiFetch(calls, {
+      statusBody: { run_id: "api-run-1", status: "completed", result: { reason: "success" } },
+      artifacts,
+      targetStatus: {
+        retry_target: ledgerEntry("retry_target", {
+          path: "retry_target.lean",
+          module_name: "Lea.Project1.retry_target",
+          content: "theorem retry_target : True := by\n  trivial\n"
+        })
+      },
+      onStatusRequest: async () => {
+        assert.equal(await fileExists(path.join(leaRepo, proofPath)), false);
+        assert.doesNotMatch(
+          await fs.readFile(path.join(leaRepo, "workspace", "projects", "project-1.md"), "utf8"),
+          /retry_target/
+        );
+        await writeLeaProjectProof(
+          leaRepo,
+          proofPath,
+          "theorem retry_target : True := by\n  trivial\n"
+        );
+        await writeLeaProjectMarkdown(leaRepo, "project-1", {
+          theoremName: "retry_target",
+          proofPath
+        });
+        artifacts.push({
+          run_id: "api-run-1",
+          declaration_name: "retry_target",
+          path: "retry_target.lean",
+          module_name: "Lea.Project1.retry_target",
+          kind: "proof"
+        });
+      }
+    });
     const state = await makeState({
       leaRepoPath: leaRepo,
       env: { OPENAI_API_KEY: "test-key" },
-      fetchImpl: makeLeaApiFetch(calls, {
-        statusBody: { run_id: "api-run-1", status: "completed", result: { reason: "success" } },
-        artifacts,
-        targetStatus: {
-          retry_target: ledgerEntry("retry_target", {
-            path: "retry_target.lean",
-            module_name: "Lea.Project1.retry_target",
-            content: "theorem retry_target : True := by\n  trivial\n"
-          })
-        },
-        onStatusRequest: async () => {
-          assert.equal(await fileExists(path.join(leaRepo, proofPath)), false);
-          assert.doesNotMatch(
-            await fs.readFile(path.join(leaRepo, "workspace", "projects", "project-1.md"), "utf8"),
-            /retry_target/
-          );
-          await writeLeaProjectProof(
-            leaRepo,
-            proofPath,
-            "theorem retry_target : True := by\n  trivial\n"
-          );
-          await writeLeaProjectMarkdown(leaRepo, "project-1", {
-            theoremName: "retry_target",
-            proofPath
-          });
-          artifacts.push({
-            run_id: "api-run-1",
-            declaration_name: "retry_target",
-            path: "retry_target.lean",
-            module_name: "Lea.Project1.retry_target",
-            kind: "proof"
-          });
+      fetchImpl: async (url, options) => {
+        if (String(url).endsWith("/artifacts/retire")) {
+          await fs.rm(path.join(leaRepo, proofPath));
+          return jsonResponse(200, { retire_commit: "a".repeat(40) });
         }
-      })
+        return adapterFetch(url, options);
+      }
     });
     state.jobs.previous_failed = {
       jobId: "previous_failed",
@@ -3617,15 +3716,19 @@ test("formalize all rechecks completed proofs before starting a queued item", as
     })
   });
 
-  const result = await handleFormalize({
+  const result = await handleFormalizeAll({
     overleafProjectId: "project-1",
-    targetKind: "theorem",
-    targetLabel: "already_proved",
-    targetText: "A previously proved theorem."
-  }, state, { batch: true });
+    items: [{
+      targetKind: "theorem",
+      targetLabel: "already_proved",
+      targetText: "A previously proved theorem."
+    }]
+  }, state);
 
   assert.equal(result.statusCode, 200);
-  assert.equal(result.body.status, "already_formalized");
+  await waitFor(() => state.repairBatches?.[result.body.batchId]?.done);
+  assert.equal(state.repairBatches[result.body.batchId].items[0].state, "skipped");
+  assert.equal(state.repairBatches[result.body.batchId].items[0].reason, "existing_proof");
   assert.ok(!calls.some((call) => String(call.url).endsWith("/api/runs")));
   assert.ok(!calls.some((call) => String(call.url).endsWith("/artifacts/retire")));
 });
@@ -3661,6 +3764,33 @@ test("formalize all cannot bypass a shared-file retirement refusal", async () =>
   assert.equal(result.statusCode, 409);
   assert.equal(result.body.error, "artifact_retirement_blocked");
   assert.equal(await fs.readFile(path.join(leaRepo, proofPath), "utf8"), original);
+  assert.ok(!calls.some((call) => String(call.url).endsWith("/api/runs")));
+});
+
+test("formalize all refuses to complete a stub stored beside another proof", async () => {
+  const leaRepo = await makeLeaRepo();
+  const calls = [];
+  const state = await makeState({
+    leaRepoPath: leaRepo,
+    env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: makeAdapterApiFetch(calls, {
+      targetStatus: {
+        needs_retry: ledgerEntry("needs_retry", {
+          path: "shared.lean", has_sorry: true, shared_file: true
+        })
+      }
+    })
+  });
+
+  const result = await handleFormalize({
+    overleafProjectId: "project-1",
+    targetKind: "theorem",
+    targetLabel: "needs_retry",
+    targetText: "A theorem with a stub."
+  }, state, { batch: true });
+
+  assert.equal(result.statusCode, 409);
+  assert.equal(result.body.error, "shared_artifact");
   assert.ok(!calls.some((call) => String(call.url).endsWith("/api/runs")));
 });
 

@@ -878,6 +878,10 @@ test("formatRepairOutcome covers every batch item state", () => {
     /skipped -- depends on failed repair of b\./
   );
   assert.match(formatRepairOutcome({ targetLabel: "c", state: "skipped", reason: "already_fixed" }), /already compiles/);
+  assert.match(
+    formatRepairOutcome({ targetLabel: "c", state: "skipped", reason: "existing_proof" }, "formalize"),
+    /existing Lean proof kept/
+  );
 });
 
 test("formatRepairOutcome is operation-aware for stub and formalize batches", () => {
@@ -905,6 +909,7 @@ test("stubbableItems / formalizableItems skip completed work in project-level ba
     { targetLabel: "stubbed_thm", status: "stub-generated", leanKind: "theorem", formalizable: true },
     { targetLabel: "broken_thm", status: "invalid", leanKind: "theorem", formalizable: true },
     { targetLabel: "done_thm", status: "valid", leanKind: "theorem", formalizable: true },
+    { targetLabel: "stale_thm", status: "stale", leanKind: "theorem", formalizable: true },
     { targetLabel: "running_thm", status: "missing-stub", leanKind: "theorem", formalizable: true, inProgress: true },
     { targetLabel: "unmarked", status: "missing-stub", leanKind: "theorem", formalizable: false }
   ];
@@ -913,7 +918,8 @@ test("stubbableItems / formalizableItems skip completed work in project-level ba
   assert.deepEqual(stubbableItems(items).map((i) => i.targetLabel), ["fresh_thm"]);
   // Formalize all: everything not yet verified -- fresh items (incl.
   // definitions), sorry-stubs to complete, and broken items to re-formalize.
-  // A valid proof remains individually rerunnable but is not restarted in bulk.
+  // Existing valid and stale proofs remain individually rerunnable but are not
+  // restarted in bulk.
   assert.deepEqual(
     formalizableItems(items).map((i) => i.targetLabel),
     ["fresh_thm", "fresh_def", "stubbed_thm", "broken_thm"]

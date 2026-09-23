@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import test from "node:test";
 import { associateProofSources, buildFormalizationSourceBundle } from "../shared/proofSource.mjs";
 import { parseTargets } from "../shared/theoremParser.mjs";
+import { sourceHashInputs } from "../extension/sourceIdentityCore.mjs";
+
+test("version-2 source hashes match the cross-language golden fixture", async () => {
+  const fixture = JSON.parse(await fs.readFile(new URL("./fixtures/sourceIdentityV2.json", import.meta.url), "utf8"));
+  const hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  const { evidence, identity } = sourceHashInputs(fixture.bundle);
+  assert.equal(hash(evidence), fixture.bundleHash);
+  assert.equal(hash(identity), fixture.sourceIdentityHash);
+});
 
 function targetsIn(content, sourceFile = "main.tex") {
   return parseTargets(content).map((target) => ({ ...target, sourceFile }));

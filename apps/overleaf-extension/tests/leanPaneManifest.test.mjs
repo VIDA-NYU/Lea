@@ -70,6 +70,7 @@ test("omits environments without Lea comment labels and preserves source metadat
   assert.equal(manifest.items.length, 1);
   const [item] = manifest.items;
   assert.equal(item.kind, "corollary");
+  assert.equal(item.targetKind, "theorem");
   assert.equal(item.label, "main_corollary");
   assert.equal(item.latexLabel, "cor:main");
   assert.equal(item.sourceFile, "main.tex");
@@ -223,6 +224,7 @@ test("inventories a tag-marked item in a custom (non-allowlisted) environment", 
   assert.equal(manifest.items.length, 2);
   const [claim, fact] = manifest.items;
   assert.equal(claim.kind, "claim");
+  assert.equal(claim.targetKind, "theorem");
   assert.equal(claim.label, "foo_claim");
   assert.equal(claim.leanKind, "theorem");
   assert.equal(claim.formalizable, true);

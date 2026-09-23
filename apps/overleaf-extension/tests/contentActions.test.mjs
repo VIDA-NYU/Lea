@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
+import { buildLeanPaneManifest } from "../shared/leanPaneManifest.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const contentScriptPath = path.join(repoRoot, "apps/overleaf-extension/extension/content.js");
@@ -112,6 +113,49 @@ test("status refresh sends the canonical version-2 source identity", async () =>
   assert.ok(statusCall, "expected a status request");
   const request = JSON.parse(statusCall.options.body);
   assert.match(request.targets[0].sourceIdentityHash, /^[a-f0-9]{64}$/);
+});
+
+test("formalize requests and pane refresh hash unchanged targets identically across LaTeX environments", async () => {
+  const cases = [
+    { environment: "theorem", marker: "% lea: formalize label=sample", kind: "theorem" },
+    { environment: "lemma", marker: "% lea: formalize label=sample", kind: "theorem" },
+    { environment: "proposition", marker: "% lea: formalize label=sample", kind: "theorem" },
+    { environment: "corollary", marker: "% lea: formalize label=sample", kind: "theorem" },
+    { environment: "definition", marker: "% lea: define label=sample", kind: "definition" },
+    { environment: "claim", marker: "\\leatheorem{label=sample}", kind: "theorem" },
+    { environment: "theorem", marker: "% lea: formalize", latexLabel: "thm:generated", kind: "theorem" }
+  ];
+  for (const { environment, marker, latexLabel, kind } of cases) {
+    const source = [
+      `\\begin{${environment}}${latexLabel ? `\\label{${latexLabel}}` : ""}`,
+      marker,
+      "A sample statement.",
+      `\\end{${environment}}`,
+      ...(kind === "theorem" ? ["\\begin{proof}", "By inspection.", "\\end{proof}"] : [])
+    ].join("\n");
+    const manifest = buildLeanPaneManifest({
+      overleafProjectId: "unknown", files: [{ path: "main.tex", content: source }]
+    });
+    assert.equal(manifest.items.length, 1, environment);
+    const item = manifest.items[0];
+    assert.equal(item.targetKind, kind, environment);
+    const harness = createContentHarness({ status: "unformalized" }, {}, {
+      locationPath: "/project/unknown",
+      manifest: { ...manifest, items: [{ ...item, status: "missing-stub" }] }
+    });
+    await harness.loadVisibleTheorems({ activeTex: source });
+    harness.clickPaneTrigger();
+    await flushPromises();
+    harness.clickPaneTreeRowText("main.tex");
+    harness.clickFirstPaneItem();
+    harness.clickButtonText("Formalize");
+    await flushPromises();
+    const call = harness.fetchCalls.find((entry) => entry.url.endsWith("/formalize"));
+    assert.ok(call, `expected /formalize for ${environment}`);
+    const request = JSON.parse(call.options.body);
+    assert.equal(request.sourceBundle.targetKind, kind, environment);
+    assert.equal(request.sourceBundle.sourceIdentityHash, item.formalizationInputHash, environment);
+  }
 });
 
 test("a source-stale formalization is labeled out of date on the LaTeX badge and in its popover", async () => {

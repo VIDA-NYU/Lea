@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { findEnvironments, parseTargets } from "../extension/targetParserCore.mjs";
+import { canonicalSourceTargetKind, sourceHashInputs } from "../extension/sourceIdentityCore.mjs";
 
 const PROOF_ENVIRONMENTS = new Set(["proof", "proof*"]);
 const EXPLICIT_ASSOCIATION = /^[ \t]*%\s*lea:\s*proof-for\s*=\s*(?:\{([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))[ \t]*(?:\r?\n|$)/im;
@@ -182,7 +183,7 @@ export function buildFormalizationSourceBundle(target, {
   const bundle = {
     version: 2,
     targetKey: identity.label,
-    targetKind: String(target?.targetKind || target?.kind || "theorem"),
+    targetKind: canonicalSourceTargetKind(target?.targetKind || target?.leanKind || target?.kind),
     statement: normalizeNewlines(target?.targetText || target?.naturalLanguageLatex || ""),
     proof: normalizeNewlines(target?.sourceProof || ""),
     proofAssociation: {
@@ -208,29 +209,13 @@ export function buildFormalizationSourceBundle(target, {
   };
   // Locations are report-navigation metadata, not mathematical identity. A
   // heading inserted above the theorem must not invalidate an unchanged proof.
-  const hashIdentity = {
-    version: bundle.version,
-    targetKey: bundle.targetKey,
-    targetKind: bundle.targetKind,
-    statement: bundle.statement,
-    proof: bundle.proof,
-    proofAssociation: {
-      status: bundle.proofAssociation.status,
-      method: bundle.proofAssociation.method,
-      sourceFile: bundle.proofAssociation.sourceFile,
-      proofHash: bundle.proofAssociation.proofHash
-    },
-    uses: bundle.uses,
-    context: bundle.context,
-    relevantSource: bundle.relevantSource,
-    mirror: bundle.mirror
-  };
+  const { evidence, identity: hashIdentity } = sourceHashInputs(bundle);
   return {
     ...bundle,
-    bundleHash: hashJson(hashIdentity),
+    bundleHash: hashJson(evidence),
     // Bounded excerpts and the whole-project mirror revision are frozen
     // evaluator evidence. They are not target identity: an unrelated paragraph
     // elsewhere in the paper must not make this formalization stale.
-    sourceIdentityHash: hashJson({ ...hashIdentity, relevantSource: [], mirror: null })
+    sourceIdentityHash: hashJson(hashIdentity)
   };
 }

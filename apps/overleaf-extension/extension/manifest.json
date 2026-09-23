@@ -23,7 +23,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["pageBridge.js", "targetParserCore.mjs", "proofSourceCore.mjs", "zipTex.mjs", "leanPaneView.mjs", "leaStatusView.mjs", "leaStatusCore.mjs", "leanPaneMath.mjs", "blueprintLayout.mjs", "blueprintPaneView.mjs", "editorHookWatchdog.mjs", "eventsClient.mjs", "vendor/katex/fonts/*"],
+      "resources": ["pageBridge.js", "targetParserCore.mjs", "proofSourceCore.mjs", "sourceIdentityCore.mjs", "zipTex.mjs", "leanPaneView.mjs", "leaStatusView.mjs", "leaStatusCore.mjs", "leanPaneMath.mjs", "blueprintLayout.mjs", "blueprintPaneView.mjs", "editorHookWatchdog.mjs", "eventsClient.mjs", "vendor/katex/fonts/*"],
       "matches": ["https://www.overleaf.com/*"]
     }
   ],

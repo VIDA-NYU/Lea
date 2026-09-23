@@ -779,6 +779,10 @@ def project_target_status_by_slug(slug: str, declarations: str = "") -> dict:
                 content = absolute.read_text()
             except OSError:
                 exists = False
+        shared_file = exists and (
+            sum(candidate["path"] == row["path"] for candidate in rows.values()) > 1
+            or len(artifacts_service.scan_lean_declarations(content)) > 1
+        )
         check = store.latest_check_for_project_path(project["id"], row["path"])
         formalization = (
             store.get_formalization(row["formalization_id"])
@@ -813,6 +817,7 @@ def project_target_status_by_slug(slug: str, declarations: str = "") -> dict:
             "module_name": row["module_name"],
             "kind": row["kind"],
             "exists": exists,
+            "shared_file": shared_file,
             "declaration_present": artifacts_service.declaration_present(content, name) if exists else False,
             "has_sorry": artifacts_service.declaration_contains_sorry(content, name) if exists else None,
             "check_status": check["check_status"] if check else None,

@@ -1,5 +1,6 @@
 import { acceptStatusEvent } from "./leaStatus.mjs";
 import { normalizeLeaStatus } from "../shared/leaStatus.mjs";
+import { canonicalSourceTargetKind, sourceHashInputs } from "../extension/sourceIdentityCore.mjs";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import http from "node:http";
@@ -375,26 +376,33 @@ export async function handleFormalize(payload, state, { batch = false } = {}) {
       body: buildJobResponse({ job: activeJob, status: "in_progress", target })
     };
   }
+  const previousJob = findLatestFinishedJob(state.jobs || {}, target.jobKey);
+  const declarations = [...new Set([
+    previousJob?.declarationName,
+    previousJob?.declarationNameHint,
+    target.targetLabel
+  ].filter(Boolean))];
+  const ledger = await fetchTargetStatusFromAdapter({ state, target, declarations });
+  if (Object.values(ledger || {}).some((entry) => entry?.recorded && entry.exists && entry.shared_file)) {
+    return errorResponse(409, "shared_artifact", "This Lean file contains other declarations; formalizing one item could overwrite them. Move the target into its own file first.");
+  }
   if (batch) {
     // The pane's status snapshot can be stale by the time this item reaches the
     // front of a long batch. Never turn a completed proof into a destructive
     // retry simply because the browser queued it earlier.
-    const previousJob = findLatestFinishedJob(state.jobs || {}, target.jobKey);
-    const declarations = [...new Set([
-      previousJob?.declarationName,
-      previousJob?.declarationNameHint,
-      target.targetLabel
-    ].filter(Boolean))];
-    const ledger = await fetchTargetStatusFromAdapter({ state, target, declarations });
     const completeOnDisk = Object.values(ledger || {}).some((entry) =>
       entry?.recorded && entry.exists && entry.has_sorry === false);
     const artifactJob = findLatestArtifactJob(state.jobs || {}, target.jobKey, {
       declarationName: previousJob?.declarationName
     });
+    const artifactPath = artifactJob?.recordedProofPath
+      ? buildLeaProofPath({ leaRepoPath: state.settings.leaRepoPath, proofPath: artifactJob.recordedProofPath })
+      : null;
     const completedJob = !ledger
-      && ["formalized", "disproved", "repaired"].includes(artifactJob?.status);
+      && ["formalized", "disproved", "repaired"].includes(artifactJob?.status)
+      && artifactPath && existsSync(artifactPath);
     if (completeOnDisk || completedJob) {
-      return { statusCode: 200, body: { status: "already_formalized" } };
+      return { statusCode: 200, body: { status: "existing_proof" } };
     }
   }
   const resume = payload.resume === true;
@@ -464,8 +472,7 @@ export async function handleFormalize(payload, state, { batch = false } = {}) {
           leaRepoPath: state.settings.leaRepoPath,
           target,
           targetText,
-          jobs: state.jobs || {},
-          requireAdapterRetire: batch
+          jobs: state.jobs || {}
         });
   } catch (error) {
     return errorResponse(409, "artifact_retirement_blocked", error instanceof Error ? error.message : String(error));
@@ -3139,8 +3146,8 @@ async function runFormalizeBatchItem(state, entry, batch) {
   }
   const body = result?.body || {};
   if (result?.statusCode === 402 || body.error === "max_spend_reached") return { paused: true };
-  if (result?.statusCode === 200 && body.status === "already_formalized") {
-    return { ok: true, state: "skipped", reason: "already_fixed" };
+  if (result?.statusCode === 200 && body.status === "existing_proof") {
+    return { ok: true, state: "skipped", reason: "existing_proof" };
   }
   if (result?.statusCode !== 200 || !body.jobId) {
     return { ok: false, reason: body.error || body.message || "formalize_start_failed", jobId: body.jobId || null };
@@ -4710,7 +4717,7 @@ function normalizeSourceContext(payload) {
   const sourceBundleCore = {
     version: 2,
     targetKey: String(submittedBundle.targetKey || payload.targetLabel || ""),
-    targetKind: String(submittedBundle.targetKind || payload.targetKind || "theorem"),
+    targetKind: canonicalSourceTargetKind(payload.targetKind || submittedBundle.targetKind),
     statement: String(submittedBundle.statement || payload.targetText || "").replace(/\r\n?/g, "\n"),
     proof: String(submittedBundle.proof || "").replace(/\r\n?/g, "\n"),
     proofAssociation: {
@@ -4737,43 +4744,12 @@ function normalizeSourceContext(payload) {
     relevantSource,
     mirror
   };
+  const hashInputs = sourceHashInputs(sourceBundleCore);
   const sourceBundle = Object.keys(submittedBundle).length || String(payload.targetText || "").trim()
     ? {
         ...sourceBundleCore,
-        bundleHash: hashExactText(JSON.stringify({
-          version: sourceBundleCore.version,
-          targetKey: sourceBundleCore.targetKey,
-          targetKind: sourceBundleCore.targetKind,
-          statement: sourceBundleCore.statement,
-          proof: sourceBundleCore.proof,
-          proofAssociation: {
-            status: sourceBundleCore.proofAssociation.status,
-            method: sourceBundleCore.proofAssociation.method,
-            sourceFile: sourceBundleCore.proofAssociation.sourceFile,
-            proofHash: sourceBundleCore.proofAssociation.proofHash
-          },
-          uses: sourceBundleCore.uses,
-          context: sourceBundleCore.context,
-          relevantSource: sourceBundleCore.relevantSource,
-          mirror: sourceBundleCore.mirror
-        })),
-        sourceIdentityHash: hashExactText(JSON.stringify({
-          version: sourceBundleCore.version,
-          targetKey: sourceBundleCore.targetKey,
-          targetKind: sourceBundleCore.targetKind,
-          statement: sourceBundleCore.statement,
-          proof: sourceBundleCore.proof,
-          proofAssociation: {
-            status: sourceBundleCore.proofAssociation.status,
-            method: sourceBundleCore.proofAssociation.method,
-            sourceFile: sourceBundleCore.proofAssociation.sourceFile,
-            proofHash: sourceBundleCore.proofAssociation.proofHash
-          },
-          uses: sourceBundleCore.uses,
-          context: sourceBundleCore.context,
-          relevantSource: [],
-          mirror: null
-        }))
+        bundleHash: hashExactText(JSON.stringify(hashInputs.evidence)),
+        sourceIdentityHash: hashExactText(JSON.stringify(hashInputs.identity))
       }
     : null;
   const contextAcquisitionMode = !mirrorAvailable
@@ -5209,14 +5185,17 @@ function repoRelativeProofPath(target, proofPath) {
   return normalized.startsWith(prefix) ? normalized.slice(prefix.length) : null;
 }
 
-async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, targetText, jobs, requireAdapterRetire = false }) {
+async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, targetText, jobs }) {
   const previousJob = findLatestFinishedJob(jobs, target.jobKey);
+  if (!previousJob) {
+    // A first attempt has no artifact owned by this target. In particular, a
+    // name inferred from its source text must not retire another target's file.
+    return { removedProofPaths: [], removedProjectEntries: [] };
+  }
 
-  const declarationHint = inferLeanDeclarationName(targetText);
   const candidateNames = new Set([
     previousJob?.declarationName,
     previousJob?.declarationNameHint,
-    declarationHint,
     target.targetLabel
   ].filter(Boolean));
   const candidateProofPaths = new Set([
@@ -5225,9 +5204,7 @@ async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, 
 
   // The adapter's ledger — not the registry markdown, which is a write-only
   // view for machines (4.3) — names the recorded file for each declaration
-  // candidate; those files are what a retry must retire. Best-effort: an
-  // unreachable adapter leaves the job-recorded path as the only candidate,
-  // same as a declaration the index never saw.
+  // candidate; those files are what a retry must retire.
   const ledger = await fetchTargetStatusFromAdapter({ state, target, declarations: [...candidateNames] });
   for (const row of Object.values(ledger || {})) {
     if (row?.recorded && row.path) {
@@ -5245,14 +5222,10 @@ async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, 
     throw new Error("This target has artifacts in multiple Lean files; review them before retrying.");
   }
 
-  // Back up what is about to be deleted (AUDIT H2): this cleanup runs BEFORE
-  // the new run, so if that run fails, times out, or hits the spend cap, the
-  // previous verified artifact would otherwise be gone for good — and every
-  // dependent that imports its module breaks with it. The backups ride on
-  // job.retryCleanup and are restored by restorePreviousRunArtifacts when the
-  // run does not end verified; dropped once it does.
+  // Retirement happens only through the adapter. It records the deleted bytes
+  // in project Git so an unsuccessful run can restore them. Never fall back to
+  // unlinking locally: that would bypass its shared-file guard.
   const removedProofPaths = [];
-  const proofFileBackups = [];
   const retiredFiles = [];
   let adapterBaseUrl = null;
   try {
@@ -5261,48 +5234,23 @@ async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, 
     adapterBaseUrl = null;
   }
   for (const proofPath of candidateProofPaths) {
-    // Single-writer path (PLAN-system-hardening 4.5): retire through the
-    // adapter, which records the deletion and can restore its SQL-owned verified
-    // snapshot. No proof bytes ride on the job record. The legacy unlink+stash
-    // below survives only as a fallback for older adapters or unmappable paths.
+    const absolute = buildLeaProofPath({ leaRepoPath, proofPath });
+    if (!absolute || !existsSync(absolute)) continue;
     const repoRelativePath = repoRelativeProofPath(target, proofPath);
-    if (adapterBaseUrl && repoRelativePath && target.projectSlug) {
-      const retired = await retireProjectArtifactBySlug({
-        fetchImpl: state?.fetchImpl || fetch,
-        baseUrl: adapterBaseUrl,
-        slug: target.projectSlug,
-        path: repoRelativePath
-      });
-      if (retired.ok && retired.body?.retire_commit) {
-        removedProofPaths.push(proofPath);
-        retiredFiles.push({ proofPath, repoRelativePath, retireCommit: retired.body.retire_commit });
-        continue;
-      }
-      if (requireAdapterRetire || retired.status === 409 || retired.status === 422) {
-        throw new Error(retired.error || `The adapter refused to retire ${proofPath}.`);
-      }
-      const absolute = buildLeaProofPath({ leaRepoPath, proofPath });
-      if (retired.status === 404 && (!absolute || !existsSync(absolute))) {
-        continue; // recorded nowhere — nothing to retire on either side
-      }
-      // Adapter unavailable / predates the endpoint / path mismatch: fall
-      // through to the legacy local unlink+stash.
+    if (!adapterBaseUrl || !repoRelativePath || !target.projectSlug) {
+      throw new Error(`Cannot safely retire ${proofPath} through the adapter.`);
     }
-    const absolutePath = buildLeaProofPath({ leaRepoPath, proofPath });
-    let content = null;
-    if (absolutePath && existsSync(absolutePath)) {
-      try {
-        content = await fs.readFile(absolutePath, "utf8");
-      } catch {
-        content = null;
-      }
+    const retired = await retireProjectArtifactBySlug({
+      fetchImpl: state?.fetchImpl || fetch,
+      baseUrl: adapterBaseUrl,
+      slug: target.projectSlug,
+      path: repoRelativePath
+    });
+    if (!retired.ok || !retired.body?.retire_commit) {
+      throw new Error(retired.error || `The adapter refused to retire ${proofPath}.`);
     }
-    if (await removeLeaProofFile({ leaRepoPath, proofPath })) {
-      removedProofPaths.push(proofPath);
-      if (content !== null && content.length <= MAX_RETRY_BACKUP_BYTES) {
-        proofFileBackups.push({ proofPath, content });
-      }
-    }
+    removedProofPaths.push(proofPath);
+    retiredFiles.push({ proofPath, repoRelativePath, retireCommit: retired.body.retire_commit });
   }
 
   const removedSections = await removeProjectTheoremEntries({
@@ -5315,7 +5263,6 @@ async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, 
     removedProofPaths,
     removedProjectEntries: removedSections.map((section) => section.name),
     backups: {
-      proofFiles: proofFileBackups,
       retiredFiles,
       markdownSections: removedSections
         .filter((section) => section.text)
@@ -5323,10 +5270,6 @@ async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, 
     }
   };
 }
-
-// Cap on how much deleted proof content is stashed on a job record (the
-// backups are persisted with jobs.json); recorded Lean proofs are a few KB.
-const MAX_RETRY_BACKUP_BYTES = 256 * 1024;
 
 // Put back what cleanupPreviousRunArtifacts deleted, after a run that did NOT
 // produce a verified replacement (AUDIT H2). Conservative on purpose: a proof
@@ -5399,23 +5342,6 @@ async function restorePreviousRunArtifacts({ state, job, target }) {
     await appendLog(job.logPath, "\n[backend] Run did not produce a verified artifact; restored the previous run's proof and markdown entry.\n");
   }
   return restored;
-}
-
-async function removeLeaProofFile({ leaRepoPath, proofPath }) {
-  if (!String(proofPath || "").startsWith(`${LEA_PROOFS_DIR}${path.sep}`)) {
-    return false;
-  }
-  const absolutePath = buildLeaProofPath({ leaRepoPath, proofPath });
-  if (!absolutePath || !existsSync(absolutePath)) {
-    return false;
-  }
-
-  try {
-    await fs.rm(absolutePath, { force: true });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 // View maintenance for a retire: splice out this view's own sections whose

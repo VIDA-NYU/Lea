@@ -1,9 +1,19 @@
 """Durable live status: admission, ordering, replay, revisions and interruptions."""
 from concurrent.futures import ThreadPoolExecutor
+import json
+from pathlib import Path
 import pytest
 from app import db, store, lea_status, lea_status_store
 from app.source_context import source_hash
 from lea.status_reporting import TOOL_SCHEMA, validate_payload, merge_assessment, attention
+
+
+def test_version_2_source_hash_matches_browser_golden_fixture():
+    fixture_path = Path(__file__).resolve().parents[3] / "overleaf-extension/tests/fixtures/sourceIdentityV2.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    source = fixture["bundle"]
+    assert source_hash(source) == fixture["bundleHash"]
+    assert source_hash(source, identity=True) == fixture["sourceIdentityHash"]
 
 
 def bundle(proof="By triviality."):

@@ -60,6 +60,7 @@ export function buildLeanPaneManifest({
         ...item,
         // formalize-from-pane (item 12): only a valid marker is a runnable target.
         formalizable: Boolean(matchedTarget),
+        targetKind: matchedTarget?.targetKind || (item.leanKind === "def" ? "definition" : "theorem"),
         targetUses: matchedTarget?.targetUses || [],
         targetContext: matchedTarget?.targetContext || "",
         documentOrder

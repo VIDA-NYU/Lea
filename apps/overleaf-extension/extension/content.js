@@ -5839,10 +5839,11 @@
     const proofAssociation = currentTarget?.proofAssociation || { status: "missing", method: "none" };
     const sourceProof = String(currentTarget?.sourceProof || "").replace(/\r\n?/g, "\n");
     const proofHash = sourceProof ? await sha256(sourceProof) : "";
+    const { canonicalSourceTargetKind, sourceHashInputs } = await import(chrome.runtime.getURL("sourceIdentityCore.mjs"));
     const sourceBundleCore = {
       version: 2,
       targetKey: String(enrichedTarget?.targetLabel || enrichedTarget?.label || ""),
-      targetKind: String(enrichedTarget?.targetKind || enrichedTarget?.kind || "theorem"),
+      targetKind: canonicalSourceTargetKind(enrichedTarget?.targetKind || enrichedTarget?.leanKind || enrichedTarget?.kind),
       statement: String(enrichedTarget?.targetText || enrichedTarget?.naturalLanguageLatex || "").replace(/\r\n?/g, "\n"),
       proof: sourceProof,
       proofAssociation: {
@@ -5870,42 +5871,11 @@
         verified: true
       } : null
     };
+    const { evidence, identity } = sourceHashInputs(sourceBundleCore);
     const sourceBundle = {
       ...sourceBundleCore,
-      bundleHash: await sha256(JSON.stringify({
-        version: sourceBundleCore.version,
-        targetKey: sourceBundleCore.targetKey,
-        targetKind: sourceBundleCore.targetKind,
-        statement: sourceBundleCore.statement,
-        proof: sourceBundleCore.proof,
-        proofAssociation: {
-          status: sourceBundleCore.proofAssociation.status,
-          method: sourceBundleCore.proofAssociation.method,
-          sourceFile: sourceBundleCore.proofAssociation.sourceFile,
-          proofHash: sourceBundleCore.proofAssociation.proofHash
-        },
-        uses: sourceBundleCore.uses,
-        context: sourceBundleCore.context,
-        relevantSource: sourceBundleCore.relevantSource,
-        mirror: sourceBundleCore.mirror
-      })),
-      sourceIdentityHash: await sha256(JSON.stringify({
-        version: sourceBundleCore.version,
-        targetKey: sourceBundleCore.targetKey,
-        targetKind: sourceBundleCore.targetKind,
-        statement: sourceBundleCore.statement,
-        proof: sourceBundleCore.proof,
-        proofAssociation: {
-          status: sourceBundleCore.proofAssociation.status,
-          method: sourceBundleCore.proofAssociation.method,
-          sourceFile: sourceBundleCore.proofAssociation.sourceFile,
-          proofHash: sourceBundleCore.proofAssociation.proofHash
-        },
-        uses: sourceBundleCore.uses,
-        context: sourceBundleCore.context,
-        relevantSource: [],
-        mirror: null
-      }))
+      bundleHash: await sha256(JSON.stringify(evidence)),
+      sourceIdentityHash: await sha256(JSON.stringify(identity))
     };
     return {
       sourceFile,

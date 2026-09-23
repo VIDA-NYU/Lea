@@ -451,7 +451,7 @@ export function hasInProgressItems(items) {
 // work stays out of a batch even though its per-item Re-formalize action remains
 // available.
 const BATCH_FORMALIZABLE_PANE_STATUSES = new Set([
-  "missing-stub", "stub-generated", "stale", "invalid", "unknown", "error", "paused"
+  "missing-stub", "stub-generated", "invalid", "unknown", "error", "paused"
 ]);
 
 // Whether the pane should offer a Formalize / Re-formalize action for an item.
@@ -498,7 +498,7 @@ export function canStubPaneItem(item) {
 // can't re-key; a formalize CAN and should just use the label.
 export function paneItemToFormalizeTarget(item) {
   return {
-    targetKind: item?.leanKind === "def" ? "definition" : "theorem",
+    targetKind: item?.targetKind || (item?.leanKind === "def" ? "definition" : "theorem"),
     targetLabel: item?.label || item?.leanDeclarationName || "",
     labelSource: item?.labelSource || "explicit",
     latexLabel: item?.latexLabel || "",
@@ -929,6 +929,9 @@ export function formatRepairOutcome(entry, operation = "repair") {
     case "skipped":
       if (String(entry.reason || "").startsWith("depends_on_failed:")) {
         return `${label}: skipped -- depends on failed ${operation === "formalize" ? "formalization" : "repair"} of ${String(entry.reason).slice("depends_on_failed:".length)}.`;
+      }
+      if (entry.reason === "existing_proof") {
+        return `${label}: existing Lean proof kept -- re-formalize this item separately if needed.`;
       }
       return `${label}: skipped${entry.reason === "already_fixed" ? " -- already compiles." : entry.reason ? ` (${entry.reason})` : "."}`;
     default: return `${label}: ${entry.state || "unknown"}.`;

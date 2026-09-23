@@ -946,6 +946,17 @@ def test_artifact_retire_refuses_file_with_multiple_declarations(tmp_path, monke
 
     assert exc.value.status_code == 409
     assert proof.read_text() == original
+    session = store.create_session("shared", project_id=project["id"])
+    run = store.create_run(session["id"], "m", None, 3, project_id=project["id"])
+    store.upsert_artifact(
+        project_id=project["id"], session_id=session["id"], run_id=run["id"],
+        declaration_name="needs_retry", kind="proof", path="shared.lean",
+        module_name="Lea.Analysis.shared",
+    )
+    status = projects_route.project_target_status_by_slug(
+        project["slug"], declarations="needs_retry"
+    )
+    assert status["targets"][0]["shared_file"] is True
 
 
 def test_artifact_retire_first_records_an_untracked_sql_owned_file(tmp_path, monkeypatch):
