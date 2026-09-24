@@ -9,6 +9,11 @@ import path from "node:path";
 // exports its own provider keys from config (D1·cfg). So dev runs just two
 // processes: the FastAPI adapter (:8001) and the Vite web dev server (:5173).
 const root = process.cwd();
+// Set LEA_ADAPTER_PORT to move the adapter off :8001 (e.g. when that port is
+// already taken by something else on the machine). adapter/run_api.py binds it,
+// vite.config.ts proxies /api to it, and scripts/doctor.mjs probes it — all from
+// this one variable, which children inherit through `env: process.env` below.
+const ADAPTER_PORT = Number(process.env.LEA_ADAPTER_PORT) || 8001;
 // In the monorepo, npm hoists workspace deps to the repo-root node_modules, so
 // this app may have no local node_modules. Resolve hoisted tools from either
 // place (local checkout first, then the monorepo root).
@@ -71,9 +76,10 @@ function portOpen(port, host = "127.0.0.1") {
   });
 }
 
-async function ensurePortAvailable(port, label) {
+async function ensurePortAvailable(port, label, envVar) {
   if (await portOpen(port)) {
-    fail(`${label} port ${port} is already in use. Stop the existing process and run npm run dev again.`);
+    const escape = envVar ? ` (or set ${envVar} to a free port)` : "";
+    fail(`${label} port ${port} is already in use. Stop the existing process${escape} and run npm run dev again.`);
   }
 }
 
@@ -124,12 +130,12 @@ if (nodeMajor !== 22 && nodeMajor !== 20) {
 // The adapter drives the prover in-process; it reads config/lea.local.toml and
 // exports provider keys to its own environment (D1·cfg), so there is nothing to
 // inject here.
-await ensurePortAvailable(8001, "UI adapter API");
+await ensurePortAvailable(ADAPTER_PORT, "UI adapter API", "LEA_ADAPTER_PORT");
 start("adapter", "./.venv/bin/python", ["run_api.py"], { cwd: path.join(root, "adapter") });
 
 try {
-  await waitFor("http://127.0.0.1:8001/api/health", "UI adapter API");
-  console.log("[dev] UI adapter API ready at http://127.0.0.1:8001");
+  await waitFor(`http://127.0.0.1:${ADAPTER_PORT}/api/health`, "UI adapter API");
+  console.log(`[dev] UI adapter API ready at http://127.0.0.1:${ADAPTER_PORT}`);
 } catch (error) {
   console.error(`[dev] ${error.message}`);
   shutdown(1);

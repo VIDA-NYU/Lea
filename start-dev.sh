@@ -4,6 +4,11 @@
 #   - standalone UI: FastAPI adapter (:8001) + Vite frontend (:5173)  [npm run dev:ui]
 #   - Overleaf companion (:31245)                                     [npm run dev:overleaf]
 #
+# If :8001 is taken on your machine, set LEA_ADAPTER_PORT to move the adapter (the
+# Vite /api proxy follows it). The Overleaf companion needs to be pointed at the
+# same place via LEA_API_BASE_URL in the root .env, e.g.
+#   LEA_ADAPTER_PORT=8011 ./start-dev.sh   with LEA_API_BASE_URL=http://127.0.0.1:8011
+#
 # By default previous session data is KEPT (PLAN-system-hardening 0.3 — wiping
 # proofs and history must be opt-in, not the default of the most-typed command).
 #
@@ -64,7 +69,7 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-echo "[start] Starting UI (adapter :8001 + frontend :5173)..."
+echo "[start] Starting UI (adapter :${LEA_ADAPTER_PORT:-8001} + frontend :5173)..."
 npm run dev:ui &
 pids+=($!)
 
