@@ -12,9 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from .db import init_db
-from .routes import (alignment_checks, lea_status, custom_tools, formalizations, mcp_servers, projects, runs, search,
+from .routes import (alignment_checks, lea_status, formalize_batch_reports, custom_tools, formalizations, mcp_servers, projects, runs, search,
                      sessions, settings, skills, subagents)
-from . import alignment_store, bridge, github_import_service, netguard, store
+from . import alignment_store, bridge, formalize_batch_reports as batch_report_service, github_import_service, netguard, store
 from .config import load_config
 
 app = FastAPI(title="Lea Interface API")
@@ -65,6 +65,7 @@ app.add_middleware(
 def startup() -> None:
     init_db()
     alignment_store.recover_interrupted()
+    batch_report_service.recover_interrupted()
     # No worker survives a restart: reap orphaned 'running' rows (their derived
     # session status would read 'thinking' forever), then re-enqueue the
     # still-pending queue so a restart doesn't strand queued work (Phase 2).
@@ -93,6 +94,7 @@ app.include_router(mcp_servers.router)
 app.include_router(custom_tools.router)
 app.include_router(alignment_checks.router)
 app.include_router(lea_status.router)
+app.include_router(formalize_batch_reports.router)
 
 
 # --- Static frontend (bundled / single-container deploy) --------------------

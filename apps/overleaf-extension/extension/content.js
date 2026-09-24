@@ -184,6 +184,14 @@
   let leanPaneExpandedBatchQueueId = "";
   let leanPaneExpandedBatchAttentionId = "";
   let leanPaneExpandedBatchCompletedId = "";
+  let leanPaneBatchReports = [];
+  let leanPaneBatchReportsProjectId = "";
+  let leanPaneBatchReportsOpen = false;
+  let leanPaneBatchReportsLoading = false;
+  let leanPaneBatchReportsLoadingProjectId = "";
+  let leanPaneBatchReportsNextCursor = null;
+  let leanPaneBatchReportDetail = null;
+  let leanPaneBatchReportError = "";
   // A repair DISPATCH failure, scoped to what was being dispatched:
   // { itemKey, message } with itemKey = the single item's target label, or
   // "batch" (PLAN-self-repair-stale-offers Fix 4 -- a global string rendered
@@ -2185,6 +2193,17 @@
     const selectedElement = selection?.anchorNode?.parentElement;
     if (!selection?.isCollapsed && selectedElement?.closest?.(".ol-lean-live-status")) return;
     const items = Array.isArray(manifest?.items) ? manifest.items : [];
+    const renderedProjectId = extractOverleafProjectId();
+    if (leanPaneBatchReportsProjectId && leanPaneBatchReportsProjectId !== renderedProjectId) {
+      leanPaneBatchReports = [];
+      leanPaneBatchReportsNextCursor = null;
+      leanPaneBatchReportDetail = null;
+      leanPaneBatchReportsOpen = false;
+      leanPaneBatchReportsLoading = false;
+      leanPaneBatchReportsLoadingProjectId = "";
+      leanPaneBatchReportError = "";
+      leanPaneBatchReportsProjectId = "";
+    }
     const tree = leanPaneView.buildLeanPaneTree(items);
     const useRelationships = leanPaneView.buildPaneUseRelationships(items);
     const fileCount = tree.files.length;
@@ -2223,6 +2242,9 @@
     const repairBatchPanel = renderLeanPaneRepairBatchPanel();
     if (repairBatchPanel) leanPaneBody.appendChild(repairBatchPanel);
 
+    const reportsPanel = renderFormalizeBatchReportHistory();
+    if (reportsPanel) leanPaneBody.appendChild(reportsPanel);
+
     const batchActions = renderLeanPaneBatchActions(items);
     if (batchActions) leanPaneBody.appendChild(batchActions);
 
@@ -2237,6 +2259,148 @@
 
     if (statusFocus?.isConnected) statusFocus.focus({ preventScroll: true });
     leanPaneBody.scrollTop = prevScrollTop;
+    const projectId = extractOverleafProjectId();
+    if (projectId && projectId !== "unknown" && leanPaneBatchReportsProjectId !== projectId) {
+      leanPaneBatchReportsProjectId = projectId;
+      loadFormalizeBatchReportHistory(projectId).catch(() => {});
+    }
+  }
+
+  async function loadFormalizeBatchReportHistory(projectId = extractOverleafProjectId(), { append = false } = {}) {
+    if (leanPaneBatchReportsLoading && leanPaneBatchReportsLoadingProjectId === projectId) return;
+    leanPaneBatchReportsLoading = true;
+    leanPaneBatchReportsLoadingProjectId = projectId;
+    leanPaneBatchReportError = "";
+    if (leanPane) renderLeanPaneManifest(lastLeanPaneManifest);
+    try {
+      const baseUrl = await chatCompanionBaseUrl();
+      const cursor = append && leanPaneBatchReportsNextCursor
+        ? `&before=${encodeURIComponent(leanPaneBatchReportsNextCursor)}` : "";
+      const response = await fetch(`${baseUrl}/formalize/all/reports?overleafProjectId=${encodeURIComponent(projectId)}${cursor}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || "Could not load Formalize all reports.");
+      if (projectId !== extractOverleafProjectId()) return;
+      const incoming = Array.isArray(payload.reports) ? payload.reports : [];
+      leanPaneBatchReports = append ? [...leanPaneBatchReports, ...incoming] : incoming;
+      leanPaneBatchReportsNextCursor = payload.nextCursor || null;
+      leanPaneBatchReportError = "";
+    } catch (error) {
+      if (projectId === extractOverleafProjectId()) leanPaneBatchReportError = normalizeErrorMessage(error);
+    }
+    if (leanPaneBatchReportsLoadingProjectId === projectId) {
+      leanPaneBatchReportsLoading = false;
+      leanPaneBatchReportsLoadingProjectId = "";
+      if (leanPane) renderLeanPaneManifest(lastLeanPaneManifest);
+    }
+  }
+
+  async function openFormalizeBatchReport(batchId) {
+    try {
+      const baseUrl = await chatCompanionBaseUrl();
+      const projectId = extractOverleafProjectId();
+      const response = await fetch(`${baseUrl}/formalize/all/reports/${encodeURIComponent(batchId)}?overleafProjectId=${encodeURIComponent(projectId)}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || "Could not load this report.");
+      if (projectId !== extractOverleafProjectId()) return;
+      leanPaneBatchReportDetail = payload;
+      leanPaneBatchReportError = "";
+      if (payload.state === "synthesizing") {
+        setTimeout(() => {
+          if (leanPane && leanPaneBatchReportDetail?.batch_id === batchId) openFormalizeBatchReport(batchId);
+        }, 3000);
+      } else {
+        loadFormalizeBatchReportHistory(projectId).catch(() => {});
+      }
+    } catch (error) {
+      leanPaneBatchReportError = normalizeErrorMessage(error);
+    }
+    renderLeanPaneManifest(lastLeanPaneManifest);
+  }
+
+  async function retryFormalizeBatchReport(batchId) {
+    try {
+      const baseUrl = await chatCompanionBaseUrl();
+      const response = await fetch(`${baseUrl}/formalize/all/reports/${encodeURIComponent(batchId)}/retry`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overleafProjectId: extractOverleafProjectId() })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || "Could not retry the summary.");
+      if (leanPaneRepairBatch?.reportId === batchId) {
+        leanPaneRepairBatch.report = payload;
+        leanPaneRepairBatch.reportState = payload.state;
+        startRepairBatchPolling();
+      }
+      if (leanPaneBatchReportDetail?.batch_id === batchId) leanPaneBatchReportDetail = payload;
+      leanPaneBatchReportError = "";
+      loadFormalizeBatchReportHistory().catch(() => {});
+    } catch (error) {
+      leanPaneBatchReportError = normalizeErrorMessage(error);
+    }
+    renderLeanPaneManifest(lastLeanPaneManifest);
+  }
+
+  function renderFormalizeBatchReportHistory() {
+    if (extractOverleafProjectId() === "unknown") return null;
+    const section = document.createElement("section");
+    section.className = "ol-lean-batch-report-history";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "ol-lean-batch-queue-completed-toggle";
+    toggle.setAttribute("aria-expanded", String(leanPaneBatchReportsOpen));
+    toggle.textContent = "Past Formalize all reports";
+    toggle.addEventListener("click", () => {
+      leanPaneBatchReportsOpen = !leanPaneBatchReportsOpen;
+      renderLeanPaneManifest(lastLeanPaneManifest);
+    });
+    section.appendChild(toggle);
+    if (leanPaneBatchReportsOpen) {
+      if (leanPaneBatchReportsLoading) {
+        const loading = document.createElement("p");
+        loading.setAttribute("role", "status");
+        loading.textContent = "Loading reports…";
+        section.appendChild(loading);
+      } else if (!leanPaneBatchReports.length && !leanPaneBatchReportError) {
+        const empty = document.createElement("p");
+        empty.textContent = "No past Formalize all reports yet.";
+        section.appendChild(empty);
+      }
+      const list = document.createElement("ul");
+      for (const report of leanPaneBatchReports) {
+        const item = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "ol-lean-batch-report-history-item";
+        const date = new Date(report.finished_at);
+        button.textContent = `${Number.isNaN(date.getTime()) ? "Finished batch" : date.toLocaleString()} · ${report.state === "ready" ? "Summary ready" : report.state === "synthesizing" ? "Writing summary" : "Factual report"}`;
+        button.addEventListener("click", () => { openFormalizeBatchReport(report.batch_id); });
+        item.appendChild(button);
+        list.appendChild(item);
+      }
+      section.appendChild(list);
+      if (leanPaneBatchReportsNextCursor) {
+        const more = document.createElement("button");
+        more.type = "button";
+        more.className = "ol-lean-batch-queue-disclosure";
+        more.textContent = "Load older reports";
+        more.addEventListener("click", () => { loadFormalizeBatchReportHistory(extractOverleafProjectId(), { append: true }); });
+        section.appendChild(more);
+      }
+      if (leanPaneBatchReportDetail) section.appendChild(renderFormalizeBatchReport(leanPaneBatchReportDetail));
+      if (leanPaneBatchReportError) {
+        const error = document.createElement("p");
+        error.setAttribute("role", "alert");
+        error.textContent = leanPaneBatchReportError;
+        section.appendChild(error);
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "ol-lean-secondary-button";
+        retry.textContent = "Reload reports";
+        retry.addEventListener("click", () => { loadFormalizeBatchReportHistory(); });
+        section.appendChild(retry);
+      }
+    }
+    return section;
   }
 
   function renderLeanPaneProjectIdentity(identity) {
@@ -3549,13 +3713,20 @@
           body: JSON.stringify({ batchId })
         });
         const payload = await response.json().catch(() => ({}));
-        if (response.ok) leanPaneRepairBatch = payload;
+        if (response.ok) {
+          leanPaneRepairBatch = payload;
+          if (payload.operation === "formalize" && payload.report
+            && payload.report.state !== "synthesizing") {
+            loadFormalizeBatchReportHistory().catch(() => {});
+          }
+        }
       } catch {
         // transient; keep the last snapshot and try again
       }
       renderLeanPaneManifest(lastLeanPaneManifest);
       scheduleLeanPaneRefresh();
-      if (leanPaneRepairBatch && !leanPaneRepairBatch.done && !leanPaneRepairBatch.pausedOn) {
+      if (leanPaneRepairBatch && ((!leanPaneRepairBatch.done && !leanPaneRepairBatch.pausedOn)
+        || ["saving", "synthesizing"].includes(leanPaneRepairBatch.reportState))) {
         startRepairBatchPolling();
       }
     }, delayMs);
@@ -3904,6 +4075,56 @@
       panel.appendChild(completed);
     }
 
+    if (operation === "formalize" && batch.done) {
+      if (batch.report) {
+        panel.appendChild(renderFormalizeBatchReport(batch.report));
+      } else {
+        const report = document.createElement("section");
+        report.className = "ol-lean-batch-report";
+        const heading = document.createElement("h3");
+        heading.textContent = "Formalize all report";
+        report.appendChild(heading);
+        const summary = document.createElement("p");
+        const verified = batch.items.filter((entry) => entry.state === "formalized").length;
+        const disproved = batch.items.filter((entry) => entry.state === "disproved").length;
+        const failed = batch.items.filter((entry) => entry.state === "failed").length;
+        const skipped = batch.items.filter((entry) => entry.state === "skipped" && entry.reason !== "existing_proof").length;
+        const alreadyVerified = batch.items.filter((entry) => entry.state === "skipped" && entry.reason === "existing_proof").length;
+        summary.textContent = `${verified} verified · ${disproved} disproved · ${failed} failed · ${skipped} skipped · ${alreadyVerified} already verified · ${canceledCount} stopped.`;
+        report.appendChild(summary);
+        const status = document.createElement("p");
+        status.setAttribute("role", "status");
+        status.textContent = batch.reportState === "save_failed"
+          ? `Could not save this report. ${batch.reportError || ""}`
+          : "Saving report…";
+        report.appendChild(status);
+        if (batch.reportState === "save_failed") {
+          const retry = document.createElement("button");
+          retry.type = "button";
+          retry.className = "ol-lean-secondary-button";
+          retry.textContent = "Retry saving report";
+          retry.addEventListener("click", async () => {
+            try {
+              const baseUrl = await chatCompanionBaseUrl();
+              const response = await fetch(`${baseUrl}/formalize/all/reports/save`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(), batchId: batch.batchId })
+              });
+              const payload = await response.json().catch(() => ({}));
+              if (!response.ok) throw new Error(payload.message || "Could not save the report.");
+              leanPaneRepairBatch = payload;
+              startRepairBatchPolling();
+            } catch (error) {
+              leanPaneRepairError = { itemKey: "batch", message: normalizeErrorMessage(error) };
+            }
+            renderLeanPaneManifest(lastLeanPaneManifest);
+          });
+          report.appendChild(retry);
+        }
+        panel.appendChild(report);
+      }
+    }
+
     if (leanPaneRepairError && leanPaneRepairError.itemKey === "batch") {
       const dismissKey = leanPaneErrorKey("repair-dispatch", "batch", leanPaneRepairError.message);
       const line = document.createElement("p");
@@ -3953,6 +4174,77 @@
     }
     if (controls.children.length > 0) panel.appendChild(controls);
     return panel;
+  }
+
+  function renderFormalizeBatchReport(report) {
+    const facts = report?.facts || {};
+    const section = document.createElement("section");
+    section.className = "ol-lean-batch-report";
+    const title = document.createElement("h3");
+    title.textContent = "Formalize all report";
+    section.appendChild(title);
+    const summary = document.createElement("p");
+    summary.className = "ol-lean-batch-report-facts";
+    summary.textContent = facts.summary || "Batch results are available below.";
+    section.appendChild(summary);
+    if (report.state === "ready" && report.narrative) {
+      const narrative = document.createElement("p");
+      narrative.className = "ol-lean-batch-report-narrative";
+      narrative.textContent = report.narrative;
+      section.appendChild(narrative);
+    } else {
+      const status = document.createElement("p");
+      status.setAttribute("role", "status");
+      status.textContent = report.state === "synthesizing"
+        ? "Writing summary…"
+        : "Lea could not write the summary. The factual results are saved; check provider access or API credits and retry.";
+      section.appendChild(status);
+      if (report.state === "narrative_unavailable") {
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "ol-lean-secondary-button";
+        retry.textContent = "Retry Lea summary";
+        retry.addEventListener("click", () => { retryFormalizeBatchReport(report.batch_id); });
+        section.appendChild(retry);
+      }
+    }
+    if (Array.isArray(facts.items) && facts.items.length) {
+      const details = document.createElement("details");
+      const disclosure = document.createElement("summary");
+      disclosure.textContent = `Item outcomes (${facts.items.length})`;
+      details.appendChild(disclosure);
+      const list = document.createElement("ul");
+      for (const item of facts.items) {
+        const row = document.createElement("li");
+        const paneItem = (lastLeanPaneManifest?.items || []).find((candidate) => (
+          candidate.label === item.targetLabel
+          && (item.targetKind !== "definition" || candidate.leanKind === "def")
+        ));
+        if (paneItem) {
+          const link = document.createElement("button");
+          link.type = "button";
+          link.className = "ol-lean-batch-report-item-link";
+          link.textContent = item.targetLabel;
+          link.setAttribute("aria-label", `Show ${item.targetLabel} in Lean pane`);
+          link.addEventListener("click", () => { revealLeanPaneItem(paneItem); });
+          row.appendChild(link);
+        } else {
+          const label = document.createElement("strong");
+          label.textContent = item.targetLabel;
+          row.appendChild(label);
+        }
+        const incomplete = item.reportingIncomplete ? " · no final Lea Status assessment" : "";
+        const confidence = item.leaStatus?.confidence
+          ? ` · Lea confidence: ${item.leaStatus.confidence} (self-reported)` : "";
+        const detail = document.createElement("span");
+        detail.textContent = ` (${item.targetKind || "item"}): ${item.state}${item.reason ? ` · ${item.reason.replaceAll("_", " ")}` : ""}${confidence}${incomplete}`;
+        row.appendChild(detail);
+        list.appendChild(row);
+      }
+      details.appendChild(list);
+      section.appendChild(details);
+    }
+    return section;
   }
 
   function renderBatchQueueEntry(entry, index, { marker, stateClass, detail }) {

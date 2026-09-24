@@ -2282,6 +2282,85 @@ button.ol-lean-project-relationship-chip {
   border-top: 1px solid var(--ol-line);
 }
 
+.ol-lean-batch-report {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ol-line);
+  color: var(--ol-ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ol-lean-batch-report h3 {
+  margin: 0 0 6px;
+  color: var(--ol-ink);
+  font-size: 13px;
+}
+
+.ol-lean-batch-report p {
+  margin: 0 0 8px;
+}
+
+.ol-lean-batch-report-narrative {
+  white-space: pre-wrap;
+  max-width: 70ch;
+}
+
+.ol-lean-batch-report details {
+  margin-top: 8px;
+}
+
+.ol-lean-batch-report summary {
+  cursor: pointer;
+  color: var(--ol-accent-ink);
+  font-weight: 650;
+}
+
+.ol-lean-batch-report li {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+
+.ol-lean-batch-report-item-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ol-accent-ink);
+  font: inherit;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.ol-lean-batch-report-history {
+  margin: 10px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--ol-line);
+  border-radius: 10px;
+  background: var(--ol-panel-2);
+}
+
+.ol-lean-batch-report-history ul {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+
+.ol-lean-batch-report-history-item {
+  border: 0;
+  background: transparent;
+  color: var(--ol-accent-ink);
+  font: 600 12px/1.5 var(--ol-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ol-lean-batch-report-history button:focus-visible,
+.ol-lean-batch-report summary:focus-visible {
+  outline: 2px solid var(--ol-accent);
+  outline-offset: 2px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ol-lean-batch-queue-progress-active,
   .ol-lean-batch-queue-item-running .ol-lean-batch-queue-marker {

@@ -914,3 +914,28 @@ export function fetchLeaStatusHistory({ fetchImpl, baseUrl, apiKey, formalizatio
     method: "GET", headers: buildHeaders(apiKey)
   });
 }
+
+function batchReportsUrl(baseUrl, slug, batchId = "") {
+  const root = `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/formalize-batch-reports`;
+  return batchId ? `${root}/${encodeURIComponent(batchId)}` : root;
+}
+
+export function createFormalizeBatchReport({ fetchImpl, baseUrl, slug, body }) {
+  return fetchJson(fetchImpl, batchReportsUrl(baseUrl, slug), {
+    method: "POST", headers: buildHeaders(null, { "Content-Type": "application/json" }),
+    body: JSON.stringify(body)
+  });
+}
+
+export function listFormalizeBatchReports({ fetchImpl, baseUrl, slug, before }) {
+  const query = before ? `?before=${encodeURIComponent(before)}` : "";
+  return fetchJson(fetchImpl, `${batchReportsUrl(baseUrl, slug)}${query}`, { method: "GET" });
+}
+
+export function getFormalizeBatchReport({ fetchImpl, baseUrl, slug, batchId }) {
+  return fetchJson(fetchImpl, batchReportsUrl(baseUrl, slug, batchId), { method: "GET" });
+}
+
+export function retryFormalizeBatchReport({ fetchImpl, baseUrl, slug, batchId }) {
+  return fetchJson(fetchImpl, `${batchReportsUrl(baseUrl, slug, batchId)}/retry`, { method: "POST" });
+}

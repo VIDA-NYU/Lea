@@ -1077,6 +1077,7 @@ def delete_project_cascade(project_id: str) -> bool:
     with connect() as conn:
         if not conn.execute("select 1 from projects where id = ?", (project_id,)).fetchone():
             return False
+        conn.execute("delete from formalize_batch_reports where project_id = ?", (project_id,))
         import_ids = [
             row["id"] for row in conn.execute(
                 "select id from github_imports where project_id = ?", (project_id,)
@@ -3867,7 +3868,16 @@ def total_spend_usd() -> float:
                 "select coalesce(sum(cost_usd), 0) as cost_usd from alignment_checks"
             ).fetchone()
             evaluator_cost = float(evaluator["cost_usd"] or 0)
-    return float(solver["cost_usd"] or 0) + evaluator_cost
+        has_reports = conn.execute(
+            "select 1 from sqlite_master where type = 'table' and name = 'formalize_batch_reports'"
+        ).fetchone()
+        report_cost = 0.0
+        if has_reports:
+            report_row = conn.execute(
+                "select coalesce(sum(cost_usd), 0) as cost_usd from formalize_batch_reports"
+            ).fetchone()
+            report_cost = float(report_row["cost_usd"] or 0)
+    return float(solver["cost_usd"] or 0) + evaluator_cost + report_cost
 
 
 def global_usage() -> dict:
@@ -3879,11 +3889,14 @@ def global_usage() -> dict:
                 (select count(*) from sessions) as session_count,
                 (select count(*) from timeline where kind != 'code') as message_count,
                 (select coalesce(sum(input_tokens), 0) from runs)
-                  + (select coalesce(sum(input_tokens), 0) from alignment_checks) as input_tokens,
+                  + (select coalesce(sum(input_tokens), 0) from alignment_checks)
+                  + (select coalesce(sum(input_tokens), 0) from formalize_batch_reports) as input_tokens,
                 (select coalesce(sum(output_tokens), 0) from runs)
-                  + (select coalesce(sum(output_tokens), 0) from alignment_checks) as output_tokens,
+                  + (select coalesce(sum(output_tokens), 0) from alignment_checks)
+                  + (select coalesce(sum(output_tokens), 0) from formalize_batch_reports) as output_tokens,
                 (select coalesce(sum(cost_usd), 0) from runs)
-                  + (select coalesce(sum(cost_usd), 0) from alignment_checks) as cost_usd
+                  + (select coalesce(sum(cost_usd), 0) from alignment_checks)
+                  + (select coalesce(sum(cost_usd), 0) from formalize_batch_reports) as cost_usd
             """
         ).fetchone()
     data = row_to_dict(row)
@@ -3927,6 +3940,9 @@ def usage_stats() -> dict:
                 union all
                 select id, session_id, updated_at, input_tokens, output_tokens, cost_usd
                 from alignment_checks
+                union all
+                select batch_id, null, updated_at, input_tokens, output_tokens, cost_usd
+                from formalize_batch_reports where attempts > 0
             ) usage_events
             group by date(updated_at)
             order by day asc
@@ -3947,6 +3963,9 @@ def usage_stats() -> dict:
                 union all
                 select id, session_id, model, input_tokens, output_tokens, cost_usd
                 from alignment_checks
+                union all
+                select batch_id, null, model, input_tokens, output_tokens, cost_usd
+                from formalize_batch_reports where attempts > 0
             ) usage_events
             group by model
             order by cost_usd desc, total_tokens desc
@@ -3958,6 +3977,8 @@ def usage_stats() -> dict:
         "origins": _origin_rollup(),
         "global": global_usage(),
         "alignment": alignment_usage(),
+        "formalize_batch_reports": formalize_batch_report_usage(),
+        "project_report_usage": project_report_usage(),
         "daily": [_normalize_usage_day(row_to_dict(row)) for row in daily_rows],
         "models": [_normalize_usage_model(row_to_dict(row)) for row in model_rows],
     }
@@ -3985,6 +4006,29 @@ def alignment_usage() -> dict:
         "total_tokens": input_tokens + output_tokens,
         "cost_usd": float(data["cost_usd"] or 0),
     }
+
+
+def formalize_batch_report_usage() -> dict:
+    with connect() as conn:
+        row = conn.execute("""select coalesce(sum(attempts), 0) as run_count,
+            coalesce(sum(input_tokens), 0) as input_tokens,
+            coalesce(sum(output_tokens), 0) as output_tokens,
+            coalesce(sum(cost_usd), 0) as cost_usd from formalize_batch_reports""").fetchone()
+    data = row_to_dict(row)
+    return {"run_count": int(data["run_count"]), "input_tokens": int(data["input_tokens"]),
+            "output_tokens": int(data["output_tokens"]), "cost_usd": float(data["cost_usd"])}
+
+
+def project_report_usage() -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute("""select p.slug as project_slug,
+            coalesce(sum(r.input_tokens), 0) as input_tokens,
+            coalesce(sum(r.output_tokens), 0) as output_tokens,
+            coalesce(sum(r.cost_usd), 0) as cost_usd,
+            coalesce(sum(r.attempts), 0) as run_count
+            from formalize_batch_reports r join projects p on p.id = r.project_id
+            group by p.slug""").fetchall()
+    return [row_to_dict(row) for row in rows]
 
 
 def _empty_origin_bucket(origin: str) -> dict:
@@ -4044,6 +4088,11 @@ def _origin_rollup() -> list[dict]:
         bucket["output_tokens"] += int(data["output_tokens"] or 0)
         bucket["total_tokens"] += int(data["input_tokens"] or 0) + int(data["output_tokens"] or 0)
         bucket["cost_usd"] += float(data["cost_usd"] or 0)
+    report_usage = formalize_batch_report_usage()
+    buckets["overleaf"]["input_tokens"] += report_usage["input_tokens"]
+    buckets["overleaf"]["output_tokens"] += report_usage["output_tokens"]
+    buckets["overleaf"]["total_tokens"] += report_usage["input_tokens"] + report_usage["output_tokens"]
+    buckets["overleaf"]["cost_usd"] += report_usage["cost_usd"]
     # 'ui' and 'overleaf' first (stable UI order), then any unexpected origins.
     ordered = ["ui", "overleaf"] + [k for k in buckets if k not in ("ui", "overleaf")]
     return [buckets[k] for k in ordered]

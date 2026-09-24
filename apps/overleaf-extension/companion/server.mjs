@@ -96,6 +96,10 @@ import {
   setProjectRemoteBySlug,
   fetchCurrentLeaStatus,
   fetchLeaStatusHistory,
+  createFormalizeBatchReport,
+  listFormalizeBatchReports,
+  getFormalizeBatchReport,
+  retryFormalizeBatchReport,
   fetchCurrentAlignmentCheck,
   updateProjectIdentityBySlug,
   writeApiSessionFile
@@ -2847,6 +2851,12 @@ function repairBatchSnapshot(batch) {
     stopping: Boolean(batch.cancelRequested) && !batch.done,
     running: batch.running,
     pausedOn: batch.pausedOn,
+    ...(batch.operation === "formalize" ? {
+      reportId: batch.report?.batch_id || batch.reportId || null,
+      reportState: batch.report?.state || batch.reportState || null,
+      reportError: batch.reportError || null,
+      report: batch.report || null
+    } : {}),
     items: batch.items.map(({ targetKind, targetLabel, state: itemState, reason, runJobId }) => ({
       targetKind, targetLabel, state: itemState, reason: reason || null, runJobId: runJobId || null
     }))
@@ -2958,6 +2968,7 @@ export async function handleBatchCancel(payload, state) {
   await interruptBatchActiveRun(state, batch);
   if (!batch.running) {
     finalizeCanceledBatch(batch);
+    if (batch.operation === "formalize") void submitFormalizeBatchReport(state, batch);
     publishEvent(state, "repair-batch-updated", {
       overleafProjectId: batch.overleafProjectId,
       batchId: batch.batchId
@@ -3090,6 +3101,7 @@ async function startTargetBatch(payload, state, operation) {
         }
       }
       batch.done = true;
+      void submitFormalizeBatchReport(state, batch);
     } else {
       batch.pausedOn = { targetLabel: null, reason: "batch_error", detail };
     }
@@ -3265,6 +3277,7 @@ async function runTargetBatch(state, batch) {
     } else {
       batch.done = batch.items.every((entry) => entry.state !== "pending" && entry.state !== "running") && !batch.pausedOn;
     }
+    if (batch.operation === "formalize" && batch.done) void submitFormalizeBatchReport(state, batch);
     publishBatch();
   }
 }
@@ -3272,6 +3285,96 @@ async function runTargetBatch(state, batch) {
 export async function handleLeanPaneRepairStatus(payload, state) {
   const batch = state.repairBatches?.[String(payload?.batchId || "")];
   if (!batch) return errorResponse(404, "unknown_batch", "No such repair batch (batches do not survive a companion restart).");
+  if (batch.operation === "formalize" && batch.reportId && batch.report?.state === "synthesizing") {
+    const result = await fetchBatchReport(state, batch.overleafProjectId, batch.reportId);
+    if (result.ok) batch.report = result.body;
+  }
+  return { statusCode: 200, body: repairBatchSnapshot(batch) };
+}
+
+function reportAdapterTarget(state, overleafProjectId) {
+  return {
+    fetchImpl: state.fetchImpl || fetch,
+    baseUrl: normalizeLeaApiBaseUrl(state.settings?.leaApiBaseUrl || DEFAULT_LEA_API_BASE_URL),
+    slug: slugProjectId(overleafProjectId)
+  };
+}
+
+function fetchBatchReport(state, overleafProjectId, batchId) {
+  return getFormalizeBatchReport({ ...reportAdapterTarget(state, overleafProjectId), batchId });
+}
+
+async function submitFormalizeBatchReport(state, batch) {
+  if (batch.reportSubmission || batch.reportId || !batch.done) return batch.reportSubmission;
+  batch.reportState = "saving";
+  batch.finishedAt ||= new Date().toISOString();
+  const body = {
+    batchId: batch.batchId,
+    startedAt: batch.createdAt,
+    finishedAt: batch.finishedAt,
+    canceled: Boolean(batch.canceled),
+    items: batch.items.map((entry) => {
+      const job = entry.runJobId ? state.jobs?.[entry.runJobId] : null;
+      return {
+        targetKind: entry.targetKind, targetLabel: entry.targetLabel,
+        state: entry.state, reason: entry.reason || null, jobId: entry.runJobId || null,
+        runId: job?.apiRunId && job?.formalizationId ? job.apiRunId : null,
+        formalizationId: job?.apiRunId && job?.formalizationId ? job.formalizationId : null
+      };
+    })
+  };
+  batch.reportSubmission = (async () => {
+    let result;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        result = await createFormalizeBatchReport({ ...reportAdapterTarget(state, batch.overleafProjectId), body });
+      } catch (error) {
+        result = { ok: false, error: String(error) };
+      }
+      if (result.ok || (result.status && result.status < 500)) break;
+      await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 1000));
+    }
+    if (result?.ok) {
+      batch.report = result.body;
+      batch.reportId = result.body.batch_id;
+      batch.reportState = result.body.state;
+      batch.reportError = null;
+    } else {
+      batch.reportState = "save_failed";
+      batch.reportError = result?.error || "Could not save the report.";
+    }
+    publishEvent(state, "repair-batch-updated", { overleafProjectId: batch.overleafProjectId, batchId: batch.batchId });
+  })();
+  return batch.reportSubmission;
+}
+
+export async function handleFormalizeBatchReports(payload, state) {
+  const overleafProjectId = String(payload?.overleafProjectId || "").trim();
+  if (!overleafProjectId) return errorResponse(400, "missing_project_id", "overleafProjectId is required.");
+  const target = reportAdapterTarget(state, overleafProjectId);
+  const batchId = String(payload?.batchId || "");
+  const result = payload?.retry
+    ? await retryFormalizeBatchReport({ ...target, batchId })
+    : batchId
+      ? await getFormalizeBatchReport({ ...target, batchId })
+      : await listFormalizeBatchReports({ ...target, before: payload?.before });
+  // The adapter creates a project on the first run. Before then, an Overleaf
+  // project has a valid empty report history but no adapter project row yet.
+  if (!batchId && result.status === 404 && result.body?.detail === "Project not found") {
+    return { statusCode: 200, body: { reports: [], nextCursor: null } };
+  }
+  if (!result.ok) return errorResponse(result.status || 502, "report_unavailable", result.error || "Could not load reports.");
+  return { statusCode: 200, body: result.body };
+}
+
+export async function handleFormalizeBatchReportSave(payload, state) {
+  const batch = state.repairBatches?.[String(payload?.batchId || "")];
+  if (!batch || batch.operation !== "formalize" || !batch.done || batch.overleafProjectId !== payload?.overleafProjectId) {
+    return errorResponse(404, "unknown_batch", "No finished Formalize all batch is available to save.");
+  }
+  if (batch.reportId) return { statusCode: 200, body: repairBatchSnapshot(batch) };
+  batch.reportSubmission = null;
+  await submitFormalizeBatchReport(state, batch);
   return { statusCode: 200, body: repairBatchSnapshot(batch) };
 }
 
@@ -3889,6 +3992,14 @@ async function fetchAdapterUsageForPopover(state, overleafProjectId) {
     },
     { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, runCount: 0 }
   );
+  const reportUsage = (stats.project_report_usage || []).find((entry) => entry.project_slug === projectSlug);
+  if (reportUsage) {
+    project.inputTokens += toNonNegativeNumber(reportUsage.input_tokens);
+    project.outputTokens += toNonNegativeNumber(reportUsage.output_tokens);
+    project.totalTokens += toNonNegativeNumber(reportUsage.input_tokens) + toNonNegativeNumber(reportUsage.output_tokens);
+    project.costUsd += toNonNegativeNumber(reportUsage.cost_usd);
+    project.runCount += toNonNegativeNumber(reportUsage.run_count);
+  }
   project.costUsd = Number(project.costUsd.toFixed(6));
 
   const global = stats.global && typeof stats.global === "object" ? stats.global : {};
@@ -4216,6 +4327,36 @@ async function routeRequest(request, response, state) {
     const result = await handleLeanPaneRepairStatus(await readBodyJson(request), state);
     sendJson(response, result.statusCode, result.body);
     return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/formalize/all/reports") {
+    const result = await handleFormalizeBatchReports({
+      overleafProjectId: url.searchParams.get("overleafProjectId"),
+      before: url.searchParams.get("before")
+    }, state);
+    sendJson(response, result.statusCode, result.body);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/formalize/all/reports/save") {
+    const result = await handleFormalizeBatchReportSave(await readBodyJson(request), state);
+    sendJson(response, result.statusCode, result.body);
+    return;
+  }
+
+  if (url.pathname.startsWith("/formalize/all/reports/")) {
+    const suffix = url.pathname.slice("/formalize/all/reports/".length);
+    const retry = suffix.endsWith("/retry");
+    const batchId = decodeURIComponent(retry ? suffix.slice(0, -"/retry".length) : suffix);
+    if ((request.method === "GET" && !retry) || (request.method === "POST" && retry)) {
+      const payload = retry ? await readBodyJson(request) : {};
+      const result = await handleFormalizeBatchReports({
+        overleafProjectId: retry ? payload.overleafProjectId : url.searchParams.get("overleafProjectId"),
+        batchId, retry
+      }, state);
+      sendJson(response, result.statusCode, result.body);
+      return;
+    }
   }
 
   if (request.method === "POST" && url.pathname === "/formalize") {

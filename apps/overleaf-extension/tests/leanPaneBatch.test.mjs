@@ -10,6 +10,8 @@ import {
   handleStubAll,
   handleFormalizeAll,
   handleBatchCancel,
+  handleLeanPaneRepairStatus,
+  handleFormalizeBatchReports,
   orderTargetsByUses,
   settleCanceledBatchEntry
 } from "../companion/server.mjs";
@@ -132,6 +134,58 @@ test("cancel of a still-running batch defers settlement to its loop (reports sto
   assert.equal(res.body.done, false);
   assert.equal(res.body.stopping, true);
   assert.equal(batch.cancelRequested, true);
+});
+
+test("stopped Formalize all submits one settled report with run provenance", async () => {
+  const calls = [];
+  const report = { batch_id: "formalize-batch-report", state: "synthesizing",
+    facts: { summary: "1 verified, 1 stopped.", items: [] } };
+  const state = {
+    settings: { leaApiBaseUrl: "http://127.0.0.1:8001" },
+    jobs: { "job-a": { apiRunId: "run-a", formalizationId: "form-a" } },
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url: String(url), options, body: options.body ? JSON.parse(options.body) : null });
+      if (options.method === "POST") return { ok: true, status: 200, text: async () => JSON.stringify(report) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ...report, state: "ready", narrative: "One item verified." }) };
+    },
+    repairBatches: {
+      "formalize-batch-report": {
+        batchId: "formalize-batch-report", operation: "formalize", overleafProjectId: PROJECT,
+        createdAt: "2026-01-01T00:00:00Z", done: false, running: false,
+        pausedOn: { reason: "max_spend" }, items: [
+          { targetKind: "theorem", targetLabel: "a", state: "formalized", runJobId: "job-a" },
+          { targetKind: "theorem", targetLabel: "b", state: "pending", runJobId: null }
+        ]
+      }
+    }
+  };
+  const stopped = await handleBatchCancel({ batchId: "formalize-batch-report" }, state);
+  assert.equal(stopped.body.items[1].state, "canceled");
+  const started = Date.now();
+  while (!state.repairBatches["formalize-batch-report"].reportId) {
+    if (Date.now() - started > 1000) throw new Error("report was not submitted");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const posts = calls.filter((call) => call.options.method === "POST");
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].body.items[0].runId, "run-a");
+  assert.equal(posts[0].body.items[0].formalizationId, "form-a");
+  assert.equal(posts[0].body.items[1].state, "canceled");
+  const polled = await handleLeanPaneRepairStatus({ batchId: "formalize-batch-report" }, state);
+  assert.equal(polled.body.report.state, "ready");
+  const history = await handleFormalizeBatchReports({ overleafProjectId: PROJECT }, state);
+  assert.equal(history.statusCode, 200);
+  assert.match(calls.at(-1).url, /project-1\/formalize-batch-reports/);
+});
+
+test("a project with no adapter row has an empty report history", async () => {
+  const state = {
+    settings: { leaApiBaseUrl: "http://127.0.0.1:8001" },
+    fetchImpl: async () => ({ ok: false, status: 404, text: async () => '{"detail":"Project not found"}' })
+  };
+  const result = await handleFormalizeBatchReports({ overleafProjectId: PROJECT }, state);
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(result.body, { reports: [], nextCursor: null });
 });
 
 test("a successful active run that wins the stop race remains completed", () => {

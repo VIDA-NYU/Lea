@@ -2391,6 +2391,121 @@ test("Formalize all limits cost-cap failures to five statements until expanded",
   assert.doesNotMatch(queue.text, /cap_t9/);
 });
 
+test("completed Formalize all shows its saved synthesis", async () => {
+  const report = {
+    batch_id: "formalize-batch-report",
+    finished_at: "2026-01-01T00:01:00Z",
+    state: "ready",
+    narrative: "t1 was verified. Review the source gap in t2.",
+    facts: {
+      summary: "1 verified, 0 disproved, 1 failed, 0 skipped, 0 already verified, 0 stopped.",
+      items: [
+        { targetLabel: "t1", state: "formalized", reason: null, reportingIncomplete: false },
+        { targetLabel: "t2", state: "failed", reason: "source_gap", reportingIncomplete: true }
+      ]
+    }
+  };
+  const items = ["t1", "t2"].map((label, index) => ({
+    id: `theorem:${label}:${index}`, kind: "theorem", label, status: "missing-stub",
+    sourceFile: "main.tex", sourceStartLine: index + 1, sourceEndLine: index + 1,
+    naturalLanguageLatex: `Theorem ${label}.`, leanKind: "theorem",
+    leanDeclarationName: label, formalizable: true
+  }));
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/unknown",
+    manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
+    targetBatch: {
+      ok: true, batchId: report.batch_id, operation: "formalize", done: true,
+      running: false, pausedOn: null, reportId: report.batch_id, reportState: "ready", report,
+      items: [
+        { targetKind: "theorem", targetLabel: "t1", state: "formalized" },
+        { targetKind: "theorem", targetLabel: "t2", state: "failed", reason: "source_gap" }
+      ]
+    },
+    repairStatus: {
+      ok: true, batchId: report.batch_id, operation: "formalize", done: true,
+      running: false, pausedOn: null, reportId: report.batch_id, reportState: "ready", report,
+      items: [
+        { targetKind: "theorem", targetLabel: "t1", state: "formalized" },
+        { targetKind: "theorem", targetLabel: "t2", state: "failed", reason: "source_gap" }
+      ]
+    }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickButtonText("Formalize all (2)");
+  await flushPromises();
+  assert.ok(harness.batchQueue(), harness.paneText());
+  assert.match(harness.batchQueue().text, /Formalize all report1 verified/);
+  assert.match(harness.batchQueue().text, /t1 was verified\. Review the source gap in t2\./);
+});
+
+test("saved Formalize all reports reopen from project history", async () => {
+  const report = {
+    batch_id: "formalize-batch-report", finished_at: "2026-01-01T00:01:00Z",
+    state: "ready", narrative: "Review the source gap in t2.",
+    facts: { summary: "1 failed.", items: [
+      { targetLabel: "t2", state: "failed", reason: "source_gap", reportingIncomplete: true }
+    ] }
+  };
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/project-1",
+    manifest: { ok: true, rootFile: "main.tex", items: [{
+      id: "theorem:t2", kind: "theorem", label: "t2", status: "invalid",
+      sourceFile: "main.tex", sourceStartLine: 1, sourceEndLine: 1,
+      naturalLanguageLatex: "Theorem t2.", leanKind: "theorem"
+    }], diagnostics: [] },
+    batchReports: { reports: [{ batch_id: report.batch_id, finished_at: report.finished_at, state: "ready" }] },
+    batchReportDetail: report
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  const disclosure = harness.leanPane().querySelector(".ol-lean-batch-report-history").querySelector("button");
+  assert.equal(disclosure.tagName, "BUTTON");
+  assert.equal(disclosure.attributes["aria-expanded"], "false");
+  harness.clickButtonText("Past Formalize all reports");
+  assert.equal(harness.leanPane().querySelector(".ol-lean-batch-report-history").querySelector("button").attributes["aria-expanded"], "true");
+  assert.match(harness.paneText(), /Summary ready/);
+  harness.clickButtonContaining("Summary ready");
+  await flushPromises();
+  assert.match(harness.paneText(), /no final Lea Status assessment/);
+  assert.equal(harness.hasButtonLabel("Show t2 in Lean pane"), true);
+  harness.clickButtonLabel("Show t2 in Lean pane");
+  assert.match(harness.paneText(), /Theorem t2/);
+});
+
+test("report history exposes loading, empty, and retryable error states", async () => {
+  let finishLoading;
+  const pending = new Promise((resolve) => { finishLoading = resolve; });
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/project-1",
+    manifest: { ok: true, rootFile: "main.tex", items: [], diagnostics: [] },
+    batchReports: () => pending
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickButtonText("Past Formalize all reports");
+  assert.match(harness.paneText(), /Loading reports/);
+  finishLoading({ reports: [] });
+  await flushPromises();
+  assert.match(harness.paneText(), /No past Formalize all reports yet/);
+
+  const errorHarness = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/project-1",
+    manifest: { ok: true, rootFile: "main.tex", items: [], diagnostics: [] },
+    reportListError: "Report service unavailable"
+  });
+  await errorHarness.loadVisibleTheorems();
+  errorHarness.clickPaneTrigger();
+  await flushPromises();
+  errorHarness.clickButtonText("Past Formalize all reports");
+  assert.match(errorHarness.paneText(), /Report service unavailable/);
+  assert.equal(errorHarness.hasButtonText("Reload reports"), true);
+});
+
 test("stopping a batch preserves a completed race winner and reports stopped items separately", async () => {
   const items = Array.from({ length: 4 }, (_unused, index) => {
     const number = index + 1;
@@ -2746,10 +2861,13 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
             : null)
         : null;
       const failingFormalize = Boolean(formalizeFailure);
+      const failingReportList = Boolean(options.reportListError)
+        && String(url).includes("/formalize/all/reports?");
       return {
-        ok: !failingRepairStart && !failingFormalize,
-        status: failingRepairStart ? 400 : failingFormalize ? formalizeFailure.status || 400 : 200,
+        ok: !failingRepairStart && !failingFormalize && !failingReportList,
+        status: failingRepairStart ? 400 : failingFormalize ? formalizeFailure.status || 400 : failingReportList ? 503 : 200,
         async json() {
+          if (failingReportList) return { message: options.reportListError };
           if (String(url).includes("/lea-status/updates")) return options.leaStatusHistory || { updates: [], has_more: false };
           if (String(url).endsWith("/targets/resolve")) return options.resolveTargets || { targets: [] };
           if (failingRepairStart) {
@@ -2833,6 +2951,16 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
             return typeof options.manifest === "function"
               ? options.manifest(fetchCalls)
               : options.manifest || { ok: true, rootFile: "main.tex", items: [], diagnostics: [] };
+          }
+          if (String(url).includes("/formalize/all/reports/") && String(url).endsWith("/retry")) {
+            return options.batchReportRetry || options.batchReportDetail || {};
+          }
+          if (String(url).includes("/formalize/all/reports/")) {
+            return options.batchReportDetail || {};
+          }
+          if (String(url).includes("/formalize/all/reports")) {
+            return typeof options.batchReports === "function"
+              ? options.batchReports(fetchCalls) : options.batchReports || { reports: [] };
           }
           if (String(url).includes("/formalize/all") || String(url).includes("/stub/all")) {
             return options.targetBatch || {
@@ -3045,6 +3173,15 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
         .find((candidate) => candidate.textContent === text);
       assert.ok(button, `expected a button labeled "${text}"`);
       button.click();
+    },
+    clickButtonContaining(text) {
+      const button = document.body.querySelectorAll("button")
+        .find((candidate) => candidate.textContent.includes(text));
+      assert.ok(button, `expected a button containing "${text}"`);
+      button.click();
+    },
+    paneText() {
+      return document.body.querySelector(".ol-lean-project-pane-body")?.textContent || "";
     },
     clickButtonRole(role) {
       const button = document.body.querySelector(`[data-role='${role}']`);
