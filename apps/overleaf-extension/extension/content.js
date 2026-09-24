@@ -182,6 +182,7 @@
   // Batch queue disclosure survives the pane's replaceChildren re-render, but
   // is scoped to one batch id so a new run always starts compact.
   let leanPaneExpandedBatchQueueId = "";
+  let leanPaneExpandedBatchAttentionId = "";
   let leanPaneExpandedBatchCompletedId = "";
   // A repair DISPATCH failure, scoped to what was being dispatched:
   // { itemKey, message } with itemKey = the single item's target label, or
@@ -2841,24 +2842,35 @@
   function renderLeanPaneItem(item, useRelationships) {
     const expanded = leanPaneExpandedItemIds.has(item.id);
     const card = document.createElement("section");
-    card.className = `ol-lean-project-item ol-lean-project-item-${item.status || "unknown"}`;
+    card.className = `ol-lean-project-item ol-lean-project-item-${item.status || "unknown"}${expanded ? " is-expanded" : ""}`;
     card.dataset.itemId = item.id || "";
 
-    const headerRow = document.createElement("div");
-    headerRow.className = "ol-lean-project-item-header-row";
+    const detailId = `ol-lean-project-detail-${encodeURIComponent(item.id || `${item.kind}-${item.label}`)}`;
+    const summary = document.createElement("div");
+    summary.className = "ol-lean-project-item-summary";
     const header = document.createElement("button");
     header.type = "button";
     header.className = "ol-lean-project-item-header";
     header.setAttribute("aria-expanded", String(expanded));
+    header.setAttribute("aria-controls", detailId);
+    header.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} details for ${item.title || item.leanDeclarationName || item.label || "item"}`);
     header.addEventListener("click", () => {
       if (leanPaneExpandedItemIds.has(item.id)) {
         leanPaneExpandedItemIds.delete(item.id);
       } else {
         leanPaneExpandedItemIds.add(item.id);
       }
-      card.replaceWith(renderLeanPaneItem(item, useRelationships));
+      const replacement = renderLeanPaneItem(item, useRelationships);
+      card.replaceWith(replacement);
+      replacement.querySelector(".ol-lean-project-item-header")?.focus({ preventScroll: true });
     });
 
+    const disclosure = document.createElement("span");
+    disclosure.className = "ol-lean-project-item-disclosure";
+    disclosure.setAttribute("aria-hidden", "true");
+    header.appendChild(disclosure);
+    const identity = document.createElement("span");
+    identity.className = "ol-lean-project-item-identity";
     const text = document.createElement("span");
     text.className = "ol-lean-project-item-title";
     renderLeanPaneTitle(text, item);
@@ -2867,28 +2879,47 @@
     meta.textContent = item.labelSource === "generated"
       ? item.latexLabel || "Auto-named"
       : item.label;
-    header.appendChild(text);
-    header.appendChild(meta);
+    identity.appendChild(text);
+    identity.appendChild(meta);
+    header.appendChild(identity);
+    summary.appendChild(header);
+
     const checks = document.createElement("span");
     checks.className = "ol-lean-project-checks";
     checks.appendChild(renderProjectCheckChip("Lean Check", item.leanCheck?.status || "unformalized", "lean"));
     checks.appendChild(renderProjectCheckChip("Lea Status", leanPaneView.leaStatusLabel(item.leaStatus), "lea"));
-    header.appendChild(checks);
-    // Same amber "!" the document overlay's badge shows for a proof whose
-    // imports are currently sorry-stubbed -- the pane item and the doc badge
-    // describe the same status object and must agree.
-    if (getStubbedTheoremUses(item).length > 0) {
-      header.appendChild(createStubbedTheoremUsesMark());
+    summary.appendChild(checks);
+
+    const summaryActions = document.createElement("div");
+    summaryActions.className = "ol-lean-project-summary-actions";
+    const formalizeAction = leanPaneView.paneItemFormalizeAction(item);
+    const formalizeButton = renderFormalizeButton(item, formalizeAction);
+    formalizeButton.className += " ol-lean-project-summary-formalize";
+    const editing = leanPaneEditingItemId === item.id;
+    formalizeButton.disabled = editing || !leanPaneView.canFormalizePaneItem(item);
+    if (item.inProgress || item.status === "in-progress") {
+      formalizeButton.textContent = "Formalizing…";
+      formalizeButton.title = "Formalization is already running";
+    } else if (editing) {
+      formalizeButton.title = "Finish editing before formalizing";
+    } else if (formalizeButton.disabled) {
+      formalizeButton.title = "This item has no formalization target";
     }
-    headerRow.appendChild(header);
-    if (
-      Object.prototype.hasOwnProperty.call(item, "approvalEligible")
-      || Boolean(item.approvalRevision)
-    ) {
-      headerRow.appendChild(createHumanApprovalButton(paneItemApprovalTarget(item), item, { pane: true }));
-    }
-    card.appendChild(headerRow);
-    card.appendChild(leanPaneView.renderLeaStatus(item, { document,
+    summaryActions.appendChild(formalizeButton);
+    summaryActions.appendChild(renderPaneItemIconAction(item, { id: "go-to-source", label: "Go to source" }));
+    summary.appendChild(summaryActions);
+    card.appendChild(summary);
+
+    const detailRegion = document.createElement("div");
+    detailRegion.id = detailId;
+    detailRegion.hidden = !expanded;
+    if (expanded) detailRegion.appendChild(renderLeanPaneItemDetail(item, useRelationships));
+    card.appendChild(detailRegion);
+    return card;
+  }
+
+  function renderLeanPaneLiveStatus(item) {
+    return leanPaneView.renderLeaStatus(item, { document,
       loadHistory: async (target, after) => {
         const baseUrl = await chatCompanionBaseUrl();
         const query = new URLSearchParams({ formalizationId: target.formalizationId });
@@ -2908,53 +2939,7 @@
         if (!response.ok) throw new Error(payload.message || payload.error || "Could not pause this run.");
         await refreshLeanPaneNow({ background: true });
       }
-    }));
-
-    const natural = document.createElement("p");
-    natural.className = "ol-lean-project-natural";
-    renderLeanPaneLatex(natural, item.naturalLanguageLatex || item.naturalLanguageRendered || "");
-    card.appendChild(natural);
-
-    if (item.githubImportPending) {
-      const importState = document.createElement("p");
-      importState.className = "ol-lean-project-import-state";
-      importState.setAttribute("role", "status");
-      importState.textContent = item.message || "Imported Lean proof is queued for checking.";
-      card.appendChild(importState);
-    }
-
-    const relationships = renderLeanPaneUseRelationships(item, useRelationships);
-    if (relationships) card.appendChild(relationships);
-
-    if (item.status === "stale") {
-      const staleNote = document.createElement("p");
-      staleNote.className = "ol-lean-project-stale-note";
-      staleNote.setAttribute("role", "status");
-      staleNote.textContent = item.message
-        || "Out of date — the LaTeX changed after this Lean artifact was generated. Re-formalize to synchronize it.";
-      card.appendChild(staleNote);
-    }
-
-    if (getStubbedTheoremUses(item).length > 0) {
-      const stubbedWarning = document.createElement("p");
-      stubbedWarning.className = "ol-lean-project-impact-note";
-      renderStubbedTheoremUsesWarning(stubbedWarning, item);
-      card.appendChild(stubbedWarning);
-    }
-
-    if (item.leanStub) {
-      card.appendChild(renderLeanCodeBlock("ol-lean-project-code", item.leanStub, "Copy stub"));
-    } else {
-      const missing = document.createElement("p");
-      missing.className = "ol-lean-project-missing";
-      missing.textContent = "No Lean stub has been generated yet.";
-      card.appendChild(missing);
-    }
-
-    if (expanded) {
-      card.appendChild(renderLeanPaneItemDetail(item));
-    }
-    return card;
+    });
   }
 
   function renderProjectCheckChip(label, status, kind) {
@@ -3056,71 +3041,128 @@
     return element;
   }
 
-  function renderLeanPaneItemDetail(item) {
+  function renderLeanPaneItemDetail(item, useRelationships) {
     const detail = document.createElement("div");
     detail.className = "ol-lean-project-detail";
+
+    const source = renderLeanPaneDetailSection("Source statement");
+    const natural = document.createElement("p");
+    natural.className = "ol-lean-project-natural";
+    renderLeanPaneLatex(natural, item.naturalLanguageLatex || item.naturalLanguageRendered || "");
+    source.appendChild(natural);
     const meta = document.createElement("p");
+    meta.className = "ol-lean-project-detail-meta";
     meta.textContent = [
       item.sourceFile,
       item.sourceStartLine ? `lines ${item.sourceStartLine}-${item.sourceEndLine || item.sourceStartLine}` : "",
       item.leanDeclarationName ? `Lean: ${item.leanDeclarationName}` : "",
       item.leanArtifactPath ? `Artifact: ${item.leanArtifactPath}` : ""
     ].filter(Boolean).join(" · ");
-    detail.appendChild(meta);
-
-    const editing = leanPaneEditingItemId === item.id;
-
-    // One row, three visual weights (leanPaneView.paneItemActions): a single
-    // status-derived primary, an icon rail for navigation, and an overflow
-    // menu for the rare alternatives. Copy lives on the code blocks instead.
-    const { primary, rail, overflow } = leanPaneView.paneItemActions(item, { editing });
-    const actions = document.createElement("div");
-    actions.className = "ol-lean-project-detail-actions";
-    if (primary) actions.appendChild(renderPaneItemPrimaryAction(item, primary));
-    const railElement = document.createElement("div");
-    railElement.className = "ol-lean-icon-rail";
-    for (const action of rail) {
-      railElement.appendChild(renderPaneItemIconAction(item, action));
+    source.appendChild(meta);
+    const relationships = renderLeanPaneUseRelationships(item, useRelationships);
+    if (relationships) source.appendChild(relationships);
+    if (item.status === "stale") {
+      const staleNote = document.createElement("p");
+      staleNote.className = "ol-lean-project-stale-note";
+      staleNote.setAttribute("role", "status");
+      staleNote.textContent = item.message
+        || "Out of date — the LaTeX changed after this Lean artifact was generated. Re-formalize to synchronize it.";
+      source.appendChild(staleNote);
     }
-    if (overflow.length > 0) {
-      railElement.appendChild(renderPaneOverflowMenu(item, overflow));
+    if (getStubbedTheoremUses(item).length > 0) {
+      // Keep the document badge's warning mark and its fuller explanation together.
+      source.appendChild(createStubbedTheoremUsesMark());
+      const stubbedWarning = document.createElement("p");
+      stubbedWarning.className = "ol-lean-project-impact-note";
+      renderStubbedTheoremUsesWarning(stubbedWarning, item);
+      source.appendChild(stubbedWarning);
     }
-    actions.appendChild(railElement);
-    detail.appendChild(actions);
+    detail.appendChild(source);
 
-    const actionError = renderLeanPaneActionError(item);
-    if (actionError) detail.appendChild(actionError);
-
-    if (item.breakage) {
-      detail.appendChild(renderLeanPaneBreakage(item));
+    const progress = renderLeanPaneDetailSection("Progress and checks");
+    progress.appendChild(renderLeanPaneLiveStatus(item));
+    if (item.githubImportPending) {
+      const importState = document.createElement("p");
+      importState.className = "ol-lean-project-import-state";
+      importState.setAttribute("role", "status");
+      importState.textContent = item.message || "Imported Lean proof is queued for checking.";
+      progress.appendChild(importState);
     }
+    if (item.breakage) progress.appendChild(renderLeanPaneBreakage(item));
     if (item.repairNeedsReview) {
       const review = document.createElement("p");
       review.className = "ol-lean-project-repair-review";
       review.textContent = "A repair for this item compiles, but its declaration header changed -- review that the statement still matches the source.";
-      detail.appendChild(review);
+      progress.appendChild(review);
     }
+    if (item.leaCheck?.report) progress.appendChild(renderLeaCheckReport(item));
+    detail.appendChild(progress);
 
-    if (item.leaCheck?.report) detail.appendChild(renderLeaCheckReport(item));
+    const editing = leanPaneEditingItemId === item.id;
+    const { primary, rail, overflow } = leanPaneView.paneItemActions(item, { editing });
+    const otherActions = renderLeanPaneDetailSection("Other actions");
+    const actions = document.createElement("div");
+    actions.className = "ol-lean-project-detail-actions";
+    // Formalize and Go to source live in the compact summary at all times.
+    // Repair and best-effort continuation remain here when they apply.
+    if (primary && primary.id !== "formalize") actions.appendChild(renderPaneItemPrimaryAction(item, primary));
+    const railElement = document.createElement("div");
+    railElement.className = "ol-lean-icon-rail";
+    for (const action of rail.filter((entry) => entry.id !== "go-to-source")) {
+      railElement.appendChild(renderPaneItemIconAction(item, action));
+    }
+    const remainingOverflow = overflow.filter((entry) => entry.id !== "formalize");
+    if (remainingOverflow.length > 0) {
+      railElement.appendChild(renderPaneOverflowMenu(item, remainingOverflow));
+    }
+    if (railElement.children.length > 0) actions.appendChild(railElement);
+    if (Object.prototype.hasOwnProperty.call(item, "approvalEligible") || item.approvalRevision) {
+      actions.appendChild(createHumanApprovalButton(paneItemApprovalTarget(item), item, { pane: true }));
+    }
+    if (actions.children.length > 0) otherActions.appendChild(actions);
 
+    const actionError = renderLeanPaneActionError(item);
+    if (actionError) otherActions.appendChild(actionError);
+    if (otherActions.children.length > 1) detail.appendChild(otherActions);
+
+    const code = renderLeanPaneDetailSection("Lean code");
+    if (item.leanStub) {
+      code.appendChild(renderLeanCodeBlock("ol-lean-project-code", item.leanStub, "Copy stub"));
+    } else {
+      const missing = document.createElement("p");
+      missing.className = "ol-lean-project-missing";
+      missing.textContent = "No Lean stub has been generated yet.";
+      code.appendChild(missing);
+    }
     if (editing) {
-      detail.appendChild(renderLeanPaneEditControls(item));
+      code.appendChild(renderLeanPaneEditControls(item));
     } else if (item.leanArtifactContent) {
-      detail.appendChild(
+      code.appendChild(
         renderLeanCodeBlock("ol-lean-project-artifact", item.leanArtifactContent, "Copy artifact")
       );
     } else {
       const empty = document.createElement("p");
       empty.className = "ol-lean-project-missing";
       empty.textContent = "No generated Lean artifact is available for this item.";
-      detail.appendChild(empty);
+      code.appendChild(empty);
     }
 
     if (!editing && leanPaneEditLastResult && leanPaneEditLastResult.itemId === item.id) {
       const summary = renderLeanPaneEditImpactSummary(leanPaneEditLastResult, item);
-      if (summary) detail.appendChild(summary);
+      if (summary) code.appendChild(summary);
     }
+    detail.appendChild(code);
     return detail;
+  }
+
+  function renderLeanPaneDetailSection(label) {
+    const section = document.createElement("section");
+    section.className = "ol-lean-project-detail-section";
+    const heading = document.createElement("h3");
+    heading.className = "ol-lean-project-detail-heading";
+    heading.textContent = label;
+    section.appendChild(heading);
+    return section;
   }
 
   function renderLeaCheckReport(item) {
@@ -3477,6 +3519,7 @@
         if (!response.ok) throw new Error(payload?.message || `Companion returned HTTP ${response.status}.`);
         leanPaneRepairBatch = payload;
         leanPaneExpandedBatchQueueId = "";
+        leanPaneExpandedBatchAttentionId = "";
         leanPaneExpandedBatchCompletedId = "";
         startRepairBatchPolling({ immediate: true });
       }
@@ -3791,7 +3834,10 @@
       attention.appendChild(attentionHeading);
       const list = document.createElement("ul");
       list.className = "ol-lean-batch-queue-list";
-      for (const entry of attentionEntries) {
+      list.id = `ol-lean-batch-attention-${batch.batchId}`;
+      const attentionExpanded = leanPaneExpandedBatchAttentionId === batch.batchId;
+      const visibleAttention = attentionExpanded ? attentionEntries : attentionEntries.slice(0, 5);
+      for (const entry of visibleAttention) {
         list.appendChild(renderBatchQueueEntry(entry, batch.items.indexOf(entry), {
           marker: entry.state === "disproved" ? "◇" : "!",
           stateClass: entry.state,
@@ -3799,6 +3845,33 @@
         }));
       }
       attention.appendChild(list);
+      if (attentionEntries.length > 5) {
+        const hiddenEntries = attentionEntries.slice(5);
+        const hiddenCount = hiddenEntries.length;
+        const allUnformalized = hiddenEntries.every((entry) => (
+          operation === "formalize" && entry.state === "skipped" && entry.reason === "max_spend"
+        ));
+        const description = allUnformalized
+          ? `unformalized statement${hiddenCount === 1 ? "" : "s"}`
+          : `item${hiddenCount === 1 ? "" : "s"} needing attention`;
+        const collapseDescription = allUnformalized
+          ? "unformalized statements"
+          : "items needing attention";
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "ol-lean-batch-queue-disclosure ol-lean-batch-queue-attention-toggle";
+        toggle.setAttribute("aria-expanded", String(attentionExpanded));
+        toggle.setAttribute("aria-controls", list.id);
+        toggle.textContent = attentionExpanded
+          ? `Show fewer ${collapseDescription}`
+          : `+${hiddenCount} more ${description}`;
+        toggle.addEventListener("click", () => {
+          leanPaneExpandedBatchAttentionId = attentionExpanded ? "" : batch.batchId;
+          renderLeanPaneManifest(lastLeanPaneManifest);
+          document.body.querySelector(".ol-lean-batch-queue-attention-toggle")?.focus({ preventScroll: true });
+        });
+        attention.appendChild(toggle);
+      }
       panel.appendChild(attention);
     }
 
@@ -3872,6 +3945,7 @@
       dismiss.addEventListener("click", () => {
         leanPaneRepairBatch = null;
         leanPaneExpandedBatchQueueId = "";
+        leanPaneExpandedBatchAttentionId = "";
         leanPaneExpandedBatchCompletedId = "";
         renderLeanPaneManifest(lastLeanPaneManifest);
       });
@@ -4360,6 +4434,7 @@
         // action consistent with the manifest state rather than implying an
         // initial formalization effort occurred.
         rememberLeanPaneActionError(item, error, action.id);
+        leanPaneExpandedItemIds.add(item.id);
         renderLeanPaneManifest(lastLeanPaneManifest);
       }
     });
@@ -6019,6 +6094,7 @@
       if (!response.ok) throw new Error(payload?.message || `Companion returned HTTP ${response.status}.`);
       leanPaneRepairBatch = payload;
       leanPaneExpandedBatchQueueId = "";
+      leanPaneExpandedBatchAttentionId = "";
       leanPaneExpandedBatchCompletedId = "";
       startRepairBatchPolling({ immediate: true });
     } catch (error) {

@@ -37,3 +37,10 @@ data/
 *.synctex.gz
 docs/*.log
 docs/*.pdf
+
+# Local Impeccable skill, hooks, and generated design context
+/.agents/skills/impeccable/
+/.codex/hooks.json
+/.impeccable/
+/PRODUCT.md
+/DESIGN.md

@@ -1260,7 +1260,7 @@ body.ol-lean-pane-resizing {
 
 .ol-lean-project-item {
   margin-bottom: 8px;
-  padding: 11px 12px;
+  padding: 10px 12px;
   border: 1px solid var(--ol-line);
   border-radius: 10px;
   background: var(--ol-panel);
@@ -1278,10 +1278,20 @@ body.ol-lean-pane-resizing {
   box-shadow: 0 0 0 3px rgba(28, 28, 32, 0.1);
 }
 
-.ol-lean-project-item-header {
+.ol-lean-project-item-summary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px 10px;
+  grid-template-areas: "identity identity" "checks actions";
+  align-items: end;
+  gap: 8px 10px;
+}
+
+.ol-lean-project-item-header {
+  grid-area: identity;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
   width: 100%;
   padding: 0;
   border: 0;
@@ -1291,15 +1301,33 @@ body.ol-lean-pane-resizing {
   cursor: pointer;
 }
 
-.ol-lean-project-item-header-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
+.ol-lean-project-item-disclosure {
+  display: inline-grid;
+  flex: 0 0 12px;
+  place-items: center;
+  width: 12px;
+  height: 18px;
+  color: var(--ol-muted);
 }
 
-.ol-lean-project-item-header-row .ol-lean-project-item-header {
+.ol-lean-project-item-disclosure::before {
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  content: "";
+  transform: rotate(-45deg);
+  transition: transform 120ms ease;
+}
+
+.ol-lean-project-item-header[aria-expanded="true"] .ol-lean-project-item-disclosure::before {
+  transform: rotate(45deg);
+}
+
+.ol-lean-project-item-identity {
+  display: grid;
   min-width: 0;
-  flex: 1 1 auto;
+  gap: 2px;
 }
 
 .ol-lean-project-item-title {
@@ -1316,6 +1344,29 @@ body.ol-lean-pane-resizing {
   font: 11px/1.3 var(--ol-mono);
 }
 
+.ol-lean-project-summary-actions {
+  grid-area: actions;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ol-lean-project-summary-formalize {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.ol-lean-project-item-header:focus-visible,
+.ol-lean-project-summary-actions button:focus-visible,
+.ol-lean-project-detail-actions button:focus-visible {
+  outline: 2px solid var(--ol-accent);
+  outline-offset: 2px;
+}
+
 .ol-lean-project-status {
   grid-row: 1 / span 2;
   grid-column: 2;
@@ -1330,22 +1381,25 @@ body.ol-lean-pane-resizing {
 }
 
 .ol-lean-project-checks {
-  grid-row: 1 / span 2;
-  grid-column: 2;
-  display: grid;
-  justify-items: end;
+  grid-area: checks;
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: 4px;
 }
 
 .ol-lean-project-check-chip {
   display: inline-flex;
+  flex-wrap: wrap;
   gap: 4px;
+  max-width: 100%;
   padding: 4px 7px;
   border-radius: 999px;
   color: var(--ol-muted);
   background: var(--ol-line-2);
-  font: 700 10px/1 var(--ol-sans);
-  white-space: nowrap;
+  font: 650 10px/1.25 var(--ol-sans);
+  overflow-wrap: anywhere;
 }
 
 .ol-lean-project-check-chip-name {
@@ -1489,7 +1543,7 @@ body.ol-lean-pane-resizing {
 
 .ol-lean-project-natural,
 .ol-lean-project-missing,
-.ol-lean-project-detail p {
+.ol-lean-project-detail-meta {
   margin: 10px 0 0;
   overflow-wrap: anywhere;
 }
@@ -1659,8 +1713,7 @@ button.ol-lean-project-relationship-chip {
   color: var(--ol-blue);
 }
 
-.ol-lean-project-missing,
-.ol-lean-project-detail p {
+.ol-lean-project-missing {
   color: var(--ol-muted);
 }
 
@@ -1708,9 +1761,36 @@ button.ol-lean-project-relationship-chip {
 }
 
 .ol-lean-project-detail {
-  margin-top: 12px;
-  padding-top: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
   border-top: 1px solid var(--ol-line-2);
+}
+
+.ol-lean-project-detail-section + .ol-lean-project-detail-section {
+  margin-top: 16px;
+  padding-top: 15px;
+  border-top: 1px solid var(--ol-line-2);
+}
+
+.ol-lean-project-detail-heading {
+  margin: 0 0 7px;
+  color: var(--ol-ink);
+  font: 650 12px/1.35 var(--ol-sans);
+}
+
+.ol-lean-project-detail-section .ol-lean-project-natural,
+.ol-lean-project-detail-section .ol-lean-project-detail-meta {
+  margin-top: 5px;
+}
+
+.ol-lean-project-detail-meta {
+  color: var(--ol-muted);
+  font: 11px/1.5 var(--ol-mono);
+}
+
+.ol-lean-project-detail-section .ol-lean-live-status {
+  padding: 0;
+  border-top: 0;
 }
 
 .ol-lean-project-detail-actions {
@@ -1718,7 +1798,7 @@ button.ol-lean-project-relationship-chip {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 4px;
 }
 
 /* The item card's navigation actions, as compact icon buttons pushed to the
@@ -2186,6 +2266,12 @@ button.ol-lean-project-relationship-chip {
   text-decoration: underline;
 }
 
+.ol-lean-batch-queue-disclosure:focus-visible,
+.ol-lean-batch-queue-completed-toggle:focus-visible {
+  outline: 2px solid var(--ol-accent);
+  outline-offset: 2px;
+}
+
 .ol-lean-batch-queue .ol-lean-project-breakage-failed {
   margin: 10px 0 0;
 }
@@ -2604,9 +2690,7 @@ body.ol-lean-settings-resizing {
   background: var(--ol-panel-2);
 }
 
-/* The item card's single status-derived primary action (Formalize / Repair) —
-   the accent marks the one state-changing step, against the quiet icon rail
-   and the overflow alternatives (leanPaneView.paneItemActions). */
+/* Accent the status-derived action in the summary or expanded details. */
 .ol-lean-item-primary-action {
   border-color: var(--ol-accent);
   color: #ffffff;

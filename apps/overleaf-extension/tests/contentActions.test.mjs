@@ -308,6 +308,8 @@ test("the Lean pane shows the same stored approval as the in-source tag", async 
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
+  assert.equal(harness.countSelector(".ol-lean-human-approval-approved"), 1);
+  harness.clickFirstPaneItem();
 
   assert.equal(harness.countSelector(".ol-lean-human-approval-approved"), 2);
   assert.equal(harness.hasButtonLabel("Remove personal approval for demo_theorem"), true);
@@ -1348,6 +1350,7 @@ test("Lean pane file rows render proportional progress segments", async () => {
   ]);
 
   harness.clickPaneTreeRowText("main.tex");
+  harness.clickPaneItemHeaderText("t7");
   assert.match(harness.bodyText(), /Out of date.*LaTeX changed after this Lean artifact was generated/i);
 });
 
@@ -1440,8 +1443,18 @@ test("Lean pane expanded detail shows copy actions only for generated content", 
   await flushPromises();
 
   harness.clickPaneTreeRowText("main.tex");
+  assert.match(harness.bodyText(), /Theorem: main_theorem.*thm:main/);
+  assert.match(harness.bodyText(), /Lean Check:unformalized/);
+  assert.match(harness.bodyText(), /Lea Status:Not assessed/);
+  assert.equal(harness.hasButtonText("Re-formalize"), true);
+  assert.equal(harness.hasButtonLabel("Go to source"), true);
+  assert.equal(harness.countSelector(".ol-lean-project-natural"), 0);
+  assert.equal(harness.countSelector(".ol-lean-live-status"), 0);
+  assert.equal(harness.hasButtonLabel("Copy stub"), false);
   harness.clickFirstPaneItem();
 
+  assert.equal(harness.countSelector(".ol-lean-project-natural"), 1);
+  assert.equal(harness.countSelector(".ol-lean-live-status"), 1);
   assert.equal(harness.hasButtonLabel("Copy stub"), true);
   assert.equal(harness.hasButtonLabel("Copy artifact"), true);
   assert.match(harness.bodyText(), /workspace\/proofs\/Main\.lean/);
@@ -1499,6 +1512,8 @@ test("Lean pane shows navigable uses and used-by relationships across project fi
   await flushPromises();
   harness.clickPaneTreeRowText("sections/");
   harness.clickPaneTreeRowText("result.tex");
+  assert.equal(harness.countSelector(".ol-lean-project-relationships"), 0);
+  harness.clickPaneItemHeaderText("result");
 
   assert.equal(harness.countSelector(".ol-lean-project-relationships"), 1);
   assert.deepEqual(
@@ -1581,6 +1596,7 @@ test("Lean pane relationship chips survive polling and reflect refreshed target 
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
+  harness.clickPaneItemHeaderText("result");
 
   assert.ok(harness.relationshipChips().some((chip) => (
     chip.text === "support" && /relationship-chip-valid/.test(chip.className)
@@ -1628,14 +1644,14 @@ test("Lean pane renders lightweight math and highlighted Lean code", async () =>
   await flushPromises();
 
   harness.clickPaneTreeRowText("main.tex");
+  assert.equal(harness.countSelector(".ol-lean-project-math"), 0);
+  harness.clickFirstPaneItem();
   assert.ok(harness.countSelector(".ol-lean-project-math") >= 2);
   assert.equal(harness.countSelector(".ol-lean-project-math-sup"), 1);
   assert.ok(harness.countSelector(".ol-lean-project-lean-kw") >= 1);
   assert.ok(harness.countSelector(".ol-lean-project-lean-ty") >= 1);
   assert.ok(harness.countSelector(".ol-lean-project-lean-num") >= 1);
   assert.match(harness.bodyText(), /For every x ∈ ℝ, x2 ≥ 0\./);
-
-  harness.clickFirstPaneItem();
 
   assert.equal(harness.hasButtonLabel("Copy stub"), true);
   assert.equal(harness.hasButtonLabel("Copy artifact"), true);
@@ -1681,6 +1697,7 @@ test("Lean pane uses KaTeX for standard notation and styles surrounding LaTeX pr
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
+  harness.clickFirstPaneItem();
 
   assert.equal(renderCalls.length, 1);
   assert.equal(renderCalls[0].source, "f(x) \\triangleq x^2");
@@ -1726,6 +1743,7 @@ test("Lean pane preserves readable math when KaTeX rejects an expression", async
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
+  harness.clickFirstPaneItem();
 
   assert.equal(harness.countSelector(".ol-lean-project-math-fallback"), 1);
   assert.match(harness.bodyText(), /\\ProjectSpecific x ⊆ X/);
@@ -1764,7 +1782,6 @@ test("Lean pane 'Go to source' posts a navigate message with the item's offsets"
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
-  harness.clickFirstPaneItem();
   harness.clickButtonLabel("Go to source");
 
   const navigate = harness.postedMessages.find((message) => message.type === "OL_LEAN_NAVIGATE");
@@ -1933,7 +1950,6 @@ test("Lean pane 'Formalize' starts a run via the /formalize endpoint", async () 
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
-  harness.clickFirstPaneItem();
   harness.clickButtonText("Formalize");
   await flushPromises();
 
@@ -2032,11 +2048,12 @@ test("Lean pane keeps Formalize after an upstream dependency blocks startup", as
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
-  harness.clickFirstPaneItem();
+  assert.equal(harness.countSelector(".ol-lean-project-detail"), 0);
 
   harness.clickButtonText("Formalize");
   await flushPromises();
 
+  assert.equal(harness.countSelector(".ol-lean-project-detail"), 1);
   assert.equal(harness.hasButtonText("Formalize"), true);
   assert.equal(harness.hasButtonText("Retry formalize"), false);
   assert.deepEqual(harness.paneActionError(), {
@@ -2310,6 +2327,68 @@ test("Formalize all renders an accessible, collapsible queue with active turn pr
   assert.equal(queue.completedCount, 3);
   assert.match(queue.text, /t1formalized and verified\./);
   assert.match(queue.text, /Hide 3 completed/);
+});
+
+test("Formalize all limits cost-cap failures to five statements until expanded", async () => {
+  const items = Array.from({ length: 9 }, (_unused, index) => ({
+    id: `theorem:cap_t${index + 1}:${index}`,
+    kind: "theorem",
+    label: `cap_t${index + 1}`,
+    status: "missing-stub",
+    sourceFile: "main.tex",
+    sourceStartLine: index + 1,
+    sourceEndLine: index + 1,
+    naturalLanguageLatex: `Theorem ${index + 1}.`,
+    leanKind: "theorem",
+    leanDeclarationName: `cap_t${index + 1}`,
+    formalizable: true
+  }));
+  const harness = createContentHarness(
+    { status: "unformalized" },
+    {},
+    {
+      locationPath: "/project/unknown",
+      manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
+      targetBatch: {
+        ok: true,
+        batchId: "formalize-cost-cap",
+        operation: "formalize",
+        done: true,
+        running: false,
+        pausedOn: null,
+        items: items.map((item, index) => ({
+          targetKind: "theorem",
+          targetLabel: item.label,
+          state: index === 0 ? "failed" : "skipped",
+          reason: index === 0 ? "global_spend_cap" : "max_spend"
+        }))
+      }
+    }
+  );
+
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickButtonText("Formalize all (9)");
+  await flushPromises();
+
+  let queue = harness.batchQueue();
+  assert.equal(queue.attentionItemCount, 5);
+  assert.equal(queue.attentionExpanded, "false");
+  assert.match(queue.text, /\+4 more unformalized statements/);
+  assert.doesNotMatch(queue.text, /cap_t9/);
+
+  harness.clickButtonText("+4 more unformalized statements");
+  queue = harness.batchQueue();
+  assert.equal(queue.attentionItemCount, 9);
+  assert.equal(queue.attentionExpanded, "true");
+  assert.match(queue.text, /cap_t9/);
+
+  harness.clickButtonText("Show fewer unformalized statements");
+  queue = harness.batchQueue();
+  assert.equal(queue.attentionItemCount, 5);
+  assert.equal(queue.attentionExpanded, "false");
+  assert.doesNotMatch(queue.text, /cap_t9/);
 });
 
 test("stopping a batch preserves a completed race winner and reports stopped items separately", async () => {
@@ -3261,7 +3340,12 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
           : [],
         pendingCount: queue.querySelectorAll(".ol-lean-batch-queue-item-pending").length,
         completedCount: queue.querySelectorAll(".ol-lean-batch-queue-item-completed").length,
-        attentionCount: queue.querySelectorAll(".ol-lean-batch-queue-attention").length
+        attentionCount: queue.querySelectorAll(".ol-lean-batch-queue-attention").length,
+        attentionItemCount: queue.querySelector(".ol-lean-batch-queue-attention")
+          ?.querySelectorAll(".ol-lean-batch-queue-item").length || 0,
+        attentionExpanded: queue.querySelector(".ol-lean-batch-queue-attention")
+          ?.querySelector(".ol-lean-batch-queue-disclosure")
+          ?.attributes["aria-expanded"] || null
       };
     },
     firstFocusedPaneItemScrolled() {
@@ -4035,6 +4119,7 @@ test("live Lea Status renders ongoing findings, history and Pause even for stale
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
   assert.match(harness.bodyText(), /High confidence · Source issue · Last assessed version/);
+  harness.clickFirstPaneItem();
   assert.match(harness.bodyText(), /Main step checked; boundary case remains/);
   assert.match(harness.bodyText(), /Source issue: open/);
   assert.match(harness.bodyText(), /Lean correction \(applied\): Handled the endpoint explicitly/);

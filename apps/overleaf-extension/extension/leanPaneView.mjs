@@ -676,8 +676,8 @@ export function canEditPaneItem(item) {
 
 // --- Item action hierarchy ---------------------------------------------------
 
-// The full action set for an expanded pane item, arranged by visual weight so
-// the card stays one row instead of a wall of same-looking buttons:
+// The full action set for a pane item. The renderer keeps Formalize and Go to
+// source in the summary, with the remaining actions in expanded details:
 //   primary  -- at most ONE status-derived accented text button (repair wins
 //               over formalize: breakage attribution means the guided path).
 //   rail     -- always-relevant navigation, rendered as icon buttons.
@@ -685,17 +685,21 @@ export function canEditPaneItem(item) {
 //               formalizable-but-broken item keeps Re-formalize here so no
 //               capability is lost when Repair takes the primary slot.
 // Copy actions are absent by design: they belong on the code blocks they copy.
-export function paneItemActions(item, { editing = false } = {}) {
-  const canFormalize = canFormalizePaneItem(item);
-  const canBestEffort = canContinueBestEffort(item);
-  const formalizeAction = {
+export function paneItemFormalizeAction(item) {
+  return {
     id: "formalize",
     label: item?.status === "missing-stub"
       ? "Formalize"
       : item?.status === "paused"
-        ? canBestEffort ? "Resume faithfully" : "Resume"
+        ? canContinueBestEffort(item) ? "Resume faithfully" : "Resume"
         : "Re-formalize"
   };
+}
+
+export function paneItemActions(item, { editing = false } = {}) {
+  const canFormalize = canFormalizePaneItem(item);
+  const canBestEffort = canContinueBestEffort(item);
+  const formalizeAction = paneItemFormalizeAction(item);
   const bestEffortAction = { id: "best-effort", label: "Continue best effort" };
 
   let primary = null;

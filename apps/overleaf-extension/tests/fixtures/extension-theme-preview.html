@@ -89,40 +89,88 @@
           </button>
           <div class="ol-lean-project-tree-items">
             <article class="ol-lean-project-item">
-              <button class="ol-lean-project-item-header">
-                <span class="ol-lean-project-item-title">compactness_criterion</span>
-                <span class="ol-lean-project-item-meta">theorem · line 42</span>
-                <span class="ol-lean-project-status ol-lean-project-status-valid">valid</span>
-              </button>
-              <p class="ol-lean-project-natural">A metric space is compact exactly when it is complete and totally bounded.</p>
-              <div class="ol-lean-project-detail">
-                <div class="ol-lean-code-block">
-                  <pre class="ol-lean-project-code"><span class="ol-lean-project-lean-kw">theorem</span> compactness_criterion :
-  IsCompact s ↔ CompleteSpace s ∧ TotallyBounded s := by
-  exact compact_iff_complete_totallyBounded</pre>
-                </div>
-                <div class="ol-lean-project-detail-actions">
-                  <button class="ol-lean-pane-action ol-lean-item-primary-action">Ask Lea</button>
-                  <span class="ol-lean-icon-rail">
-                    <button class="ol-lean-icon-action" aria-label="Edit">✎</button>
-                    <button class="ol-lean-icon-action" aria-label="Copy">⧉</button>
+              <div class="ol-lean-project-item-summary">
+                <button class="ol-lean-project-item-header" aria-expanded="false" aria-controls="compactness-detail">
+                  <span class="ol-lean-project-item-disclosure" aria-hidden="true"></span>
+                  <span class="ol-lean-project-item-identity">
+                    <span class="ol-lean-project-item-title">Theorem: Compactness criterion</span>
+                    <span class="ol-lean-project-item-meta">compactness_criterion</span>
                   </span>
+                </button>
+                <span class="ol-lean-project-checks">
+                  <span class="ol-lean-project-check-chip ol-lean-project-check-chip-lean ol-lean-project-check-chip-checked"><span class="ol-lean-project-check-chip-name">Lean Check:</span><span>checked</span></span>
+                  <span class="ol-lean-project-check-chip ol-lean-project-check-chip-lea ol-lean-project-check-chip-approved"><span class="ol-lean-project-check-chip-name">Lea Status:</span><span>Approved</span></span>
+                </span>
+                <span class="ol-lean-project-summary-actions">
+                  <button class="ol-lean-secondary-button ol-lean-item-primary-action ol-lean-project-summary-formalize">Re-formalize</button>
+                  <button class="ol-lean-icon-action" aria-label="Go to source" title="Go to source"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"></circle><line x1="12" y1="2" x2="12" y2="5"></line><line x1="12" y1="19" x2="12" y2="22"></line><line x1="2" y1="12" x2="5" y2="12"></line><line x1="19" y1="12" x2="22" y2="12"></line></svg></button>
+                </span>
+              </div>
+              <div id="compactness-detail" hidden></div>
+            </article>
+            <article class="ol-lean-project-item is-expanded">
+              <div class="ol-lean-project-item-summary">
+                <button class="ol-lean-project-item-header" aria-expanded="true" aria-controls="heine-detail">
+                  <span class="ol-lean-project-item-disclosure" aria-hidden="true"></span>
+                  <span class="ol-lean-project-item-identity">
+                    <span class="ol-lean-project-item-title">Theorem: Heine–Borel application</span>
+                    <span class="ol-lean-project-item-meta">heine_borel_application</span>
+                  </span>
+                </button>
+                <span class="ol-lean-project-checks">
+                  <span class="ol-lean-project-check-chip ol-lean-project-check-chip-lean"><span class="ol-lean-project-check-chip-name">Lean Check:</span><span>in progress</span></span>
+                  <span class="ol-lean-project-check-chip ol-lean-project-check-chip-lea"><span class="ol-lean-project-check-chip-name">Lea Status:</span><span>Checking proof</span></span>
+                </span>
+                <span class="ol-lean-project-summary-actions">
+                  <button class="ol-lean-secondary-button ol-lean-item-primary-action ol-lean-project-summary-formalize" disabled>Formalizing…</button>
+                  <button class="ol-lean-icon-action" aria-label="Go to source" title="Go to source"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"></circle><line x1="12" y1="2" x2="12" y2="5"></line><line x1="12" y1="19" x2="12" y2="22"></line><line x1="2" y1="12" x2="5" y2="12"></line><line x1="19" y1="12" x2="22" y2="12"></line></svg></button>
+                </span>
+              </div>
+              <div id="heine-detail">
+                <div class="ol-lean-project-detail">
+                  <section class="ol-lean-project-detail-section">
+                    <h3 class="ol-lean-project-detail-heading">Source statement</h3>
+                    <p class="ol-lean-project-natural">Every closed and bounded subset of ℝⁿ is compact.</p>
+                    <p class="ol-lean-project-detail-meta">main.tex · lines 57–62 · Lean: heine_borel_application</p>
+                  </section>
+                  <section class="ol-lean-project-detail-section">
+                    <h3 class="ol-lean-project-detail-heading">Progress and checks</h3>
+                    <div class="ol-lean-live-status">
+                      <p>Checking the final proof obligation.</p>
+                      <p class="ol-lean-live-status-meta">Checking proof · Updated 8 seconds ago</p>
+                    </div>
+                  </section>
+                  <section class="ol-lean-project-detail-section">
+                    <h3 class="ol-lean-project-detail-heading">Other actions</h3>
+                    <div class="ol-lean-project-detail-actions"><button class="ol-lean-icon-action" aria-label="Chat">Chat</button></div>
+                  </section>
+                  <section class="ol-lean-project-detail-section">
+                    <h3 class="ol-lean-project-detail-heading">Lean code</h3>
+                    <div class="ol-lean-code-block"><pre class="ol-lean-project-code"><span class="ol-lean-project-lean-kw">theorem</span> heine_borel_application : IsCompact s := by
+  exact isCompact_iff_isClosed_bounded.mpr ⟨hs_closed, hs_bounded⟩</pre></div>
+                  </section>
                 </div>
               </div>
             </article>
             <article class="ol-lean-project-item">
-              <button class="ol-lean-project-item-header">
-                <span class="ol-lean-project-item-title">heine_borel_application</span>
-                <span class="ol-lean-project-item-meta">theorem · line 57</span>
-                <span class="ol-lean-project-status ol-lean-project-status-in-progress">running</span>
-              </button>
-            </article>
-            <article class="ol-lean-project-item">
-              <button class="ol-lean-project-item-header">
-                <span class="ol-lean-project-item-title">finite_subcover</span>
-                <span class="ol-lean-project-item-meta">lemma · line 68</span>
-                <span class="ol-lean-project-status ol-lean-project-status-needs-review">review</span>
-              </button>
+              <div class="ol-lean-project-item-summary">
+                <button class="ol-lean-project-item-header" aria-expanded="false" aria-controls="subcover-detail">
+                  <span class="ol-lean-project-item-disclosure" aria-hidden="true"></span>
+                  <span class="ol-lean-project-item-identity">
+                    <span class="ol-lean-project-item-title">Lemma: Finite subcover</span>
+                    <span class="ol-lean-project-item-meta">finite_subcover</span>
+                  </span>
+                </button>
+                <span class="ol-lean-project-checks">
+                  <span class="ol-lean-project-check-chip ol-lean-project-check-chip-lean ol-lean-project-check-chip-checked"><span class="ol-lean-project-check-chip-name">Lean Check:</span><span>checked</span></span>
+                  <span class="ol-lean-project-check-chip ol-lean-project-check-chip-lea ol-lean-project-check-chip-warning"><span class="ol-lean-project-check-chip-name">Lea Status:</span><span>Needs author input</span></span>
+                </span>
+                <span class="ol-lean-project-summary-actions">
+                  <button class="ol-lean-secondary-button ol-lean-item-primary-action ol-lean-project-summary-formalize">Re-formalize</button>
+                  <button class="ol-lean-icon-action" aria-label="Go to source" title="Go to source"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"></circle><line x1="12" y1="2" x2="12" y2="5"></line><line x1="12" y1="19" x2="12" y2="22"></line><line x1="2" y1="12" x2="5" y2="12"></line><line x1="19" y1="12" x2="22" y2="12"></line></svg></button>
+                </span>
+              </div>
+              <div id="subcover-detail" hidden></div>
             </article>
           </div>
         </div>
