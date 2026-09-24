@@ -471,7 +471,6 @@ export async function handleFormalize(payload, state, { batch = false } = {}) {
           state,
           leaRepoPath: state.settings.leaRepoPath,
           target,
-          targetText,
           jobs: state.jobs || {}
         });
   } catch (error) {
@@ -5175,8 +5174,7 @@ async function createLeaJob({
 // Convert a leaRepoPath-relative recorded proof path
 // ("workspace/proofs/Lea/Project1/x.lean") into the project-repo-relative path
 // the adapter's artifact retire/restore endpoints speak ("x.lean"). Null when
-// the namespace is unknown or the path lives elsewhere — callers fall back to
-// the legacy local unlink/stash.
+// the namespace is unknown or the path lives elsewhere; retirement then stops.
 function repoRelativeProofPath(target, proofPath) {
   const namespacePath = String(targetNamespace(target) || "").split(".").filter(Boolean).join("/");
   if (!namespacePath) return null;
@@ -5185,7 +5183,7 @@ function repoRelativeProofPath(target, proofPath) {
   return normalized.startsWith(prefix) ? normalized.slice(prefix.length) : null;
 }
 
-async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, targetText, jobs }) {
+async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, jobs }) {
   const previousJob = findLatestFinishedJob(jobs, target.jobKey);
   if (!previousJob) {
     // A first attempt has no artifact owned by this target. In particular, a
@@ -5255,8 +5253,7 @@ async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, 
 
   const removedSections = await removeProjectTheoremEntries({
     projectMarkdownPath: target.projectMarkdownPath,
-    candidateNames,
-    candidateProofPaths
+    retiredProofPaths: new Set(removedProofPaths)
   });
 
   return {
@@ -5348,14 +5345,14 @@ async function restorePreviousRunArtifacts({ state, job, target }) {
 // entry names or recorded paths match what is being retired. Reading the
 // markers here is the writer keeping its own view consistent — never a
 // truth source (the ledger is).
-async function removeProjectTheoremEntries({ projectMarkdownPath, candidateNames, candidateProofPaths }) {
-  if ((candidateNames.size === 0 && candidateProofPaths.size === 0) || !existsSync(projectMarkdownPath)) {
+async function removeProjectTheoremEntries({ projectMarkdownPath, retiredProofPaths }) {
+  if (retiredProofPaths.size === 0 || !existsSync(projectMarkdownPath)) {
     return [];
   }
 
   const markdown = await fs.readFile(projectMarkdownPath, "utf8");
   const sections = findProjectTheoremSections(markdown)
-    .filter((section) => candidateNames.has(section.entry.name) || candidateProofPaths.has(section.entry.proofPath));
+    .filter((section) => retiredProofPaths.has(section.entry.proofPath));
   if (sections.length === 0) {
     return [];
   }

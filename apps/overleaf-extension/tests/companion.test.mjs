@@ -3694,8 +3694,12 @@ test("formalize cleans previous failed Lea artifacts before retrying", async () 
       ].join("\n")
     }, state);
 
-    await waitFor(() => state.jobs[result.body.jobId]?.status === "formalized");
+    assert.equal(result.statusCode, 200, result.body?.message);
+    await waitFor(() => state.jobs[result.body.jobId]?.status === "formalized"
+      || (state.jobs[result.body.jobId]?.finishedAt
+        && state.jobs[result.body.jobId]?.status !== "in_progress"));
     const job = state.jobs[result.body.jobId];
+    assert.equal(job.status, "formalized", job.error);
     assert.deepEqual(job.retryCleanup.removedProofPaths, [proofPath]);
     assert.deepEqual(job.retryCleanup.removedProjectEntries, ["retry_target"]);
     assert.equal(job.declarationName, "retry_target");
@@ -3753,6 +3757,16 @@ test("formalize all cannot bypass a shared-file retirement refusal", async () =>
       ? jsonResponse(409, { detail: "This Lean file contains multiple declarations." })
       : adapterFetch(url, options)
   });
+  state.jobs.previous_failed = {
+    jobId: "previous_failed",
+    jobKey: "project-1:theorem:needs_retry",
+    status: "failed",
+    targetLabel: "needs_retry",
+    declarationName: "needs_retry",
+    recordedProofPath: proofPath,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    finishedAt: "2026-01-01T00:01:00.000Z"
+  };
 
   const result = await handleFormalize({
     overleafProjectId: "project-1",
@@ -3792,6 +3806,32 @@ test("formalize all refuses to complete a stub stored beside another proof", asy
   assert.equal(result.statusCode, 409);
   assert.equal(result.body.error, "shared_artifact");
   assert.ok(!calls.some((call) => String(call.url).endsWith("/api/runs")));
+});
+
+test("a first formalization does not retire a different target inferred from its source", async () => {
+  const leaRepo = await makeLeaRepo();
+  const proofPath = path.join("workspace", "proofs", "Lea", "Project1", "already_proved.lean");
+  const original = "theorem already_proved : True := by trivial\n";
+  await writeLeaProjectProof(leaRepo, proofPath, original);
+  const calls = [];
+  const state = await makeState({
+    leaRepoPath: leaRepo,
+    env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: makeAdapterApiFetch(calls, {
+      targetStatus: { already_proved: ledgerEntry("already_proved") }
+    })
+  });
+
+  const result = await handleFormalize({
+    overleafProjectId: "project-1",
+    targetKind: "theorem",
+    targetLabel: "new_target",
+    targetText: "Theorem name: already_proved\nA new statement."
+  }, state);
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(await fs.readFile(path.join(leaRepo, proofPath), "utf8"), original);
+  assert.ok(!calls.some((call) => String(call.url).endsWith("/artifacts/retire")));
 });
 
 test("statuses are unformalized when project markdown has no theorem entry", async () => {
