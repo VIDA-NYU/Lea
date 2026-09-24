@@ -389,9 +389,10 @@ export async function handleFormalize(payload, state, { batch = false } = {}) {
   if (batch) {
     // The pane's status snapshot can be stale by the time this item reaches the
     // front of a long batch. Never turn a completed proof into a destructive
-    // retry simply because the browser queued it earlier.
+    // retry simply because the browser queued it earlier. A partial file can
+    // contain no sorry and still fail Lean, so require a successful check.
     const completeOnDisk = Object.values(ledger || {}).some((entry) =>
-      entry?.recorded && entry.exists && entry.has_sorry === false);
+      entry?.recorded && entry.exists && entry.has_sorry === false && entry.check_status === "ok");
     const artifactJob = findLatestArtifactJob(state.jobs || {}, target.jobKey, {
       declarationName: previousJob?.declarationName
     });
@@ -405,7 +406,9 @@ export async function handleFormalize(payload, state, { batch = false } = {}) {
       return { statusCode: 200, body: { status: "existing_proof" } };
     }
   }
-  const resume = payload.resume === true;
+  // A queued item may have paused since the pane built its batch payload.
+  // Choose the resume path from the latest job when this item is dispatched.
+  const resume = payload.resume === true || (batch && previousJob?.status === "paused");
   const bestEffort = payload.bestEffort === true;
   if (bestEffort) {
     const pausedJob = findLatestFinishedJob(state.jobs || {}, target.jobKey);

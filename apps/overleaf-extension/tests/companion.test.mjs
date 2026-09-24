@@ -3737,6 +3737,115 @@ test("formalize all rechecks completed proofs before starting a queued item", as
   assert.ok(!calls.some((call) => String(call.url).endsWith("/artifacts/retire")));
 });
 
+test("formalize all resumes a paused proof without retiring its partial artifact", async () => {
+  const leaRepo = await makeLeaRepo();
+  const proofPath = path.join("workspace", "proofs", "Lea", "Project1", "paused_target.lean");
+  const partial = "theorem paused_target : True := by\n  exact missing_lemma\n";
+  await writeLeaProjectProof(leaRepo, proofPath, partial);
+  const calls = [];
+  let contentAtRunStart = null;
+  const adapterFetch = makeAdapterApiFetch(calls, {
+    sessionId: "sess-paused",
+    doneStatus: "failed",
+    targetStatus: {
+      paused_target: ledgerEntry("paused_target", { content: partial, check_status: "error" })
+    }
+  });
+  const state = await makeState({
+    leaRepoPath: leaRepo,
+    env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: async (url, options) => {
+      if (String(url).endsWith("/api/runs") && options?.method === "POST") {
+        contentAtRunStart = await fs.readFile(path.join(leaRepo, proofPath), "utf8");
+      }
+      return adapterFetch(url, options);
+    }
+  });
+  state.jobs.paused_target = {
+    jobId: "paused_target",
+    jobKey: "project-1:theorem:paused_target",
+    status: "paused",
+    targetKind: "theorem",
+    targetLabel: "paused_target",
+    declarationName: "paused_target",
+    recordedProofPath: proofPath,
+    leaSessionId: "sess-paused",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    finishedAt: "2026-01-01T00:01:00.000Z"
+  };
+
+  const result = await handleFormalizeAll({
+    overleafProjectId: "project-1",
+    items: [{ targetKind: "theorem", targetLabel: "paused_target", targetText: "A paused theorem." }]
+  }, state);
+
+  assert.equal(result.statusCode, 200);
+  await waitFor(() => state.repairBatches[result.body.batchId].done);
+  const resumedJob = Object.values(state.jobs).find((job) => job.jobId !== "paused_target");
+  const runCall = calls.find((call) => String(call.url).endsWith("/api/runs") && call.options?.method === "POST");
+  assert.ok(runCall);
+  assert.equal(runCall.body.session_id, "sess-paused");
+  assert.equal(resumedJob.resumed, true);
+  assert.deepEqual(resumedJob.retryCleanup.removedProofPaths, []);
+  assert.equal(contentAtRunStart, partial);
+  assert.equal(await fs.readFile(path.join(leaRepo, proofPath), "utf8"), partial);
+  assert.ok(!calls.some((call) => String(call.url).endsWith("/artifacts/retire")));
+});
+
+test("formalize all resumes an item that pauses while waiting in the queue", async () => {
+  const leaRepo = await makeLeaRepo();
+  const calls = [];
+  let firstRunWaiting = false;
+  let releaseFirstRun;
+  const firstRunGate = new Promise((resolve) => { releaseFirstRun = resolve; });
+  const adapterFetch = makeAdapterApiFetch(calls, { doneStatus: "failed", sessionId: "sess-paused" });
+  const state = await makeState({
+    leaRepoPath: leaRepo,
+    env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: async (url, options) => {
+      if (String(url).endsWith("/api/runs") && options?.method === "POST"
+          && JSON.parse(options.body).message.includes("labeled first_target")) {
+        firstRunWaiting = true;
+        await firstRunGate;
+      }
+      return adapterFetch(url, options);
+    }
+  });
+
+  const result = await handleFormalizeAll({
+    overleafProjectId: "project-1",
+    items: [
+      { targetKind: "theorem", targetLabel: "first_target", targetText: "A first theorem." },
+      { targetKind: "theorem", targetLabel: "queued_target", targetText: "A queued theorem." }
+    ]
+  }, state);
+  assert.equal(result.statusCode, 200);
+  try {
+    await waitFor(() => firstRunWaiting);
+    state.jobs.queued_pause = {
+      jobId: "queued_pause",
+      jobKey: "project-1:theorem:queued_target",
+      status: "paused",
+      targetKind: "theorem",
+      targetLabel: "queued_target",
+      declarationName: "queued_target",
+      leaSessionId: "sess-paused",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      finishedAt: "2026-01-01T00:01:00.000Z"
+    };
+  } finally {
+    releaseFirstRun();
+  }
+
+  await waitFor(() => state.repairBatches[result.body.batchId].done);
+  const resumedJob = Object.values(state.jobs).find((job) => job.targetLabel === "queued_target" && job.jobId !== "queued_pause");
+  const queuedRun = calls.find((call) => String(call.url).endsWith("/api/runs")
+    && call.options?.method === "POST" && call.body.message.includes("labeled queued_target"));
+  assert.ok(queuedRun);
+  assert.equal(queuedRun.body.session_id, "sess-paused");
+  assert.equal(resumedJob.resumed, true);
+});
+
 test("formalize all cannot bypass a shared-file retirement refusal", async () => {
   const leaRepo = await makeLeaRepo();
   const proofPath = path.join("workspace", "proofs", "Lea", "Project1", "shared.lean");

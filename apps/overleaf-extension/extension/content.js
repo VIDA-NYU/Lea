@@ -5468,18 +5468,54 @@
 
     const popover = document.createElement("div");
     popover.className = "ol-lean-popover ol-lean-settings-popover";
+    popover.setAttribute("role", "dialog");
+    popover.setAttribute("aria-label", "Lea settings");
+    popover.setAttribute("aria-modal", "false");
     popover.innerHTML = `
       <div class="ol-lean-popover-arrow ol-lean-popover-arrow-bottom" aria-hidden="true"></div>
       <div class="ol-lean-popover-header">
         <div class="ol-lean-popover-kicker">
           <span class="ol-lean-popover-mark" aria-hidden="true">L</span>
-          <span>Extension Settings</span>
+          <span>Lea settings <small>Overleaf extension</small></span>
         </div>
-        <button type="button" class="ol-lean-icon-button" data-role="close" aria-label="Close Lea popover">x</button>
+        <button type="button" class="ol-lean-icon-button" data-role="close" aria-label="Close Lea popover"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg></button>
       </div>
       <div class="ol-lean-popover-body">
+        <details class="ol-lean-settings-group" data-group="usage" open>
+          <summary class="ol-lean-settings-group-summary">
+            <span><strong>Usage &amp; budget</strong><small>Spend, limits, and this project</small></span>
+          </summary>
+          <div class="ol-lean-settings-group-content">
+        <section class="ol-lean-usage-panel" aria-live="polite">
+          <div class="ol-lean-usage-row" data-usage="project">
+            <div class="ol-lean-usage-row-head">
+              <span>This project</span>
+              <strong data-field="cost">--</strong>
+            </div>
+            <div class="ol-lean-usage-metrics">
+              <span><small>Input tokens</small><strong data-field="input">--</strong></span>
+              <span><small>Output tokens</small><strong data-field="output">--</strong></span>
+            </div>
+          </div>
+          <div class="ol-lean-usage-separator"></div>
+          <div class="ol-lean-usage-row" data-usage="allTime">
+            <div class="ol-lean-usage-row-head">
+              <span>All-time</span>
+              <strong data-field="cost">--</strong>
+            </div>
+            <div class="ol-lean-usage-metrics">
+              <span><small>Input tokens</small><strong data-field="input">--</strong></span>
+              <span><small>Output tokens</small><strong data-field="output">--</strong></span>
+            </div>
+          </div>
+          <p class="ol-lean-usage-cap" data-role="cost-cap-summary" hidden></p>
+        </section>
+        <label class="ol-lean-settings-budget-field">
+          <span>Maximum spend <small>All projects · USD · blank for no cap</small></span>
+          <input type="number" min="0" step="0.01" data-role="max-spend" placeholder="No cap">
+        </label>
         <section class="ol-lean-project-identity-panel" data-role="project-identity">
-          <div class="ol-lean-provider-title">Project</div>
+          <div class="ol-lean-provider-title">Project identity</div>
           <div class="ol-lean-provider-row">
             <div class="ol-lean-provider-row-head">
               <span data-role="project-name">Overleaf Project</span>
@@ -5493,33 +5529,44 @@
             </div>
           </div>
         </section>
-        <section class="ol-lean-usage-panel" aria-live="polite">
-          <div class="ol-lean-usage-row" data-usage="project">
-            <div class="ol-lean-usage-row-head">
-              <span>This project</span>
-              <strong data-field="cost">--</strong>
-            </div>
-            <div class="ol-lean-usage-metrics">
-              <span><small>In</small><strong data-field="input">--</strong></span>
-              <span><small>Out</small><strong data-field="output">--</strong></span>
-            </div>
           </div>
-          <div class="ol-lean-usage-separator"></div>
-          <div class="ol-lean-usage-row" data-usage="allTime">
-            <div class="ol-lean-usage-row-head">
-              <span>All-time</span>
-              <strong data-field="cost">--</strong>
-            </div>
-            <div class="ol-lean-usage-metrics">
-              <span><small>In</small><strong data-field="input">--</strong></span>
-              <span><small>Out</small><strong data-field="output">--</strong></span>
-            </div>
+        </details>
+        <details class="ol-lean-settings-group" data-group="formalization">
+          <summary class="ol-lean-settings-group-summary">
+            <span><strong>Formalization</strong><small>Model and run behavior</small></span>
+          </summary>
+          <div class="ol-lean-settings-group-content">
+        <section class="ol-lean-settings-panel">
+          <div class="ol-lean-model-field">
+            <span>Model</span>
+            <div data-role="model"></div>
           </div>
-          <p class="ol-lean-usage-cap" data-role="cost-cap-summary" hidden></p>
+          <p class="lea-model-requirement-note" data-role="model-catalog-status"></p>
+          <div class="lea-model-requirements" data-role="model-requirements" aria-live="polite"></div>
+          <label>
+            <span>Max turns</span>
+            <input type="number" min="1" max="200" data-role="max-turns">
+          </label>
+          <label class="ol-lean-checkbox-field">
+            <input type="checkbox" data-role="tex-mirror">
+            <span>Mirror Overleaf LaTeX sources into the project</span>
+          </label>
+          <label class="ol-lean-checkbox-field">
+            <input type="checkbox" data-role="source-pause">
+            <span>Pause formalization when Lea needs author input</span>
+          </label>
+          <p class="ol-lean-provider-note">Lea Status findings remain visible when this is off. Formalize all never pauses for source issues.</p>
         </section>
+          </div>
+        </details>
+        <details class="ol-lean-settings-group" data-group="access">
+          <summary class="ol-lean-settings-group-summary">
+            <span><strong>Access &amp; sharing</strong><small>Model keys and GitHub</small></span>
+          </summary>
+          <div class="ol-lean-settings-group-content">
         <section class="ol-lean-provider-panel" data-role="provider-keys">
-          <div class="ol-lean-provider-title">Model families</div>
-          <p class="ol-lean-provider-note">Keys are saved to the root .env by the companion, not to Chrome or settings.json.</p>
+          <div class="ol-lean-provider-title">Model API keys</div>
+          <p class="ol-lean-provider-note">Keys are saved locally by Lea in the root .env file, never in Chrome.</p>
           ${Object.entries(MODEL_FAMILY_LABELS).map(([family, label]) => `
             <div class="ol-lean-provider-row" data-family="${family}">
               <div class="ol-lean-provider-row-head">
@@ -5528,7 +5575,7 @@
               </div>
               <div class="ol-lean-provider-key-controls">
                 <button type="button" class="ol-lean-provider-key-button" data-role="provider-key-toggle" data-family="${family}">Add key</button>
-                <input type="password" autocomplete="off" spellcheck="false" data-role="provider-key-input" data-family="${family}" placeholder="${label} API key" hidden>
+                <input type="password" autocomplete="off" spellcheck="false" data-role="provider-key-input" data-family="${family}" aria-label="${label} API key" placeholder="${label} API key" hidden>
               </div>
             </div>
           `).join("")}
@@ -5571,34 +5618,13 @@
             </div>
           </div>
         </section>
-        <section class="ol-lean-settings-panel">
-          <div class="ol-lean-model-field">
-            <span>Model</span>
-            <div data-role="model"></div>
           </div>
-          <p class="lea-model-requirement-note" data-role="model-catalog-status"></p>
-          <div class="lea-model-requirements" data-role="model-requirements" aria-live="polite"></div>
-          <label>
-            <span>Max turns</span>
-            <input type="number" min="1" max="200" data-role="max-turns">
-          </label>
-          <label>
-            <span>Cost cap (USD)</span>
-            <input type="number" min="0" step="0.01" data-role="max-spend" placeholder="None">
-          </label>
-          <label class="ol-lean-checkbox-field">
-            <input type="checkbox" data-role="tex-mirror">
-            <span>Mirror Overleaf LaTeX sources into the project</span>
-          </label>
-          <label class="ol-lean-checkbox-field">
-            <input type="checkbox" data-role="source-pause">
-            <span>Pause formalization when Lea needs author input</span>
-          </label>
-          <p class="ol-lean-provider-note">Lea Status findings remain visible when this is off. Formalize all never pauses for source issues.</p>
-          <button type="button" class="ol-lean-save-button" data-role="save-settings" disabled>Save changes</button>
-        </section>
+        </details>
       </div>
-      <p class="ol-lean-popover-status" role="status"></p>
+      <div class="ol-lean-settings-footer">
+        <p class="ol-lean-popover-status" role="status"></p>
+        <button type="button" class="ol-lean-save-button" data-role="save-settings" disabled>Save changes</button>
+      </div>
     `;
 
     const resizer = document.createElement("button");
@@ -5765,6 +5791,9 @@
     document.body.appendChild(popover);
     activePopover = popover;
     positionSettingsPopover(popover);
+    if (!focusMissingCredential) {
+      popover.querySelector("[data-group='usage'] > summary")?.focus({ preventScroll: true });
+    }
     loadPopoverSettings(popover)
       .then(() => {
         if (focusMissingCredential) focusFirstMissingCredential(popover);
@@ -7181,6 +7210,8 @@
         .find((candidate) => candidate.dataset.env === missing.env) || null;
     }
     if (input) {
+      const group = input.closest?.(".ol-lean-settings-group");
+      if (group) group.open = true;
       input.hidden = false;
       input.scrollIntoView?.({ block: "center", behavior: "smooth" });
       input.focus({ preventScroll: true });
@@ -7188,6 +7219,7 @@
     }
     const firstAddKey = [...popover.querySelectorAll("[data-role='provider-key-toggle']")]
       .find((button) => button.textContent === "Add key");
+    if (firstAddKey) popover.querySelector("[data-group='access']").open = true;
     firstAddKey?.focus({ preventScroll: true });
   }
 

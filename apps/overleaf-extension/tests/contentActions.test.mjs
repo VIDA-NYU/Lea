@@ -3552,7 +3552,7 @@ class FakeElement {
       results.className = "lea-model-picker-results";
       return;
     }
-    if (html.includes("Extension Settings")) {
+    if (html.includes("ol-lean-settings-group")) {
       const close = this.appendChild(new FakeElement("button"));
       close.dataset.role = "close";
       close.setAttribute("aria-label", "Close Lea popover");
