@@ -10,6 +10,7 @@ graph), so detail here is just meta + the project's sessions.
 from __future__ import annotations
 
 import re
+import hashlib
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
@@ -748,7 +749,7 @@ _TARGET_STATUS_CONTENT_CAP = 64 * 1024
 
 
 @router.get("/api/projects/by-slug/{slug}/target-status")
-def project_target_status_by_slug(slug: str, declarations: str = "") -> dict:
+def project_target_status_by_slug(slug: str, declarations: str = "", formalization_ids: str = "") -> dict:
     """Ledger-side target evidence (PLAN-system-hardening 4.4): for each named
     declaration, what the adapter's own records say — the artifact row, whether
     the recorded file exists and still holds the declaration, whether it leans
@@ -758,21 +759,57 @@ def project_target_status_by_slug(slug: str, declarations: str = "") -> dict:
     `content` rides along (capped) purely for display extraction client-side —
     the verdict fields here are authoritative."""
     from .. import artifacts as artifacts_service
+    from .. import formalizations as formalization_service
+    from ..target_completion import target_declaration
 
     project = _require_project_by_slug(slug)
     _ensure_artifacts_backfilled(project)
     names = [name for name in (part.strip() for part in declarations.split(",")) if name]
+    requested_ids = [fid for fid in (part.strip() for part in formalization_ids.split(",")) if fid]
     repo = project_service.project_repo_dir(project, _proofs_root())
     rows = {row["declaration_name"]: row for row in store.list_artifacts_for_scope(project["id"])}
+    formalizations_by_name = {}
+    for fid in requested_ids:
+        formalization = formalization_service.get(fid)
+        if formalization and formalization.get("project_id") == project["id"]:
+            identity_label = formalization.get("declaration_name") or formalization.get("display_title") or fid
+            formalizations_by_name[identity_label] = formalization
+            if identity_label not in names:
+                names.append(identity_label)
 
     targets = []
     for name in names:
         row = rows.get(name)
-        if not row:
-            targets.append({"declaration_name": name, "recorded": False})
+        formalization = formalizations_by_name.get(name)
+        if not formalization and row and row.get("formalization_id"):
+            formalization = formalization_service.get(row["formalization_id"])
+        if not formalization:
+            identity = store.find_formalization_by_declaration(
+                project_id=project["id"], loose_session_id=None,
+                declaration_name=name,
+            )
+            if identity:
+                formalization = formalization_service.get(identity["id"])
+        if not row and not formalization:
+            targets.append({"declaration_name": name, "recorded": False,
+                            "validity_status": "unavailable", "validity_reason": "No formalization identity is available.",
+                            "completion_run_id": None, "declaration_kind": None, "check_current": False})
             continue
-        absolute = repo / row["path"]
-        exists = absolute.is_file()
+        steps = store.current_code_steps_for_formalization(formalization["id"]) if formalization else []
+        proof_path = row["path"] if row else ((formalization or {}).get("primary_path") or (steps[0]["path"] if steps else None))
+        if formalization and formalization.get("completion_run_id") and (
+            not proof_path or formalization.get("validity_status") == "needs_review"
+        ):
+            from ..db import connect
+            with connect() as conn:
+                partial = conn.execute(
+                    """select path from timeline where kind = 'code' and run_id = ?
+                       and lower(path) like '%.lean' order by id desc limit 1""",
+                    (formalization["completion_run_id"],),
+                ).fetchone()
+            proof_path = partial["path"] if partial else proof_path
+        absolute = repo / proof_path if proof_path else None
+        exists = bool(absolute and absolute.is_file())
         content = ""
         if exists:
             try:
@@ -780,27 +817,14 @@ def project_target_status_by_slug(slug: str, declarations: str = "") -> dict:
             except OSError:
                 exists = False
         shared_file = exists and (
-            sum(candidate["path"] == row["path"] for candidate in rows.values()) > 1
+            sum(candidate["path"] == proof_path for candidate in rows.values()) > 1
             or len(artifacts_service.scan_lean_declarations(content)) > 1
         )
-        check = store.latest_check_for_project_path(project["id"], row["path"])
-        formalization = (
-            store.get_formalization(row["formalization_id"])
-            if row.get("formalization_id") else None
-        )
+        check = store.latest_check_for_project_path(project["id"], proof_path) if proof_path else None
         current_step = None
         editing_session_id = None
         if formalization:
-            current_step = next(
-                (
-                    step
-                    for step in store.current_code_steps_for_formalization(
-                        formalization["id"]
-                    )
-                    if step.get("path") == row["path"]
-                ),
-                None,
-            )
+            current_step = next((step for step in steps if step.get("path") == proof_path), None)
             associated_sessions = store.session_ids_for_formalization(formalization["id"])
             current_session_id = current_step.get("session_id") if current_step else None
             editing_session_id = (
@@ -809,23 +833,38 @@ def project_target_status_by_slug(slug: str, declarations: str = "") -> dict:
                 else (associated_sessions[0] if associated_sessions else None)
             )
         current_source_hash = (formalization or {}).get("source_hash")
-        artifact_source_hash = row.get("source_hash")
+        artifact_source_hash = (row or {}).get("source_hash")
+        checked_sha = (check or {}).get("checked_sha256")
+        content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest() if exists else None
+        check_current = bool(checked_sha and checked_sha == content_sha and check.get("check_status") == "ok")
+        declared = target_declaration(content, name, (formalization or {}).get("kind") or "theorem") if exists else None
+        validity = (formalization or {}).get("validity_status") or "unavailable"
+        validity_reason = (formalization or {}).get("validity_reason") or "No authoritative target verdict is available."
+        if validity in {"proved", "defined"} and not check_current:
+            validity, validity_reason = "unchecked", "The current file contents do not match a passing Lean check."
+        if validity in {"proved", "defined"} and not declared:
+            validity, validity_reason = "needs_review", "The current file does not declare the requested target."
         targets.append({
             "declaration_name": name,
-            "recorded": True,
-            "path": row["path"],
-            "module_name": row["module_name"],
-            "kind": row["kind"],
+            "recorded": bool(row),
+            "path": proof_path,
+            "module_name": (row or {}).get("module_name") if row and row["path"] == proof_path else None,
+            "kind": (row or {}).get("kind"),
             "exists": exists,
             "shared_file": shared_file,
-            "declaration_present": artifacts_service.declaration_present(content, name) if exists else False,
+            "declaration_present": bool(declared),
             "has_sorry": artifacts_service.declaration_contains_sorry(content, name) if exists else None,
             "check_status": check["check_status"] if check else None,
             "check_detail": check["check_detail"] if check else None,
             "check_author": check["author"] if check else None,
             "check_created_at": check["created_at"] if check else None,
             "artifact_updated_at": current_step["created_at"] if current_step else None,
-            "formalization_id": row.get("formalization_id"),
+            "formalization_id": (formalization or {}).get("id") or (row or {}).get("formalization_id"),
+            "validity_status": validity,
+            "validity_reason": validity_reason,
+            "completion_run_id": (formalization or {}).get("completion_run_id"),
+            "declaration_kind": declared.kind if declared else (formalization or {}).get("declaration_kind"),
+            "check_current": check_current,
             # The session that wrote the current artifact revision is the
             # durable editing context. Companion jobs are only a projection
             # and may not exist for GitHub-imported formalizations.

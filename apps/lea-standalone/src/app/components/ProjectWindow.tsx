@@ -246,6 +246,7 @@ function FormalizationsTab({
         {!!summary.proved && <span className="ok">{summary.proved} proved</span>}
         {!!summary.failing && <span className="fail">{summary.failing} failing</span>}
         {!!summary.stale && <span className="warn">{summary.stale} stale</span>}
+        {!!summary.needs_review && <span className="warn">{summary.needs_review} Needs review</span>}
         {!!summary.active_run_count && <span>{summary.active_run_count} active</span>}
       </div>
       <div className="pw-form-controls">
@@ -282,10 +283,11 @@ function FormalizationsTab({
                     {item.primary_path ? ` · ${item.primary_path}` : ' · no file yet'}
                   </small>
                 </span>
-                <span className="pw-form-state">
+                <span className="pw-form-state" title={item.validity_reason || undefined}>
                   {item.activity.status !== 'idle'
-                    ? `${item.activity.status} · ${item.validity_status}`
-                    : item.validity_status}
+                    ? `${item.activity.status} · ${item.validity_status === 'needs_review' ? 'Needs review' : item.validity_status}`
+                    : item.validity_status === 'needs_review' ? 'Needs review' : item.validity_status}
+                  {item.validity_status === 'needs_review' && item.check_current ? ' · Lean check passed' : ''}
                 </span>
               </button>
               <button
@@ -306,6 +308,7 @@ function formalizationDotClass(item: Formalization): string {
   if (item.activity.status !== 'idle') return 'run';
   if (item.validity_status === 'proved' || item.validity_status === 'defined') return 'ok';
   if (item.validity_status === 'failing') return 'fail';
+  if (item.validity_status === 'needs_review') return 'warn';
   return 'idle';
 }
 
@@ -313,5 +316,6 @@ function sessionDotClass(status: SessionStatus | string): string {
   if (status === 'ok' || status === 'proved' || status === 'defined') return 'ok';
   if (status === 'error') return 'fail';
   if (status === 'running' || status === 'disproved') return 'run';
+  if (status === 'needs_review') return 'warn';
   return 'idle';
 }

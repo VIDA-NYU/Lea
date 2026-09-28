@@ -76,19 +76,19 @@ test('run disproved is displayed as disproof, not proof', () => {
   assert.equal(deriveRunCompletionStatus('disproved', [step()]), 'disproved');
 });
 
-test('ambiguous checked theorem artifacts are displayed by artifact status', () => {
-  assert.equal(deriveRunCompletionStatus('needs_review', [step({ artifact_kind: 'proof' })]), 'proved');
+test('reviewed theorem artifacts retain the review verdict', () => {
+  assert.equal(deriveRunCompletionStatus('needs_review', [step({ artifact_kind: 'proof' })]), 'needs_review');
 });
 
-test('ambiguous checked definition artifacts are displayed as definitions', () => {
+test('reviewed definition artifacts retain the review verdict', () => {
   assert.equal(
     deriveRunCompletionStatus('needs_review', [step({ code: 'def d : Nat := 0\n', artifact_kind: 'definition' })]),
-    'defined',
+    'needs_review',
   );
 });
 
-test('ambiguous checked unknown artifacts are not displayed as proofs', () => {
-  assert.equal(deriveRunCompletionStatus('needs_review', [step({ artifact_kind: 'unknown' })]), 'answered');
+test('reviewed unknown artifacts retain the review verdict', () => {
+  assert.equal(deriveRunCompletionStatus('needs_review', [step({ artifact_kind: 'unknown' })]), 'needs_review');
 });
 
 test('Lean comments mentioning sorry do not make the code a stub', () => {

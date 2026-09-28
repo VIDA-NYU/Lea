@@ -211,9 +211,10 @@ export function generateProjectBlueprintBySlug({ fetchImpl, baseUrl, slug }) {
 // file existence / sorry scan / newest check verdict, straight from the
 // adapter's own records. One of the two sources the ledger status engine
 // merges (the other is the companion's job overlay).
-export function fetchProjectTargetStatusBySlug({ fetchImpl, baseUrl, slug, declarations }) {
+export function fetchProjectTargetStatusBySlug({ fetchImpl, baseUrl, slug, declarations, formalizationIds = [] }) {
   const query = encodeURIComponent((declarations || []).join(","));
-  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/target-status?declarations=${query}`, {
+  const ids = encodeURIComponent(formalizationIds.join(","));
+  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/target-status?declarations=${query}&formalization_ids=${ids}`, {
     method: "GET",
     headers: buildHeaders(null),
   });

@@ -64,7 +64,7 @@ function makeEditFetch(calls, {
     const method = requestOptions.method || "GET";
     const body = requestOptions.body ? JSON.parse(requestOptions.body) : null;
     if (String(url).includes("/target-status")) {
-      const requested = decodeURIComponent(String(url).split("declarations=")[1] || "").split(",").filter(Boolean);
+      const requested = (new URL(String(url)).searchParams.get("declarations") || "").split(",").filter(Boolean);
       const targets = requested.map((name) => {
         const fixture = ledgerEntries[name];
         if (fixture) {
@@ -73,9 +73,15 @@ function makeEditFetch(calls, {
           return {
             ...fixture,
             declaration_name: name,
+            formalization_id: fixture.formalization_id || `fixture-${name}`,
             content,
             check_status: check ? check.status : fixture.check_status,
-            check_detail: check ? check.detail : fixture.check_detail
+            check_detail: check ? check.detail : fixture.check_detail,
+            check_current: (check ? check.status : fixture.check_status) === "ok",
+            validity_status: (check ? check.status : fixture.check_status) === "error"
+              ? "failing" : fixture.has_sorry ? "unchecked" : (fixture.validity_status || "proved"),
+            validity_reason: fixture.validity_reason || "The target has a checked artifact.",
+            completion_run_id: fixture.completion_run_id || "fixture-run"
           };
         }
         // A declaration's recorded file: the newest written content that
@@ -105,6 +111,11 @@ function makeEditFetch(calls, {
           check_status: check ? check.status : "ok",
           check_detail: check ? check.detail : null,
           check_author: "user",
+          formalization_id: `fixture-${name}`,
+          validity_status: check?.status === "error" ? "failing" : "proved",
+          validity_reason: "The target has a checked artifact.",
+          completion_run_id: "fixture-run",
+          check_current: check?.status !== "error",
           content
         };
       });
@@ -932,6 +943,14 @@ test("edit save flips the item's own status chip to invalid on the next manifest
     leaRepo,
     jobs: { a: editedJob() }, // status: "formalized" -- what the pane read as "valid" before the bugfix
     fetchImpl: makeEditFetch(calls, {
+      ledgerEntries: { compactness_criterion: {
+        recorded: true, path: "compactness_criterion.lean",
+        module_name: "Lea.Project1.compactness_criterion",
+        kind: "proof", exists: true, declaration_present: true,
+        has_sorry: false, check_status: "ok", check_detail: null,
+        session_id: "sess-a",
+        content: "theorem compactness_criterion : True := by trivial\n"
+      } },
       sessionDetails: { "sess-a": EDITED_SESSION_DETAIL },
       writeResponses: { "sess-a": { unchanged: false, code_step: { id: "step-2" }, note: null } },
       checkResponses: {

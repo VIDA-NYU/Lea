@@ -50,7 +50,7 @@ export function formalizationStatusClass(item) {
   if (item?.activity?.status && item.activity.status !== 'idle') return 'run';
   if (item?.validity_status === 'proved' || item?.validity_status === 'defined') return 'ok';
   if (item?.validity_status === 'failing') return 'fail';
-  if (item?.validity_status === 'stale') return 'warn';
+  if (item?.validity_status === 'stale' || item?.validity_status === 'needs_review') return 'warn';
   return 'idle';
 }
 

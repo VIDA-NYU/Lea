@@ -339,7 +339,7 @@ def test_confirm_import_populates_matching_target_and_keeps_helper_reusable(tmp_
     assert "lemma conflict" in (repo / "Conflict.lean").read_text()
     decorated = formalizations.get(formalization["id"])
     assert decorated["primary_path"] == "Goal.lean"
-    assert decorated["validity_status"] == "proved"
+    assert decorated["validity_status"] == "unchecked"
     reusable = store.find_unbound_imported_declarations(project["id"], "helper")
     assert len(reusable) == 1
     assert all(

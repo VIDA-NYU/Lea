@@ -775,12 +775,8 @@ test("lean pane manifest surfaces a disproof as a counterexample, not a failure"
   assert.equal(res.body.items[0].status, "disproved");
 });
 
-test("lean pane manifest surfaces needs_review metadata as unknown, not valid", async () => {
-  // Reproduces the real bug: a job finished `needs_review` with no markdown
-  // entry recorded (mirrors production, where markdown recording was skipped
-  // entirely for this resultKind before the fix) and no other local evidence.
-  // It should not keep a stale valid chip or invent a first-class needs-review
-  // status without checked artifact evidence.
+test("lean pane manifest surfaces needs_review as a visible review state", async () => {
+  // A partial run with no artifact-index row remains visible as Needs review.
   const leaRepo = await makeLeaRepo();
   const state = await makeState({ leaRepoPath: leaRepo });
   state.jobs.needsReview = {
@@ -813,7 +809,7 @@ test("lean pane manifest surfaces needs_review metadata as unknown, not valid", 
   }, state);
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.items[0].status, "unknown");
+  assert.equal(res.body.items[0].status, "needs-review");
 });
 
 // The terminal-outcome branches in getTheoremStatus used pairwise recency
@@ -866,12 +862,15 @@ test("lean pane manifest: a newer unconfirmed re-run beats an older formalized j
   }, state);
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.items[0].status, "unknown");
+  assert.equal(res.body.items[0].status, "needs-review");
 });
 
 test("lean pane manifest: a newer formalized re-run beats an older needs_review job", async () => {
   const leaRepo = await makeLeaRepo();
-  const state = await makeState({ leaRepoPath: leaRepo });
+  const state = await makeState({ leaRepoPath: leaRepo,
+    fetchImpl: makeAdapterApiFetch([], { targetStatus: {
+      compactness_corollary: ledgerEntry("compactness_corollary")
+    } }) });
   const base = {
     jobKey: "project-1:theorem:compactness_corollary",
     targetKind: "theorem",
@@ -992,6 +991,9 @@ test("lean pane manifest surfaces stubbed-import uses on the dependent's pane it
         compactness_criterion: ledgerEntry("compactness_criterion", {
           has_sorry: true,
           content: "theorem compactness_criterion : True := by\n  sorry\n"
+        }),
+        compactness_corollary: ledgerEntry("compactness_corollary", {
+          content: "import Lea.Project1.compactness_criterion\ntheorem compactness_corollary : True := by trivial\n"
         })
       }
     })
@@ -1079,12 +1081,14 @@ test("stubbed-upstream warnings are file-derived and transitive: every downstrea
   const leaRepo = await makeLeaRepo();
   // Mutable ledger evidence for the stub itself: flipped to a clean entry
   // when the test rewrites the file below. The transitive warnings on the
-  // dependents stay purely file-derived — no ledger entries for them.
+  // dependents stay file-derived, while their own completion is certified by the adapter.
   const targetStatus = {
     compactness_criterion: ledgerEntry("compactness_criterion", {
       has_sorry: true,
       content: "theorem compactness_criterion : True := by\n  sorry\n"
-    })
+    }),
+    compactness_corollary: ledgerEntry("compactness_corollary"),
+    compactness_application: ledgerEntry("compactness_application")
   };
   const state = await makeState({
     leaRepoPath: leaRepo,
@@ -1726,13 +1730,16 @@ test("approval revisions agree across status surfaces and change with transitive
   );
 });
 
-test("lean pane manifest uses adapter session code for formalized jobs without recorded proof paths", async () => {
+test("lean pane manifest uses adapter ledger content for formalized jobs without recorded proof paths", async () => {
   const leaRepo = await makeLeaRepo();
   const calls = [];
   const state = await makeState({
     leaRepoPath: leaRepo,
     fetchImpl: makeAdapterApiFetch(calls, {
       sessionId: "sess-formalized",
+      targetStatus: { compactness_criterion: ledgerEntry("compactness_criterion", {
+        path: "Compactness.lean", session_id: "sess-formalized"
+      }) },
       sessionDetail: {
         project_namespace: "Lea.Project",
         runs: [{ id: "api-run-1", input_tokens: 0, output_tokens: 0, cost_usd: 0 }],
@@ -1782,7 +1789,7 @@ test("lean pane manifest uses adapter session code for formalized jobs without r
   assert.match(res.body.items[0].leanStub, /theorem compactness_criterion : True/);
   assert.match(res.body.items[0].leanArtifactContent, /trivial/);
   assert.match(res.body.items[0].leanArtifactPath, /Compactness\.lean/);
-  assert.ok(calls.some((call) => String(call.url).includes("/api/sessions/sess-formalized")));
+  assert.ok(!calls.some((call) => String(call.url).includes("/api/sessions/sess-formalized")));
 });
 
 test("lean pane manifest degrades when Lea lookup is unavailable", async () => {
@@ -2319,7 +2326,7 @@ test("completed formalization status keeps Lea UI session link", async () => {
   assert.equal(statuses.statusCode, 200);
   assert.equal(statuses.body.statuses["theorem:linked_done_test"].status, "formalized");
   assert.equal(statuses.body.statuses["theorem:linked_done_test"].leaSessionId, "sess-done");
-  assert.equal(statuses.body.statuses["theorem:linked_done_test"].leaSessionUrl, "http://localhost:5173/?session=sess-done");
+  assert.equal(statuses.body.statuses["theorem:linked_done_test"].leaSessionUrl, "http://localhost:5173/?session=sess-done&formalization=fixture-linked_done_test");
 });
 
 test("in-progress status links Lea UI session from leaSessionId (no recorder)", async () => {
@@ -2448,7 +2455,7 @@ test("a newer repaired job is terminal evidence: its declarationName beats the o
   const status = statuses.body.statuses["theorem:renamed_after_repair"];
   // a verified repair reads as formalized, from the repair job itself
   assert.equal(status.status, "formalized");
-  assert.equal(status.jobId, "repair_run");
+  assert.equal(status.leaSessionId, "sess-repair-rename");
   assert.equal(status.declarationName, "renamed_after_repair_v2");
 });
 
@@ -2822,6 +2829,7 @@ test("formalize includes resolved theorem uses in the Lea prompt", async () => {
       env: { OPENAI_API_KEY: "test-key" },
       fetchImpl: makeLeaApiFetch(calls, {
         statusBody: { run_id: "api-run-1", status: "completed", result: { reason: "success" } },
+        targetStatus: { even_square_of_even: ledgerEntry("even_square_of_even") },
         onStatusRequest: async () => {
           await writeLeaProjectProof(
             leaRepo,
@@ -2841,6 +2849,8 @@ test("formalize includes resolved theorem uses in the Lea prompt", async () => {
       jobKey: "project-1:theorem:epsilon_one",
       status: "formalized",
       declarationName: "even_square_of_even",
+      formalizationId: "fixture-even_square_of_even",
+      leaSessionId: "sess-even-square",
       recordedProofPath: dependencyProofPath,
       moduleName: "Lea.Project1.even_square_of_even",
       startedAt: "2026-01-01T00:00:00.000Z",
@@ -2859,7 +2869,9 @@ test("formalize includes resolved theorem uses in the Lea prompt", async () => {
       targetUses: ["epsilon_one"]
     }, state);
 
-    await waitFor(() => state.jobs[result.body.jobId]?.status === "formalized");
+    assert.equal(result.statusCode, 200, JSON.stringify(result.body));
+    await waitFor(() => ["formalized", "needs_review", "failed"].includes(state.jobs[result.body.jobId]?.status));
+    assert.equal(state.jobs[result.body.jobId]?.status, "formalized", JSON.stringify(state.jobs[result.body.jobId]));
     assert.equal(result.statusCode, 200);
     assert.match(
       calls[0].body.task,
@@ -2893,6 +2905,10 @@ test("formalize includes multiple resolved theorem uses in source order", async 
       env: { OPENAI_API_KEY: "test-key" },
       fetchImpl: makeLeaApiFetch(calls, {
         statusBody: { run_id: "api-run-1", status: "completed", result: { reason: "success" } },
+        targetStatus: {
+          first_support: ledgerEntry("first_support"),
+          second_support: ledgerEntry("second_support")
+        },
         onStatusRequest: async () => {
           await writeLeaProjectProof(leaRepo, targetProofPath, "theorem multi_use_target : True := by\n  trivial\n");
           await writeLeaProjectMarkdown(leaRepo, "project-1", {
@@ -2907,6 +2923,8 @@ test("formalize includes multiple resolved theorem uses in source order", async 
       jobKey: "project-1:theorem:first_label",
       status: "formalized",
       declarationName: "first_support",
+      formalizationId: "fixture-first_support",
+      leaSessionId: "sess-first",
       recordedProofPath: firstProofPath,
       startedAt: "2026-01-01T00:00:00.000Z",
       finishedAt: "2026-01-01T00:00:01.000Z"
@@ -2916,6 +2934,8 @@ test("formalize includes multiple resolved theorem uses in source order", async 
       jobKey: "project-1:theorem:second_label",
       status: "formalized",
       declarationName: "second_support",
+      formalizationId: "fixture-second_support",
+      leaSessionId: "sess-second",
       recordedProofPath: secondProofPath,
       startedAt: "2026-01-01T00:00:02.000Z",
       finishedAt: "2026-01-01T00:00:03.000Z"
@@ -2930,7 +2950,9 @@ test("formalize includes multiple resolved theorem uses in source order", async 
       targetContext: "Reuse the support lemmas in the listed order."
     }, state);
 
-    await waitFor(() => state.jobs[result.body.jobId]?.status === "formalized");
+    assert.equal(result.statusCode, 200, JSON.stringify(result.body));
+    await waitFor(() => ["formalized", "needs_review", "failed"].includes(state.jobs[result.body.jobId]?.status));
+    assert.equal(state.jobs[result.body.jobId]?.status, "formalized", JSON.stringify(state.jobs[result.body.jobId]));
     const task = calls[0].body.task;
     const firstIndex = task.indexOf(`make use of the first_support theorem at ${path.join(leaRepo, firstProofPath)}.`);
     const secondIndex = task.indexOf(`make use of the second_support theorem at ${path.join(leaRepo, secondProofPath)}.`);
@@ -3623,16 +3645,17 @@ test("formalize cleans previous failed Lea artifacts before retrying", async () 
     // The retire candidates come from the adapter's ledger (4.3) — the
     // registry markdown is only the agent-facing view the cleanup splices.
     const artifacts = [];
+    const targetStatus = {
+      retry_target: ledgerEntry("retry_target", {
+        path: "retry_target.lean",
+        module_name: "Lea.Project1.retry_target",
+        content: "theorem retry_target : True := by\n  trivial\n"
+      })
+    };
     const adapterFetch = makeLeaApiFetch(calls, {
       statusBody: { run_id: "api-run-1", status: "completed", result: { reason: "success" } },
       artifacts,
-      targetStatus: {
-        retry_target: ledgerEntry("retry_target", {
-          path: "retry_target.lean",
-          module_name: "Lea.Project1.retry_target",
-          content: "theorem retry_target : True := by\n  trivial\n"
-        })
-      },
+      targetStatus,
       onStatusRequest: async () => {
         assert.equal(await fileExists(path.join(leaRepo, proofPath)), false);
         assert.doesNotMatch(
@@ -3654,6 +3677,10 @@ test("formalize cleans previous failed Lea artifacts before retrying", async () 
           path: "retry_target.lean",
           module_name: "Lea.Project1.retry_target",
           kind: "proof"
+        });
+        targetStatus.retry_target = ledgerEntry("retry_target", {
+          path: "retry_target.lean", module_name: "Lea.Project1.retry_target",
+          completion_run_id: "api-run-1"
         });
       }
     });
@@ -4186,7 +4213,7 @@ async function installFakeLake() {
 
 async function makeState(overrides = {}) {
   const appDir = await fs.mkdtemp(path.join(os.tmpdir(), "overleaf-lean-state-"));
-  return {
+  const state = {
     settingsPath: path.join(appDir, "settings.json"),
     jobsPath: path.join(appDir, "jobs.json"),
     envPath: path.join(appDir, ".env"),
@@ -4211,6 +4238,46 @@ async function makeState(overrides = {}) {
     env: overrides.env || process.env,
     fetchImpl: overrides.fetchImpl || makeProviderValidationFetch([])
   };
+  if (!overrides.fetchImpl) {
+    const providerFetch = state.fetchImpl;
+    state.fetchImpl = async (url, requestOptions) => {
+      if (!String(url).includes("/target-status")) return providerFetch(url, requestOptions);
+      const requested = (new URL(String(url)).searchParams.get("declarations") || "").split(",").filter(Boolean);
+      const targets = await Promise.all(requested.map(async (name) => {
+        const job = Object.values(state.jobs)
+          .filter((item) => item?.declarationName === name || item?.targetLabel === name)
+          .sort((a, b) => String(b.finishedAt || b.startedAt).localeCompare(String(a.finishedAt || a.startedAt)))[0];
+        if (!job) return { declaration_name: name, recorded: false };
+        if (job.status === "needs_review") return ledgerEntry(name, {
+          exists: false, recorded: false, validity_status: "needs_review", check_current: false
+        });
+        if (!["formalized", "repaired"].includes(job.status)) {
+          return { declaration_name: name, recorded: false };
+        }
+        if (!job.recordedProofPath) return ledgerEntry(name, {
+          path: `${name}.lean`,
+          kind: job.targetKind === "definition" ? "definition" : "proof",
+          validity_status: job.targetKind === "definition" ? "defined" : "proved",
+          content: job.targetKind === "definition"
+            ? `def ${name} : Prop := True\n`
+            : `theorem ${name} : True := by trivial\n`,
+          session_id: job.leaSessionId || null
+        });
+        const absolute = path.join(state.settings.leaRepoPath, job.recordedProofPath);
+        const content = await fs.readFile(absolute, "utf8").catch(() => null);
+        if (content === null) return { declaration_name: name, recorded: false };
+        return ledgerEntry(name, {
+          path: path.basename(job.recordedProofPath), content,
+          module_name: job.moduleName || `Lea.Project1.${name}`,
+          kind: job.targetKind === "definition" ? "definition" : "proof",
+          validity_status: job.targetKind === "definition" ? "defined" : "proved",
+          session_id: job.leaSessionId || null
+        });
+      }));
+      return jsonResponse(200, { project_id: "adapter-project-1", slug: "project-1", targets });
+    };
+  }
+  return state;
 }
 
 function makeUsageJob({ jobId, projectId, inputTokens, outputTokens, costUsd }) {
@@ -4241,6 +4308,8 @@ async function fileExists(filePath) {
 
 function makeLeaApiFetch(calls, options = {}) {
   let eventHookHandled = false;
+  let runFinished = false;
+  const initialTargets = new Set(Object.keys(options.targetStatus || {}));
   return async (url, requestOptions = {}) => {
     if (String(url).endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, independent_checks: false, source_pause_policy: 1 } } });
     if (String(url).endsWith("/api/settings")) {
@@ -4260,12 +4329,18 @@ function makeLeaApiFetch(calls, options = {}) {
         : jsonResponse(404, { detail: "No project" });
     }
     if (String(url).includes("/api/projects/by-slug/") && String(url).includes("/target-status")) {
-      const requested = decodeURIComponent(String(url).split("declarations=")[1] || "").split(",").filter(Boolean);
+      const requested = (new URL(String(url)).searchParams.get("declarations") || "").split(",").filter(Boolean);
       const known = options.targetStatus || {};
       return jsonResponse(200, {
         project_id: "adapter-project-1",
         slug: "project-1",
-        targets: requested.map((name) => known[name] || { declaration_name: name, recorded: false })
+        targets: requested.map((name) => known[name]
+          ? (runFinished && !initialTargets.has(name)
+            ? { ...known[name], completion_run_id: "api-run-1" }
+            : known[name])
+          : (runFinished
+          ? mockCompletedTarget(name, options.doneStatus, options.sessionBody)
+          : { declaration_name: name, recorded: false }))
       });
     }
     const body = requestOptions.body ? JSON.parse(requestOptions.body) : null;
@@ -4275,6 +4350,7 @@ function makeLeaApiFetch(calls, options = {}) {
       return jsonResponse(200, { run_id: "api-run-1", session_id: "sess-api-1", status: "running" });
     }
     if (String(url).includes("/api/runs/") && String(url).endsWith("/events")) {
+      runFinished = true;
       if (!eventHookHandled && options.onStatusRequest) {
         eventHookHandled = true;
         await options.onStatusRequest();
@@ -4491,6 +4567,8 @@ function adapterSseResponse(frames) {
 }
 
 function makeAdapterApiFetch(calls, options = {}) {
+  let runFinished = false;
+  const initialTargets = new Set(Object.keys(options.targetStatus || {}));
   return async (url, requestOptions = {}) => {
     if (String(url).endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, independent_checks: false, source_pause_policy: 1 } } });
     const body = requestOptions.body ? JSON.parse(requestOptions.body) : null;
@@ -4506,6 +4584,7 @@ function makeAdapterApiFetch(calls, options = {}) {
       });
     }
     if (String(url).includes("/api/runs/") && String(url).endsWith("/events")) {
+      runFinished = true;
       return adapterSseResponse(options.eventFrames || [
         { type: "status", data: { status: "tool_call", message: "Running write_file", turn: 1 } },
         { type: "done", data: { status: options.doneStatus || "proved" } }
@@ -4538,12 +4617,18 @@ function makeAdapterApiFetch(calls, options = {}) {
       // Ledger evidence for the ledger status engine (PLAN 4.4). The option
       // maps declaration name → entry; unnamed declarations answer
       // { recorded: false } like the real endpoint.
-      const requested = decodeURIComponent(String(url).split("declarations=")[1] || "").split(",").filter(Boolean);
+      const requested = (new URL(String(url)).searchParams.get("declarations") || "").split(",").filter(Boolean);
       const known = options.targetStatus || {};
       return jsonResponse(200, {
         project_id: "adapter-project-1",
         slug: "project-1",
-        targets: requested.map((name) => known[name] || { declaration_name: name, recorded: false })
+        targets: requested.map((name) => known[name]
+          ? (runFinished && !initialTargets.has(name)
+            ? { ...known[name], completion_run_id: options.runId || "api-run-1" }
+            : known[name])
+          : (runFinished
+          ? mockCompletedTarget(name, options.doneStatus)
+          : { declaration_name: name, recorded: false }))
       });
     }
     if (String(url).endsWith("/interrupt")) {
@@ -4642,6 +4727,29 @@ test("formalize all overrides opt-in pauses, skips dependents, and continues ind
   assert.equal(runs.length, 2);
   assert.ok(runs.every((call) => call.body.allow_source_pause === false));
   assert.match(runs[0].body.message, /preferred Lean declaration name is base/);
+});
+
+test("formalize all keeps review terminal and skips only dependent targets", async () => {
+  const leaRepo = await makeLeaRepo();
+  const state = await makeState({
+    leaRepoPath: leaRepo,
+    env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: makeAdapterApiFetch([], { doneStatus: "needs_review" })
+  });
+  const item = (targetLabel, extra = {}) => ({ targetKind: "theorem", targetLabel,
+    targetText: `Statement of ${targetLabel}.`, ...extra });
+  const result = await handleFormalizeAll({
+    overleafProjectId: "project-1",
+    items: [item("review_base"), item("review_dependent", { targetUses: ["review_base"] }),
+      item("independent")]
+  }, state);
+  assert.equal(result.statusCode, 200);
+  const batch = state.repairBatches[result.body.batchId];
+  await waitFor(() => batch.done);
+  assert.deepEqual(Object.fromEntries(batch.items.map((entry) => [entry.targetLabel, entry.state])), {
+    review_base: "needs_review", review_dependent: "skipped", independent: "needs_review"
+  });
+  assert.equal(batch.items[1].reason, "depends_on_review:review_base");
 });
 
 test("best-effort continuation is scoped to a proofless source-obstruction pause and changes the resumed prompt", async () => {
@@ -4995,20 +5103,17 @@ test("re-formalize creates a new run in the target's existing Lea session", asyn
   assert.equal(runCall.body.new_formalization, undefined);
 });
 
-test("resolveProofOutcome trusts an adapter-verified run even with no local proof file", async () => {
-  // The adapter defers project-markdown recording, so the companion often
-  // cannot locate the proof on disk (localStatus === unformalized). A successful
-  // run (exit.ok) must still resolve to `formalized` — this is the core fix.
+test("resolveProofOutcome does not certify a bare successful stream outcome", async () => {
   const job = { targetKind: "theorem", targetLabel: "t1", leaWorkspacePath: "/tmp/does-not-matter" };
   const outcome = await resolveProofOutcome({
     job,
     localStatus: { status: "unformalized" },
-    exit: { ok: true }
+    exit: { ok: true, resultKind: "proved" }
   });
 
-  assert.equal(outcome.jobStatus, "formalized");
-  assert.equal(outcome.finalStatus, "formalized");
-  assert.equal(outcome.effectiveStatus.status, "formalized");
+  assert.equal(outcome.jobStatus, "needs_review");
+  assert.equal(outcome.finalStatus, "needs_review");
+  assert.equal(outcome.effectiveStatus.status, "needs_review");
   assert.equal(outcome.error, null);
   assert.equal(outcome.leanCheck, null);
 });
@@ -5035,13 +5140,23 @@ test("resolveProofOutcome maps adapter disproof to disproved status", async () =
 test("resolveProofOutcome keeps a verified run formalized when local evidence is also formalized", async () => {
   const job = { targetKind: "theorem", targetLabel: "t2", leaWorkspacePath: "/tmp/x" };
   const localStatus = { status: "formalized", leanStatement: "theorem t2 : True" };
-  const outcome = await resolveProofOutcome({ job, localStatus, exit: { ok: true } });
+  const outcome = await resolveProofOutcome({ job, localStatus, exit: { ok: true, resultKind: "proved", targetVerified: true } });
 
   assert.equal(outcome.jobStatus, "formalized");
   assert.equal(outcome.finalStatus, "formalized");
   assert.equal(outcome.effectiveStatus, localStatus);
   // No absolutePath, so no local lean check is attempted.
   assert.equal(outcome.leanCheck, null);
+});
+
+test("resolveProofOutcome retains a certified definition result", async () => {
+  const outcome = await resolveProofOutcome({
+    job: { targetKind: "definition", targetLabel: "d" },
+    localStatus: { status: "formalized" },
+    exit: { ok: true, resultKind: "defined", targetVerified: true }
+  });
+  assert.equal(outcome.jobStatus, "formalized");
+  assert.equal(outcome.resultKind, "defined");
 });
 
 test("resolveProofOutcome records a leftover sorry as a failed run with sorry_stub effective status", async () => {
@@ -5068,26 +5183,9 @@ test("resolveProofOutcome marks a failed run as failed and surfaces the run erro
   assert.equal(outcome.error, "Lea run ended with status: failed");
 });
 
-test("resolveProofOutcome promotes a needs_review run to formalized when local evidence independently confirms it", async () => {
-  // Regression for the bug where a run that finished `needs_review` (bridge.py
-  // groups it with proved/disproved as a completed, checked-artifact outcome --
-  // NOT a crash/timeout) was collapsed into the same "failed" bucket as an
-  // actual compile failure, because leaApiClient's SUCCESS_DONE_STATUS
-  // deliberately excludes it so exit.ok is false. The pane showed `invalid` for
-  // code that genuinely compiled.
-  //
-  // Once applyProofOutcomeToJob has independently confirmed the emitted file is
-  // sorry-free and really compiles (recoverFormalizedStatusFromTargetPath, since
-  // the agent itself skipped self-registering it), there is no principled reason
-  // to hold it to a stricter bar than any other proof in this app -- promote it
-  // all the way to `formalized`/valid, the same outcome a clean "proved" run
-  // gets. The agent's own uncertainty is not evidence the artifact is wrong.
+test("resolveProofOutcome preserves needs_review even when the local file compiles", async () => {
+  // A passing local compile remains a separate fact from the target verdict.
   const job = { targetKind: "theorem", targetLabel: "t5", leaWorkspacePath: "/tmp/x" };
-  // The recovery path attaches its already-run, already-passing compile as
-  // `leanCheck` -- promotion is gated on it (regex-derived "formalized" alone
-  // must never promote; that's only half the "sorry-free + compiles" bar).
-  // Attaching it here also keeps runLeanCheck (a real toolchain spawn) out of
-  // the unit test.
   const leanCheck = { ok: true, exitCode: 0, stdout: "", stderr: "", message: "" };
   const localStatus = { status: "formalized", leanStatement: "theorem t5 : True", leanCheck };
   const outcome = await resolveProofOutcome({
@@ -5096,10 +5194,10 @@ test("resolveProofOutcome promotes a needs_review run to formalized when local e
     exit: { ok: false, doneStatus: "needs_review", resultKind: "needs_review", resultDetail: "NEEDS_REVIEW" }
   });
 
-  assert.equal(outcome.jobStatus, "formalized");
-  assert.equal(outcome.finalStatus, "formalized");
-  assert.equal(outcome.effectiveStatus, localStatus);
-  assert.equal(outcome.resultKind, "proved");
+  assert.equal(outcome.jobStatus, "needs_review");
+  assert.equal(outcome.finalStatus, "needs_review");
+  assert.equal(outcome.effectiveStatus.status, "needs_review");
+  assert.equal(outcome.resultKind, "needs_review");
   assert.equal(outcome.error, null);
   // reuses the attached check -- it must not pay for a second compile
   assert.equal(outcome.leanCheck, leanCheck);
@@ -5117,9 +5215,9 @@ test("resolveProofOutcome fails unconfirmed needs_review when the fresh compile 
     exit: { ok: false, doneStatus: "needs_review", resultKind: "needs_review", resultDetail: "NEEDS_REVIEW" }
   });
 
-  assert.equal(outcome.jobStatus, "failed");
-  assert.equal(outcome.finalStatus, "failed");
-  assert.equal(outcome.effectiveStatus.status, "failed");
+  assert.equal(outcome.jobStatus, "needs_review");
+  assert.equal(outcome.finalStatus, "needs_review");
+  assert.equal(outcome.effectiveStatus.status, "needs_review");
   assert.equal(outcome.resultKind, "needs_review");
   // the failing check is kept as the diagnostic explaining WHY
   assert.equal(outcome.leanCheck, failingCheck);
@@ -5138,9 +5236,9 @@ test("resolveProofOutcome fails unconfirmed needs_review when no compile evidenc
     exit: { ok: false, doneStatus: "needs_review", resultKind: "needs_review", resultDetail: "NEEDS_REVIEW" }
   });
 
-  assert.equal(outcome.jobStatus, "failed");
-  assert.equal(outcome.finalStatus, "failed");
-  assert.equal(outcome.effectiveStatus.status, "failed");
+  assert.equal(outcome.jobStatus, "needs_review");
+  assert.equal(outcome.finalStatus, "needs_review");
+  assert.equal(outcome.effectiveStatus.status, "needs_review");
   assert.equal(outcome.resultKind, "needs_review");
   assert.equal(outcome.leanCheck, null);
 });
@@ -5284,15 +5382,8 @@ test("recoverFormalizedStatusFromTargetPath returns null when the run has no ses
   assert.equal(recovered, null);
 });
 
-test("resolveProofOutcome records unconfirmed needs_review as failed when no local evidence was found", async () => {
-  // This is the actual shape production hits, not a hypothetical: the
-  // project-markdown index identifyLeaArtifact diffs against is populated by
-  // the agent's own in-run tool calls, and it appears to skip that call when
-  // it isn't confident enough to self-report "proved" -- so localStatus stays
-  // "unformalized" for essentially every real needs_review run, even when the
-  // emitted file may compile cleanly. Without checked artifact evidence, the
-  // primary status should be failed/unconfirmed while resultKind preserves the
-  // classifier metadata.
+test("resolveProofOutcome keeps needs_review when no local file is found", async () => {
+  // The review verdict survives even without a local file link.
   const job = { targetKind: "theorem", targetLabel: "t6", leaWorkspacePath: "/tmp/x" };
   const outcome = await resolveProofOutcome({
     job,
@@ -5300,11 +5391,11 @@ test("resolveProofOutcome records unconfirmed needs_review as failed when no loc
     exit: { ok: false, doneStatus: "needs_review", resultKind: "needs_review", error: "Lea run ended with status: needs_review" }
   });
 
-  assert.equal(outcome.jobStatus, "failed");
-  assert.equal(outcome.finalStatus, "failed");
+  assert.equal(outcome.jobStatus, "needs_review");
+  assert.equal(outcome.finalStatus, "needs_review");
   assert.equal(outcome.resultKind, "needs_review");
-  assert.equal(outcome.effectiveStatus.status, "failed");
-  assert.match(outcome.error, /could not confirm/);
+  assert.equal(outcome.effectiveStatus.status, "needs_review");
+  assert.equal(outcome.error, null);
 });
 
 test("formalize on the /api backend tags the theorem formalized when the run succeeds (regression)", async () => {
@@ -5327,7 +5418,8 @@ test("formalize on the /api backend tags the theorem formalized when the run suc
     targetText: "A theorem."
   }, state);
 
-  await waitFor(() => state.jobs[result.body.jobId]?.status === "formalized");
+  await waitFor(() => ["formalized", "needs_review", "failed"].includes(state.jobs[result.body.jobId]?.status));
+  assert.equal(state.jobs[result.body.jobId]?.status, "formalized", JSON.stringify(state.jobs[result.body.jobId]));
   const job = state.jobs[result.body.jobId];
   assert.equal(job.exitCode, 0);
   assert.equal(job.error, undefined);
@@ -6409,6 +6501,18 @@ test("formalize resolves the artifact from the adapter index, no agent markdown 
 // Two sources only: the adapter's per-declaration ledger evidence + the
 // companion's job overlay. No markdown parsing, no direct-FS regex probes.
 
+function mockCompletedTarget(name, doneStatus = "proved", sessionBody = null) {
+  if (doneStatus && !["proved", "defined"].includes(doneStatus)) {
+    return { declaration_name: name, recorded: false };
+  }
+  if (Array.isArray(sessionBody?.code_steps) && sessionBody.code_steps.length > 0
+    && !sessionBody.code_steps.some((step) => new RegExp(`\\b(?:theorem|lemma|def)\\s+${name}\\b`).test(String(step.code || "")))) {
+    return { declaration_name: name, recorded: false };
+  }
+  return ledgerEntry(name, { completion_run_id: "api-run-1",
+    validity_status: doneStatus === "defined" ? "defined" : "proved" });
+}
+
 function ledgerEntry(name, overrides = {}) {
   return {
     declaration_name: name,
@@ -6422,6 +6526,11 @@ function ledgerEntry(name, overrides = {}) {
     check_status: "ok",
     check_detail: null,
     check_author: "agent",
+    check_current: true,
+    formalization_id: `fixture-${name}`,
+    completion_run_id: `fixture-run-${name}`,
+    validity_status: "proved",
+    validity_reason: "The requested declaration passed Lean.",
     content: `import Mathlib\n\ntheorem ${name} : True := by\n  trivial\n`,
     ...overrides
   };
@@ -6456,9 +6565,10 @@ test("ledger engine: recorded + clean check reads formalized with the lean state
   assert.match(info.leanStatement || "", /theorem ledger_ok/);
 });
 
-test("ledger engine: a fresh checked proof supersedes a paused job", async () => {
+test("ledger engine: only a later successful target run supersedes a paused job", async () => {
   const name = "checked_after_pause";
   const evidence = ledgerEntry(name, {
+    completion_run_id: null,
     check_created_at: "2026-01-03T00:00:00.000Z",
     artifact_updated_at: "2026-01-03T00:00:00.000Z"
   });
@@ -6470,12 +6580,14 @@ test("ledger engine: a fresh checked proof supersedes a paused job", async () =>
     startedAt: "2026-01-02T00:00:00.000Z", finishedAt: "2026-01-02T00:01:00.000Z"
   };
 
-  assert.equal((await ledgerStatusFor(state, name)).status, "formalized");
+  assert.equal((await ledgerStatusFor(state, name)).status, "paused");
   evidence.check_created_at = "2026-01-01T00:00:00.000Z";
   assert.equal((await ledgerStatusFor(state, name)).status, "paused");
   evidence.check_created_at = "2026-01-03T00:00:00.000Z";
   evidence.artifact_updated_at = "2026-01-04T00:00:00.000Z";
   assert.equal((await ledgerStatusFor(state, name)).status, "paused");
+  evidence.completion_run_id = "later-successful-run";
+  assert.equal((await ledgerStatusFor(state, name)).status, "formalized");
 });
 
 test("ledger engine: a sorry in the recorded file reads sorry_stub", async () => {
@@ -6530,7 +6642,7 @@ test("ledger engine: a recorded artifact whose file is gone reads unformalized w
   assert.equal(info.status, "unformalized");
 });
 
-test("ledger engine: unrecorded declaration with no jobs reads unformalized; a formalized job wins index ignorance", async () => {
+test("ledger engine: an unconfirmed historical formalized job remains unavailable", async () => {
   const { state, leaRepo } = await makeLedgerState({});
   const empty = await ledgerStatusFor(state, "ledger_unknown");
   assert.equal(empty.status, "unformalized");
@@ -6542,6 +6654,6 @@ test("ledger engine: unrecorded declaration with no jobs reads unformalized; a f
     leaRepoPath: leaRepo, startedAt: "2026-01-01T00:00:00.000Z", finishedAt: "2026-01-01T00:00:01.000Z"
   };
   const preIndex = await ledgerStatusFor(state, "ledger_preindex");
-  assert.equal(preIndex.status, "formalized",
-    "an index that never saw the declaration defers to the job record");
+  assert.equal(preIndex.status, "unavailable",
+    "a historical job cannot certify the current target without adapter evidence");
 });

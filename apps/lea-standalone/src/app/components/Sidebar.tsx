@@ -229,6 +229,7 @@ function dotClass(session: SessionSummary, runningSessionId?: string): string {
   if ((session.active_run_count ?? 0) > 0) return 'run';
   if (session.status === 'ok' || session.status === 'proved' || session.status === 'defined') return 'ok';
   if (session.status === 'disproved') return 'run';
+  if (session.status === 'needs_review') return 'warn';
   if (session.status === 'error') return 'fail';
   return 'idle';
 }

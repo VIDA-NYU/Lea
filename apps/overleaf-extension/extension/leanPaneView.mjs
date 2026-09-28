@@ -19,6 +19,7 @@ const PANE_STATUS_LABELS = {
   disproved: "counterexample",
   "in-progress": "in progress",
   paused: "paused",
+  "needs-review": "Needs review",
   invalid: "invalid",
   stale: "out of date",
   error: "error",
@@ -451,7 +452,7 @@ export function hasInProgressItems(items) {
 // work stays out of a batch even though its per-item Re-formalize action remains
 // available.
 const BATCH_FORMALIZABLE_PANE_STATUSES = new Set([
-  "missing-stub", "stub-generated", "invalid", "unknown", "error", "paused"
+  "missing-stub", "stub-generated", "invalid", "unknown", "error", "paused", "needs-review"
 ]);
 
 // Whether the pane should offer a Formalize / Re-formalize action for an item.
@@ -924,7 +925,9 @@ export function formatRepairOutcome(entry, operation = "repair") {
     case "stubbed": return `${label}: stub created.`;
     case "formalized": return `${label}: formalized and verified.`;
     case "disproved": return `${label}: counterexample found.`;
-    case "needs_review": return `${label}: repaired, but the statement changed -- review required.`;
+    case "needs_review": return operation === "formalize"
+      ? `${label}: Needs review${entry.reason ? ` — ${entry.reason}` : "."}`
+      : `${label}: repaired, but the statement changed -- review required.`;
     case "canceled": return `${label}: stopped.`;
     case "failed": {
       const verb = operation === "stub" ? "stub failed" : operation === "formalize" ? "formalization failed" : "repair failed";
@@ -933,6 +936,9 @@ export function formatRepairOutcome(entry, operation = "repair") {
     case "skipped":
       if (String(entry.reason || "").startsWith("depends_on_failed:")) {
         return `${label}: skipped -- depends on failed ${operation === "formalize" ? "formalization" : "repair"} of ${String(entry.reason).slice("depends_on_failed:".length)}.`;
+      }
+      if (String(entry.reason || "").startsWith("depends_on_review:")) {
+        return `${label}: skipped — dependency ${String(entry.reason).slice("depends_on_review:".length)} needs review.`;
       }
       if (entry.reason === "existing_proof") {
         return `${label}: existing Lean proof kept -- re-formalize this item separately if needed.`;

@@ -41,7 +41,8 @@ export function latestCodeStep(steps = []) {
  */
 export function deriveRunCompletionStatus(runStatus, steps = [], resultKind = null) {
   if (runStatus === 'disproved') return runStatus;
-  if (runStatus !== 'proved' && runStatus !== 'success' && runStatus !== 'needs_review') return runStatus || 'pending';
+  if (runStatus === 'needs_review' || resultKind === 'needs_review') return 'needs_review';
+  if (runStatus !== 'proved' && runStatus !== 'success') return runStatus || 'pending';
   const latest = latestCodeStep(steps);
   const proofStatus = deriveCodeStepProofStatus(latest);
   if (proofStatus === 'defined' || ((resultKind === 'defined' || latest?.artifact_kind === 'definition') && proofStatus === 'proved')) return 'defined';

@@ -259,7 +259,7 @@ def test_shared_file_change_controls_current_validity(tmp_path, monkeypatch):
         check_status="ok", artifact_kind="proof",
         formalization_id=theorem["id"],
     )
-    assert formalizations.get(theorem["id"])["validity_status"] == "proved"
+    assert formalizations.get(theorem["id"])["validity_status"] == "unchecked"
 
     store.add_code_step(
         session_two["id"], None, "Shared.lean",

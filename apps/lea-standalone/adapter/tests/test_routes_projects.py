@@ -1106,7 +1106,8 @@ def test_target_status_serves_ledger_evidence(tmp_path, monkeypatch):
     retired = by_name["retired_one"]
     assert retired["recorded"] is True and retired["exists"] is False
 
-    assert by_name["never_seen"] == {"declaration_name": "never_seen", "recorded": False}
+    assert by_name["never_seen"]["recorded"] is False
+    assert by_name["never_seen"]["validity_status"] == "unavailable"
 
 
 def test_target_status_check_verdict_spans_sessions(tmp_path, monkeypatch):

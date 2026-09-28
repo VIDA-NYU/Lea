@@ -186,6 +186,7 @@ export function ChatThread({
   const runResultKindById = useProofSession((s) => s.runResultKindById);
   const runFocusById = useProofSession((s) => s.runFocusById);
   const formalizations = useProofSession((s) => s.formalizations);
+  const formalizationScope = useProofSession((s) => s.formalizationScope);
   const isRunning = useProofSession((s) => s.isRunning);
   const currentRunId = useProofSession((s) => s.currentRunId);
   const approvals = useProofSession((s) => s.approvals);
@@ -398,15 +399,21 @@ export function ChatThread({
   );
   const headChip = isRunning
     ? { cls: 'run', text: '● proving' }
+    : (session?.status === 'needs_review' || formalizations.some((item) =>
+        item.validity_status === 'needs_review' &&
+        (formalizationScope === item.id || (formalizationScope === 'project' && formalizations.length === 1))))
+    ? { cls: 'warn', text: 'Needs review' }
     : latestProofStatus === 'stubbed'
     ? { cls: 'run', text: '○ stubbed' }
     : latestRunOutcome === 'disproved' && latestProofStatus === 'proved'
     ? { cls: 'warn', text: '⊘ disproved' }
-    : (latestRunOutcome === 'proved' || latestRunOutcome === 'success' || latestRunOutcome === 'needs_review') &&
+    : latestRunOutcome === 'needs_review'
+    ? { cls: 'warn', text: 'Needs review' }
+    : (latestRunOutcome === 'proved' || latestRunOutcome === 'success') &&
         latestRunResultKind === 'defined' &&
         (latestProofStatus === 'proved' || latestProofStatus === 'defined')
     ? { cls: 'ok', text: '✓ defined' }
-    : (latestRunOutcome === 'proved' || latestRunOutcome === 'success' || latestRunOutcome === 'needs_review') &&
+    : (latestRunOutcome === 'proved' || latestRunOutcome === 'success') &&
         latestProofStatus === 'proved'
     ? { cls: 'ok', text: '✓ proved' }
     : runStatus === 'failed' || runStatus === 'max_turns'
@@ -883,7 +890,10 @@ function FormalizationScope({ session }: { session?: SessionSummary }) {
             {/* Its own element so it can ellipsize: a bare text node in a flex row has no
                 box to clip, which is how a whole prompt ended up spilling across the rail. */}
             <span className="form-label">{item.declaration_name || item.display_title}</span>
-            <small>{item.activity.status !== 'idle' ? item.activity.status : item.validity_status}</small>
+            <small title={item.validity_reason || undefined}>
+              {item.activity.status !== 'idle' ? item.activity.status : item.validity_status === 'needs_review' ? 'Needs review' : item.validity_status}
+              {item.validity_status === 'needs_review' && item.check_current ? ' · Lean check passed' : ''}
+            </small>
           </button>
         ))}
         <button
@@ -1015,7 +1025,7 @@ function formalizationStatusClass(validity: string, activity: string): string {
   if (activity !== 'idle') return 'run';
   if (validity === 'proved' || validity === 'defined') return 'ok';
   if (validity === 'failing') return 'fail';
-  if (validity === 'stale') return 'warn';
+  if (validity === 'stale' || validity === 'needs_review') return 'warn';
   return 'idle';
 }
 

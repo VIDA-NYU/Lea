@@ -17,7 +17,8 @@ export type SessionStatus =
   | 'running'
   | 'proved'
   | 'defined'
-  | 'disproved';
+  | 'disproved'
+  | 'needs_review';
 // ── Run-level status (a single proof attempt) ─────────────────────────────────
 // 'proved' / 'disproved' are checked-artifact outcomes; 'needs_review' is
 // preserved as classifier metadata, not a primary session/code status.
@@ -144,6 +145,17 @@ export interface Formalization {
   origin_key?: string | null;
   source_hash?: string | null;
   validity_status: FormalizationValidity | string;
+  validity_reason?: string | null;
+  completion_run_id?: string | null;
+  declaration_kind?: string | null;
+  check_current?: boolean;
+  latest_check?: {
+    code_step_id: string;
+    path: string;
+    status: string | null;
+    detail?: string | null;
+    created_at: string;
+  } | null;
   activity: {
     status: 'idle' | 'queued' | 'running' | 'waiting_for_approval' | string;
     run_id?: string | null;

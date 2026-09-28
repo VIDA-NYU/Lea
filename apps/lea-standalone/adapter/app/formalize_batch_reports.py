@@ -12,7 +12,7 @@ from . import lea_status_store, store
 from .config import load_config
 from .db import connect, utc_now, write
 
-STATES = {"formalized", "disproved", "failed", "skipped", "canceled"}
+STATES = {"formalized", "disproved", "needs_review", "failed", "skipped", "canceled"}
 
 
 def _public(row, *, detail=True):
@@ -83,17 +83,19 @@ def _counts(items):
             counts["disproved"] += 1
         elif state == "failed":
             counts["failed"] += 1
+        elif state == "needs_review":
+            counts["needsReview"] += 1
         elif state == "canceled":
             counts["stopped"] += 1
         elif reason == "existing_proof":
             counts["alreadyVerified"] += 1
         elif reason == "max_spend":
             counts["spendCapSkipped"] += 1
-        elif reason.startswith("depends_on_failed:"):
+        elif reason.startswith(("depends_on_failed:", "depends_on_review:")):
             counts["dependencySkipped"] += 1
         else:
             counts["otherSkipped"] += 1
-    return {key: counts[key] for key in ("verified", "verifiedProofs", "verifiedDefinitions", "disproved", "failed", "alreadyVerified", "dependencySkipped", "spendCapSkipped", "otherSkipped", "stopped")}
+    return {key: counts[key] for key in ("verified", "verifiedProofs", "verifiedDefinitions", "disproved", "needsReview", "failed", "alreadyVerified", "dependencySkipped", "spendCapSkipped", "otherSkipped", "stopped")}
 
 
 def create(slug, payload):

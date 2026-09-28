@@ -3824,7 +3824,7 @@
       ? ["stubbed"]
       : operation === "formalize"
         ? ["formalized", "disproved"]
-        : ["repaired", "needs_review"]);
+        : ["repaired"]);
     const attentionStates = new Set(["failed", "skipped", "canceled", "needs_review", "disproved"]);
     const completedEntries = batch.items.filter((entry) => completedStates.has(entry.state));
     const attentionEntries = batch.items.filter((entry) => attentionStates.has(entry.state));
@@ -6954,10 +6954,15 @@
       }
       const stubbedUsesLabel = hasStubbedTheoremUses(statusInfo) ? " warning: proof uses sorry-stubbed support" : "";
       const statusLabel = `${formatStatus(status, statusInfo)}${turnProgress.label ? ` ${turnProgress.label}` : ""}${stubbedUsesLabel}`;
-      badge.title = statusInfo.sourceFreshness === "stale"
+      badge.title = status === "needs_review"
+        ? statusInfo.message || `The requested ${targetDisplayName(target)} needs review.`
+        : statusInfo.sourceFreshness === "stale"
         ? statusInfo.sourceFreshnessMessage
           || "The LaTeX source changed after this Lean artifact was generated. Re-formalize to synchronize it."
         : statusInfo.message || `Lean status for ${targetDisplayName(target)}: ${statusLabel}`;
+      if (status === "needs_review" && statusInfo.leanCheckPassed === true) {
+        badge.title += " Lean check passed for the current file.";
+      }
       badge.setAttribute("aria-label", `Open Lea popover for ${targetDisplayName(target)}. Status: ${statusLabel}.`);
       badge.style.left = `${Math.min(coords.left + 8, window.innerWidth - 140)}px`;
       badge.style.top = `${coords.top}px`;
@@ -6997,6 +7002,8 @@
         return "defined";
       case "disproved":
         return "Counterexample found";
+      case "needs_review":
+        return "Needs review";
       case "sorry_stub":
         return "sorry stub";
       case "failed":
@@ -7113,6 +7120,8 @@
         return definition ? "Regenerate definition" : "Re-formalize";
       case "unknown":
         return "Check status";
+      case "needs_review":
+        return definition ? "Review definition" : "Review proof";
       case "sorry_stub":
       case "unformalized":
       default:
@@ -7121,6 +7130,7 @@
   }
 
   function getActionStatus(statusInfo) {
+    if (statusInfo?.status === "needs_review") return "needs_review";
     if (statusInfo?.sourceFreshness === "stale") {
       return "stale";
     }
@@ -7131,6 +7141,7 @@
   }
 
   function getDisplayStatus(statusInfo) {
+    if (statusInfo?.status === "needs_review") return "needs_review";
     return statusInfo?.sourceFreshness === "stale"
       ? "stale"
       : statusInfo?.status || "unknown";

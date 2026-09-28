@@ -7,6 +7,7 @@ export function projectLeanCheck({ paneStatus = "", statusInfo = {} } = {}) {
   if (status === "stub-generated") value = "stubbed";
   else if (status === "in-progress") value = "in-progress";
   else if (["valid", "defined", "disproved", "stale"].includes(status)) value = "checked";
+  else if (status === "needs-review" && statusInfo?.leanCheckPassed === true) value = "checked";
   else if (status === "paused") value = "paused";
   else if (["invalid", "error", "unknown"].includes(status)) value = "error";
   return {
@@ -31,4 +32,3 @@ export function normalizeLeaCheck(value) {
 export function isDualCheckStatus(value) {
   return LEAN_VALUES.has(value?.leanCheck?.status) && LEA_VALUES.has(value?.leaCheck?.status);
 }
-

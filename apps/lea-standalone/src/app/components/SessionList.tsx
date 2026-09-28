@@ -13,6 +13,8 @@ function StatusIcon({ status }: { status: SessionSummary['status'] }) {
       return <CheckCircle className="h-4 w-4 text-green-600" />;
     case 'disproved':
       return <Ban className="h-4 w-4 text-amber-600" />;
+    case 'needs_review':
+      return <CircleDashed className="h-4 w-4 text-amber-600" aria-label="Needs review" />;
     case 'error':
       return <XCircle className="h-4 w-4 text-destructive" />;
     case 'unchecked':
@@ -60,6 +62,7 @@ export function SessionList({
                   <p className="mt-1 text-xs text-muted-foreground">
                     {new Date(session.updated_at).toLocaleString()}
                     {session.primary_model ? ` · ${session.primary_model}` : ''}
+                    {session.status === 'needs_review' ? ' · Needs review' : ''}
                   </p>
                 </div>
               </div>

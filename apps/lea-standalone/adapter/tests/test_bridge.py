@@ -31,7 +31,7 @@ from lea.interface import (
 )
 from lea.providers import Usage
 
-from app import bridge, db, projects, runbroker, runregistry, store
+from app import bridge, db, formalizations, projects, runbroker, runregistry, store
 from app.config import LeaConfig
 from app.runregistry import RunRegistry
 
@@ -129,7 +129,7 @@ def test_happy_path_commits_steps_and_persists_run(tmp_path, monkeypatch):
     assert types[-1] == "done"
 
 
-def test_definition_artifact_persists_defined_result_kind(tmp_path, monkeypatch):
+def test_definition_artifact_preserves_explicit_review_result_kind(tmp_path, monkeypatch):
     ctx, queue = _context(tmp_path, monkeypatch, task="Define a subadditive predicate")
 
     def script(proof_path):
@@ -160,17 +160,17 @@ def test_definition_artifact_persists_defined_result_kind(tmp_path, monkeypatch)
     bridge.run_lea(ctx)
 
     run = store.get_run(ctx.run_id)
-    assert run["status"] == "proved"
-    assert run["result_kind"] == "defined"
-    assert run["result_detail"] is None
+    assert run["status"] == "needs_review"
+    assert run["result_kind"] == "needs_review"
+    assert run["result_detail"] == "NEEDS_REVIEW"
 
     done = _drain(queue)[-1]
     assert done["type"] == "done"
-    assert done["payload"]["status"] == "proved"
-    assert done["payload"]["result_kind"] == "defined"
+    assert done["payload"]["status"] == "needs_review"
+    assert done["payload"]["result_kind"] == "needs_review"
 
 
-def test_needs_review_proof_artifact_keeps_proved_session_status(tmp_path, monkeypatch):
+def test_needs_review_proof_artifact_keeps_review_session_status(tmp_path, monkeypatch):
     ctx, queue = _context(tmp_path, monkeypatch, task="Prove True")
 
     def script(proof_path):
@@ -197,7 +197,7 @@ def test_needs_review_proof_artifact_keeps_proved_session_status(tmp_path, monke
     bridge.run_lea(ctx)
 
     detail = store.session_detail(ctx.session_id)
-    assert detail["status"] == "proved"
+    assert detail["status"] == "needs_review"
     assert detail["code_steps"][0]["artifact_kind"] == "proof"
 
     run = store.get_run(ctx.run_id)
@@ -208,6 +208,38 @@ def test_needs_review_proof_artifact_keeps_proved_session_status(tmp_path, monke
     assert done["type"] == "done"
     assert done["payload"]["status"] == "needs_review"
     assert done["payload"]["result_kind"] == "needs_review"
+
+
+def test_focused_run_cannot_certify_a_compiling_helper_instead_of_target(tmp_path, monkeypatch):
+    ctx, queue = _context(tmp_path, monkeypatch, task="Prove thmB")
+    target = store.create_formalization(
+        project_id=None, loose_session_id=ctx.session_id,
+        display_title="thmB", declaration_name="thmB", kind="theorem",
+    )
+    with db.write() as conn:
+        conn.execute("update runs set focus_formalization_id = ? where id = ?",
+                     (target["id"], ctx.run_id))
+
+    def script(proof_path):
+        Path(proof_path).write_text("import Mathlib\n\ndef helper : Prop := True\n")
+        yield TurnStarted(1)
+        yield FileChanged(proof_path)
+        yield CheckResult(proof_path, "ok", None)
+        yield Finished("completed", "All done.", 1, ctx.session_id, "gemini/test",
+                       Usage(input_tokens=10, output_tokens=5), 0.01, {},
+                       result_kind="proved")
+
+    monkeypatch.setattr(bridge, "run_events", _fake_run_events(script))
+    bridge.run_lea(ctx)
+
+    run = store.get_run(ctx.run_id)
+    assert run["status"] == run["result_kind"] == "needs_review"
+    assert "thmB" in run["result_detail"]
+    assert store.session_detail(ctx.session_id)["status"] == "needs_review"
+    assert formalizations.get(target["id"])["validity_status"] == "needs_review"
+    assert not any(item["declaration_name"] == "thmB" for item in store.list_artifacts_for_scope(ctx.session_id))
+    assert any(item["role"] == "support" for item in formalizations.get(target["id"])["files"])
+    assert _drain(queue)[-1]["payload"]["result_kind"] == "needs_review"
 
 
 def test_disproof_result_persists_and_streams_distinct_outcome(tmp_path, monkeypatch):

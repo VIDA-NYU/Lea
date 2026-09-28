@@ -9,6 +9,8 @@ test("projects compiler and attempt facts into the six Lean Check states", () =>
   assert.equal(projectLeanCheck({ paneStatus: "valid" }).status, "checked");
   assert.equal(projectLeanCheck({ paneStatus: "paused" }).status, "paused");
   assert.equal(projectLeanCheck({ paneStatus: "invalid" }).status, "error");
+  assert.equal(projectLeanCheck({ paneStatus: "needs-review", statusInfo: { leanCheckPassed: true } }).status, "checked");
+  assert.equal(projectLeanCheck({ paneStatus: "needs-review", statusInfo: { leanCheckPassed: false } }).status, "unformalized");
 });
 
 test("normalizes missing semantic evidence to an explained N/A", () => {
@@ -18,4 +20,3 @@ test("normalizes missing semantic evidence to an explained N/A", () => {
     leaCheck: normalizeLeaCheck({ status: "warning" })
   }), true);
 });
-

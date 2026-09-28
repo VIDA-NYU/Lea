@@ -877,6 +877,10 @@ test("formatRepairOutcome covers every batch item state", () => {
     formatRepairOutcome({ targetLabel: "c", state: "skipped", reason: "depends_on_failed:b" }),
     /skipped -- depends on failed repair of b\./
   );
+  assert.match(
+    formatRepairOutcome({ targetLabel: "c", state: "skipped", reason: "depends_on_review:b" }),
+    /dependency b needs review\./
+  );
   assert.match(formatRepairOutcome({ targetLabel: "c", state: "skipped", reason: "already_fixed" }), /already compiles/);
   assert.match(
     formatRepairOutcome({ targetLabel: "c", state: "skipped", reason: "existing_proof" }, "formalize"),
@@ -908,6 +912,7 @@ test("stubbableItems / formalizableItems skip completed work in project-level ba
     { targetLabel: "fresh_def", status: "missing-stub", leanKind: "def", formalizable: true },
     { targetLabel: "stubbed_thm", status: "stub-generated", leanKind: "theorem", formalizable: true },
     { targetLabel: "broken_thm", status: "invalid", leanKind: "theorem", formalizable: true },
+    { targetLabel: "review_thm", status: "needs-review", leanKind: "theorem", formalizable: true },
     { targetLabel: "done_thm", status: "valid", leanKind: "theorem", formalizable: true },
     { targetLabel: "stale_thm", status: "stale", leanKind: "theorem", formalizable: true },
     { targetLabel: "running_thm", status: "missing-stub", leanKind: "theorem", formalizable: true, inProgress: true },
@@ -922,7 +927,7 @@ test("stubbableItems / formalizableItems skip completed work in project-level ba
   // restarted in bulk.
   assert.deepEqual(
     formalizableItems(items).map((i) => i.targetLabel),
-    ["fresh_thm", "fresh_def", "stubbed_thm", "broken_thm"]
+    ["fresh_thm", "fresh_def", "stubbed_thm", "broken_thm", "review_thm"]
   );
 });
 

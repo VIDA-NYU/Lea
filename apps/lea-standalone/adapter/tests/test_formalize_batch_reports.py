@@ -63,7 +63,7 @@ def test_captures_settled_facts_and_exact_run_status(tmp_path, monkeypatch):
     assert created
     assert report["facts"]["counts"] == {
         "verified": 1, "verifiedProofs": 1, "verifiedDefinitions": 0,
-        "disproved": 1, "failed": 1, "alreadyVerified": 1,
+        "disproved": 1, "needsReview": 0, "failed": 1, "alreadyVerified": 1,
         "dependencySkipped": 1, "spendCapSkipped": 1, "otherSkipped": 0, "stopped": 1,
     }
     first = report["facts"]["items"][0]
@@ -88,6 +88,20 @@ def test_captures_settled_facts_and_exact_run_status(tmp_path, monkeypatch):
         reports.create("project-one", altered)
     assert len(reports.list_reports("project-one")["reports"]) == 1
     assert reports.list_reports("project-two")["reports"] == []
+
+
+def test_review_is_terminal_but_not_verified_in_historical_report(tmp_path, monkeypatch):
+    seed(tmp_path, monkeypatch)
+    data = payload()
+    data["batchId"] = "formalize-batch-review"
+    data["items"][5]["state"] = "needs_review"
+    data["items"][1]["reason"] = "depends_on_review:failed"
+    report, created = reports.create("project-one", data)
+    assert created is True
+    assert report["facts"]["counts"]["needsReview"] == 1
+    assert report["facts"]["counts"]["failed"] == 0
+    assert report["facts"]["counts"]["verified"] == 1
+    assert report["facts"]["counts"]["dependencySkipped"] == 1
 
 
 def test_history_cursor_handles_same_completion_time(tmp_path, monkeypatch):

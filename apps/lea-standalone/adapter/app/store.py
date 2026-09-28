@@ -230,15 +230,39 @@ def _list_sessions(
                     order by cs.id desc
                     limit 1
                 ) as latest_artifact_kind,
-                (
-                    select rcs.status
-                    from timeline cs
+                coalesce(
+                    (select cs.formalization_id from timeline cs
+                     where cs.session_id = s.id and cs.kind = 'code'
+                       and lower(cs.path) not like '%scratch%'
+                     order by cs.id desc limit 1),
+                    (select rcs.focus_formalization_id from runs rcs
+                     where rcs.session_id = s.id
+                       and rcs.result_kind in ('proved', 'defined', 'needs_review')
+                     order by rcs.created_at desc, rcs.id desc limit 1)
+                ) as latest_code_formalization_id,
+                case when (
+                    select rcs.result_kind from runs rcs
+                    where rcs.session_id = s.id
+                      and rcs.result_kind in ('proved', 'defined', 'needs_review')
+                      and (
+                        (select cs.formalization_id from timeline cs
+                         where cs.session_id = s.id and cs.kind = 'code'
+                           and lower(cs.path) not like '%scratch%'
+                         order by cs.id desc limit 1) is null
+                        or rcs.focus_formalization_id = (
+                          select cs.formalization_id from timeline cs
+                          where cs.session_id = s.id and cs.kind = 'code'
+                            and lower(cs.path) not like '%scratch%'
+                          order by cs.id desc limit 1)
+                      )
+                    order by rcs.created_at desc, rcs.id desc limit 1
+                ) = 'needs_review' then 'needs_review' else (
+                    select rcs.status from timeline cs
                     left join runs rcs on rcs.id = cs.run_id
                     where cs.session_id = s.id and cs.kind = 'code'
                       and lower(cs.path) not like '%scratch%'
-                    order by cs.id desc
-                    limit 1
-                ) as latest_code_run_status,
+                    order by cs.id desc limit 1
+                ) end as latest_code_run_status,
                 (
                     select count(*) from timeline cs
                     where cs.session_id = s.id and cs.kind = 'code'
@@ -290,8 +314,10 @@ def _list_sessions(
             (*params, int(limit)),
         ).fetchall()
     sessions = []
+    status_targets = []
     for row in rows:
         data = row_to_dict(row)
+        status_targets.append(data.pop("latest_code_formalization_id", None))
         # v2.3 item 13: keep the integer active-run count on the row (not just the
         # bool the derived status consumes). Derived status deliberately stays a
         # working-copy verdict (D14), so a session that already has code but is
@@ -307,6 +333,21 @@ def _list_sessions(
         )
         data["active_run_count"] = active_run_count
         sessions.append(_normalize_usage_session(data))
+    target_ids = list({fid for fid in status_targets if fid})
+    if target_ids:
+        from . import formalizations as formalization_service
+        with connect() as conn:
+            marks = ",".join("?" for _ in target_ids)
+            raw = [row_to_dict(row) for row in conn.execute(
+                f"select * from formalizations where id in ({marks})", target_ids
+            ).fetchall()]
+        reviewed_ids = {
+            item["id"] for item in formalization_service.decorate(raw)
+            if item["validity_status"] == "needs_review"
+        }
+        for session, fid in zip(sessions, status_targets):
+            if fid in reviewed_ids:
+                session["status"] = "needs_review"
     return sessions
 
 
@@ -2679,9 +2720,11 @@ def latest_check_for_project_path(project_id: str, path: str) -> dict | None:
     with connect() as conn:
         row = conn.execute(
             """
-            select t.check_status, t.check_detail, t.author, t.data, t.created_at
+            select t.check_status, t.check_detail, t.author, t.data, t.created_at,
+                   b.sha256 as checked_sha256
             from timeline t
             join sessions s on s.id = t.session_id
+            left join artifact_blobs b on b.id = t.after_blob_id
             where s.project_id = ? and t.kind = 'code' and t.path = ?
               and t.check_status is not null
             order by t.created_at desc, t.id desc
@@ -3799,19 +3842,41 @@ def session_detail(session_id: str) -> dict | None:
     latest_check_status = real_steps[-1]["check_status"] if real_steps else None
     latest_artifact_kind = real_steps[-1]["artifact_kind"] if real_steps else None
     latest_code_run_status = None
-    if real_steps and real_steps[-1]["run_id"]:
+    run_row = None
+    if real_steps:
         with connect() as conn:
             run_row = conn.execute(
-                "select status from runs where id = ?",
-                (real_steps[-1]["run_id"],),
+                """select result_kind, focus_formalization_id from runs where session_id = ?
+                   and result_kind in ('proved', 'defined', 'needs_review')
+                   and (? is null or focus_formalization_id = ?)
+                   order by created_at desc, id desc limit 1""",
+                (session_id, real_steps[-1].get("formalization_id"),
+                 real_steps[-1].get("formalization_id")),
             ).fetchone()
-        latest_code_run_status = run_row["status"] if run_row else None
+            if run_row and run_row["result_kind"] == "needs_review":
+                latest_code_run_status = "needs_review"
+            elif real_steps[-1]["run_id"]:
+                step_run = conn.execute(
+                    "select status from runs where id = ?", (real_steps[-1]["run_id"],)
+                ).fetchone()
+                latest_code_run_status = step_run["status"] if step_run else None
+    derived_status = _derive_session_status(
+        latest_check_status, latest_artifact_kind, len(real_steps),
+        active_run is not None, latest_code_run_status,
+    )
+    latest_formalization_id = (
+        (real_steps[-1].get("formalization_id") if real_steps else None)
+        or (run_row["focus_formalization_id"] if run_row else None)
+    )
+    if latest_formalization_id:
+        from . import formalizations as formalization_service
+        target = formalization_service.get(latest_formalization_id)
+        if target and target["validity_status"] == "needs_review":
+            derived_status = "needs_review"
     return {
         **session,
         **usage,
-        "status": _derive_session_status(
-            latest_check_status, latest_artifact_kind, len(real_steps), active_run is not None, latest_code_run_status
-        ),
+        "status": derived_status,
         "messages": messages,
         "code_steps": [_normalize_code_step(step) for step in code_steps],
         "diagnostics": diagnostics_out,
@@ -3840,6 +3905,8 @@ def _derive_session_status(
     an Overleaf-driven one whose first file hasn't been written yet — surfaces as
     in-progress in the session list and stats the moment it starts."""
     if code_step_count:
+        if latest_code_run_status == "needs_review":
+            return "needs_review"
         if latest_check_status == "ok":
             if latest_code_run_status == "disproved":
                 return "disproved"

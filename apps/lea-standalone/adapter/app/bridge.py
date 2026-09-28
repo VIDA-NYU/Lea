@@ -67,6 +67,7 @@ from lea.interface import (
 )
 
 from .artifacts import classify_lean_artifact, declaration_present, extract_declaration_name
+from .target_completion import checked_target, target_declaration
 from .config import LeaConfig, configured_provider_keys, load_config
 from .diagnostics import analyze_exception, resolve as resolve_diagnostic
 from .gitstore import GitStore, GitStoreError
@@ -649,6 +650,8 @@ def _completed_artifact_result(ev: Finished, artifact_kind: str) -> tuple[str, s
         return _finished_status(ev), None
     if ev.result_kind == "disproved":
         return "disproved", "disproved"
+    if ev.result_kind == "needs_review":
+        return "needs_review", "needs_review"
     if artifact_kind == "definition":
         return "proved", "defined"
     result_kind = ev.result_kind if ev.result_kind in _COMPLETED_RESULTS else "proved"
@@ -872,6 +875,7 @@ def _record_run_artifacts(
     *,
     focus_formalization_id: str | None = None,
     source_hash: str | None = None,
+    completion_verified: bool = True,
 ) -> None:
     """Write the structured artifact index rows for this run's checked files
     (PLAN-system-hardening 4.1). Only files whose latest step verdict is ok
@@ -898,8 +902,9 @@ def _record_run_artifacts(
             focused_declaration = (
                 focused.get("declaration_name") if focused else None
             )
-            if focused_declaration and not declaration_present(
-                code, focused_declaration
+            if focus_formalization_id and (
+                not completion_verified or not focused_declaration
+                or not target_declaration(code, focused_declaration, focused.get("kind") or "theorem")
             ):
                 store.link_formalization_file(
                     focus_formalization_id, rel, "support"
@@ -2322,6 +2327,30 @@ def run_lea(context: RunnerContext) -> None:
                 final_status, result_kind = _completed_artifact_result(ev, checked_artifact_kind)
                 final_result_kind = result_kind
                 final_result_detail = None if result_kind == "defined" else ev.result_detail
+                if focus_formalization_id and ev.reason == "completed" and result_kind != "disproved":
+                    # A successful file check is evidence only for the declaration it
+                    # contains. The run must have checked the current target snapshot.
+                    checked_steps = []
+                    for path, step_id in step_id_by_path.items():
+                        step = store.latest_code_step_for_path(session_id, path)
+                        if not step or step.get("id") != step_id:
+                            continue
+                        try:
+                            if (repo / path).read_text() != step.get("code"):
+                                continue
+                        except (OSError, UnicodeDecodeError):
+                            continue
+                        checked_steps.append(step)
+                    match, reason = checked_target(focused_formalization or {}, checked_steps)
+                    successful_result = ev.result_kind == "proved" or (
+                        focused_formalization.get("kind") == "definition" and ev.result_kind == "defined"
+                    )
+                    if ev.result_kind == "needs_review" or not successful_result or match is None:
+                        final_status = final_result_kind = "needs_review"
+                        final_result_detail = ev.result_detail or reason or "Lea requested review of this target."
+                    else:
+                        final_status = "proved"
+                        final_result_kind = "defined" if focused_formalization.get("kind") == "definition" else "proved"
                 if spend_capped and ev.reason != "completed":
                     # Our own cap-triggered stop, not a user cancel: label it. A
                     # run that completed anyway (finished the proof in the same
@@ -2381,6 +2410,7 @@ def run_lea(context: RunnerContext) -> None:
                                  session_id, run_id, project, namespace,
                                  dict(step_id_by_path),
                                  focus_formalization_id=focus_formalization_id,
+                                 completion_verified=final_result_kind in {"proved", "defined"},
                                  source_hash=focus_source_hash))
 
     except Exception as exc:  # noqa: BLE001 — surface any failure as an error event, never hang the stream
