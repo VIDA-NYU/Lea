@@ -823,6 +823,8 @@ def project_target_status_by_slug(slug: str, declarations: str = "") -> dict:
             "check_status": check["check_status"] if check else None,
             "check_detail": check["check_detail"] if check else None,
             "check_author": check["author"] if check else None,
+            "check_created_at": check["created_at"] if check else None,
+            "artifact_updated_at": current_step["created_at"] if current_step else None,
             "formalization_id": row.get("formalization_id"),
             # The session that wrote the current artifact revision is the
             # durable editing context. Companion jobs are only a projection

@@ -586,6 +586,34 @@ def list_formalization_files(formalization_id: str) -> list[dict]:
     return [row_to_dict(row) for row in rows]
 
 
+def unlink_missing_formalization_support(formalization_id: str, repo: Path) -> list[str]:
+    """Retire deleted support files before capturing a live status snapshot.
+
+    A helper can be replaced by another module and deleted through a shell
+    command, which does not emit a FileChanged event. Keep primary/generated
+    registrations intact: their disappearance must remain a reporting error.
+    """
+    removed: list[str] = []
+    root = repo.resolve()
+    with write() as conn:
+        rows = conn.execute(
+            "select path from formalization_files where formalization_id = ? and role = 'support'",
+            (formalization_id,),
+        ).fetchall()
+        for row in rows:
+            path = (root / row["path"]).resolve()
+            if not path.is_relative_to(root):
+                continue
+            if path.is_file():
+                continue
+            conn.execute(
+                "delete from formalization_files where formalization_id = ? and path = ? and role = 'support'",
+                (formalization_id, row["path"]),
+            )
+            removed.append(row["path"])
+    return removed
+
+
 def list_raw_project_formalizations(project_id: str) -> list[dict]:
     with connect() as conn:
         rows = conn.execute(

@@ -7597,7 +7597,15 @@ async function getTheoremStatus({
       }
     : {};
   const newestFinishedJob = findLatestFinishedJob(jobs, target.jobKey);
-  if (newestFinishedJob?.status === "paused") {
+  // A later checked revision can complete work after a run paused. The
+  // companion's old job is then historical context, not the artifact verdict.
+  const checkedAfterPause = newestFinishedJob?.status === "paused"
+    && evidence?.exists && evidence.declaration_present && !evidence.has_sorry
+    && evidence.check_status === "ok"
+    && evidence.check_created_at && evidence.artifact_updated_at
+    && Date.parse(evidence.check_created_at) >= Date.parse(evidence.artifact_updated_at)
+    && Date.parse(evidence.check_created_at) > Date.parse(newestFinishedJob.finishedAt || newestFinishedJob.startedAt || "");
+  if (newestFinishedJob?.status === "paused" && !checkedAfterPause) {
     const paused = buildJobResponse({ job: newestFinishedJob, status: "paused", target });
     if (evidence?.exists) {
       const entry = {

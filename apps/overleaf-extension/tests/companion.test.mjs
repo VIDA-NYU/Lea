@@ -6456,6 +6456,28 @@ test("ledger engine: recorded + clean check reads formalized with the lean state
   assert.match(info.leanStatement || "", /theorem ledger_ok/);
 });
 
+test("ledger engine: a fresh checked proof supersedes a paused job", async () => {
+  const name = "checked_after_pause";
+  const evidence = ledgerEntry(name, {
+    check_created_at: "2026-01-03T00:00:00.000Z",
+    artifact_updated_at: "2026-01-03T00:00:00.000Z"
+  });
+  const { state, leaRepo } = await makeLedgerState({ [name]: evidence });
+  state.jobs.paused = {
+    jobId: "paused", jobKey: `project-1:theorem:${name}`, status: "paused",
+    targetKind: "theorem", targetLabel: name, declarationName: name,
+    overleafProjectId: "project-1", projectSlug: "project-1", leaRepoPath: leaRepo,
+    startedAt: "2026-01-02T00:00:00.000Z", finishedAt: "2026-01-02T00:01:00.000Z"
+  };
+
+  assert.equal((await ledgerStatusFor(state, name)).status, "formalized");
+  evidence.check_created_at = "2026-01-01T00:00:00.000Z";
+  assert.equal((await ledgerStatusFor(state, name)).status, "paused");
+  evidence.check_created_at = "2026-01-03T00:00:00.000Z";
+  evidence.artifact_updated_at = "2026-01-04T00:00:00.000Z";
+  assert.equal((await ledgerStatusFor(state, name)).status, "paused");
+});
+
 test("ledger engine: a sorry in the recorded file reads sorry_stub", async () => {
   const { state } = await makeLedgerState({
     ledger_sorry: ledgerEntry("ledger_sorry", {

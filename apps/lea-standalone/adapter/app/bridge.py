@@ -1889,6 +1889,12 @@ def run_lea(context: RunnerContext) -> None:
             if isinstance(ev, LeaStatusUpdateRequested):
                 from lea.status_reporting import attention
                 try:
+                    if ev.payload.get("scope") != "source_only" and focus_formalization_id:
+                        retired = store.unlink_missing_formalization_support(
+                            focus_formalization_id, repo
+                        )
+                        if retired:
+                            logger.info("lea_status.retired_missing_support run=%s paths=%s", run_id, retired)
                     # Capture shell/custom-tool changes only for files already bound to this target.
                     from .artifact_snapshots import _snapshot
                     captured = _snapshot(focus_formalization_id, run_id=run_id) if ev.payload.get("scope") != "source_only" else None

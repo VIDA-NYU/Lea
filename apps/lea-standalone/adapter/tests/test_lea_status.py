@@ -200,6 +200,41 @@ def test_bridge_acknowledges_committed_update_before_next_effect(fresh, tmp_path
     assert len(lea_status.history(form)["updates"]) == 2
 
 
+def test_status_retires_deleted_support_without_losing_the_target(fresh, tmp_path, monkeypatch):
+    from queue import Queue
+    from app import bridge
+    from app.config import LeaConfig
+    from lea.interface import Finished
+    from lea.providers import Usage
+    from lea.status_reporting import LeaStatusUpdateRequested
+
+    run, form, session = ids(fresh)
+    observed = []
+
+    def fake(config, messages, **kwargs):
+        repo = Path(kwargs["working_dir"])
+        primary = repo / "target.lean"
+        primary.write_text("theorem target : True := by trivial")
+        store.link_formalization_file(form, primary.name, "primary")
+        store.add_code_step(session, run, primary.name, content=primary.read_text(), formalization_id=form)
+        store.link_formalization_file(form, "retired.lean", "support")
+        store.add_code_step(session, run, "retired.lean", content="def oldHelper := 1", formalization_id=form)
+        ack = yield LeaStatusUpdateRequested(payload(scope="statement_and_proof"), "after-retirement")
+        observed.append(ack)
+        yield Finished("interrupted", "Done", 1, session, "test", Usage(), 0, {})
+
+    monkeypatch.setattr(bridge, "run_events", fake)
+    bridge.run_lea(bridge.RunnerContext(
+        session_id=session, run_id=run, task="Formalize target",
+        config=LeaConfig(model="test", lea_root=tmp_path, max_turns=3), events=Queue(),
+        autonomous=True, purpose="overleaf_solver"))
+
+    assert observed[0].accepted
+    assert [row["path"] for row in store.list_formalization_files(form)] == ["target.lean"]
+    update = lea_status_store.latest(run)
+    assert [item["path"] for item in update["artifact_snapshot"]["files"]] == ["target.lean"]
+
+
 def test_source_obstruction_pause_is_opt_in(fresh, tmp_path, monkeypatch):
     from queue import Queue
     from app import bridge
