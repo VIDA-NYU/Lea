@@ -91,6 +91,7 @@ interface ProofSessionState {
   // on the code card / sub-agent row / tool step it names, and in the run-level
   // block when it names nothing. Append-only within a session: a diagnostic is
   // history, so a later one never overwrites an earlier one.
+  manualCheckSessionId?: string;
   diagnostics: Diagnostic[];
   setDiagnostics: (update: Updater<Diagnostic[]>) => void;
   /** Merge one in, ignoring a duplicate id (SSE replay after a reconnect). */

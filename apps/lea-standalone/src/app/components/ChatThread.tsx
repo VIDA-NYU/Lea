@@ -14,6 +14,8 @@ import type {
   TimelineItem,
 } from '../lib/api';
 import { MarkdownMessage } from './MarkdownMessage';
+import { LeanCheckRuntimeStatus } from './LeanCheckRuntimeStatus';
+import { checkExecutionMessage } from '../lib/leanCheckRuntime.mjs';
 import { ModelPicker } from './ModelPicker';
 import { OriginBadge } from './OriginBadge';
 import { buildTimeline } from '../lib/timeline.mjs';
@@ -221,12 +223,12 @@ export function ChatThread({
     for (const d of diagnostics) {
       // Keep the LATEST of each code: a condition reported repeatedly is one
       // condition, and its most recent description is the current one.
-      if (d.severity === 'degraded') byCode.set(d.code, d);
+      if (d.severity === 'degraded' && !d.code.startsWith('lean.lsp_')) byCode.set(d.code, d);
     }
     return [...byCode.values()];
   }, [diagnostics]);
   const threadDiagnostics = useMemo(
-    () => diagnostics.filter((d) => d.severity !== 'degraded' && !d.context?.child_id),
+    () => diagnostics.filter((d) => (d.severity !== 'degraded' || d.code.startsWith('lean.lsp_')) && !d.context?.child_id),
     [diagnostics],
   );
   const childDiagnostics = useMemo(() => {
@@ -673,6 +675,7 @@ export function ChatThread({
               interleaved: they describe a condition that is STILL TRUE, so they
               belong where they stay visible rather than scrolling away like an
               event. One row per code — a fallback reported forty times is one fact. */}
+          <LeanCheckRuntimeStatus sessionId={session?.id} active={isRunning} refreshKey={diagnostics.length} />
           {degradedDiagnostics.map((d) => (
             <DiagnosticCard key={`deg:${d.code}`} diagnostic={d} onAction={runDiagnosticAction} />
           ))}
@@ -1221,7 +1224,10 @@ function DiagnosticCard({
   // goes, it just reports which one was pressed.
   onAction?: (action: DiagnosticAction) => void;
 }) {
-  const { severity, title, message, detail, remedy, actions, context, code } = diagnostic;
+  const { severity, title, detail, remedy, actions, context, code } = diagnostic;
+  const message = code === 'lean.check_execution'
+    ? checkExecutionMessage(context?.execution, context?.check_status) || diagnostic.message
+    : diagnostic.message;
   const anchor = context?.path || context?.tool;
   return (
     <div className={`diag diag-${severity}`} data-code={code}>

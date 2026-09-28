@@ -1,3 +1,4 @@
+import { runtimeNeedsPolling, runtimeStatusMessage, checkExecutionMessage } from "../../lea-standalone/src/app/lib/leanCheckRuntime.mjs";
 import { acceptStatusEvent } from "./leaStatus.mjs";
 import { normalizeLeaStatus } from "../shared/leaStatus.mjs";
 import { canonicalSourceTargetKind, sourceHashInputs } from "../extension/sourceIdentityCore.mjs";
@@ -73,6 +74,7 @@ import {
   fetchAdapterHealth,
   fetchAdapterUsageStats,
   fetchApiSessionDetail,
+  fetchApiLeanCheckRuntime,
   fetchProjectArtifactsBySlug,
   fetchProjectGraphBySlug,
   generateProjectBlueprintBySlug,
@@ -1220,6 +1222,19 @@ export async function handleGithubTokenUpdate(payload, state) {
   };
 }
 
+export async function handleLeanCheckRuntime(sessionId, state) {
+  try {
+    const result = await fetchApiLeanCheckRuntime({
+      fetchImpl: state.fetchImpl || fetch, baseUrl: chatBaseUrls(state).baseUrl,
+      apiKey: state.env?.LEA_API_KEY, sessionId
+    });
+    const runtime = result.ok ? result.body : { state: "unavailable" };
+    return { statusCode: 200, body: { runtime, message: runtimeStatusMessage(runtime) } };
+  } catch {
+    return { statusCode: 200, body: { runtime: { state: "unavailable" }, message: "Lean check runtime unavailable" } };
+  }
+}
+
 export async function handleLeanPaneManifest(payload, state) {
   const overleafProjectId = payload.overleafProjectId || "unknown";
   const reservedLabels = legacyExplicitJobLabels(state, overleafProjectId);
@@ -1307,11 +1322,28 @@ export async function handleLeanPaneManifest(payload, state) {
     ([jobId, job]) => !jobsBeforeEnrichment.has(jobId) && job?.ledgerHydrated === true
   );
   if (hydratedLedgerJob) await persistJobs(state);
+  const runtimeSession = items.find((item) => item.leaSessionId)?.leaSessionId;
+  let leanCheckRuntime = null;
+  if (runtimeSession) {
+    try {
+      const result = await fetchApiLeanCheckRuntime({
+        fetchImpl: state.fetchImpl || fetch,
+        baseUrl: chatBaseUrls(state).baseUrl,
+        apiKey: state.env?.LEA_API_KEY,
+        sessionId: runtimeSession
+      });
+      leanCheckRuntime = result.ok ? result.body : { state: "unavailable" };
+    } catch { leanCheckRuntime = { state: "unavailable" }; }
+  }
+
 
   return {
     statusCode: 200,
     body: {
       ...manifest,
+      leanCheckRuntime,
+      leanCheckRuntimeMessage: runtimeStatusMessage(leanCheckRuntime),
+      leanCheckRuntimePolling: runtimeNeedsPolling(leanCheckRuntime),
       diagnostics: targetSyncWarning
         ? [...manifest.diagnostics, { code: "target_sync_failed", message: targetSyncWarning }]
         : manifest.diagnostics,
@@ -2248,6 +2280,10 @@ export async function handleLeanPaneEditSave(payload, state) {
     path: before.path,
     checkStatus: check.body?.status || null,
     checkDetail: check.body?.detail || null,
+    execution: check.body?.execution || null,
+    executionMessage: checkExecutionMessage(check.body?.execution, check.body?.status),
+    diagnostics: check.body?.diagnostics || [],
+    leanCheckRuntime: check.body?.lean_check_runtime || null,
     classification
   };
 
@@ -3512,11 +3548,12 @@ export function settleCanceledBatchEntry(entry, outcome = {}) {
 // Lea" offer), and ANY passing verdict clears it -- however the item got
 // fixed (repair run, manual edit, chat), a compile pass is the one
 // authoritative "no longer broken" signal.
-function recordEditCheckVerdict(job, { status, detail } = {}, breakage = null) {
+function recordEditCheckVerdict(job, { status, detail, execution } = {}, breakage = null) {
   if (!job) return false;
   const ok = String(status || "").toLowerCase() === "ok";
   job.lastEditCheckStatus = ok ? "ok" : "error";
   job.lastEditCheckDetail = detail || null;
+  if (execution) job.lastCheckExecution = execution;
   job.lastEditedAt = new Date().toISOString();
   if (ok) {
     delete job.lastEditBreakage;
@@ -3607,7 +3644,7 @@ function startChatRun({
       let lastPublishAt = 0;
       return async (type, data) => {
         if (type === "lea_status_updated") acceptStatusEvent(state, data, null, target.overleafProjectId);
-        if (type !== "message" && type !== "assistant_delta" && type !== "done") return;
+        if (type !== "message" && type !== "assistant_delta" && type !== "done" && type !== "diagnostic") return;
         const now = Date.now();
         if (type !== "done" && now - lastPublishAt < 1000) return;
         lastPublishAt = now;
@@ -4281,6 +4318,11 @@ async function routeRequest(request, response, state) {
     return;
   }
 
+  if (request.method === "GET" && url.pathname.startsWith("/lean-pane/check-runtime/")) {
+    const sessionId = decodeURIComponent(url.pathname.slice("/lean-pane/check-runtime/".length));
+    const result = await handleLeanCheckRuntime(sessionId, state);
+    return sendJson(response, result.statusCode, result.body);
+  }
   if (request.method === "GET" && url.pathname.startsWith("/lean-pane/chat/session/")) {
     const sessionId = decodeURIComponent(url.pathname.slice("/lean-pane/chat/session/".length));
     const result = await handleChatPoll({ sessionId }, state);
@@ -5566,6 +5608,11 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
     },
     onEvent: async (type, data) => {
       if (type === "lea_status_updated") acceptStatusEvent(state, data, job);
+      if (type === "diagnostic" && data?.code?.startsWith("lean.")) {
+        if (data.context?.execution) job.lastCheckExecution = data.context.execution;
+        publishEvent(state, "jobs-changed", { overleafProjectId: job.overleafProjectId || target.overleafProjectId });
+        publishEvent(state, "chat-updated", { overleafProjectId: target.overleafProjectId, targetKey: target.targetKey });
+      }
       if (onEvent) await onEvent(type, data);
     },
     onProgressUpdated: async (progress) => {
@@ -7246,6 +7293,7 @@ async function enrichLeanPaneItem({
     leaStatus,
     leanCheck,
     leaCheck,
+    lastCheckExecution: latestJob?.lastCheckExecution || null,
     // Let the batch queue show the active Lea turn even when the target lives
     // in a different project file and therefore has no in-document badge.
     turnProgress: inProgress && !stale ? statusInfo?.turnProgress : undefined,

@@ -113,10 +113,13 @@ CATALOG: dict[str, tuple[str, str | None]] = {
         "is pointed at the right project, or remove it under Library → MCP servers.",
     ),
     "lean.lsp_cold_fallback": (
-        "Lean checks are running cold",
-        "Checks are ~440x slower until the language-server daemon comes back. "
-        "Restarting the adapter rebuilds it.",
+        "Checking with full compilation",
+        "The Lean server could not recover for this check. A full compile is running "
+        "within the check's remaining time limit; later checks retry the server automatically.",
     ),
+    "lean.lsp_recovering": ("Recovering Lean server", "The check will retry through a fresh Lean server."),
+    "lean.lsp_recovered": ("Lean server recovered", None),
+    "lean.check_execution": ("Lean check finished", None),
     "code.content_lost": (
         "A written file could not be read back",
         "The step is recorded, but its contents are not stored — the file may have "
@@ -472,6 +475,10 @@ def resolve(
     invisible precisely because nobody had written its copy yet, which is the bug
     this whole phase is about.
     """
+    if code.startswith("lean.") and context:
+        failure = context.get("failure") or (context.get("execution") or {}).get("failure")
+        if failure and detail is None:
+            detail = json.dumps(failure, ensure_ascii=False, indent=2)
     # G4: fill in the code's buttons when the caller didn't supply any.
     if actions is None:
         actions = CODE_ACTIONS.get(code)

@@ -1,67 +1,39 @@
-"""Persistent `lake env lean --server` daemon per Lake project root.
+"""Persistent Lean servers, with bounded recovery and per-Lake-root ownership.
 
-Keeps Mathlib oleans mmapped in one long-running Lean LSP server process
-instead of cold-spawning `lake env lean <file>` for every `lean_check` call.
-
-Headline win measured on FQB: ~0.21 s per in-place edit vs. ~88 s for cold
-subprocess. See `tests/lsp/README.md` for the benchmark.
-
-This is a *real* JSON-RPC/LSP client, not a synchronous shim: one reader thread
-demultiplexes the server's stream, routing responses by request `id` and
-notifications by document `uri`, so one warm server can serve many concurrent
-checks (Lean spawns one file-worker per open document and is built for
-concurrent requests). Readiness is the server's own signal — the Lean-specific
-`textDocument/waitForDiagnostics` request, which resolves only once a version's
-diagnostics are final — not a timing heuristic. See `tests/lsp/` for the
-dispatch unit test and the concurrent real-Lean guard.
-
-Falls back transparently to the caller (which should re-run via subprocess)
-on any LSP error or server crash. Set `LEA_DISABLE_LSP=1` to skip entirely.
+The editor WebSocket server is independent. This module owns only subprocesses it
+starts, and a check is complete only after exact-version diagnostics and Lean's
+waitForDiagnostics barrier have both arrived.
 """
 from __future__ import annotations
+
 import atexit
+from collections import OrderedDict
 import json
+import logging
 import os
+from pathlib import Path
+from queue import Empty, Full, Queue
+import select
 import subprocess
 import threading
 import time
-from pathlib import Path
-from queue import Queue, Empty, Full
+from uuid import uuid4
 
+from .check_runtime import CheckBudget, CheckFailure, lsp_disabled, stop_process
 
-# Restart a daemon after this many checks. Bounds memory growth from Lean's
-# per-document elaboration cache. Tunable via env var.
 _RESTART_AFTER = int(os.environ.get("LEA_LSP_RESTART_AFTER", "500"))
-
-# Hard timeout for one check (incl. cold first-open). Subsumed by the
-# caller's LEAN_CHECK_TIMEOUT if larger. This is the ONLY time-based bound in
-# a check now — the readiness signal itself is `waitForDiagnostics`, not a
-# timer (see `LeanDaemon.check`).
-_CHECK_TIMEOUT = int(os.environ.get("LEAN_CHECK_TIMEOUT", "900"))
-
-# Handshake timeout (initialize response). The server answers `initialize`
-# before it touches Mathlib, so this is fast even cold.
+_CHECK_TIMEOUT = float(os.environ.get("LEAN_CHECK_TIMEOUT", "900"))
 _INIT_TIMEOUT = 120
-
-# Mapping from LSP severity int → string matching `lake env lean` output.
+_MAX_IDLE_DOCUMENTS = 8
 _SEVERITY = {1: "error", 2: "warning", 3: "info", 4: "hint"}
-
-# Server→client requests we acknowledge with a null result. The Lean server
-# genuinely sends these (measured: `client/registerCapability` with a *string*
-# id, plus `workspace/*/refresh` on a ~2s cadence) and RETRIES a refresh until
-# acked — so acking is not just protocol-correct, it stops a retry storm. They
-# carry both a `method` and an `id`; the dispatcher must never mistake one for
-# a response to our own request (their ids collide with ours), which is exactly
-# why `_dispatch` checks `method` first.
 _ACK_METHODS = {
-    "client/registerCapability",
-    "client/unregisterCapability",
-    "workspace/semanticTokens/refresh",
-    "workspace/inlayHint/refresh",
-    "workspace/codeLens/refresh",
-    "workspace/diagnostic/refresh",
+    "client/registerCapability", "client/unregisterCapability",
+    "workspace/semanticTokens/refresh", "workspace/inlayHint/refresh",
+    "workspace/codeLens/refresh", "workspace/diagnostic/refresh",
 }
 _METHOD_NOT_FOUND = -32601
+_log = logging.getLogger("lea.lean_checks")
+_RUNTIME_ID = uuid4().hex
 
 
 def _encode(msg: dict) -> bytes:
@@ -70,317 +42,354 @@ def _encode(msg: dict) -> bytes:
 
 
 class _Transport:
-    """Owns the `lake env lean --server` subprocess and JSON-RPC framing.
-
-    The only Lean-agnostic layer: it spawns the process, frames/parses
-    messages, serializes writes so two threads can't interleave a
-    `Content-Length` header with another body on the unbuffered pipe, and hands
-    each parsed message to a callback. On stream close it delivers a single
-    `None` so the owner can fail every waiter. Injected as a seam so the
-    dispatcher is testable with a fake server and no Lean toolchain.
-    """
-
     def __init__(self, command: list[str], cwd: str):
-        self._command = command
-        self._cwd = cwd
-        self._proc: subprocess.Popen | None = None
+        self._command, self._cwd = command, cwd
+        self._proc = None
         self._io_lock = threading.Lock()
+        self._close_lock = threading.Lock()
+        self._failure_lock = threading.Lock()
         self._on_message = None
+        self._threads = []
+        self._stderr = bytearray()
+        self._stderr_lock = threading.Lock()
+        self.failure: CheckFailure | None = None
+        self._ended = False
+        self._closed = False
 
     def start(self, on_message) -> bool:
         self._on_message = on_message
-        try:
-            self._proc = subprocess.Popen(
-                self._command, cwd=self._cwd,
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                bufsize=0,
-            )
-        except FileNotFoundError:
+        with self._close_lock:
+            if self._closed:
+                self.failure = CheckFailure("cancelled", "Lean transport was shut down", retryable=False)
+                return False
+            try:
+                proc = subprocess.Popen(
+                    self._command, cwd=self._cwd, stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+                    start_new_session=True,
+                )
+                self._proc = proc
+                os.set_blocking(proc.stdin.fileno(), False)
+            except OSError as exc:
+                self.failure = CheckFailure("executable_missing" if isinstance(exc, FileNotFoundError)
+                                            else "startup", str(exc), phase="initialization",
+                                            retryable=not isinstance(exc, FileNotFoundError))
+            if not self.failure:
+                for fn in (self._reader, self._drain_stderr):
+                    thread = threading.Thread(target=fn, args=(proc,), daemon=True)
+                    self._threads.append(thread)
+                    thread.start()
+        if self.failure:
+            self.close()
             return False
-        threading.Thread(target=self._reader, daemon=True).start()
-        threading.Thread(target=self._drain_stderr, daemon=True).start()
         return True
 
-    def send(self, msg: dict) -> None:
-        """Serialize a message onto the pipe. Raises on a dead pipe."""
-        data = _encode(msg)
-        with self._io_lock:
-            if self._proc is None or self._proc.stdin is None:
-                raise RuntimeError("transport not started")
-            self._proc.stdin.write(data)
-            self._proc.stdin.flush()
+    def evidence(self):
+        with self._stderr_lock:
+            tail = bytes(self._stderr).decode("utf-8", errors="replace")
+        return {"stderr_tail": tail, "exit_code": self.poll()}
+
+    def _fail(self, exc: Exception):
+        with self._failure_lock:
+            if self._ended:
+                return
+            self._ended = True
+            self.failure = exc if isinstance(exc, CheckFailure) else CheckFailure(
+                "transport", f"{type(exc).__name__}: {exc}", **self.evidence())
+        if self._on_message:
+            self._on_message(None)
+
+    def send(self, msg: dict, *, budget: CheckBudget | None = None):
+        budget = budget or CheckBudget(5)
+        data = memoryview(_encode(msg))
+        frame_size = len(data)
+        with budget.acquire(self._io_lock):
+            proc = self._proc
+            if proc is None or proc.stdin is None:
+                raise CheckFailure("transport", "Lean transport is not running")
+            if self.failure:
+                raise _failure(self.failure)
+            try:
+                while data:
+                    budget.remaining("lsp")
+                    count = proc.stdin.write(data)
+                    if count:
+                        data = data[count:]
+                    else:
+                        # A nonblocking raw pipe returns None when full. Never hold
+                        # an unbounded write or silently discard a short write.
+                        select.select([], [proc.stdin], [], min(0.1, budget.remaining("lsp")))
+            except CheckFailure as exc:
+                if len(data) != frame_size:
+                    # A cancellation/deadline must retain its caller-facing
+                    # meaning, but nobody can reuse a partially written frame.
+                    self._fail(CheckFailure("transport", "Lean write interrupted mid-frame",
+                                            cause=exc.as_dict(), **self.evidence()))
+                raise
+            except (OSError, ValueError) as exc:
+                self._fail(exc)
+                raise _failure(self.failure) from exc
 
     def poll(self):
-        return None if self._proc is None else self._proc.poll()
+        return self._proc.poll() if self._proc is not None else None
 
-    def close(self) -> None:
-        if self._proc is None:
+    def close(self):
+        deadline = time.monotonic() + 5
+        if not self._close_lock.acquire(timeout=5):
             return
-        proc, self._proc = self._proc, None
         try:
-            proc.wait(timeout=5)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            self._closed = True
+            proc = self._proc
+            if proc is None:
+                return
+            stop_process(proc, deadline=deadline)
+            self._fail(CheckFailure("transport", "Lean transport closed", **self.evidence()))
+            if self.failure:
+                self.failure.evidence.update(self.evidence())
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+            for thread in self._threads:
+                if thread is not threading.current_thread():
+                    thread.join(timeout=max(0, deadline - time.monotonic()))
+            self._proc = None
+        finally:
+            self._close_lock.release()
 
-    def _reader(self) -> None:
-        stream = self._proc.stdout
-        while True:
-            headers = {}
+    def _reader(self, proc=None):
+        stream = (proc or self._proc).stdout
+        try:
             while True:
-                line = stream.readline()
-                if not line:
-                    self._on_message(None)  # EOF → owner fails all waiters
-                    return
-                s = line.decode("utf-8", errors="replace").strip()
-                if s == "":
-                    break
-                k, _, v = s.partition(":")
-                headers[k.strip().lower()] = v.strip()
-            n = int(headers.get("content-length", 0))
-            if n == 0:
-                continue
-            body = stream.read(n).decode("utf-8", errors="replace")
-            try:
-                msg = json.loads(body)
-            except json.JSONDecodeError:
-                continue
-            try:
+                headers = {}
+                header_bytes = 0
+                while True:
+                    line = stream.readline(8193)
+                    if not line:
+                        raise CheckFailure("transport", "EOF in Lean server stream", **self.evidence())
+                    header_bytes += len(line)
+                    if header_bytes > 8192:
+                        raise ValueError("JSON-RPC headers exceed 8 KiB")
+                    if line == b"\r\n":
+                        break
+                    key, sep, value = line.decode("ascii").strip().partition(":")
+                    if not sep or key.lower() in headers:
+                        raise ValueError("Malformed or duplicate JSON-RPC header")
+                    headers[key.lower()] = value.strip()
+                size = int(headers["content-length"])
+                if not 0 < size <= 64 * 1024 * 1024:
+                    raise ValueError("Invalid JSON-RPC Content-Length")
+                body = bytearray()
+                while len(body) < size:
+                    chunk = stream.read(size - len(body))
+                    if not chunk:
+                        raise ValueError("Truncated JSON-RPC body")
+                    body.extend(chunk)
+                msg = json.loads(body.decode("utf-8"))
+                if not isinstance(msg, dict):
+                    raise ValueError("JSON-RPC message must be an object")
                 self._on_message(msg)
-            except Exception:
-                pass  # a routing bug must never kill the reader
+        except Exception as exc:
+            failure = exc if isinstance(exc, CheckFailure) else CheckFailure(
+                "protocol", f"{type(exc).__name__}: {exc}", **self.evidence())
+            self._fail(failure)
 
-    def _drain_stderr(self) -> None:
-        for _ in iter(self._proc.stderr.readline, b""):
-            pass  # discard; LSP server stderr is mostly info noise
+    def _drain_stderr(self, proc=None):
+        stream = (proc or self._proc).stderr
+        try:
+            while chunk := stream.read(4096):
+                with self._stderr_lock:
+                    self._stderr.extend(chunk)
+                    del self._stderr[:-32768]
+        except (OSError, ValueError):
+            pass
 
 
 class LeanDaemon:
-    """One `lake env lean --server` instance scoped to a Lake project root.
-
-    Serves many concurrent `check()` calls over one warm server: responses are
-    routed to per-request waiters by `id`, notifications to per-`uri` queues.
-    Distinct documents check in parallel (Lean gives each its own file worker);
-    two checks of the *same* document serialize on a per-uri lock, because a
-    Lean file worker holds one state per uri and a version bump can't make two
-    contents coexist.
-    """
-
     def __init__(self, lake_root: str, transport_factory=None):
         self.lake_root = lake_root
+        self.generation = uuid4().hex
         self.broken = False
-        # Set by mark_stale() when another process (rebuild_module's `lake
-        # build`) changed a module this daemon may have imported. Lean's import
-        # cache is process-lifetime, so the whole server is restarted on the
-        # next check. (A finer fix Lean itself supports — reopen the affected
-        # uri with `dependencyBuildMode: "once"` on an "Imports are out of
-        # date" diagnostic — is left for the deferred staleness work.)
         self.stale = False
-
-        # Transport seam.
-        factory = transport_factory or (
-            lambda: _Transport(["lake", "env", "lean", "--server"], lake_root)
-        )
-        self._transport = factory()
-
-        # Dispatch state.
-        self._state_lock = threading.Lock()
-        self.opened: set[str] = set()          # uris seen via didOpen
-        self._version = 0                       # monotonic LSP document version
-        self._check_count = 0                   # for _RESTART_AFTER
-        self._uri_queues: dict[str, Queue] = {}  # uri → notifications for the active check
-        self._uri_locks: dict[str, threading.Lock] = {}
-
+        self.failure = None
+        self.closed = threading.Event()
+        self._transport = (transport_factory or (
+            lambda: _Transport(["lake", "env", "lean", "--server"], lake_root)))()
+        self._state_lock = threading.RLock()
+        self.opened = set()
+        self._idle = OrderedDict()
+        self._version = self._check_count = 0
+        self._uri_queues = {}
+        self._uri_locks = {}
+        self._uri_users = {}
         self._id_lock = threading.Lock()
         self._next_id = 0
         self._pending_lock = threading.Lock()
-        self._pending: dict[int, Queue] = {}    # our-request id → response slot
-
-        # Lease / retire state (see check_via_lsp): a retired daemon is removed
-        # from the registry so no new leases attach, and shut down only once its
-        # last in-flight check drains.
+        self._pending = {}
         self._lease_lock = threading.Lock()
         self._leases = 0
-        self._retiring = False
-        self._shut = False
+        self._retiring = self._shut = False
+        self._shutdown_lock = threading.Lock()
 
-    # ---- lifecycle ----
-    def start(self) -> bool:
-        """Spawn the server and run the LSP handshake. False on failure."""
-        if not self._transport.start(self._dispatch):
-            return False
+    def _send(self, msg, budget=None):
+        # Fake transports implement the same routing seam without OS I/O.
+        if isinstance(self._transport, _Transport):
+            self._transport.send(msg, budget=budget)
+        else:
+            self._transport.send(msg)
+
+    def start(self, budget=None) -> bool:
+        budget = budget or CheckBudget(_CHECK_TIMEOUT)
         try:
-            self._request("initialize", {
-                "processId": os.getpid(),
-                "rootUri": Path(self.lake_root).as_uri(),
-                "capabilities": {"textDocument": {"publishDiagnostics": {}}},
-            }, timeout=_INIT_TIMEOUT)
-            self._transport.send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+            with budget.measure("initialization"):
+                if not self._transport.start(self._dispatch):
+                    raise getattr(self._transport, "failure", None) or CheckFailure(
+                        "startup", "Could not start Lean server", phase="initialization")
+                self._request("initialize", {
+                    "processId": os.getpid(), "rootUri": Path(self.lake_root).as_uri(),
+                    "capabilities": {"textDocument": {"publishDiagnostics": {"versionSupport": True}}},
+                }, timeout=_INIT_TIMEOUT, budget=budget)
+                self._send({"jsonrpc": "2.0", "method": "initialized", "params": {}}, budget)
             return True
-        except Exception:
+        except Exception as exc:
+            self.failure = _failure(exc, phase="initialization")
             self.broken = True
+            self.shutdown()
             return False
 
-    def shutdown(self) -> None:
-        if self.broken and self._transport.poll() is not None:
+    def shutdown(self):
+        if not self._shutdown_lock.acquire(blocking=False):
             return
         try:
-            self._transport.send({"jsonrpc": "2.0", "id": self._nxt(), "method": "shutdown"})
-            self._transport.send({"jsonrpc": "2.0", "method": "exit"})
-        except Exception:
-            pass
-        self._transport.close()
-        self.broken = True
-        self._fail_all_waiters()
-
-    def close_documents_under(self, dir_path: str) -> int:
-        """`didClose` every open document whose file lives under ``dir_path``,
-        drop its per-uri state, and return how many were closed.
-
-        Lean spawns one ``lean --worker`` per *open* document and holds it until
-        the document is closed. This daemon otherwise never closes a document, so
-        every unique file it checks leaks a worker for the server's lifetime.
-        Sub-agents make that acute: each ``proof-candidate`` child checks a
-        candidate at a unique scratch path, leaking one worker per child (B1 —
-        ~118 workers, GBs resident, in a single session). Called when the run that
-        owns ``dir_path`` finishes (a sub-agent returning), this reaps those
-        workers at the one moment nothing will re-check those files: the parent
-        collates via the filesystem into its own canonical file, never the scratch
-        path.
-
-        Uris are stored resolved (``lean_check`` does ``Path(path).resolve()``
-        before handing us the path), so the prefix is resolved to match — no
-        symlink (`/var`→`/private/var`) misses. A uri mid-check (still in
-        ``_uri_queues``) is left for its own check to close; a finished child has
-        none. Best-effort: a dead pipe just means the server is already gone.
-        """
-        if self.broken:
-            return 0
-        try:
-            prefix = Path(dir_path).resolve().as_uri().rstrip("/") + "/"
-        except Exception:
-            return 0
-        with self._state_lock:
-            victims = [u for u in self.opened
-                       if u.startswith(prefix) and u not in self._uri_queues]
-        closed = 0
-        for uri in victims:
-            try:
-                self._transport.send({
-                    "jsonrpc": "2.0", "method": "textDocument/didClose",
-                    "params": {"textDocument": {"uri": uri}},
-                })
-                closed += 1
-            except Exception:
-                self.broken = True
-                break
-        if victims:
-            with self._state_lock:
-                for uri in victims:
-                    self.opened.discard(uri)
-                    self._uri_locks.pop(uri, None)
-        return closed
-
-    # ---- the check ----
-    def check(self, file_path: str, content: str) -> str:
-        """Open or update `file_path` with `content`; return its diagnostics.
-
-        Blocks until `textDocument/waitForDiagnostics` confirms the version is
-        fully elaborated, then returns the final diagnostics for that version.
-        Empty → clean; otherwise the formatted errors/warnings.
-        """
-        if self.broken:
-            raise RuntimeError("daemon not alive")
-        uri = Path(file_path).as_uri()
-
-        # Serialize same-document checks: one file worker, one doc state per uri.
-        with self._uri_lock(uri):
-            with self._state_lock:
-                self._version += 1
-                version = self._version
-                self._check_count += 1
-                is_open = uri in self.opened
-                q: Queue = Queue()
-                self._uri_queues[uri] = q
-            try:
-                self._send_document(uri, content, version, is_open)
-                with self._state_lock:
-                    self.opened.add(uri)
-                # waitForDiagnostics resolves only once this version's
-                # diagnostics are final (measured on v4.29.0: its response
-                # trails the last publishDiagnostics on the wire). The single
-                # reader thread processes that publishDiagnostics — putting it
-                # on `q` — strictly before it processes this response, so once
-                # we're here every diagnostic for `version` is already queued.
-                self._request(
-                    "textDocument/waitForDiagnostics",
-                    {"uri": uri, "version": version},
-                    timeout=_CHECK_TIMEOUT,
-                )
-                return self._format(file_path, self._collect(q, version))
-            finally:
-                with self._state_lock:
-                    self._uri_queues.pop(uri, None)
-
-    def _send_document(self, uri: str, content: str, version: int, is_open: bool) -> None:
-        try:
-            if is_open:
-                self._transport.send({
-                    "jsonrpc": "2.0", "method": "textDocument/didChange",
-                    "params": {
-                        "textDocument": {"uri": uri, "version": version},
-                        "contentChanges": [{"text": content}],
-                    },
-                })
-            else:
-                self._transport.send({
-                    "jsonrpc": "2.0", "method": "textDocument/didOpen",
-                    "params": {"textDocument": {
-                        "uri": uri, "languageId": "lean4",
-                        "version": version, "text": content,
-                    }},
-                })
-        except (BrokenPipeError, OSError, RuntimeError):
-            self.broken = True
-            raise
-
-    def _collect(self, q: Queue, version: int) -> list:
-        """Drain queued notifications; return the last publishDiagnostics whose
-        version is current (or unversioned). The waitForDiagnostics response has
-        already fired, so all of this version's diagnostics are present."""
-        diags: list = []
-        while True:
-            try:
-                m = q.get_nowait()
-            except Empty:
-                break
-            if m is None:
-                raise RuntimeError("server stream closed")
-            if m.get("method") != "textDocument/publishDiagnostics":
-                continue
-            p = m.get("params", {})
-            v = p.get("version")
-            if v is None or v >= version:
-                diags = p.get("diagnostics", [])
-        return diags
-
-    # ---- dispatch (reader thread) ----
-    def _dispatch(self, msg) -> None:
-        if msg is None:
+            if self.closed.is_set():
+                return
             self.broken = True
             self._fail_all_waiters()
+            # Closing the owned process group also reaps workers when the
+            # protocol itself is damaged; no request can extend cleanup time.
+            self._transport.close()
+            self.closed.set()
+        finally:
+            self._shutdown_lock.release()
+
+    def _close_uri_locked(self, uri, budget=None):
+        if uri not in self.opened:
             return
-        method = msg.get("method")
-        msg_id = msg.get("id")
-        # method AND id → a server→client REQUEST, never a response. Its id
-        # lives in the server's namespace and collides with ours; checking
-        # `method` first is what keeps us from reading it as our answer.
+        self._send({"jsonrpc": "2.0", "method": "textDocument/didClose",
+                    "params": {"textDocument": {"uri": uri}}}, budget)
+        self.opened.discard(uri)
+        self._idle.pop(uri, None)
+        if not self._uri_users.get(uri):
+            self._uri_locks.pop(uri, None)
+
+    def close_documents_under(self, dir_path):
+        prefix = Path(dir_path).resolve().as_uri().rstrip("/") + "/"
+        count = 0
+        with self._state_lock:
+            for uri in list(self.opened):
+                if (uri.startswith(prefix) and not self._uri_users.get(uri)
+                        and uri not in self._uri_queues):
+                    self._close_uri_locked(uri)
+                    count += 1
+        return count
+
+    def check(self, file_path: str, content: str, *, budget=None) -> str:
+        budget = budget or CheckBudget(_CHECK_TIMEOUT)
+        uri = Path(file_path).resolve().as_uri()
+        # Count queued users too: close/evict must not replace a lock held by
+        # someone who is waiting for the same document.
+        with self._state_lock:
+            lock = self._uri_locks.setdefault(uri, threading.Lock())
+            self._uri_users[uri] = self._uri_users.get(uri, 0) + 1
+            self._idle.pop(uri, None)
+        try:
+            with budget.acquire(lock):
+                if self.broken:
+                    raise self.failure or CheckFailure("transport", "Lean daemon is not alive")
+                with self._state_lock:
+                    self._version += 1
+                    version = self._version
+                    self._check_count += 1
+                    q = Queue()
+                    self._uri_queues[uri] = q
+                    is_open = uri in self.opened
+                try:
+                    with budget.measure("lsp"):
+                        self._send_document(uri, content, version, is_open, budget)
+                        with self._state_lock:
+                            self.opened.add(uri)
+                        self._request("textDocument/waitForDiagnostics", {"uri": uri, "version": version},
+                                      timeout=budget.remaining(), budget=budget)
+                        return self._format(file_path, self._collect(q, version))
+                except CheckFailure as exc:
+                    exc = _failure(exc)
+                    exc.evidence.update(uri=uri, document_version=version,
+                                        daemon_generation=self.generation)
+                    if exc.kind == "cancelled":
+                        with self._state_lock:
+                            self._close_uri_locked(uri)
+                    raise exc
+                finally:
+                    with self._state_lock:
+                        self._uri_queues.pop(uri, None)
+        finally:
+            with self._state_lock:
+                self._uri_users[uri] -= 1
+                if not self._uri_users[uri]:
+                    del self._uri_users[uri]
+                    if uri in self.opened:
+                        self._idle[uri] = time.monotonic()
+                    else:
+                        self._uri_locks.pop(uri, None)
+                while len(self._idle) > _MAX_IDLE_DOCUMENTS:
+                    victim = next(iter(self._idle))
+                    try:
+                        self._close_uri_locked(victim)
+                    except Exception as exc:
+                        self.broken = True
+                        self.failure = _failure(exc)
+                        break
+
+    def _send_document(self, uri, content, version, is_open, budget=None):
+        doc = {"uri": uri, "version": version}
+        method = "textDocument/didChange" if is_open else "textDocument/didOpen"
+        params = {"textDocument": doc, "contentChanges": [{"text": content}]} if is_open else {
+            "textDocument": {**doc, "languageId": "lean4", "text": content}}
+        self._send({"jsonrpc": "2.0", "method": method, "params": params}, budget)
+
+    def _collect(self, q, version):
+        diags = None
+        while True:
+            try:
+                msg = q.get_nowait()
+            except Empty:
+                break
+            if msg is None:
+                raise self.failure or CheckFailure("transport", "Lean server stream closed")
+            if msg.get("method") == "textDocument/publishDiagnostics":
+                params = msg.get("params", {})
+                if params.get("version") == version:
+                    value = params.get("diagnostics")
+                    if not isinstance(value, list):
+                        raise CheckFailure("protocol", "Invalid Lean diagnostics publication")
+                    diags = value
+        if diags is None:
+            raise CheckFailure("missing_diagnostics", "Lean returned no diagnostics for the checked version")
+        return diags
+
+    def _dispatch(self, msg):
+        if msg is None:
+            self.broken = True
+            self.failure = self.failure or getattr(self._transport, "failure", None) or CheckFailure(
+                "transport", "Lean server stream closed")
+            self._fail_all_waiters()
+            return
+        method, msg_id = msg.get("method"), msg.get("id")
         if method is not None and msg_id is not None:
             self._ack_server_request(msg_id, method)
-            return
-        if msg_id is not None:
+        elif msg_id is not None:
             with self._pending_lock:
                 slot = self._pending.get(msg_id)
             if slot is not None:
@@ -388,125 +397,110 @@ class LeanDaemon:
                     slot.put_nowait(msg)
                 except Full:
                     pass
-            return
-        if method is not None:
+        elif method is not None:
             uri = _uri_of(method, msg.get("params") or {})
-            if uri is None:
-                return  # window/logMessage, global $/lean/* — nothing waits on it
             with self._state_lock:
                 q = self._uri_queues.get(uri)
             if q is not None:
                 q.put(msg)
 
-    def _ack_server_request(self, msg_id, method: str) -> None:
-        if method in _ACK_METHODS:
-            payload = {"jsonrpc": "2.0", "id": msg_id, "result": None}
-        else:
-            payload = {"jsonrpc": "2.0", "id": msg_id,
-                       "error": {"code": _METHOD_NOT_FOUND, "message": f"unsupported: {method}"}}
-        try:
-            self._transport.send(payload)
-        except Exception:
-            pass
+    def _ack_server_request(self, msg_id, method):
+        payload = {"jsonrpc": "2.0", "id": msg_id}
+        payload.update({"result": None} if method in _ACK_METHODS else {
+            "error": {"code": _METHOD_NOT_FOUND, "message": f"unsupported: {method}"}})
+        self._send(payload)
 
-    def _request(self, method: str, params: dict, timeout: float):
-        """Send a request and block for its response, routed by id."""
+    def _request(self, method, params, timeout, budget=None):
+        budget = budget or CheckBudget(timeout)
+        until = min(budget.deadline, time.monotonic() + timeout)
         req_id = self._nxt()
-        slot: Queue = Queue(maxsize=1)
+        slot = Queue(maxsize=1)
         with self._pending_lock:
             self._pending[req_id] = slot
         try:
-            self._transport.send({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params})
-            try:
-                msg = slot.get(timeout=timeout)
-            except Empty:
-                raise RuntimeError(f"{method} timed out after {timeout}s")
-        except (BrokenPipeError, OSError):
-            self.broken = True
-            raise
+            self._send({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}, budget)
+            while True:
+                left = min(budget.remaining("initialization" if method == "initialize" else "lsp"),
+                           until - time.monotonic())
+                if left <= 0:
+                    raise CheckFailure("initialization_timeout", f"{method} timed out after {timeout}s",
+                                       phase="initialization")
+                try:
+                    msg = slot.get(timeout=min(0.1, left))
+                    break
+                except Empty:
+                    continue
+            if msg is None:
+                raise self.failure or CheckFailure("transport", "Lean server stream closed")
+            if "error" in msg:
+                error = msg["error"]
+                unsupported = isinstance(error, dict) and error.get("code") == _METHOD_NOT_FOUND
+                raise CheckFailure("unsupported_method" if unsupported else "server_error",
+                                   f"LSP error: {error}", retryable=not unsupported)
+            if "result" not in msg:
+                raise CheckFailure("protocol", "Lean response has neither result nor error")
+            return msg["result"]
+        except CheckFailure as exc:
+            exc = _failure(exc)
+            exc.evidence.update(method=method, request_id=req_id)
+            if exc.kind in {"cancelled", "timeout"}:
+                try:
+                    self._send({"jsonrpc": "2.0", "method": "$/cancelRequest",
+                                "params": {"id": req_id}}, CheckBudget(0.2))
+                except Exception:
+                    pass
+            raise exc
         finally:
             with self._pending_lock:
                 self._pending.pop(req_id, None)
-        if msg is None:
-            self.broken = True
-            raise RuntimeError("server stream closed")
-        if "error" in msg:
-            raise RuntimeError(f"LSP error: {msg['error']}")
-        return msg.get("result")
 
-    def _fail_all_waiters(self) -> None:
-        """Unblock every pending request and active check with a sentinel."""
+    def _fail_all_waiters(self):
         with self._pending_lock:
             slots = list(self._pending.values())
-        for s in slots:
+        with self._state_lock:
+            slots += list(self._uri_queues.values())
+        for slot in slots:
             try:
-                s.put_nowait(None)
+                slot.put_nowait(None)
             except Full:
                 pass
-        with self._state_lock:
-            queues = list(self._uri_queues.values())
-        for qq in queues:
-            qq.put(None)
 
-    # ---- leases (called from check_via_lsp) ----
-    def _acquire_lease(self) -> None:
+    def _acquire_lease(self):
         with self._lease_lock:
             self._leases += 1
 
-    def _release_lease(self) -> None:
+    def _release_lease(self):
         with self._lease_lock:
             self._leases -= 1
-            should = self._retiring and self._leases == 0 and not self._shut
-            if should:
-                self._shut = True
-        if should:
+            close = self._retiring and self._leases == 0
+        if close:
             self.shutdown()
 
-    def _retire(self) -> None:
-        """Removed from the registry: shut down now if idle, else when the last
-        in-flight check releases its lease."""
+    def _retire(self):
         with self._lease_lock:
             self._retiring = True
-            should = self._leases == 0 and not self._shut
-            if should:
-                self._shut = True
-        if should:
+            close = self._leases == 0
+        if close:
             self.shutdown()
 
-    # ---- internal ----
-    def _nxt(self) -> int:
+    def _nxt(self):
         with self._id_lock:
             self._next_id += 1
             return self._next_id
 
-    def _uri_lock(self, uri: str) -> threading.Lock:
-        with self._state_lock:
-            lk = self._uri_locks.get(uri)
-            if lk is None:
-                lk = threading.Lock()
-                self._uri_locks[uri] = lk
-            return lk
-
-    def _format(self, file_path: str, diags: list) -> str:
-        # Only surface errors (severity 1) and warnings (severity 2) to match
-        # subprocess `lake env lean` behavior. LSP info/hint diagnostics (3/4)
-        # are hover-style metadata that confuse the agent (it interpreted an
-        # `info:` path-resolution note as a real problem and went off-rails).
-        diags = [d for d in diags if d.get("severity", 1) in (1, 2)]
-        if not diags:
-            return "OK — no errors, no warnings."
+    def _format(self, file_path, diags):
         lines = []
-        for d in diags:
-            sev = _SEVERITY.get(d.get("severity", 1), "error")
-            r = d.get("range", {}).get("start", {})
-            ln = r.get("line", 0) + 1
-            col = r.get("character", 0) + 1
-            msg = d.get("message", "").rstrip()
-            lines.append(f"{file_path}:{ln}:{col}: {sev}: {msg}")
-        return "\n".join(lines)
+        for diag in diags:
+            severity = diag.get("severity", 1)
+            if severity not in (1, 2):
+                continue
+            pos = diag.get("range", {}).get("start", {})
+            lines.append(f"{file_path}:{pos.get('line', 0) + 1}:{pos.get('character', 0) + 1}: "
+                         f"{_SEVERITY[severity]}: {diag.get('message', '').rstrip()}")
+        return "\n".join(lines) or "OK — no errors, no warnings."
 
 
-def _uri_of(method: str, params: dict) -> str | None:
+def _uri_of(method, params):
     if method == "textDocument/publishDiagnostics":
         return params.get("uri")
     if method == "$/lean/fileProgress":
@@ -514,89 +508,296 @@ def _uri_of(method: str, params: dict) -> str | None:
     return None
 
 
-# ---- module-level cache ----
-_daemons: dict[str, LeanDaemon] = {}
+def _failure(exc, **context):
+    if isinstance(exc, CheckFailure):
+        return CheckFailure(exc.kind, str(exc), phase=exc.phase, retryable=exc.retryable,
+                            **exc.evidence)
+    return CheckFailure("transport", f"{type(exc).__name__}: {exc}", **context)
+
+
+class _Root:
+    def __init__(self):
+        self.condition = threading.Condition(threading.RLock())
+        self.retired = []
+        self.starting = False
+        self.probing = False
+        self.failures = 0
+        self.retry_at = 0.0
+        self.last_failure = None
+        self.episode = None
+        self.active_cold = 0
+        self.state = "idle"
+        self.revision = 0
+        self.closing = False
+        self.starting_daemon = None
+        self.restarts = 0
+
+
+_daemons = {}
+_roots = {}
 _lock = threading.Lock()
 
 
-def check_via_lsp(file_path: str, content: str, lake_root: str) -> str:
-    """Run `lean_check` via the persistent LSP daemon for `lake_root`.
-
-    Raises on any failure so the caller can fall back to subprocess.
-    """
-    retiring = None
+def _root(root):
+    root = str(Path(root).resolve())
     with _lock:
-        d = _daemons.get(lake_root)
-        if d is not None and (d.broken or d.stale or d._check_count >= _RESTART_AFTER):
-            # Retire it: out of the registry so no new lease attaches. Shutdown
-            # is deferred (below, outside _lock) to the retire path, which fires
-            # it now if idle or on the last in-flight check otherwise — never
-            # under another check the way the old code tore the server down.
-            del _daemons[lake_root]
-            retiring, d = d, None
-        if d is None:
-            d = LeanDaemon(lake_root)
-            if not d.start():
-                raise RuntimeError(f"failed to start lean --server in {lake_root}")
-            _daemons[lake_root] = d
-        d._acquire_lease()
-    if retiring is not None:
-        retiring._retire()
+        state = _roots.get(root)
+        if state is None:
+            state = _roots[root] = _Root()
+    return root, state
+
+
+def runtime_is_closing(lake_root):
+    with _lock:
+        state = _roots.get(str(Path(lake_root).resolve()))
+    return bool(state and state.closing)
+
+
+def runtime_snapshot(lake_root=None):
+    base = {"runtime_id": _RUNTIME_ID, "generation": None, "state": "disabled" if lsp_disabled() else "idle",
+            "active_cold_checks": 0, "retry_after_ms": 0, "last_failure": None, "episode_id": None}
+    if lake_root is None:
+        return base
+    key = str(Path(lake_root).resolve())
+    with _lock:
+        state = _roots.get(key)
+    if state is None:
+        return base
+    with state.condition:
+        daemon = _daemons.get(key)
+        return {**base, "generation": getattr(daemon, "generation", None),
+                "state": "disabled" if lsp_disabled() else state.state,
+                "active_cold_checks": state.active_cold, "episode_id": state.episode,
+                "retry_after_ms": max(0, round((state.retry_at - time.monotonic()) * 1000)),
+                "last_failure": state.last_failure}
+
+
+def _report(state, code, message, budget, path, *, severity="notice"):
+    from . import diagnostics
+    diagnostics.report(severity, code, message, source="lean_check", once=True,
+                       episode_id=state.episode, check_id=budget.execution["check_id"], path=path,
+                       failure=state.last_failure)
+
+
+def note_cold(lake_root, delta):
+    _, state = _root(lake_root)
+    with state.condition:
+        state.active_cold = max(0, state.active_cold + delta)
+
+
+def _retire_locked(key, state, daemon):
+    if _daemons.get(key) is daemon:
+        daemon.stale = True
+        state.retired = [d for d in state.retired if not d.closed.is_set()]
+        if state.retired:
+            # Keep the invalid current generation registered (unavailable for
+            # new leases) until its predecessor has drained. Never have two
+            # retiring generations plus a serving replacement.
+            return
+        _daemons.pop(key, None)
+        state.retired.append(daemon)
+        # Cleanup outside the root lock: it must not block other check leases.
+        threading.Thread(target=daemon._retire, daemon=True).start()
+
+
+def _acquire_daemon(key, state, budget, file_path=None):
+    while True:
+        with state.condition:
+            if state.closing:
+                raise CheckFailure("cancelled", "Lean runtime is shutting down", retryable=False)
+            while state.probing and state.probing != budget.execution["check_id"]:
+                with budget.measure("queue"):
+                    state.condition.wait(timeout=min(0.1, budget.remaining("queue")))
+            state.retired = [d for d in state.retired if not d.closed.is_set()]
+            daemon = _daemons.get(key)
+            if daemon and (daemon.broken or daemon.stale or daemon._check_count >= _RESTART_AFTER):
+                if daemon.broken:
+                    state.probing = budget.execution["check_id"]
+                    if state.episode is None:
+                        state.episode = uuid4().hex
+                        state.restarts = 0
+                        state.last_failure = (daemon.failure or CheckFailure("transport", "Lean server exited")).as_dict()
+                if not state.retired:
+                    _retire_locked(key, state, daemon)
+                    daemon = None
+                else:
+                    daemon = None  # wait for a free generation slot
+            if daemon is not None:
+                daemon._acquire_lease()
+                return daemon
+            if time.monotonic() < state.retry_at:
+                raise CheckFailure("backoff", "Lean server recovery is waiting before its next attempt",
+                                   retryable=False, cause=state.last_failure)
+            if not state.starting and key not in _daemons:
+                state.starting = True
+                state.state = "recovering" if state.episode else "starting"
+                revision = state.revision
+                if state.episode:
+                    state.restarts += 1
+                daemon = LeanDaemon(key)
+                state.starting_daemon = daemon
+                break
+            with budget.measure("queue"):
+                state.condition.wait(timeout=min(0.1, budget.remaining("queue")))
     try:
-        return d.check(file_path, content)
+        if state.episode:
+            _report(state, "lean.lsp_recovering", "Recovering Lean server", budget, file_path)
+        if not daemon.start(budget):
+            raise daemon.failure or CheckFailure("startup", "Lean server initialization failed")
+        with state.condition:
+            if state.closing:
+                daemon.shutdown()
+                raise CheckFailure("cancelled", "Lean runtime is shutting down", retryable=False)
+            daemon.stale = state.revision != revision
+            _daemons[key] = daemon
+            daemon._acquire_lease()
+            if not state.episode and state.probing == budget.execution["check_id"]:
+                # Initial startup is shared only through initialize. Do not
+                # serialize unrelated first-document elaborations behind it.
+                state.probing = False
+                state.condition.notify_all()
+            return daemon
     finally:
-        d._release_lease()
+        with state.condition:
+            state.starting = False
+            state.starting_daemon = None
+            state.condition.notify_all()
 
 
-def mark_stale(lake_root: str) -> None:
-    """Flag the persistent daemon for `lake_root`, if one is running, so its
-    *next* check restarts the underlying `lean --server` process first.
+def check_via_lsp(file_path, content, lake_root, *, budget=None):
+    budget = budget or CheckBudget(_CHECK_TIMEOUT)
+    key, state = _root(lake_root)
+    owner = budget.execution["check_id"]
+    try:
+        for attempt in range(2):
+            daemon = None
+            try:
+                with state.condition:
+                    while state.probing and state.probing != owner:
+                        with budget.measure("queue"):
+                            state.condition.wait(timeout=min(0.1, budget.remaining("queue")))
+                    if time.monotonic() < state.retry_at:
+                        raise CheckFailure("backoff", "Lean server recovery is waiting before its next attempt",
+                                           retryable=False, cause=state.last_failure)
+                    if key not in _daemons or state.failures:
+                        state.probing = owner
+                        if state.failures:
+                            state.restarts = 0
+                budget.remaining()
+                budget.execution["attempts"] += 1
+                daemon = _acquire_daemon(key, state, budget, file_path)
+                budget.execution["daemon_generation"] = daemon.generation
+                if daemon.stale:
+                    raise CheckFailure("stale_generation", "Dependencies changed during Lean initialization")
+                result = daemon.check(file_path, content, budget=budget)
+                with state.condition:
+                    if daemon.stale:
+                        raise CheckFailure("stale_generation", "Dependencies changed during the Lean check")
+                    # An older retiring generation cannot clear a newer outage.
+                    if _daemons.get(key) is daemon and not daemon.stale:
+                        recovered = state.episode is not None
+                        state.state = "ready"
+                        state.failures = 0
+                        state.restarts = 0
+                        state.retry_at = 0
+                        if recovered:
+                            _report(state, "lean.lsp_recovered", "Lean server recovered", budget, file_path)
+                        state.episode = None
+                return result
+            except Exception as raw:
+                exc = _failure(raw)
+                if exc.kind in {"cancelled", "queue_timeout", "backoff"}:
+                    raise exc
+                budget.execution["failure"] = exc.as_dict()
+                with state.condition:
+                    current = _daemons.get(key)
+                    # Join a sibling's recovery, or reuse its already healthy
+                    # replacement. Late failures cannot reopen its outage.
+                    joined = (state.probing and state.probing != owner) or (
+                        daemon is not None and current is not None and current is not daemon
+                        and state.state == "ready")
+                    if joined:
+                        if attempt == 0 and exc.kind != "timeout":
+                            continue
+                        raise exc
+                    if daemon is not None:
+                        _retire_locked(key, state, daemon)
+                    state.last_failure = exc.as_dict()
+                    if state.episode is None:
+                        state.episode = uuid4().hex
+                        state.restarts = 0
+                    if not state.probing:
+                        state.probing = owner
+                    state.state = "recovering"
+                if exc.kind == "timeout":
+                    with state.condition:
+                        state.state = "degraded"
+                    raise exc
+                if attempt == 0 and exc.retryable and state.restarts < 1:
+                    _report(state, "lean.lsp_recovering", "Recovering Lean server", budget, file_path)
+                    continue
+                with state.condition:
+                    if state.probing == owner:
+                        state.failures += 1
+                        state.retry_at = time.monotonic() + min(300, 30 * 2 ** min(state.failures - 1, 4))
+                        state.state = "degraded"
+                raise exc
+            finally:
+                if daemon is not None:
+                    daemon._release_lease()
+    finally:
+        with state.condition:
+            if state.probing == owner:
+                state.probing = False
+                if not state.episode and key not in _daemons:
+                    state.state = "idle"
+                state.condition.notify_all()
 
-    Call this after any real `lake build` (`tools.rebuild_module`) that
-    changes a module's `.olean` on disk. Lean's server caches every module it
-    has ever imported for the life of its process (see this module's
-    docstring) -- a build in a different process can't reach into that cache
-    and fix just the one module, so a full restart is the only guaranteed-
-    correct remedy. This is deliberately lazy (flag now, restart on next use)
-    rather than an eager synchronous restart: an eager restart would pay the
-    cold Mathlib-reload cost inside whatever request triggered the rebuild,
-    and would tear the shared daemon down out from under any unrelated
-    request that happens to be mid-check. Callers that cannot wait for the
-    next check to trigger this (the Overleaf lean pane's cascade re-check,
-    which runs immediately after its own rebuild) should bypass the daemon
-    entirely instead -- see `tools.lean_check_cold`.
 
-    A no-op if no daemon has been started for `lake_root` yet (nothing to
-    invalidate) or if `lake_root` doesn't match any tracked daemon.
-    """
+def mark_stale(lake_root):
+    key, state = _root(lake_root)
+    with state.condition:
+        state.revision += 1
+        daemon = _daemons.get(key)
+        if daemon is not None:
+            daemon.stale = True
+
+
+def close_documents_under(dir_path):
     with _lock:
-        d = _daemons.get(lake_root)
-        if d is not None:
-            d.stale = True
-
-
-def close_documents_under(dir_path: str) -> int:
-    """Close (didClose) every open LSP document under ``dir_path`` across all live
-    daemons, reaping the per-document ``lean --worker`` Lean keeps per open file.
-
-    Call when a run that owns a scratch tree finishes — notably a sub-agent
-    returning (B1); its candidate files are never checked again. Best-effort and
-    safe: a no-op when the LSP path is disabled (no daemons started) or nothing
-    under ``dir_path`` is open. Returns the number of documents closed.
-    """
-    with _lock:
-        daemons = list(_daemons.values())
+        states = list(_roots.items())
     total = 0
-    for d in daemons:
-        try:
-            total += d.close_documents_under(dir_path)
-        except Exception:
-            pass
+    for key, state in states:
+        with state.condition:
+            daemons = [*state.retired, *([_daemons[key]] if key in _daemons else [])]
+        for daemon in daemons:
+            try:
+                total += daemon.close_documents_under(dir_path)
+            except Exception:
+                _log.exception("Could not close Lean scratch documents")
     return total
 
 
 @atexit.register
 def _shutdown_all():
-    for d in list(_daemons.values()):
-        d.shutdown()
-    _daemons.clear()
+    with _lock:
+        states = list(_roots.items())
+    threads = []
+    for key, state in states:
+        with state.condition:
+            state.closing = True
+            state.state = "idle"
+            daemons = [*state.retired, *([_daemons.pop(key)] if key in _daemons else [])]
+            if state.starting_daemon:
+                daemons.append(state.starting_daemon)
+        for daemon in daemons:
+            thread = threading.Thread(target=daemon.shutdown, daemon=True)
+            thread.start()
+            threads.append(thread)
+    deadline = time.monotonic() + 5
+    for thread in threads:
+        thread.join(timeout=max(0, deadline - time.monotonic()))
+    # Cold checks observe the same closing flag in their deadline loop and
+    # terminate their owned subprocess. Include their cleanup in this grace.
+    while any(state.active_cold for _, state in states) and time.monotonic() < deadline:
+        time.sleep(0.01)

@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 
 import lea.tools as tools
+import lea.lean_checks as lean_checks
+from unittest.mock import patch
 import lea.lsp_daemon as lsp_daemon
 from lea.tools import lean_check, rebuild_module
 
@@ -48,35 +50,36 @@ def test_cold_check_semaphore_bounds_concurrency():
     live = {"now": 0, "max": 0}
     mlock = threading.Lock()
 
-    def fake_run(cmd, **kwargs):
-        with mlock:
-            live["now"] += 1
-            live["max"] = max(live["max"], live["now"])
-        time.sleep(0.05)
-        with mlock:
-            live["now"] -= 1
-        return _FakeCompleted(returncode=0, stdout="", stderr="")
+    class FakeProcess:
+        returncode = 0
+        stdout = stderr = None
+        def __init__(self, *args, **kwargs):
+            with mlock:
+                live["now"] += 1
+                live["max"] = max(live["max"], live["now"])
+        def communicate(self, timeout=None):
+            time.sleep(0.05)
+            with mlock:
+                live["now"] -= 1
+            return "", ""
 
-    tmp = Path(tempfile.mkdtemp()) / "T.lean"  # no lakefile above -> cmd=["lean", ...]
-    tmp.write_text("theorem t : True := trivial\n")
-
-    orig_run, orig_sem = tools.subprocess.run, tools._cold_check_sem
-    tools.subprocess.run = fake_run
-    tools._cold_check_sem = threading.BoundedSemaphore(limit)
-    try:
-        threads = [threading.Thread(target=lambda: lean_check(str(tmp), use_lsp=False))
-                   for _ in range(n_threads)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5)
-        check("all cold checks completed", all(not t.is_alive() for t in threads))
-        check(f"never more than {limit} cold compiles at once (saw {live['max']})",
-              live["max"] <= limit)
-        check("the bound was actually exercised (>1 concurrent)", live["max"] >= 2)
-    finally:
-        tools.subprocess.run = orig_run
-        tools._cold_check_sem = orig_sem
+    with tempfile.TemporaryDirectory() as directory:
+        tmp = Path(directory) / "T.lean"
+        tmp.write_text("theorem t : True := trivial\n")
+        with patch.object(lean_checks.subprocess, 'Popen', FakeProcess), \
+             patch.object(lean_checks, 'stop_process'), \
+             patch.object(lean_checks, '_cold_check_sem', threading.BoundedSemaphore(limit)):
+            results = []
+            threads = [threading.Thread(target=lambda: results.append(lean_check(str(tmp), use_lsp=False)))
+                       for _ in range(n_threads)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=5)
+            check("all cold checks completed", all(not t.is_alive() for t in threads))
+            check("all cold checks succeeded", len(results) == n_threads and all(r.startswith('OK') for r in results))
+            check(f"never more than {limit} cold compiles at once (saw {live['max']})", live["max"] <= limit)
+            check("the bound was actually exercised (>1 concurrent)", live["max"] >= 2)
 
 
 def _make_project():

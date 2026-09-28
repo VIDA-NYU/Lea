@@ -369,7 +369,8 @@ def _meaning_events(tool_name: str, args: dict, result: str) -> list:
     if tool_name == "lean_check":
         err = _lean_check_has_error(result)
         return [CheckResult(path, "error" if err else "ok",
-                            _first_error_line(result) if err else None)]
+                            _first_error_line(result) if err else None,
+                            execution=getattr(result, "execution", None))]
     return []
 
 
@@ -1063,7 +1064,8 @@ def _run_events_inner(
             if tc["name"] == "lean_check":
                 hint = _domain_cascade_for_check(tc.get("args") or {}, working_dir, surfaced_domains)
                 if hint:
-                    r = f"{r}\n\n{hint}"
+                    from .check_runtime import CheckText
+                    r = CheckText(f"{r}\n\n{hint}", getattr(r, "execution", None))
             return r
 
         # Results by tool-call index, reassembled in the original order below so the
@@ -1193,7 +1195,23 @@ def _run_events_inner(
                             isinstance(f, dict) and f.get("severity") in {"warning", "blocking"} for f in attempted_findings)
                         result = f"Error: {exc}"
                 else:
-                    result = _exec_tool(tc)
+                    # Checkers can recover or compile for minutes. Drain their
+                    # human-facing events while they run, preserving serial tool
+                    # order and the invocation's ContextVars on the worker.
+                    if tc["name"] in {"lean_check", "suggest_imports"}:
+                        pending = {}
+                        ctx = contextvars.copy_context()
+                        def check_work(call=tc):
+                            pending["result"] = ctx.run(_exec_tool, call)
+                        worker = threading.Thread(target=check_work, daemon=True)
+                        worker.start()
+                        while worker.is_alive():
+                            worker.join(timeout=0.05)
+                            for diag in diagnostics.drain():
+                                yield diag
+                        result = pending.get("result", "Error: Lean check worker failed")
+                    else:
+                        result = _exec_tool(tc)
                     tools_since_status += 1
                 results_by_idx[idx] = result
                 if config.status_reporting:

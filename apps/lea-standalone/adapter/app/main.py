@@ -82,6 +82,12 @@ def health() -> dict:
     return {"ok": True, "capabilities": {"lea_status": {"version": 1, "admission_enabled": admission_enabled(), "independent_checks": False, "source_pause_policy": 1}}}
 
 
+@app.on_event("shutdown")
+def shutdown_lean_checks() -> None:
+    from lea.lsp_daemon import _shutdown_all
+    _shutdown_all()
+
+
 app.include_router(sessions.router)
 app.include_router(runs.router)
 app.include_router(settings.router)

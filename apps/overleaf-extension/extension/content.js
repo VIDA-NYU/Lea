@@ -1977,7 +1977,7 @@
   // `forceFetch` re-downloads the project archive; `background` skips the blanking
   // "Loading…" state and preserves scroll, for edit-driven and poll refreshes.
   async function refreshLeanPaneNow({ forceFetch = false, background = false } = {}) {
-    if (!leanPane || !leanPaneBody || !leanPaneStatus) return;
+    if (!leanPane || !leanPaneBody || !leanPaneStatus || (background && document.hidden)) return;
     clearTimeout(leanPaneRefreshTimer);
     leanPaneRefreshTimer = null;
     clearTimeout(leanPanePollTimer);
@@ -2082,12 +2082,21 @@
   }
 
   // Keep refreshing while any item is still being formalized; stop once it settles.
-  function scheduleLeanPanePollIfNeeded(manifest) {
-    if (!leanPane || !leanPaneView?.hasInProgressItems(manifest?.items)) return;
+  document.addEventListener("visibilitychange", () => {
     clearTimeout(leanPanePollTimer);
+    clearTimeout(leanPaneChatPollTimer);
+    if (!document.hidden) {
+      if (leanPane) refreshLeanPaneNow({ background: true }).catch(() => {});
+      if (leanPaneChatPanel) pollChatSession().catch(() => {});
+    }
+  });
+
+  function scheduleLeanPanePollIfNeeded(manifest) {
+    clearTimeout(leanPanePollTimer);
+    if (!leanPane || document.hidden || (!manifest?.leanCheckRuntimePolling && !leanPaneView?.hasInProgressItems(manifest?.items))) return;
     leanPanePollTimer = setTimeout(() => {
       refreshLeanPaneNow({ background: true }).catch(renderLeanPaneError);
-    }, pushConnected ? LEAN_PANE_POLL_RECONCILE_MS : LEAN_PANE_POLL_DELAY_MS);
+    }, 5000);
   }
 
   async function getLeanPaneProjectFiles({ projectId, forceFetch, deferArchiveFetch = false }) {
@@ -2218,6 +2227,14 @@
       ? `${inventorySummary} ${leanPaneInventoryWarning}`
       : inventorySummary;
 
+    if (manifest?.leanCheckRuntimeMessage) {
+      const runtime = document.createElement("div");
+      runtime.className = "ol-lean-project-pane-diagnostics";
+      runtime.setAttribute("role", "status");
+      runtime.textContent = manifest.leanCheckRuntimeMessage;
+      runtime.title = manifest.leanCheckRuntime?.last_failure?.message || "";
+      leanPaneBody.appendChild(runtime);
+    }
     if (Array.isArray(manifest?.diagnostics) && manifest.diagnostics.length > 0) {
       const visibleDiagnostics = manifest.diagnostics.slice(0, 4);
       const dismissKey = leanPaneErrorKey(
@@ -4343,6 +4360,28 @@
     }
   }
 
+  function watchManualCheckRuntime(sessionId, line) {
+    let stopped = false;
+    let timer;
+    let request;
+    async function poll() {
+      clearTimeout(timer);
+      if (stopped || document.hidden || !line.isConnected || !sessionId) return;
+      request = new AbortController();
+      try {
+        const baseUrl = await chatCompanionBaseUrl();
+        const response = await fetch(`${baseUrl}/lean-pane/check-runtime/${encodeURIComponent(sessionId)}`, { signal: request.signal });
+        const payload = await response.json();
+        if (!stopped) line.textContent = payload.message || "Checking with Lean…";
+      } catch { if (!stopped) line.textContent = "Lean check runtime unavailable"; }
+      if (!stopped && !document.hidden) timer = setTimeout(poll, 5000);
+    }
+    const visibility = () => { clearTimeout(timer); request?.abort(); if (!document.hidden) poll(); };
+    document.addEventListener("visibilitychange", visibility);
+    poll();
+    return () => { stopped = true; clearTimeout(timer); request?.abort(); document.removeEventListener("visibilitychange", visibility); };
+  }
+
   function closeLeanPaneEdit() {
     leanPaneEditingItemId = "";
     leanPaneEditDraft = "";
@@ -4443,6 +4482,11 @@
       textarea.disabled = true;
       saveButton.textContent = "Saving…";
       errorLine.hidden = true;
+      const runtimeLine = document.createElement("p");
+      runtimeLine.setAttribute("role", "status");
+      runtimeLine.textContent = "Checking with Lean…";
+      container.appendChild(runtimeLine);
+      const stopRuntime = watchManualCheckRuntime(item.leaSessionId, runtimeLine);
       try {
         const projectId = itemsProjectId(lastLeanPaneManifest?.items || []);
         const target = leanPaneView.paneItemToEditTarget(item, projectId);
@@ -4471,6 +4515,9 @@
         textarea.disabled = false;
         saveButton.textContent = "Save";
         renderLeanPaneEditErrorLine(errorLine);
+      } finally {
+        stopRuntime();
+        runtimeLine.remove();
       }
     });
 
@@ -4506,10 +4553,16 @@
       result.dependentsImpact || [],
       lastLeanPaneManifest?.items || []
     );
-    if (dependents.length === 0) return null;
+    if (dependents.length === 0 && !result.ownResult?.executionMessage) return null;
 
     const container = document.createElement("div");
     container.className = "ol-lean-project-impact-note";
+    if (result.ownResult?.executionMessage) {
+      const execution = document.createElement("p");
+      execution.textContent = result.ownResult.executionMessage;
+      container.appendChild(execution);
+    }
+    if (dependents.length === 0) return container;
     const heading = document.createElement("p");
     const stillBroken = leanPaneView.stillBrokenDependents(dependents);
     const stillBrokenSet = new Set(stillBroken);
@@ -5066,8 +5119,9 @@
     }
   }
 
-  function startChatPolling(delayMs = (pushConnected ? LEAN_PANE_CHAT_POLL_RECONCILE_MS : LEAN_PANE_POLL_DELAY_MS)) {
+  function startChatPolling(delayMs = 5000) {
     clearTimeout(leanPaneChatPollTimer);
+    if (document.hidden || !leanPaneChatPanel) return;
     leanPaneChatPollTimer = setTimeout(() => {
       // pollChatSession handles its own transient errors; the catch is a
       // last-resort guard against an unexpected synchronous throw.
@@ -5076,7 +5130,7 @@
   }
 
   async function pollChatSession() {
-    if (!leanPaneChatSessionId) return;
+    if (!leanPaneChatSessionId || !leanPaneChatPanel || document.hidden) return;
     const token = leanPaneChatToken;
     let payload = null;
     try {
@@ -5112,6 +5166,7 @@
         leanPaneChatSending = false;
         // A finished chat run may have changed the item's artifact/status.
         if (wasRunning) refreshLeanPaneNow({ background: true }).catch(() => {});
+        if (payload.leanCheckRuntimePolling) startChatPolling();
       }
     } else {
       // Adapter reachable but reporting unavailable mid-run: surface it and
@@ -5180,6 +5235,13 @@
     closeButton.addEventListener("click", closeLeanPaneChat);
     header.appendChild(closeButton);
     panel.appendChild(header);
+    if (leanPaneChatResponse?.leanCheckRuntimeMessage) {
+      const runtime = document.createElement("div");
+      runtime.className = "ol-lean-chat-source";
+      runtime.setAttribute("role", "status");
+      runtime.textContent = leanPaneChatResponse.leanCheckRuntimeMessage;
+      panel.appendChild(runtime);
+    }
 
     if (item.sourceFile) {
       const source = document.createElement("p");
@@ -5211,6 +5273,17 @@
       if (leanPaneChatSending) transcript.appendChild(chatNotice("Lea is working…"));
       // Self-repair: the last completed run's downstream impact (companion
       // Phase 1 post-run cascade) -- broken dependents + one repair action.
+      for (const diagnostic of leanPaneChatResponse?.leanCheckDiagnostics || []) {
+        const row = document.createElement("details");
+        row.className = "ol-lean-chat-source";
+        const summary = document.createElement("summary");
+        summary.textContent = `${diagnostic.executionMessage || diagnostic.title || diagnostic.message}${diagnostic.context?.path ? ` · ${diagnostic.context.path}` : ""}`;
+        row.appendChild(summary);
+        const body = document.createElement("pre");
+        body.textContent = diagnostic.detail || JSON.stringify(diagnostic.context?.execution || diagnostic.context?.failure || {}, null, 2);
+        row.appendChild(body);
+        transcript.appendChild(row);
+      }
       const impactNotice = renderChatRunImpactNotice(leanPaneChatResponse?.lastRunImpact);
       if (impactNotice) transcript.appendChild(impactNotice);
     }

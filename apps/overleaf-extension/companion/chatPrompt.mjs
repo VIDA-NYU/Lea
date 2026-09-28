@@ -1,3 +1,4 @@
+import { runtimeNeedsPolling, runtimeStatusMessage, checkExecutionMessage } from "../../lea-standalone/src/app/lib/leanCheckRuntime.mjs";
 // Pure, side-effect-free helpers for the Lean-pane chat mirror.
 //
 // The mirror is a thin Overleaf-native view of the same adapter-backed session
@@ -213,7 +214,14 @@ export function toChatSessionResponse(detail = {}, { targetKey = null, leaSessio
     status: status || detail.status || "unknown",
     messages,
     runs,
-    activeRun
+    activeRun,
+    leanCheckRuntime: detail.lean_check_runtime || null,
+    leanCheckRuntimeMessage: runtimeStatusMessage(detail.lean_check_runtime),
+    leanCheckRuntimePolling: runtimeNeedsPolling(detail.lean_check_runtime, Boolean(activeRun)),
+    leanCheckDiagnostics: (detail.diagnostics || []).filter((d) => d.code?.startsWith("lean.")).slice(-50).map((d) => ({
+      ...d,
+      executionMessage: checkExecutionMessage(d.context?.execution, d.context?.check_status)
+    }))
   };
 }
 

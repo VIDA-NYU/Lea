@@ -6,6 +6,9 @@
 
 import type {
   ApprovalDecision,
+  LeanCheckExecution,
+  LeanCheckRuntime,
+  Diagnostic,
   SessionSummary,
   SessionStatus,
   ChatMessage,
@@ -951,11 +954,17 @@ export async function writeSessionFile(
   return response.json();
 }
 
+export async function fetchLeanCheckRuntime(sessionId: string, signal?: AbortSignal): Promise<LeanCheckRuntime> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/lean-check-runtime`, { signal });
+  if (!response.ok) return { state: 'unavailable' };
+  return response.json();
+}
+
 export async function leanCheckSession(
   sessionId: string,
   path?: string,
   formalizationId?: string,
-): Promise<{ path: string; status: 'ok' | 'error'; detail?: string | null }> {
+): Promise<{ path: string; status: 'ok' | 'error'; detail?: string | null; execution?: LeanCheckExecution; diagnostics?: Diagnostic[]; lean_check_runtime?: LeanCheckRuntime }> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/lean-check`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

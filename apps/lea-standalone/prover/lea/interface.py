@@ -71,7 +71,7 @@ __all__ = [
 ]
 
 
-def check(path: str, *, cold: bool = False) -> CheckResult:
+def check(path: str, *, cold: bool = False, allow_cold: bool = True) -> CheckResult:
     """Run `lean_check` on a file and return a structured verdict.
 
     No agent run. Uses the same output classifiers as the agent's live CheckResult
@@ -92,12 +92,15 @@ def check(path: str, *, cold: bool = False) -> CheckResult:
     it relies instead on `tools.rebuild_module`'s `lsp_daemon.mark_stale` call
     (see that function's docstring), confirmed correct by the same test.
     """
-    out = lean_check_cold(path) if cold else lean_check(path)
+    out = lean_check_cold(path) if cold else (
+        lean_check(path) if allow_cold else lean_check(path, allow_cold=False)
+    )
     err = _lean_check_has_error(out)
     return CheckResult(
         path,
         "error" if err else "ok",
         _first_error_line(out) if err else None,
+        execution=getattr(out, "execution", None),
     )
 
 

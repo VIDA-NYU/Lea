@@ -1789,7 +1789,7 @@ test("lean pane manifest uses adapter ledger content for formalized jobs without
   assert.match(res.body.items[0].leanStub, /theorem compactness_criterion : True/);
   assert.match(res.body.items[0].leanArtifactContent, /trivial/);
   assert.match(res.body.items[0].leanArtifactPath, /Compactness\.lean/);
-  assert.ok(!calls.some((call) => String(call.url).includes("/api/sessions/sess-formalized")));
+  assert.ok(!calls.some((call) => new URL(call.url).pathname === "/api/sessions/sess-formalized"));
 });
 
 test("lean pane manifest degrades when Lea lookup is unavailable", async () => {

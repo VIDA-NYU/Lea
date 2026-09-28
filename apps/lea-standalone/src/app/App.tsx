@@ -560,7 +560,15 @@ export default function App() {
       }
       throw err;
     }
-    const result = await leanCheckSession(selectedSessionId, target, focusId);
+    useProofSession.setState({ manualCheckSessionId: selectedSessionId });
+    let result;
+    try {
+      result = await leanCheckSession(selectedSessionId, target, focusId);
+    } finally {
+      if (useProofSession.getState().manualCheckSessionId === selectedSessionId) {
+        useProofSession.setState({ manualCheckSessionId: undefined });
+      }
+    }
     await reconcile(selectedSessionId);
     await refreshSessions();
     setEditedPath(target); // after reconcile (which clears it) — surface the nudge

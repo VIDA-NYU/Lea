@@ -529,6 +529,12 @@ export function writeApiSessionFile({
 // records a *new* code_step attributed to that author -- used for
 // re-verifying a project dependent that the edit itself didn't touch. See
 // docs/PLAN-overleaf-lean-pane-manual-edit.md Phase 1/2.
+export function fetchApiLeanCheckRuntime({ fetchImpl, baseUrl, apiKey, sessionId }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/lean-check-runtime`, {
+    method: "GET", headers: buildHeaders(apiKey)
+  });
+}
+
 export function runApiSessionLeanCheck({
   fetchImpl, baseUrl, apiKey, sessionId, path, author, summary,
   formalizationId = null,

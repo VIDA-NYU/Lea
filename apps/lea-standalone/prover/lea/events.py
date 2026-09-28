@@ -73,6 +73,7 @@ class CheckResult:
     path: str
     status: str
     detail: str | None = None
+    execution: dict | None = None
 
 
 @dataclass(frozen=True)

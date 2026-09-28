@@ -547,7 +547,28 @@ export interface CodeStep {
   code: string;
 }
 
+export interface LeanCheckExecution {
+  check_id: string;
+  daemon_generation?: string | null;
+  backend: 'lsp' | 'cold' | 'none';
+  cold_reason?: 'explicit' | 'disabled' | 'no_lake_root' | 'fallback' | null;
+  failure?: { kind: string; message: string; phase?: string; [key: string]: unknown } | null;
+  attempts: number;
+  timings_ms: Record<'queue' | 'initialization' | 'lsp' | 'cold' | 'total', number>;
+}
+
+export interface LeanCheckRuntime {
+  runtime_id?: string;
+  generation?: string | null;
+  state: 'idle' | 'starting' | 'ready' | 'recovering' | 'degraded' | 'disabled' | 'unavailable';
+  active_cold_checks?: number;
+  retry_after_ms?: number;
+  last_failure?: { kind: string; message: string; [key: string]: unknown } | null;
+  episode_id?: string | null;
+}
+
 export interface StatusEvent {
+  execution?: LeanCheckExecution | null;
   id: string;
   session_id?: string;
   run_id?: string;
@@ -685,6 +706,7 @@ export interface Diagnostic {
 }
 
 export interface SessionDetail extends SessionSummary {
+  lean_check_runtime?: LeanCheckRuntime;
   messages: ChatMessage[];
   code_steps: CodeStep[];
   /** Persisted failures for this session, in timeline order (G1). */

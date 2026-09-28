@@ -20,8 +20,7 @@ from .runctx import current_config, current_depth, current_working_dir
 
 # Cold `lake env lean <file>` fallback: caps concurrent full-Mathlib compiles
 # (each ~GBs resident). Not a correctness bound — a memory one.
-_COLD_CHECK_CONCURRENCY = max(1, int(os.environ.get("LEA_COLD_CHECK_CONCURRENCY", "2")))
-_cold_check_sem = threading.BoundedSemaphore(_COLD_CHECK_CONCURRENCY)
+from .lean_checks import _COLD_CHECK_CONCURRENCY, _cold_check_sem
 
 # `lake build` writes the shared workspace's `.lake` artifacts; two concurrent
 # builds against one lake_root race on them (a documented non-goal). One lock
@@ -352,7 +351,7 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
     return "OK"
 
 
-def lean_check(path: str, *, use_lsp: bool = True) -> str:
+def lean_check(path: str, *, use_lsp: bool = True, allow_cold: bool = True) -> str:
     p = _run_relative_path(path)
     roots = _readable_roots()
     if roots is not None and not _within(p, roots):
@@ -362,71 +361,9 @@ def lean_check(path: str, *, use_lsp: bool = True) -> str:
         )
     if not p.exists():
         return f"Error: {p} does not exist."
-
-    lake_root = _find_lake_root(str(p))
-
-    # Fast path: persistent LSP daemon (keeps Mathlib oleans warm). ~420×
-    # speedup on in-place edits. See lea/lsp_daemon.py and tests/lsp/.
-    #
-    # `use_lsp=False` skips this deliberately (see `lean_check_cold` below):
-    # the daemon caches every module it has ever imported for the life of its
-    # process, so a check through it can silently resolve an `import` against
-    # a stale in-memory copy even after a real `lake build` (`rebuild_module`,
-    # below) refreshed that module's `.olean` on disk from a *different*
-    # process.
-    #
-    # CAUTION: a live end-to-end test (tests/lsp/test_cascade_rename_integration.py)
-    # found that `use_lsp=False` -- i.e. the plain `lake env lean <file>`
-    # subprocess below -- does NOT reliably see a just-rebuilt project-local
-    # module's fresh `.olean` either, unlike restarting the daemon (which does).
-    # This is a real Lean/Lake behavior difference still under investigation,
-    # not something to rely on for correctness yet. The Overleaf lean pane's
-    # cascade re-check of a dependent (routes/sessions.py) does NOT use this --
-    # it relies on `rebuild_module`'s `lsp_daemon.mark_stale` call instead,
-    # confirmed correct by the same test. See
-    # docs/FEATURE-overleaf-lean-pane-manual-edit.md ("Cascade verification").
-    if use_lsp and lake_root and not os.environ.get("LEA_DISABLE_LSP"):
-        try:
-            from lea.lsp_daemon import check_via_lsp
-            return check_via_lsp(str(p), p.read_text(), lake_root)
-        except Exception as exc:  # noqa: BLE001 — fall through to subprocess
-            # C4: the fallback is CORRECT but ~440x slower (~0.2s -> ~88s per check,
-            # a cold Mathlib elaboration). Silently, this looked like the agent
-            # thinking for a minute and a half, repeatedly, with no way for the user
-            # to know the fast path was gone. `once=True`: the daemon being down is
-            # one ongoing condition, not one fact per check.
-            from lea import diagnostics
-            diagnostics.report(
-                "degraded", "lean.lsp_cold_fallback",
-                f"The Lean language-server daemon is unavailable ({type(exc).__name__}); "
-                "falling back to full compiles.",
-                source="lean_check", once=True, path=str(p),
-            )
-
-    if lake_root:
-        cmd = ["lake", "env", "lean", str(p)]
-        cwd = lake_root
-    else:
-        cmd = ["lean", str(p)]
-        cwd = str(p.parent)
-
-    timeout = int(os.environ.get("LEAN_CHECK_TIMEOUT", "900"))
-    # Semaphore-bound: this cold compile loads a full Mathlib. Under concurrent
-    # runs a single daemon hiccup would otherwise let every run spawn one at
-    # once (D74 / item 6). Held across the whole compile so waiters queue.
-    with _cold_check_sem:
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd
-            )
-            output = (result.stdout + "\n" + result.stderr).strip()
-            if result.returncode == 0 and not output:
-                return "OK — no errors, no warnings."
-            return output if output else f"Exit code {result.returncode} (no output)."
-        except subprocess.TimeoutExpired:
-            return f"Error: lean timed out after {timeout}s."
-        except FileNotFoundError:
-            return "Error: `lean` or `lake` not found. Is Lean 4 installed?"
+    from .lean_checks import check_file
+    return check_file(p, _find_lake_root(str(p)), use_lsp=use_lsp,
+                      allow_cold=allow_cold).text()
 
 
 def lean_check_cold(path: str) -> str:

@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import re
+from queue import Queue
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
@@ -167,6 +168,7 @@ def session_detail(session_id: str) -> dict:
         **detail,
         "formalizations": items,
         "formalization_summary": formalization_service.summary(items),
+        "lean_check_runtime": lean_check_runtime(session_id),
         "latest_focus_formalization_id": (
             focused_runs[-1]["focus_formalization_id"] if focused_runs else None
         ),
@@ -367,6 +369,22 @@ def write_file_session(session_id: str, request: FileWriteRequest) -> dict:
     }
 
 
+@router.get("/api/sessions/{session_id}/lean-check-runtime")
+def lean_check_runtime(session_id: str) -> dict:
+    """Read current shared-server health without starting Lean or creating files."""
+    from lea.lsp_daemon import runtime_snapshot
+    from lea.tools import _find_lake_root
+    session = store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    config = load_config()
+    if config.lea_root is None:
+        return {"state": "unavailable"}
+    project = store.get_project(session["project_id"]) if session.get("project_id") else None
+    repo = projects.repo_for_session(session, config.lea_root / "workspace" / "proofs", project)
+    return runtime_snapshot(_find_lake_root(str(repo / "Runtime.lean")))
+
+
 @router.post("/api/sessions/{session_id}/lean-check")
 def lean_check_session(session_id: str, request: PathRequest) -> dict:
     """Standalone `lean_check` on a session's working file (LSP fast path, no run,
@@ -399,7 +417,21 @@ def lean_check_session(session_id: str, request: PathRequest) -> dict:
     formalization_id = _validated_formalization_id(
         session_id, request.formalization_id
     )
-    result = interface_check(abs_path)
+    from lea import diagnostics
+    from ..bridge import diagnose
+    recorded = []
+    def record_diagnostic(event):
+        recorded.append(diagnose(Queue(), session_id, None, event.severity, event.code,
+                                 event.message, source=event.source, remedy=event.remedy,
+                                 **{**event.context, "path": rel}))
+    token = diagnostics.begin_scope(sink=record_diagnostic)
+    try:
+        result = (interface_check(abs_path, allow_cold=False) if request.author == "cascade"
+                  else interface_check(abs_path))
+    finally:
+        diagnostics.end_scope(token)
+    evidence = {"execution": result.execution, "diagnostics": recorded,
+                "lean_check_runtime": lean_check_runtime(session_id)}
     artifact_kind = classify_lean_artifact(Path(abs_path).read_text()) if result.status == "ok" else None
     session_step = store.latest_code_step_for_path(session_id, rel)
     current_snapshot = (
@@ -438,6 +470,7 @@ def lean_check_session(session_id: str, request: PathRequest) -> dict:
             formalization_id=formalization_id or step.get("formalization_id"),
         )
         return {
+            **evidence,
             "path": rel,
             "status": result.status,
             "detail": result.detail,
@@ -447,6 +480,7 @@ def lean_check_session(session_id: str, request: PathRequest) -> dict:
     if step:
         store.set_code_step_check(step["id"], result.status, result.detail, artifact_kind=artifact_kind)
     return {
+        **evidence,
         "path": rel,
         "status": result.status,
         "detail": result.detail,

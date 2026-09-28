@@ -1130,7 +1130,7 @@ def _subagent_progress_payload(child_id: str, result_id: str, inner) -> dict | N
     if isinstance(inner, ToolCalled):
         return {**base, "kind": "tool", "tool": inner.name}
     if isinstance(inner, CheckResult):
-        return {**base, "kind": "check", "status": inner.status}
+        return {**base, "kind": "check", "status": inner.status, "execution": inner.execution}
     if isinstance(inner, Finished):
         return {**base, "kind": "finished", "reason": inner.reason}
     return None
@@ -1193,7 +1193,7 @@ def _forward_to_child_broker(broker, inner, started: dict) -> None:
         emit(broker, "status", {"status": "tool_call", "message": f"Running {inner.name}", "turn": None})
     elif isinstance(inner, CheckResult):
         emit(broker, "status", {"status": "lean_check", "check_status": inner.status,
-                                "check_detail": inner.detail})
+                                "check_detail": inner.detail, "execution": inner.execution})
 
 
 def _subagent_error(ev: SubagentFinished) -> str | None:
@@ -2063,6 +2063,7 @@ def run_lea(context: RunnerContext) -> None:
                 emit(events, "status", {
                     "status": "lean_check", "message": f"lean_check: {ev.status}",
                     "turn": current_turn, "check_status": ev.status, "check_detail": ev.detail,
+                    "execution": ev.execution,
                 })
 
             elif isinstance(ev, UsageUpdated):

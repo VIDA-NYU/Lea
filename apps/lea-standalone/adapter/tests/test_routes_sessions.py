@@ -90,7 +90,7 @@ def test_lean_check_backfills_verdict_onto_the_step(tmp_path, monkeypatch):
     session, _ = _seed_session_with_code(tmp_path)  # seeds a step with check_status="ok"
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
     monkeypatch.setattr(sessions_route, "interface_check",
-                        lambda p, cold=False: CheckResult(p, "error", "p.lean:2:0: error: boom"))
+                        lambda p, cold=False, allow_cold=True: CheckResult(p, "error", "p.lean:2:0: error: boom"))
 
     result = sessions_route.lean_check_session(session["id"], PathRequest(path="Lea/Misc/p.lean"))
 
@@ -112,7 +112,7 @@ def test_lean_check_with_author_records_a_new_cascade_step_instead_of_backfillin
     session, code = _seed_session_with_code(tmp_path)  # seeds one step, check_status="ok"
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
     monkeypatch.setattr(sessions_route, "interface_check",
-                        lambda p, cold=False: CheckResult(p, "error", "p.lean:3:0: error: unknown identifier"))
+                        lambda p, cold=False, allow_cold=True: CheckResult(p, "error", "p.lean:3:0: error: unknown identifier"))
 
     result = sessions_route.lean_check_session(
         session["id"],
@@ -149,22 +149,22 @@ def test_lean_check_with_cascade_author_uses_the_warm_path_not_cold(tmp_path, mo
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
     calls = []
 
-    def _fake_check(p, cold=False):
-        calls.append(cold)
+    def _fake_check(p, cold=False, allow_cold=True):
+        calls.append((cold, allow_cold))
         return CheckResult(p, "ok", None)
 
     monkeypatch.setattr(sessions_route, "interface_check", _fake_check)
 
     sessions_route.lean_check_session(session["id"], PathRequest(path="Lea/Misc/p.lean", author="cascade"))
-    assert calls == [False]
+    assert calls == [(False, False)]
 
     calls.clear()
     sessions_route.lean_check_session(session["id"], PathRequest(path="Lea/Misc/p.lean"))
-    assert calls == [False]
+    assert calls == [(False, True)]
 
     calls.clear()
     sessions_route.lean_check_session(session["id"], PathRequest(path="Lea/Misc/p.lean", author="user"))
-    assert calls == [False]  # every author uses the same (warm) path
+    assert calls == [(False, True)]  # every author uses the same (warm) path
 
 
 def test_lean_check_without_author_still_backfills_as_before(tmp_path, monkeypatch):
@@ -174,7 +174,7 @@ def test_lean_check_without_author_still_backfills_as_before(tmp_path, monkeypat
     db.init_db()
     session, _ = _seed_session_with_code(tmp_path)
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
-    monkeypatch.setattr(sessions_route, "interface_check", lambda p, cold=False: CheckResult(p, "ok", None))
+    monkeypatch.setattr(sessions_route, "interface_check", lambda p, cold=False, allow_cold=True: CheckResult(p, "ok", None))
 
     result = sessions_route.lean_check_session(session["id"], PathRequest(path="Lea/Misc/p.lean"))
 
@@ -599,7 +599,7 @@ def test_escaping_path_is_refused_before_a_cascade_step_is_written(tmp_path, mon
     session, _ = _seed_session_with_code(tmp_path)
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
     monkeypatch.setattr(sessions_route, "interface_check",
-                        lambda p, cold=False: CheckResult(p, "ok", None))
+                        lambda p, cold=False, allow_cold=True: CheckResult(p, "ok", None))
 
     with pytest.raises(HTTPException) as ei:
         sessions_route.lean_check_session(
@@ -617,7 +617,7 @@ def test_a_legitimate_path_still_resolves_and_normalizes(tmp_path, monkeypatch):
     session, _ = _seed_session_with_code(tmp_path)
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
     monkeypatch.setattr(sessions_route, "interface_check",
-                        lambda p, cold=False: CheckResult(p, "ok", None))
+                        lambda p, cold=False, allow_cold=True: CheckResult(p, "ok", None))
 
     plain = sessions_route.lean_check_session(session["id"], PathRequest(path="Lea/Misc/p.lean"))
     noisy = sessions_route.lean_check_session(
@@ -626,3 +626,39 @@ def test_a_legitimate_path_still_resolves_and_normalizes(tmp_path, monkeypatch):
 
     assert plain["path"] == noisy["path"] == "Lea/Misc/p.lean"
     assert store.latest_code_step_for_path(session["id"], "Lea/Misc/p.lean")["check_status"] == "ok"
+
+
+def test_lean_runtime_read_does_not_start_server_or_create_files(tmp_path, monkeypatch):
+    from lea import lsp_daemon
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'test.sqlite3')
+    db.init_db()
+    session = store.create_session('Runtime')
+    monkeypatch.setattr(sessions_route, 'load_config', _config_for(tmp_path))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('runtime reads must not start Lean')
+    monkeypatch.setattr(lsp_daemon.LeanDaemon, 'start', forbidden)
+    before = set(tmp_path.rglob('*'))
+    assert sessions_route.lean_check_runtime(session['id'])['state'] in {'idle', 'disabled'}
+    assert set(tmp_path.rglob('*')) == before
+
+
+def test_manual_check_persists_execution_and_transition_diagnostics(tmp_path, monkeypatch):
+    from lea import diagnostics
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'test.sqlite3')
+    db.init_db()
+    session, _ = _seed_session_with_code(tmp_path)
+    monkeypatch.setattr(sessions_route, 'load_config', _config_for(tmp_path))
+    execution = {'check_id': 'manual', 'backend': 'cold', 'cold_reason': 'fallback', 'attempts': 2,
+                 'failure': {'kind': 'transport', 'message': 'broken pipe'}, 'timings_ms': {'total': 123}}
+    def check(path):
+        diagnostics.report('degraded', 'lean.lsp_cold_fallback', 'Checking with full compilation',
+                           path=path, episode_id='outage', failure=execution['failure'])
+        diagnostics.report('notice', 'lean.check_execution', 'Lean check finished', execution=execution)
+        return CheckResult(path, 'ok', execution=execution)
+    monkeypatch.setattr(sessions_route, 'interface_check', check)
+    result = sessions_route.lean_check_session(session['id'], PathRequest(path='Lea/Misc/p.lean'))
+    assert result['execution'] == execution
+    stored = store.session_detail(session['id'])['diagnostics']
+    assert [d['code'] for d in stored] == ['lean.lsp_cold_fallback', 'lean.check_execution']
+    assert 'broken pipe' in stored[0]['detail']
+    assert stored[1]['context']['execution'] == execution
