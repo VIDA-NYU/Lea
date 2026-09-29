@@ -193,6 +193,8 @@ def _list_sessions(
                 coalesce(sum(r.output_tokens), 0) as output_tokens,
                 coalesce(sum(r.input_tokens + r.output_tokens), 0) as total_tokens,
                 coalesce(sum(r.cost_usd), 0) as cost_usd,
+                coalesce(sum(case when r.usage_status in ('pending', 'partial') then 1 else 0 end), 0) as incomplete_usage_runs,
+                coalesce(sum(case when r.id is not null and (r.usage_status is null or r.usage_status = 'unknown') then 1 else 0 end), 0) as unconfirmed_usage_runs,
                 count(distinct r.id) as run_count,
                 (
                     select count(*)
@@ -393,9 +395,9 @@ def create_run(
             """
             insert into runs (
                 id, session_id, project_id, status, autonomous, model, provider,
-                max_turns, focus_formalization_id, focus_source_hash, purpose, created_at, updated_at
+                max_turns, focus_formalization_id, focus_source_hash, purpose, usage_status, created_at, updated_at
             )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
             """,
             (
                 run_id, session_id, project_id, "pending",
@@ -855,9 +857,9 @@ def create_run_bundle(
             """
             insert into runs (
                 id, session_id, project_id, status, autonomous, model, provider,
-                max_turns, focus_formalization_id, focus_source_hash, purpose, allow_source_pause,
+                max_turns, focus_formalization_id, focus_source_hash, purpose, allow_source_pause, usage_status,
                 created_at, updated_at
-            ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
             """,
             (
                 run_id, session_id, project_id, 1 if autonomous else 0,
@@ -2276,6 +2278,7 @@ def update_run(
     result_detail: str | None = None,
     stop_reason: str | None = None,
     recoverable: bool | None = None,
+    usage_status: str | None = None,
 ) -> None:
     now = utc_now()
     with connect() as conn:
@@ -2291,16 +2294,57 @@ def update_run(
                 input_tokens = coalesce(?, input_tokens),
                 output_tokens = coalesce(?, output_tokens),
                 cost_usd = coalesce(?, cost_usd),
+                usage_status = coalesce(?, usage_status),
+                usage_updated_at = case when ? is not null then ? else usage_updated_at end,
                 updated_at = ?
             where id = ?
             """,
             (
                 status, final_text, result_kind, result_detail, stop_reason,
                 None if recoverable is None else (1 if recoverable else 0),
-                input_tokens, output_tokens, cost_usd, now, run_id,
+                input_tokens, output_tokens, cost_usd, usage_status,
+                usage_status, now, now, run_id,
             ),
         )
     _bump_sessions_changed()
+
+
+def record_stop_request(run_id: str, reason: str, source: str) -> dict | None:
+    """First accepted active-run stop cause wins; terminal runs stay terminal."""
+    now = utc_now()
+    with write() as conn:
+        conn.execute("""update runs set stop_requested_reason = ?, stop_requested_by = ?,
+                    stop_requested_at = ?, updated_at = ?
+                    where id = ? and status in ('pending', 'running')
+                      and stop_requested_reason is null""",
+                     (reason, source, now, now, run_id))
+        row = conn.execute("select * from runs where id = ?", (run_id,)).fetchone()
+    if row:
+        _bump_sessions_changed()
+    return _normalize_run(row_to_dict(row)) if row else None
+
+
+def checkpoint_run_usage(run_id: str, input_tokens: int, output_tokens: int,
+                         cost_usd: float, revision: int) -> bool:
+    """Replace one run's cumulative observation; stale checkpoints cannot regress it."""
+    now = utc_now()
+    with connect() as conn:
+        cursor = conn.execute("""update runs set input_tokens = ?, output_tokens = ?,
+                    cost_usd = ?, usage_status = 'partial', usage_revision = ?,
+                    usage_updated_at = ?, updated_at = ?
+                    where id = ? and status = 'running' and usage_revision < ?""",
+                    (input_tokens, output_tokens, cost_usd, revision, now, now, run_id, revision))
+    if cursor.rowcount:
+        _bump_sessions_changed()
+    return cursor.rowcount > 0
+
+
+def mark_run_usage_unknown(run_id: str) -> None:
+    """A crashed run retains checkpoints; absent accounting stays explicitly unknown."""
+    with connect() as conn:
+        conn.execute("""update runs set usage_status = case
+                    when usage_revision > 0 then 'partial' else 'unknown' end
+                    where id = ? and usage_status != 'final'""", (run_id,))
 
 
 def fail_pending_run(run_id: str, detail: str) -> bool:
@@ -2313,10 +2357,12 @@ def fail_pending_run(run_id: str, detail: str) -> bool:
     can win."""
     with connect() as conn:
         cursor = conn.execute(
-            "update runs set status = 'failed', result_kind = coalesce(result_kind, 'failed'),"
-            " result_detail = coalesce(result_detail, ?), updated_at = ?"
+            "update runs set status = 'cancelled', result_kind = coalesce(result_kind, 'cancelled'),"
+            " result_detail = coalesce(result_detail, ?), stop_reason = stop_requested_reason,"
+            " recoverable = 1, usage_status = 'final', usage_revision = usage_revision + 1,"
+            " usage_updated_at = ?, updated_at = ?"
             " where id = ? and status = 'pending'",
-            (detail, utc_now(), run_id),
+            (detail, utc_now(), utc_now(), run_id),
         )
     _bump_sessions_changed()
     return cursor.rowcount > 0
@@ -2351,6 +2397,7 @@ def fail_stale_active_runs() -> int:
             """
             update runs
             set status = 'failed',
+                usage_status = case when usage_revision > 0 then 'partial' else 'unknown' end,
                 result_kind = coalesce(result_kind, 'failed'),
                 result_detail = coalesce(result_detail, ?),
                 updated_at = ?
@@ -2642,7 +2689,11 @@ def get_run_status(run_id: str) -> dict | None:
     detail there was a self-inflicted DB-contention source under concurrency."""
     with connect() as conn:
         row = conn.execute(
-            "select id, status, result_kind, result_detail from runs where id = ?",
+            """select id, status, result_kind, result_detail, stop_reason,
+                      stop_requested_reason, stop_requested_at, stop_requested_by,
+                      recoverable, input_tokens, output_tokens, cost_usd,
+                      usage_status, usage_revision, usage_updated_at
+               from runs where id = ?""",
             (run_id,),
         ).fetchone()
     return row_to_dict(row) if row else None
@@ -3991,7 +4042,9 @@ def global_usage() -> dict:
                   + (select coalesce(sum(output_tokens), 0) from formalize_batch_reports) as output_tokens,
                 (select coalesce(sum(cost_usd), 0) from runs)
                   + (select coalesce(sum(cost_usd), 0) from alignment_checks)
-                  + (select coalesce(sum(cost_usd), 0) from formalize_batch_reports) as cost_usd
+                  + (select coalesce(sum(cost_usd), 0) from formalize_batch_reports) as cost_usd,
+                (select count(*) from runs where usage_status in ('pending', 'partial')) as incomplete_usage_runs,
+                (select count(*) from runs where usage_status is null or usage_status = 'unknown') as unconfirmed_usage_runs
             """
         ).fetchone()
     data = row_to_dict(row)
@@ -4008,6 +4061,8 @@ def global_usage() -> dict:
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
         "cost_usd": cost_usd,
+        "incomplete_usage_runs": int(data["incomplete_usage_runs"] or 0),
+        "unconfirmed_usage_runs": int(data["unconfirmed_usage_runs"] or 0),
         "average_tokens_per_session": round(total_tokens / session_count) if session_count else 0,
         "average_cost_per_session": cost_usd / session_count if session_count else 0,
         "average_messages_per_session": round(message_count / session_count) if session_count else 0,
@@ -4203,6 +4258,8 @@ def _normalize_usage_session(row: dict) -> dict:
     for key in ("input_tokens", "output_tokens", "total_tokens", "message_count", "run_count", "duration_seconds"):
         row[key] = int(row.get(key) or 0)
     row["cost_usd"] = float(row.get("cost_usd") or 0)
+    row["incomplete_usage_runs"] = int(row.get("incomplete_usage_runs") or 0)
+    row["unconfirmed_usage_runs"] = int(row.get("unconfirmed_usage_runs") or 0)
     row["started_at"] = row.get("started_at")
     row["ended_at"] = row.get("ended_at")
     return row

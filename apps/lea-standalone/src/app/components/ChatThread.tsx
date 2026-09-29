@@ -186,6 +186,7 @@ export function ChatThread({
   const runStatus = useProofSession((s) => s.runStatus);
   const runStatusById = useProofSession((s) => s.runStatusById);
   const runResultKindById = useProofSession((s) => s.runResultKindById);
+  const runStopReasonById = useProofSession((s) => s.runStopReasonById);
   const runFocusById = useProofSession((s) => s.runFocusById);
   const formalizations = useProofSession((s) => s.formalizations);
   const formalizationScope = useProofSession((s) => s.formalizationScope);
@@ -399,6 +400,8 @@ export function ChatThread({
     },
     [runResultKindById],
   );
+  const stopReasons = Object.values(runStopReasonById);
+  const latestStopReason = stopReasons.length ? stopReasons[stopReasons.length - 1] : undefined;
   const headChip = isRunning
     ? { cls: 'run', text: '● proving' }
     : (session?.status === 'needs_review' || formalizations.some((item) =>
@@ -421,7 +424,8 @@ export function ChatThread({
     : runStatus === 'failed' || runStatus === 'max_turns'
     ? { cls: 'fail', text: '✕ unproved' }
     : runStatus === 'cancelled'
-    ? { cls: 'fail', text: '◼ stopped' }
+    ? { cls: 'fail', text: latestStopReason === 'timeout' ? '◼ time limit reached'
+      : latestStopReason === 'user_stop' ? '◼ stopped by user' : '◼ stopped' }
     : null;
 
   // M18: show "Lea is thinking…" whenever a run is live and Lea isn't currently

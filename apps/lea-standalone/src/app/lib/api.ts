@@ -1060,6 +1060,8 @@ interface UsageGlobals {
   output_tokens: number;
   total_tokens: number;
   cost_usd: number;
+  incomplete_usage_runs?: number;
+  unconfirmed_usage_runs?: number;
   average_tokens_per_session: number;
   average_cost_per_session: number;
   average_messages_per_session: number;

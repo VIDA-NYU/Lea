@@ -587,6 +587,40 @@ def test_request_stop_flag_reaches_the_run(tmp_path, monkeypatch):
     assert ctx.run_id not in bridge._stop_events
 
 
+def test_timeout_keeps_observed_usage_and_real_stop_cause(tmp_path, monkeypatch):
+    ctx, queue = _context(tmp_path, monkeypatch)
+    def fake(config, messages, *, session_id=None, **kwargs):
+        yield TurnStarted(1)
+        yield UsageUpdated(100, 20, 0.037)
+        bridge.request_stop(ctx.run_id, reason="timeout", source="companion")
+        yield Finished("interrupted", "Run stopped at a turn boundary.", 1,
+                       session_id, "gemini/test", Usage(100, 20), 0.037, {"messages": []})
+    monkeypatch.setattr(bridge, "run_events", fake)
+    bridge.run_lea(ctx)
+    row = store.get_run(ctx.run_id)
+    assert row["status"] == "cancelled"
+    assert row["stop_reason"] == "timeout"
+    assert row["usage_status"] == "final"
+    assert row["usage_revision"] == 1
+    assert row["cost_usd"] == pytest.approx(0.037)
+    done = _drain(queue)[-1]["payload"]
+    assert done["stop_reason"] == "timeout"
+    assert done["cost_usd"] == pytest.approx(0.037)
+
+
+def test_crash_retains_usage_checkpoint(tmp_path, monkeypatch):
+    ctx, _queue = _context(tmp_path, monkeypatch)
+    def fake(config, messages, **kwargs):
+        yield UsageUpdated(50, 7, 0.012)
+        raise RuntimeError("provider disconnected")
+    monkeypatch.setattr(bridge, "run_events", fake)
+    bridge.run_lea(ctx)
+    row = store.get_run(ctx.run_id)
+    assert row["status"] == "failed"
+    assert row["usage_status"] == "partial"
+    assert row["cost_usd"] == pytest.approx(0.012)
+
+
 def test_gate_policy_gates_only_impactful_tools():
     bridge._session_allowlists.pop("sess-gate", None)
     gate = bridge._make_gate("sess-gate")
@@ -1428,7 +1462,7 @@ def test_a_supersede_is_requested_once_per_incumbent(tmp_path, monkeypatch):
     db.init_db()
     monkeypatch.setattr(runregistry, "registry", RunRegistry(max_concurrent=4))
     stops = []
-    monkeypatch.setattr(bridge, "request_stop", lambda run_id: stops.append(run_id))
+    monkeypatch.setattr(bridge, "request_stop", lambda run_id, **_kw: stops.append(run_id))
 
     session = store.create_session("S")
     incumbent = store.create_run(session["id"], "gemini/test", None, 3)

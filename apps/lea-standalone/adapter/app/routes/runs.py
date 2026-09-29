@@ -80,6 +80,11 @@ class ApprovalDecisionRequest(BaseModel):
     decision: str
 
 
+class InterruptRequest(BaseModel):
+    reason: str = "user_stop"
+    source: str = "user"
+
+
 def sse(event_type: str, payload: dict, seq: int | None = None) -> str:
     # A monotonic `id:` lets the browser's native EventSource reconnect resume via
     # `Last-Event-ID` (no re-replay). Manual reattach omits it and replays from 0.
@@ -109,6 +114,9 @@ def _done_payload(run: dict) -> dict:
     if run.get("stop_reason"):
         payload["stop_reason"] = run["stop_reason"]
     payload["recoverable"] = bool(run.get("recoverable"))
+    for key in ("stop_requested_reason", "input_tokens", "output_tokens", "cost_usd",
+                "usage_status", "usage_revision", "usage_updated_at"):
+        payload[key] = run.get(key)
     return payload
 
 
@@ -307,13 +315,23 @@ def resolve_approval(run_id: str, approval_id: str, request: ApprovalDecisionReq
 
 
 @router.post("/api/runs/{run_id}/interrupt")
-def interrupt_run(run_id: str) -> dict:
+def interrupt_run(run_id: str, request: InterruptRequest | None = None) -> dict:
+    request = request or InterruptRequest()
+    if request.reason not in {"user_stop", "timeout", "superseded", "global_spend_cap", "transport_abandonment"}:
+        raise HTTPException(status_code=422, detail="Unsupported stop reason")
+    if request.source not in {"user", "companion", "adapter"}:
+        raise HTTPException(status_code=422, detail="Unsupported stop source")
     run = store.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     if run["status"] not in {"pending", "running"}:
-        raise HTTPException(status_code=409, detail="Run is not active")
-    request_stop(run_id)
+        return {"status": run["status"], "stop_reason": run.get("stop_reason"),
+                "usage_status": run.get("usage_status")}
+    accepted = bridge.request_stop(run_id, reason=request.reason, source=request.source)
+    if accepted["status"] not in {"pending", "running"}:
+        return {"status": accepted["status"], "stop_reason": accepted.get("stop_reason"),
+                "usage_status": accepted.get("usage_status")}
+    reason = accepted.get("stop_requested_reason") or request.reason
     # A queued run has no driver to read the stop flag, so the endpoint finalizes it
     # itself — atomically (AUDIT-2026-07-24 C7). This used to read the status, ask the
     # registry whether the run was active, and then write, which the dispatcher could
@@ -321,10 +339,12 @@ def interrupt_run(run_id: str) -> dict:
     # client had been told it was interrupted. `fail_pending_run` and
     # `store.claim_pending_run` (in `run_lea`) are the same conditional UPDATE from
     # opposite sides, so exactly one of them can win.
-    if store.fail_pending_run(run_id, "Interrupted before the run started."):
+    if store.fail_pending_run(run_id, "Time limit reached before the run started." if reason == "timeout"
+                              else "Interrupted before the run started."):
         bridge.publish_terminal_from_row(run_id)
-        return {"status": "interrupted"}
-    return {"status": "interrupting"}
+        return {"status": "interrupted", "stop_reason": reason, "usage_status": "final"}
+    return {"status": "interrupting", "stop_reason": reason,
+            "usage_status": accepted.get("usage_status")}
 
 
 @router.post("/api/sub-agents/{session_id}/interrupt")

@@ -467,31 +467,36 @@ export function resolveApiApproval({ fetchImpl, baseUrl, apiKey, runId, approval
   });
 }
 
-export function interruptApiRun({ fetchImpl, baseUrl, apiKey, runId }) {
+export function interruptApiRun({ fetchImpl, baseUrl, apiKey, runId, reason = "user_stop", source = "user", signal }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/runs/${encodeURIComponent(runId)}/interrupt`, {
     method: "POST",
-    headers: buildHeaders(apiKey),
+    headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ reason, source }),
+    signal,
   });
 }
 
-// Pull this run's usage/cost back off the persisted run row (no usage events on
-// the wire). Best-effort: any shape mismatch yields zeroes.
+// A run's own persisted usage is authoritative. Missing/inaccessible rows have
+// unknown accounting; a zero is confirmed only with an explicit final status.
 export async function fetchApiRunUsage({ fetchImpl, baseUrl, apiKey, sessionId, runId }) {
-  const detail = await fetchJson(fetchImpl, `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}`, {
-    method: "GET",
-    headers: buildHeaders(apiKey),
-  });
-  const empty = { usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, costUsd: 0 };
-  if (!detail.ok || !detail.body) return empty;
-  const runs = Array.isArray(detail.body.runs) ? detail.body.runs : [];
-  const run = runs.find((r) => r && r.id === runId) || null;
-  const source = run || detail.body.usage || {};
-  const inputTokens = toNonNegativeNumber(source.input_tokens ?? source.inputTokens);
-  const outputTokens = toNonNegativeNumber(source.output_tokens ?? source.outputTokens);
-  const costUsd = toNonNegativeNumber(source.cost_usd ?? source.costUsd ?? run?.cost_usd);
+  let run = await fetchApiRunRow({ fetchImpl, baseUrl, apiKey, sessionId, runId });
+  if ((!run || !Object.hasOwn(run, "cost_usd")) && sessionId) {
+    const detail = await fetchApiSessionDetail({ fetchImpl, baseUrl, apiKey, sessionId });
+    run = detail.ok && Array.isArray(detail.body?.runs)
+      ? detail.body.runs.find((candidate) => candidate?.id === runId) || run : run;
+  }
+  if (!run || !Object.hasOwn(run, "cost_usd")) {
+    return { usage: null, costUsd: null, usageStatus: "unknown", usageRevision: 0 };
+  }
+  const inputTokens = toNonNegativeNumber(run.input_tokens ?? run.inputTokens);
+  const outputTokens = toNonNegativeNumber(run.output_tokens ?? run.outputTokens);
+  const costUsd = toNonNegativeNumber(run.cost_usd ?? run.costUsd);
   return {
     usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
     costUsd,
+    usageStatus: run.usage_status || "unknown",
+    usageRevision: Number(run.usage_revision || 0),
+    usageUpdatedAt: run.usage_updated_at || null,
   };
 }
 
@@ -703,11 +708,12 @@ function waitBeforeRetry(ms, signal) {
 // A 404 for that route on an older adapter falls back to the session-detail scan so
 // a companion pointed at a pre-item-16 backend still works. Best-effort: null when
 // the adapter or the row can't be reached.
-async function fetchApiRunRow({ fetchImpl, baseUrl, apiKey, sessionId, runId }) {
+export async function fetchApiRunRow({ fetchImpl, baseUrl, apiKey, sessionId, runId, signal }) {
   if (!runId) return null;
   const res = await fetchJson(fetchImpl, `${baseUrl}/api/runs/${encodeURIComponent(runId)}`, {
     method: "GET",
     headers: buildHeaders(apiKey),
+    signal,
   });
   if (res.ok && res.body) return res.body;
   // 404 here is ambiguous: an unknown run id (nothing to fall back to), OR an old
@@ -733,6 +739,7 @@ export async function runApiProofJob({
   sessionId = null,
   maxTurns = null,
   timeoutMs = 900000,
+  settleGraceMs = 10000,
   busyRetryDelayMs = 3000,
   autoApprove = true,
   autonomous = true,
@@ -786,10 +793,12 @@ export async function runApiProofJob({
 
   const abort = new AbortController();
   let timedOut = false;
+  let interruptPromise = null;
   const timer = setTimeout(() => {
     timedOut = true;
     abort.abort();
-    interruptApiRun({ fetchImpl, baseUrl, apiKey, runId }).catch(() => {});
+    interruptPromise = interruptApiRun({ fetchImpl, baseUrl, apiKey, runId,
+                                       reason: "timeout", source: "companion" });
   }, Math.max(1, timeoutMs));
   if (typeof timer.unref === "function") timer.unref();
 
@@ -852,7 +861,8 @@ export async function runApiProofJob({
         rowMisses += 1;
         if (rowMisses >= MAX_RUN_ROW_MISSES) {
           await log("[backend] Lea run status is unavailable; giving up on this run and requesting an interrupt.\n");
-          interruptApiRun({ fetchImpl, baseUrl, apiKey, runId }).catch(() => {});
+          interruptApiRun({ fetchImpl, baseUrl, apiKey, runId,
+                            reason: "transport_abandonment", source: "companion" }).catch(() => {});
           break;
         }
       } else {
@@ -872,21 +882,40 @@ export async function runApiProofJob({
     clearTimeout(timer);
   }
 
+  let settledRow = null;
+  if (timedOut) {
+    const until = Date.now() + settleGraceMs;
+    if (interruptPromise) {
+      await Promise.race([interruptPromise, new Promise((resolve) => setTimeout(resolve, Math.min(1000, settleGraceMs)))]);
+    }
+    do {
+      settledRow = await fetchApiRunRow({ fetchImpl, baseUrl, apiKey, sessionId: newSessionId, runId,
+                                         signal: AbortSignal.timeout(Math.max(1, Math.min(3000, until - Date.now()))) });
+      if (settledRow && !["pending", "running"].includes(String(settledRow.status || "").toLowerCase())) break;
+      if (Date.now() >= until) break;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250, until - Date.now())));
+    } while (Date.now() < until);
+  }
   const usage = await fetchApiRunUsage({ fetchImpl, baseUrl, apiKey, sessionId: newSessionId, runId });
 
   if (timedOut) {
+    const terminal = settledRow && !["pending", "running"].includes(String(settledRow.status || "").toLowerCase());
+    const completed = terminal && SUCCESS_DONE_STATUS.has(String(settledRow.status).toLowerCase());
     return {
-      ok: false,
-      timedOut: true,
+      ok: Boolean(completed),
+      timedOut: !completed,
+      settling: !terminal,
       apiRunId: runId,
       sessionId: newSessionId,
-      doneStatus: outcome?.doneStatus || null,
-      resultKind: outcome?.resultKind || null,
-      resultDetail: outcome?.resultDetail || null,
-      stopReason: outcome?.stopReason || "timeout",
-      recoverable: true,
+      doneStatus: settledRow?.status || outcome?.doneStatus || null,
+      resultKind: settledRow?.result_kind || outcome?.resultKind || null,
+      resultDetail: settledRow?.result_detail || outcome?.resultDetail || null,
+      stopReason: settledRow?.stop_requested_reason
+        || (settledRow?.usage_status != null ? settledRow.stop_reason : null)
+        || outcome?.stopReason || (completed ? null : "timeout"),
+      recoverable: completed ? false : (settledRow?.recoverable ?? true),
       formalizationId: start.body?.focus_formalization_id || start.body?.formalization?.id || null,
-      error: "Lea adapter run timed out.",
+      error: completed ? null : "Time limit reached.",
       ...usage,
     };
   }

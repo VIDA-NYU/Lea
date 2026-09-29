@@ -52,6 +52,15 @@ function fmtCost(value: number, digits = 4) {
   return `$${value.toFixed(digits)}`;
 }
 
+function fmtRecordedCost(value: number, incomplete?: number, unconfirmed?: number) {
+  if (incomplete == null && unconfirmed == null) {
+    return value > 0 ? `${fmtCost(value)} recorded · unconfirmed` : 'Usage unavailable';
+  }
+  if (incomplete) return value > 0 ? `${fmtCost(value)} recorded so far` : 'Awaiting usage';
+  if (unconfirmed) return value > 0 ? `${fmtCost(value)} recorded · unconfirmed` : 'Usage unavailable';
+  return fmtCost(value);
+}
+
 function fmtDate(iso: string | null | undefined) {
   if (!iso) {
     return 'Unknown date';
@@ -216,7 +225,7 @@ function SessionListPane({
                         {modelLabel(session.primary_model)}
                       </span>
                       <span className="shrink-0 text-muted-foreground">
-                        {fmtCost(session.cost_usd)}
+                        {fmtRecordedCost(session.cost_usd, session.incomplete_usage_runs, session.unconfirmed_usage_runs)}
                       </span>
                     </span>
                   </button>
@@ -283,7 +292,7 @@ function SessionDetailPane({ session }: { session?: StatsSessionDetail }) {
             <StatCard
               icon={DollarSign}
               label="Session cost"
-              value={fmtCost(session.cost_usd)}
+              value={fmtRecordedCost(session.cost_usd, session.incomplete_usage_runs, session.unconfirmed_usage_runs)}
               sub={totalTokens ? `${fmtCost(costPerThousand)} / 1K tokens` : 'No token usage recorded'}
               accent={MONEY_COLOR}
             />
@@ -315,7 +324,7 @@ function SessionDetailPane({ session }: { session?: StatsSessionDetail }) {
             <Row label="Output tokens" value={`${fmtNumber(session.output_tokens)} tok`} />
             <Row label="Model runs" value={fmtNumber(session.run_count)} />
             <div className="border-t border-border pt-2">
-              <Row label="Recorded total" value={fmtCost(session.cost_usd)} accent={MONEY_COLOR} />
+              <Row label="Recorded total" value={fmtRecordedCost(session.cost_usd, session.incomplete_usage_runs, session.unconfirmed_usage_runs)} accent={MONEY_COLOR} />
             </div>
           </div>
 
@@ -449,7 +458,7 @@ function GlobalStatsPane({ stats }: { stats?: UsageStats }) {
             <StatCard
               icon={DollarSign}
               label="Total spent"
-              value={`$${global.cost_usd.toFixed(2)}`}
+              value={fmtRecordedCost(global.cost_usd, global.incomplete_usage_runs, global.unconfirmed_usage_runs)}
               accent={MONEY_COLOR}
             />
             <StatCard icon={Zap} label="Total tokens" value={fmtNumber(global.total_tokens)} />
@@ -790,7 +799,7 @@ export function StatsPage({ onBack }: { onBack: () => void }) {
           )}
           <span className="truncate font-mono text-[0.7rem] text-muted-foreground">
             {stats
-              ? `${stats.global.session_count} sessions - $${stats.global.cost_usd.toFixed(2)} total${
+              ? `${stats.global.session_count} sessions - ${fmtRecordedCost(stats.global.cost_usd, stats.global.incomplete_usage_runs, stats.global.unconfirmed_usage_runs)}${
                   hasRunningSession ? ' - live' : ''
                 }`
               : 'Statistics'}

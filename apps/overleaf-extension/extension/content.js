@@ -3222,6 +3222,29 @@
     return element;
   }
 
+  function formatLeanPaneAccounting(item) {
+    if (!item?.accounting && !item?.stopReason && !item?.settling) return "";
+    const parts = [];
+    if (item.settling) parts.push("Time limit reached; waiting for the adapter to stop");
+    else if (item.outcomeNeedsReview) parts.push("The adapter later completed this run; review the current target status");
+    else if (item.stopReason === "timeout") parts.push("Stopped at the time limit");
+    else if (item.stopReason === "user_stop") parts.push("Stopped by user");
+    else if (item.stopReason === "global_spend_cap") parts.push("Stopped at the spend cap");
+    const accounting = item.accounting;
+    const cost = accounting?.costUsd == null ? null : Number(accounting.costUsd);
+    if (accounting?.status === "final" && cost != null && Number.isFinite(cost)) {
+      parts.push(`${formatCost(accounting.costUsd)} recorded`);
+    } else if (cost != null && Number.isFinite(cost) && cost > 0) {
+      parts.push(`${formatCost(accounting.costUsd)} recorded so far`);
+    } else if (["pending", "partial"].includes(accounting?.status)) {
+      parts.push("Awaiting usage");
+    } else if (accounting && (item.stopReason || item.settling
+        || (accounting.status === "unknown" && !item.inProgress))) {
+      parts.push("usage unavailable");
+    }
+    return parts.join(" · ");
+  }
+
   function renderLeanPaneItemDetail(item, useRelationships) {
     const detail = document.createElement("div");
     detail.className = "ol-lean-project-detail";
@@ -3262,6 +3285,13 @@
 
     const progress = renderLeanPaneDetailSection("Progress and checks");
     progress.appendChild(renderLeanPaneLiveStatus(item));
+    const accountingNote = formatLeanPaneAccounting(item);
+    if (accountingNote) {
+      const note = document.createElement("p");
+      note.className = "ol-lean-project-detail-meta";
+      note.textContent = accountingNote;
+      progress.appendChild(note);
+    }
     if (item.githubImportPending) {
       const importState = document.createElement("p");
       importState.className = "ol-lean-project-import-state";
@@ -5235,6 +5265,13 @@
     closeButton.addEventListener("click", closeLeanPaneChat);
     header.appendChild(closeButton);
     panel.appendChild(header);
+    const accountingNote = formatLeanPaneAccounting(item);
+    if (accountingNote) {
+      const note = document.createElement("p");
+      note.className = "ol-lean-chat-source";
+      note.textContent = accountingNote;
+      panel.appendChild(note);
+    }
     if (leanPaneChatResponse?.leanCheckRuntimeMessage) {
       const runtime = document.createElement("div");
       runtime.className = "ol-lean-chat-source";
@@ -7712,7 +7749,14 @@
   function renderUsage(popover, key, usage) {
     const row = popover.querySelector(`[data-usage='${key}']`);
     if (!row) return;
-    row.querySelector("[data-field='cost']").textContent = formatCost(usage?.costUsd || 0);
+    const cost = Number(usage?.costUsd || 0);
+    row.querySelector("[data-field='cost']").textContent = !usage || usage.accountingUnavailable
+      ? "Usage unavailable"
+      : usage?.incompleteUsageRuns
+      ? cost > 0 ? `${formatCost(cost)} recorded so far` : "Awaiting usage"
+      : usage?.unconfirmedUsageRuns
+        ? cost > 0 ? `${formatCost(cost)} recorded · unconfirmed` : "Usage unavailable"
+        : formatCost(cost);
     row.querySelector("[data-field='input']").textContent = formatTokens(usage?.inputTokens || 0);
     row.querySelector("[data-field='output']").textContent = formatTokens(usage?.outputTokens || 0);
   }

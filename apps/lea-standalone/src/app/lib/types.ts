@@ -41,6 +41,11 @@ export interface RunSummary {
   focus_source_hash?: string | null;
   result_kind?: 'proved' | 'disproved' | 'needs_review' | string | null;
   result_detail?: string | null;
+  stop_reason?: string | null;
+  stop_requested_reason?: string | null;
+  usage_status?: 'pending' | 'partial' | 'final' | 'unknown' | null;
+  usage_revision?: number;
+  cost_usd?: number;
 }
 // ── Per-tool approval gate (D19) ──────────────────────────────────────────────
 export type GatedTool = 'bash' | 'write_file' | 'edit_file';
@@ -64,6 +69,8 @@ export interface SessionSummary {
   output_tokens: number;
   total_tokens: number;
   cost_usd: number;
+  incomplete_usage_runs?: number;
+  unconfirmed_usage_runs?: number;
   run_count: number;
   message_count: number;
   code_step_count: number;
@@ -634,6 +641,8 @@ export interface UsageBreakdownRow {
 export interface ActiveRun {
   id: string;
   status: RunStatus | string;
+  stop_reason?: string | null;
+  stop_requested_reason?: string | null;
   model?: string;
   pending_approval?: PendingApproval | null;
   result_kind?: string | null;
@@ -756,6 +765,9 @@ export interface DoneEvent {
   status: RunStatus;
   result_kind?: string | null;
   result_detail?: string | null;
+  stop_reason?: string | null;
+  usage_status?: string | null;
+  cost_usd?: number | null;
 }
 
 // ── Frontend-derived timeline (built from messages + code steps by timeline.mjs) ──

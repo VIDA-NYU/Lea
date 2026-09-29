@@ -148,6 +148,8 @@ interface ProofSessionState {
   setRunStatusById: (update: Updater<Record<string, string>>) => void;
   runResultKindById: Record<string, string | null | undefined>;
   setRunResultKindById: (update: Updater<Record<string, string | null | undefined>>) => void;
+  runStopReasonById: Record<string, string | null | undefined>;
+  setRunStopReasonById: (update: Updater<Record<string, string | null | undefined>>) => void;
   runFocusById: Record<string, string | null | undefined>;
   setRunFocusById: (update: Updater<Record<string, string | null | undefined>>) => void;
 
@@ -228,6 +230,7 @@ const SESSION_SCOPED = {
   statusEvents: [] as StatusEvent[],
   runStatusById: {} as Record<string, string>,
   runResultKindById: {} as Record<string, string | null | undefined>,
+  runStopReasonById: {} as Record<string, string | null | undefined>,
   approvals: [] as ApprovalRecord[],
   subagentProgress: {} as Record<string, SubagentLive>,
   subagentErrors: {} as Record<string, string>,
@@ -281,6 +284,7 @@ export const useProofSession = create<ProofSessionState>((set) => ({
   setRunStatus: (runStatus) => set({ runStatus }),
   setRunStatusById: (update) => set((s) => ({ runStatusById: apply(update, s.runStatusById) })),
   setRunResultKindById: (update) => set((s) => ({ runResultKindById: apply(update, s.runResultKindById) })),
+  setRunStopReasonById: (update) => set((s) => ({ runStopReasonById: apply(update, s.runStopReasonById) })),
   setRunFocusById: (update) => set((s) => ({ runFocusById: apply(update, s.runFocusById) })),
 
   setApprovals: (update) => set((s) => ({ approvals: apply(update, s.approvals) })),

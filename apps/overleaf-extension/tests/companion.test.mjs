@@ -3541,14 +3541,18 @@ test("usage falls back to in-memory job totals when the adapter is unavailable",
     outputTokens: 100,
     totalTokens: 500,
     costUsd: 0.46,
-    runCount: 2
+    runCount: 2,
+    incompleteUsageRuns: 0,
+    unconfirmedUsageRuns: 3
   });
   assert.deepEqual(result.body.allTime, {
     inputTokens: 450,
     outputTokens: 110,
     totalTokens: 560,
     costUsd: 0.48,
-    runCount: 3
+    runCount: 3,
+    incompleteUsageRuns: 0,
+    unconfirmedUsageRuns: 4
   });
   assert.equal(result.body.leaMaxSpendUsd, 1);
   assert.equal(result.body.leaCurrentSpendUsd, 0.48);
@@ -3594,14 +3598,20 @@ test("usage sourced from the adapter matches /api/stats (all-time + this project
     outputTokens: 125,
     totalTokens: 625,
     costUsd: 0.3,
-    runCount: 3
+    runCount: 3,
+    incompleteUsageRuns: 0,
+    unconfirmedUsageRuns: 0,
+    accountingUnavailable: true
   });
   assert.deepEqual(result.body.allTime, {
     inputTokens: 1000,
     outputTokens: 250,
     totalTokens: 1250,
     costUsd: 0.7,
-    runCount: 4
+    runCount: 4,
+    incompleteUsageRuns: 0,
+    unconfirmedUsageRuns: 0,
+    accountingUnavailable: true
   });
   assert.equal(result.body.leaCurrentSpendUsd, 0.7);
   assert.equal(result.body.leaSpendLimitReached, false);
@@ -4309,6 +4319,7 @@ async function fileExists(filePath) {
 function makeLeaApiFetch(calls, options = {}) {
   let eventHookHandled = false;
   let runFinished = false;
+  let interrupted = false;
   const initialTargets = new Set(Object.keys(options.targetStatus || {}));
   return async (url, requestOptions = {}) => {
     if (String(url).endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, independent_checks: false, source_pause_policy: 1 } } });
@@ -4350,7 +4361,7 @@ function makeLeaApiFetch(calls, options = {}) {
       return jsonResponse(200, { run_id: "api-run-1", session_id: "sess-api-1", status: "running" });
     }
     if (String(url).includes("/api/runs/") && String(url).endsWith("/events")) {
-      runFinished = true;
+      runFinished = !options.neverDone;
       if (!eventHookHandled && options.onStatusRequest) {
         eventHookHandled = true;
         await options.onStatusRequest();
@@ -4391,8 +4402,10 @@ function makeLeaApiFetch(calls, options = {}) {
       return jsonResponse(200, {
         runs: [{
           id: "api-run-1",
-          status: options.doneStatus || "proved",
-          result_kind: options.doneStatus || "proved",
+          status: options.neverDone ? (interrupted ? "cancelled" : "running") : options.doneStatus || "proved",
+          result_kind: options.neverDone ? (interrupted ? "cancelled" : null) : options.doneStatus || "proved",
+          stop_reason: options.neverDone && interrupted ? "timeout" : null,
+          usage_status: options.neverDone && interrupted ? "final" : "unknown",
           input_tokens: usage.input_tokens || 0,
           output_tokens: usage.output_tokens || 0,
           cost_usd: options.statusBody?.result?.cost || 0
@@ -4403,6 +4416,7 @@ function makeLeaApiFetch(calls, options = {}) {
       });
     }
     if (String(url).endsWith("/interrupt")) {
+      interrupted = true;
       return jsonResponse(options.cancelStatus || 200, options.cancelBody || { status: "interrupting" });
     }
     return jsonResponse(404, { detail: "not found" });

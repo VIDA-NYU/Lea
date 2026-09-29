@@ -767,7 +767,7 @@ def _run_events_inner(
         # canvas is accurate — a clean stop, not a hard kill. The transcript so far
         # rides out so a follow-up still has a coherent base.
         if should_stop is not None and should_stop():
-            yield Finished("interrupted", "Run interrupted by the user.",
+            yield Finished("interrupted", "Run stopped at a turn boundary.",
                            turn, session_id, model, total_usage, total_cost, transcript(turn))
             return
 

@@ -114,9 +114,12 @@ def _public_error_detail(exc: Exception) -> str:
 _stop_events: dict[str, Event] = {}
 
 
-def request_stop(run_id: str) -> None:
-    """Flag a run for a clean cooperative stop (the interrupt endpoint calls this)."""
-    _stop_events.setdefault(run_id, Event()).set()
+def request_stop(run_id: str, *, reason: str = "user_stop", source: str = "user") -> dict | None:
+    """Persist the first stop cause before signalling a cooperative stop."""
+    run = store.record_stop_request(run_id, reason, source)
+    if run and run["status"] in {"pending", "running"}:
+        _stop_events.setdefault(run_id, Event()).set()
+    return run
 
 
 # D2: live sub-agent children, mapping the child's SESSION id -> its prover `result_id`,
@@ -232,7 +235,7 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
         # 100 ms poll for as long as the incumbent took to wind down.
         if superseded.get(run_id) != admission.incumbent_run_id:
             superseded[run_id] = admission.incumbent_run_id
-            request_stop(admission.incumbent_run_id)
+            request_stop(admission.incumbent_run_id, reason="superseded", source="adapter")
     return _DEFER
 
 
@@ -317,6 +320,7 @@ def publish_terminal_from_row(run_id: str) -> None:
     live, which prevents an interrupted queued run from hanging.
     """
     run = store.get_run(run_id)
+    _stop_events.pop(run_id, None)
     broker = runbroker.get(run_id)
     if not run or broker is None:
         return
@@ -325,6 +329,9 @@ def publish_terminal_from_row(run_id: str) -> None:
         payload["result_kind"] = run["result_kind"]
     if run.get("result_detail"):
         payload["result_detail"] = run["result_detail"]
+    for key in ("stop_reason", "stop_requested_reason", "recoverable", "input_tokens",
+                "output_tokens", "cost_usd", "usage_status", "usage_revision", "usage_updated_at"):
+        payload[key] = run.get(key)
     broker.put({"type": "done", "payload": payload})
 
 
@@ -586,21 +593,9 @@ _COMPLETED_RESULTS = {"proved", "disproved", "needs_review"}
 # persisted run *status* stays "cancelled" — the status vocabulary is unchanged.
 _MAX_SPEND_DETAIL = "Max spend limit reached; the run was stopped at a turn boundary."
 
-# Usage is persisted only when a run finishes. While several admitted runs are
-# live, their in-flight cost would otherwise be invisible to each other's global
-# cap checks. This process-local overlay makes the check persisted-global plus
-# every active run's observed ``UsageUpdated`` total.
-_live_spend_lock = Lock()
-_live_run_costs: dict[str, float] = {}
-
-
-# Persisted spend changes only when a run *finishes* (`update_run` writes its
-# cost_usd), but the cap is re-checked on every `UsageUpdated` and every turn — so the
-# unmemoized read meant several DB aggregates per second per active run, against the
-# same single-writer SQLite the runs are writing to (AUDIT-2026-07-24 P2). A short TTL
-# removes that without weakening the cap: the term that moves continuously *within* a
-# run is the in-memory `_live_run_costs` overlay, which is always exact, and the
-# staleness this admits is bounded by one other run finishing inside the window.
+# Cumulative run usage is checkpointed in SQLite at each UsageUpdated, including
+# active runs. The cap reads that same ledger; summing an active-run overlay would
+# count its cost twice.
 _PERSISTED_SPEND_TTL_SECONDS = 2.0
 _persisted_spend_lock = Lock()
 # (database path, monotonic_at, usd). The path is part of the key because the total is
@@ -618,14 +613,10 @@ def _persisted_spend_usd() -> float:
     path, now = db.DB_PATH, time.monotonic()
     with _persisted_spend_lock:
         cached = _persisted_spend_cache
-        if (
-            cached is not None
-            and cached[0] == path
-            and now - cached[1] < _PERSISTED_SPEND_TTL_SECONDS
-        ):
+        if (cached is not None and cached[0] == path
+                and now - cached[1] < _PERSISTED_SPEND_TTL_SECONDS):
             return cached[2]
-    value = store.total_spend_usd()
-    with _persisted_spend_lock:
+        value = store.total_spend_usd()
         _persisted_spend_cache = (path, now, value)
     return value
 
@@ -636,6 +627,18 @@ def reset_persisted_spend_cache() -> None:
     global _persisted_spend_cache
     with _persisted_spend_lock:
         _persisted_spend_cache = None
+
+
+def _advance_spend_cache(delta: float) -> None:
+    """Reflect a committed usage checkpoint without an aggregate read per event."""
+    global _persisted_spend_cache
+    from . import db
+    with _persisted_spend_lock:
+        cached = _persisted_spend_cache
+        if cached and cached[0] == db.DB_PATH and time.monotonic() - cached[1] < _PERSISTED_SPEND_TTL_SECONDS:
+            _persisted_spend_cache = (cached[0], cached[1], cached[2] + delta)
+        else:
+            _persisted_spend_cache = None
 
 
 def _finished_status(ev: Finished) -> str:
@@ -1625,6 +1628,9 @@ def run_lea(context: RunnerContext) -> None:
     last_write_path: str | None = None
     checked_artifact_kind = "unknown"
     usage = _UsageByTurn()
+    observed_input = observed_output = 0
+    observed_cost = 0.0
+    usage_revision = 0
     # Finished sub-agents (item 24), in the order they completed — surfaced as child
     # sessions and kept for the collation pass (item 25) on the coordinator's Finished.
     subagent_results: list[SubagentFinished] = []
@@ -1658,9 +1664,6 @@ def run_lea(context: RunnerContext) -> None:
     # overshoot but a run can no longer run away.
     max_spend_usd = cfg.max_spend_usd
     spend_capped = False
-    with _live_spend_lock:
-        _live_run_costs[run_id] = 0.0
-
     def check_spend_cap() -> None:
         nonlocal spend_capped
         if spend_capped or max_spend_usd is None:
@@ -1674,9 +1677,10 @@ def run_lea(context: RunnerContext) -> None:
         except Exception:
             logger.exception("Could not read persisted spend; skipping this cap check")
             return
-        with _live_spend_lock:
-            live = sum(_live_run_costs.values())
-        if persisted + live >= float(max_spend_usd):
+        if persisted >= float(max_spend_usd):
+            accepted = store.record_stop_request(run_id, "global_spend_cap", "adapter")
+            if accepted and accepted.get("stop_requested_reason") != "global_spend_cap":
+                return
             spend_capped = True
             stop_event.set()
             emit(events, "status", {
@@ -2068,10 +2072,13 @@ def run_lea(context: RunnerContext) -> None:
 
             elif isinstance(ev, UsageUpdated):
                 usage.add(current_turn, ev.input_tokens, ev.output_tokens, ev.cost)
-                with _live_spend_lock:
-                    _live_run_costs[run_id] = (
-                        _live_run_costs.get(run_id, 0.0) + float(ev.cost or 0.0)
-                    )
+                observed_input += ev.input_tokens or 0
+                observed_output += ev.output_tokens or 0
+                observed_cost += float(ev.cost or 0.0)
+                usage_revision += 1
+                if store.checkpoint_run_usage(run_id, observed_input, observed_output,
+                                              observed_cost, usage_revision):
+                    _advance_spend_cache(float(ev.cost or 0.0))
                 check_spend_cap()
 
             elif isinstance(ev, Compacted):
@@ -2373,17 +2380,21 @@ def run_lea(context: RunnerContext) -> None:
                     stop_reason = ev.reason
                     recoverable = True
                 elif ev.reason == "interrupted":
-                    stop_reason = "user_stop"
+                    stop_reason = (store.get_run(run_id) or {}).get("stop_requested_reason") or "user_stop"
                     recoverable = True
+                    if stop_reason == "timeout":
+                        final_result_detail = "Time limit reached; the run stopped at a turn boundary."
                 final_stop_reason = stop_reason
                 final_recoverable = recoverable
                 store.update_run(
                     run_id, final_status, final_text=final_text,
                     input_tokens=ev.usage.input_tokens, output_tokens=ev.usage.output_tokens,
                     cost_usd=ev.cost,
+                    usage_status="final",
                     result_kind=final_result_kind, result_detail=final_result_detail,
                     stop_reason=stop_reason, recoverable=recoverable,
                 )
+                reset_persisted_spend_cache()
                 if reporting_context:
                     def record_reporting_completion():
                         latest_status = lea_status_store.latest(run_id)
@@ -2480,6 +2491,7 @@ def run_lea(context: RunnerContext) -> None:
                 )
             except Exception:
                 logger.exception("Failed to mark run %s failed", run_id)
+            store.mark_run_usage_unknown(run_id)
             final_status = "failed"
             final_result_kind = "failed"
             final_result_detail = error_detail
@@ -2507,8 +2519,6 @@ def run_lea(context: RunnerContext) -> None:
         subagent_children.clear()
         _stop_events.pop(run_id, None)
         _pending_approvals.pop(run_id, None)
-        with _live_spend_lock:
-            _live_run_costs.pop(run_id, None)
         # Release the admission slot (paired with the dispatcher's try_admit). Idempotent,
         # so a run that reaches here unadmitted — e.g. a direct unit-test call to
         # run_lea, which never goes through the endpoint — is a harmless no-op.
@@ -2521,6 +2531,10 @@ def run_lea(context: RunnerContext) -> None:
         if final_stop_reason:
             done_payload["stop_reason"] = final_stop_reason
         done_payload["recoverable"] = final_recoverable
+        settled = store.get_run_status(run_id) or {}
+        for key in ("stop_requested_reason", "input_tokens", "output_tokens", "cost_usd",
+                    "usage_status", "usage_revision", "usage_updated_at"):
+            done_payload[key] = settled.get(key)
         emit(events, "done", done_payload)
         # The run has ended: retire its broker. Subscribers already draining hold
         # their own reference and exit on `done`; a late observer gets a synthesized

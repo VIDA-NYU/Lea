@@ -74,6 +74,8 @@ import {
   fetchAdapterHealth,
   fetchAdapterUsageStats,
   fetchApiSessionDetail,
+  fetchApiRunRow,
+  fetchApiRunUsage,
   fetchApiLeanCheckRuntime,
   fetchProjectArtifactsBySlug,
   fetchProjectGraphBySlug,
@@ -192,6 +194,18 @@ export async function createServer({
   await recoverInterruptedJobs(state);
   await pruneAndPersistJobs(state);
 
+  // Jobs awaiting a terminal run/usage snapshot survive companion restarts.
+  // Reconcile a bounded number per tick; keep the historical job record intact.
+  let reconciliationBusy = false;
+  const reconciliationTimer = setInterval(async () => {
+    if (reconciliationBusy) return;
+    reconciliationBusy = true;
+    try { await reconcilePendingJobUsage(state); }
+    catch (error) { console.warn("[companion] Usage reconciliation failed:", error); }
+    finally { reconciliationBusy = false; }
+  }, 5000);
+  reconciliationTimer.unref?.();
+
   const server = http.createServer(async (request, response) => {
     try {
       await routeRequest(request, response, state);
@@ -207,6 +221,7 @@ export async function createServer({
   });
   // Exposed for the boot log's provider-aware readiness warning (AUDIT L10).
   server.leaState = state;
+  server.on("close", () => clearInterval(reconciliationTimer));
   return server;
 }
 
@@ -4025,10 +4040,13 @@ async function fetchAdapterUsageForPopover(state, overleafProjectId) {
       acc.outputTokens += outputTokens;
       acc.totalTokens += inputTokens + outputTokens;
       acc.costUsd += toNonNegativeNumber(session.cost_usd);
+      acc.incompleteUsageRuns += toNonNegativeNumber(session.incomplete_usage_runs);
+      acc.unconfirmedUsageRuns += toNonNegativeNumber(session.unconfirmed_usage_runs);
       acc.runCount += toNonNegativeNumber(session.run_count);
       return acc;
     },
-    { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, runCount: 0 }
+    { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, runCount: 0,
+      incompleteUsageRuns: 0, unconfirmedUsageRuns: 0 }
   );
   const reportUsage = (stats.project_report_usage || []).find((entry) => entry.project_slug === projectSlug);
   if (reportUsage) {
@@ -4039,6 +4057,8 @@ async function fetchAdapterUsageForPopover(state, overleafProjectId) {
     project.runCount += toNonNegativeNumber(reportUsage.run_count);
   }
   project.costUsd = Number(project.costUsd.toFixed(6));
+  project.accountingUnavailable = sessions.some((session) =>
+    session?.project_slug === projectSlug && !Object.hasOwn(session, "incomplete_usage_runs"));
 
   const global = stats.global && typeof stats.global === "object" ? stats.global : {};
   const allInput = toNonNegativeNumber(global.input_tokens);
@@ -4048,6 +4068,9 @@ async function fetchAdapterUsageForPopover(state, overleafProjectId) {
     outputTokens: allOutput,
     totalTokens: toNonNegativeNumber(global.total_tokens) || allInput + allOutput,
     costUsd: Number(toNonNegativeNumber(global.cost_usd).toFixed(6)),
+    incompleteUsageRuns: toNonNegativeNumber(global.incomplete_usage_runs),
+    unconfirmedUsageRuns: toNonNegativeNumber(global.unconfirmed_usage_runs),
+    accountingUnavailable: !Object.hasOwn(global, "incomplete_usage_runs"),
     runCount: toNonNegativeNumber(global.session_count)
   };
 
@@ -5593,6 +5616,19 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
     logPath: job.logPath,
     onRunStarted: async (apiRunId, sessionId, startBody = {}) => {
       job.apiRunId = apiRunId;
+      job.usageRunId = apiRunId;
+      job.usageStatus = "pending";
+      job.usageRevision = 0;
+      job.usageSyncPending = true;
+      job.usageSyncAttempts = 0;
+      job.usageNextSyncAt = null;
+      job.reconciledUsage = null;
+      job.reconciledStopReason = null;
+      job.adapterOutcomeStatus = null;
+      job.outcomeNeedsReview = false;
+      job.settling = false;
+      job.usage = null;
+      job.costUsd = null;
       job.leaSessionId = sessionId || job.leaSessionId || null;
       job.projectNamespace = startBody.project_namespace || job.projectNamespace || null;
       job.projectSlug = startBody.project_slug || job.projectSlug || target.projectSlug;
@@ -5627,7 +5663,8 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
     // re-interrupting the already-terminal run.
     await markJobMaxSpend({ state, job, mode: job.mode, interrupt: false });
   }
-  if (exit.usage || exit.costUsd !== undefined) {
+  recordJobUsage(job, exit);
+  if (exit.usage && typeof exit.costUsd === "number") {
     await recordUsageAndEnforceSpendLimit({
       state,
       job,
@@ -5635,6 +5672,8 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
       mode: "formalization"
     });
   }
+  job.usageSyncPending = exit.settling === true || exit.usageStatus !== "final";
+  if (job.usageSyncPending) await persistJobs(state);
   // Every run type (formalize / stub / repair) passes through here, so this is
   // the one retention chokepoint: each run adds exactly one job, so pruning
   // after each run keeps the store bounded. Never removes this run's job (it
@@ -6450,11 +6489,78 @@ The final file must compile with zero errors, but it must intentionally keep the
 }
 
 function recordJobUsage(job, exit) {
-  if (!exit?.usage) return;
-  recordJobUsageSnapshot(job, {
-    ...exit.usage,
-    costUsd: exit.costUsd
-  });
+  if (!exit) return;
+  job.usageStatus = exit.usageStatus || "unknown";
+  job.usageRevision = Number(exit.usageRevision || 0);
+  job.usageRunId = exit.apiRunId || job.apiRunId || null;
+  job.usageSyncPending = exit.settling === true || job.usageStatus !== "final";
+  job.settling = exit.settling === true;
+  if (exit.usage && typeof exit.costUsd === "number") {
+    recordJobUsageSnapshot(job, { ...exit.usage, costUsd: exit.costUsd });
+  }
+}
+
+export async function reconcilePendingJobUsage(state, limit = 4) {
+  const now = Date.now();
+  const jobs = Object.values(state.jobs || {}).filter((job) => job?.apiRunId &&
+    (job.usageSyncPending || !job.usageStatus) &&
+    (!job.usageNextSyncAt || Date.parse(job.usageNextSyncAt) <= now));
+  if (!jobs.length) return 0;
+  const start = state.usageReconcileCursor || 0;
+  state.usageReconcileCursor = (start + limit) % jobs.length;
+  let changed = 0;
+  for (let offset = 0; offset < Math.min(limit, jobs.length); offset++) {
+    const job = jobs[(start + offset) % jobs.length];
+    const runId = job.apiRunId;
+    const fetchImpl = state.fetchImpl || fetch;
+    const baseUrl = job.leaApiBaseUrl || state.settings?.leaApiBaseUrl || DEFAULT_LEA_API_BASE_URL;
+    const apiKey = state.env?.LEA_API_KEY;
+    const row = await fetchApiRunRow({ fetchImpl, baseUrl, apiKey, sessionId: job.leaSessionId, runId });
+    if (job.apiRunId !== runId) continue;
+    const attempts = Number(job.usageSyncAttempts || 0) + 1;
+    const delay = [5, 15, 30, 60][Math.min(attempts - 1, 3)];
+    job.usageSyncAttempts = attempts;
+    job.usageNextSyncAt = new Date(now + delay * 1000).toISOString();
+    changed++;
+    if (!row) continue;
+    const snapshot = await fetchApiRunUsage({ fetchImpl, baseUrl, apiKey,
+                                             sessionId: job.leaSessionId, runId });
+    if (job.apiRunId !== runId) continue;
+    const terminal = !["pending", "running"].includes(String(row.status || "").toLowerCase());
+    const previous = job.reconciledUsage;
+    const newer = snapshot.usage && (!previous || Number(snapshot.usageRevision) > Number(previous.revision || 0)
+      || (snapshot.usageStatus === "final" && previous.status !== "final"));
+    if (newer) {
+      job.reconciledUsage = { runId, ...snapshot.usage, costUsd: snapshot.costUsd,
+                              status: snapshot.usageStatus, revision: snapshot.usageRevision,
+                              updatedAt: snapshot.usageUpdatedAt };
+      changed++;
+    }
+    if (terminal) {
+      const authoritativeStop = row.stop_requested_reason
+        || (row.usage_status != null || !job.stopReason ? row.stop_reason : null);
+      const nextPending = snapshot.usageStatus !== "final";
+      if (job.settling || job.usageSyncPending !== nextPending
+          || job.adapterOutcomeStatus !== row.status
+          || (authoritativeStop && authoritativeStop !== job.reconciledStopReason)) changed++;
+      job.usageSyncPending = nextPending;
+      if (!nextPending) {
+        job.usageSyncAttempts = 0;
+        job.usageNextSyncAt = null;
+      }
+      job.settling = false;
+      job.adapterOutcomeStatus = row.status;
+      if (authoritativeStop) job.reconciledStopReason = authoritativeStop;
+      if (["proved", "disproved"].includes(row.status) && job.timedOut) {
+        // Proof validity still comes from the adapter's target status.
+        job.outcomeNeedsReview = true;
+      }
+    } else if (snapshot.usageStatus !== "final") {
+      job.usageSyncPending = true;
+    }
+  }
+  if (changed) await persistJobs(state);
+  return changed;
 }
 
 function recordJobUsageSnapshot(job, usage) {
@@ -6500,20 +6606,27 @@ function aggregateUsage(jobs, { overleafProjectId } = {}) {
     outputTokens: 0,
     totalTokens: 0,
     costUsd: 0,
-    runCount: 0
+    runCount: 0,
+    incompleteUsageRuns: 0,
+    unconfirmedUsageRuns: 0
   };
 
   for (const job of Object.values(jobs || {})) {
     if (overleafProjectId && job.overleafProjectId !== overleafProjectId && job.projectSlug !== projectSlug) {
       continue;
     }
-    if (!job.usage) {
-      continue;
-    }
-    aggregate.inputTokens += toNonNegativeNumber(job.usage.inputTokens);
-    aggregate.outputTokens += toNonNegativeNumber(job.usage.outputTokens);
-    aggregate.totalTokens += toNonNegativeNumber(job.usage.totalTokens);
-    aggregate.costUsd += toNonNegativeNumber(job.costUsd);
+    const hasReconciledUsage = Boolean(job.reconciledUsage && job.apiRunId
+      && job.reconciledUsage.runId === job.apiRunId);
+    const usage = hasReconciledUsage ? job.reconciledUsage : job.usage;
+    const status = hasReconciledUsage
+      ? job.reconciledUsage.status : job.usageStatus;
+    if (status === "pending" || status === "partial") aggregate.incompleteUsageRuns += 1;
+    if (!status || status === "unknown") aggregate.unconfirmedUsageRuns += 1;
+    if (!usage) continue;
+    aggregate.inputTokens += toNonNegativeNumber(usage.inputTokens);
+    aggregate.outputTokens += toNonNegativeNumber(usage.outputTokens);
+    aggregate.totalTokens += toNonNegativeNumber(usage.totalTokens);
+    aggregate.costUsd += toNonNegativeNumber(usage.costUsd ?? job.costUsd);
     aggregate.runCount += 1;
   }
 
@@ -6743,7 +6856,9 @@ function buildJobResponse({ job, status, target }) {
   const declarationName = job.declarationName || target.declarationName || target.targetLabel;
   const leaSessionId = job.leaSessionId || job.recorderSessionId || null;
   const pausedMessage = status === "paused"
-    ? job.stopReason === "timeout"
+    ? job.settling === true
+      ? "Time limit reached — the adapter is stopping this run. Recorded usage may still change."
+      : job.stopReason === "timeout"
       ? "Formalization paused after reaching its time limit. Resume to continue from the current artifact."
       : job.stopReason === "turn_cap"
         ? "Formalization paused after reaching its turn limit. Resume to continue from the current artifact."
@@ -6769,7 +6884,7 @@ function buildJobResponse({ job, status, target }) {
     moduleName: job.moduleName || null,
     leanStatement: job.leanStatement || "",
     logTail: "",
-    message: job.error || job.resultDetail || pausedMessage || (status === "disproved"
+    message: (job.settling ? pausedMessage : null) || job.error || job.resultDetail || pausedMessage || (status === "disproved"
       ? "Lea found a verified counterexample or disproof. The original theorem was not proven."
       : status === "needs_review"
         ? "Lea produced a checked, sorry-free proof but flagged its own result for human review."
@@ -6778,7 +6893,14 @@ function buildJobResponse({ job, status, target }) {
     resultDetail: job.resultDetail || null,
     finalStatus: job.finalStatus || null,
     formalizationId: job.formalizationId || null,
-    stopReason: job.stopReason || null,
+    stopReason: job.reconciledStopReason || job.stopReason || null,
+    accounting: job.reconciledUsage || (job.usage ? {
+      ...job.usage, costUsd: job.costUsd, status: job.usageStatus || "unknown",
+      revision: job.usageRevision || 0
+    } : { status: job.usageStatus || "unknown" }),
+    settling: job.settling === true,
+    adapterOutcomeStatus: job.adapterOutcomeStatus || null,
+    outcomeNeedsReview: job.outcomeNeedsReview === true,
     recoverable: job.recoverable === true,
     leaSessionId,
     leaSessionUrl: leaSessionId
@@ -7294,6 +7416,15 @@ async function enrichLeanPaneItem({
     leanCheck,
     leaCheck,
     lastCheckExecution: latestJob?.lastCheckExecution || null,
+    stopReason: latestJob?.reconciledStopReason || latestJob?.stopReason || statusInfo?.stopReason || null,
+    accounting: !latestJob ? undefined : latestJob.reconciledUsage || (latestJob.usage ? {
+      ...latestJob.usage,
+      costUsd: latestJob.costUsd,
+      status: latestJob.usageStatus || "unknown"
+    } : { status: latestJob.usageStatus || "unknown" }),
+    settling: latestJob?.settling === true,
+    adapterOutcomeStatus: latestJob?.adapterOutcomeStatus || null,
+    outcomeNeedsReview: latestJob?.outcomeNeedsReview === true,
     // Let the batch queue show the active Lea turn even when the target lives
     // in a different project file and therefore has no in-document badge.
     turnProgress: inProgress && !stale ? statusInfo?.turnProgress : undefined,

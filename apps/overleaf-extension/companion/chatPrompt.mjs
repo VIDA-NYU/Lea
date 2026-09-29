@@ -246,7 +246,11 @@ function toRunSummary(run) {
   return {
     id: run.id || null,
     status: String(run.status || "").toLowerCase() || "unknown",
-    createdAt: run.created_at || run.createdAt || null
+    createdAt: run.created_at || run.createdAt || null,
+    stopReason: run.stop_reason || run.stop_requested_reason || null,
+    usageStatus: run.usage_status || "unknown",
+    costUsd: run.usage_status === "final" || run.usage_status === "partial"
+      ? Number(run.cost_usd || 0) : null,
   };
 }
 

@@ -96,6 +96,7 @@ export function useProofStream() {
       setApprovalBusy,
       setRunStatusById,
       setRunResultKindById,
+      setRunStopReasonById,
       setRunFocusById,
       setEditedPath,
       setSafeVerify,
@@ -161,19 +162,23 @@ export function useProofStream() {
     setApprovalBusy(false);
     const statuses: Record<string, string> = {};
     const resultKinds: Record<string, string | null | undefined> = {};
+    const stopReasons: Record<string, string | null | undefined> = {};
     const focuses: Record<string, string | null | undefined> = {};
     for (const r of detail.runs || []) {
       statuses[r.id] = r.status;
       resultKinds[r.id] = r.result_kind;
+      stopReasons[r.id] = r.stop_reason || r.stop_requested_reason;
       focuses[r.id] = r.focus_formalization_id;
     }
     if (active) {
       statuses[active.id] = active.status;
       resultKinds[active.id] = active.result_kind;
+      stopReasons[active.id] = active.stop_reason || active.stop_requested_reason;
       focuses[active.id] = active.focus_formalization_id;
     }
     setRunStatusById(statuses);
     setRunResultKindById(resultKinds);
+    setRunStopReasonById(stopReasons);
     setRunFocusById(focuses);
     setEditedPath(undefined);
     setSafeVerify(detail.safe_verify || null);
@@ -281,6 +286,7 @@ export function useProofStream() {
       setRunStatus,
       setRunStatusById,
       setRunResultKindById,
+      setRunStopReasonById,
       setCurrentRunId,
       setError,
     } = useProofSession.getState();
@@ -576,10 +582,12 @@ export function useProofStream() {
       eventSourceRef.current = null;
       let status: RunStatus = 'proved';
       let resultKind: string | null | undefined;
+      let stopReason: string | null | undefined;
       try {
         const payload = JSON.parse((event as MessageEvent).data || '{}');
         status = (payload.status as RunStatus) || 'proved';
         resultKind = payload.result_kind;
+        stopReason = payload.stop_reason;
       } catch {
         /* keep default */
       }
@@ -587,6 +595,7 @@ export function useProofStream() {
       setRunStatus(status);
       setRunStatusById((prev) => ({ ...prev, [runId]: status }));
       setRunResultKindById((prev) => ({ ...prev, [runId]: resultKind }));
+      setRunStopReasonById((prev) => ({ ...prev, [runId]: stopReason }));
       setCurrentRunId(undefined);
       setApprovals((prev) => prev.filter((a) => a.decision));
       setApprovalBusy(false);

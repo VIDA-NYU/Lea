@@ -8,6 +8,7 @@ import {
   getGithubImportBySlug,
   syncProjectFormalizationTargetsBySlug,
   parseSseFrame,
+  fetchApiRunUsage,
   runApiProofJob,
 } from "../companion/leaApiClient.mjs";
 
@@ -439,12 +440,90 @@ test("runApiProofJob: still queued at the deadline → times out and interrupts 
     baseUrl: "http://127.0.0.1:8001",
     message: "Formalize starved",
     timeoutMs: 40,
+    settleGraceMs: 30,
     busyRetryDelayMs: 5,
   });
 
   assert.equal(result.ok, false);
   assert.equal(result.timedOut, true);
   assert.ok(calls.some((c) => c.url.includes("/api/runs/run-w/interrupt") && c.method === "POST"));
+  assert.equal(result.usageStatus, "unknown");
+  assert.equal(result.costUsd, null);
+});
+
+test("runApiProofJob: timeout retains the final run cost and cause", async () => {
+  let interrupted = false;
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith("/api/runs") && options.method === "POST") return jsonResponse({ session_id: "sess-t", run_id: "run-t" });
+    if (url.endsWith("/run-t/interrupt")) {
+      assert.deepEqual(JSON.parse(options.body), { reason: "timeout", source: "companion" });
+      interrupted = true;
+      return jsonResponse({ status: "interrupting", stop_reason: "timeout" });
+    }
+    if (url.endsWith("/run-t/events")) return sseResponse([frame("queued", { position: 1 })]);
+    if (url.endsWith("/run-t")) return jsonResponse({ id: "run-t", status: interrupted ? "cancelled" : "pending",
+      stop_reason: interrupted ? "timeout" : null, input_tokens: 100, output_tokens: 40,
+      cost_usd: 0.037, usage_status: interrupted ? "final" : "partial", usage_revision: 2 });
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const result = await runApiProofJob({ fetchImpl, baseUrl: "http://adapter", message: "work",
+                                       timeoutMs: 25, settleGraceMs: 40, busyRetryDelayMs: 5 });
+  assert.equal(result.timedOut, true);
+  assert.equal(result.settling, false);
+  assert.equal(result.stopReason, "timeout");
+  assert.equal(result.costUsd, 0.037);
+  assert.equal(result.usageStatus, "final");
+});
+
+test("runApiProofJob: a completion that wins the timeout race is not paused", async () => {
+  let interrupted = false;
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith("/api/runs") && options.method === "POST") return jsonResponse({ session_id: "sess-r", run_id: "run-r" });
+    if (url.endsWith("/run-r/interrupt")) {
+      interrupted = true;
+      return jsonResponse({ status: "proved" });
+    }
+    if (url.endsWith("/run-r/events")) return sseResponse([frame("queued", { position: 1 })]);
+    if (url.endsWith("/run-r")) return jsonResponse({ id: "run-r", status: interrupted ? "proved" : "running",
+      result_kind: interrupted ? "proved" : null, input_tokens: 100, output_tokens: 40,
+      cost_usd: 0.037, usage_status: interrupted ? "final" : "partial", usage_revision: 2 });
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const result = await runApiProofJob({ fetchImpl, baseUrl: "http://adapter", message: "work",
+                                       timeoutMs: 25, settleGraceMs: 40, busyRetryDelayMs: 5 });
+  assert.equal(result.ok, true);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.recoverable, false);
+  assert.equal(result.doneStatus, "proved");
+});
+
+test("runApiProofJob: old adapter user_stop does not erase the companion timeout", async () => {
+  let interrupted = false;
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith("/api/runs") && options.method === "POST") return jsonResponse({ session_id: "sess-old", run_id: "run-old" });
+    if (url.endsWith("/run-old/interrupt")) {
+      interrupted = true;
+      return jsonResponse({ status: "interrupting" });
+    }
+    if (url.endsWith("/run-old/events")) return sseResponse([frame("queued", { position: 1 })]);
+    if (url.endsWith("/run-old")) return jsonResponse({ id: "run-old", status: interrupted ? "cancelled" : "pending",
+      stop_reason: "user_stop", cost_usd: 0 });
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const result = await runApiProofJob({ fetchImpl, baseUrl: "http://adapter", message: "work",
+                                       timeoutMs: 25, settleGraceMs: 40, busyRetryDelayMs: 5 });
+  assert.equal(result.stopReason, "timeout");
+  assert.equal(result.usageStatus, "unknown");
+});
+
+test("missing run usage cannot borrow another run's or session's total", async () => {
+  const fetchImpl = async (url) => url.endsWith("/api/runs/missing")
+    ? jsonResponse({ detail: "not found" }, false, 404)
+    : jsonResponse({ usage: { cost_usd: 0.25 }, runs: [{ id: "other", cost_usd: 0.25 }] });
+  const result = await fetchApiRunUsage({ fetchImpl, baseUrl: "http://adapter",
+                                         sessionId: "s", runId: "missing" });
+  assert.equal(result.costUsd, null);
+  assert.equal(result.usageStatus, "unknown");
 });
 
 test("runApiProofJob: an HTTP rejection of the attach fails immediately (no retry)", async () => {

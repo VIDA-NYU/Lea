@@ -10,7 +10,7 @@ from app import db, runbroker, runregistry, store
 from app.config import LeaConfig
 from app.runregistry import RunRegistry
 from app.routes import runs as runs_route
-from app.routes.runs import NewFormalizationRequest, RunRequest
+from app.routes.runs import InterruptRequest, NewFormalizationRequest, RunRequest
 
 
 class _Req:
@@ -285,13 +285,12 @@ def test_create_run_ignores_invalid_slug(tmp_path, monkeypatch):
     assert store.list_projects() == []
 
 
-def test_get_run_row_returns_only_cheap_outcome_columns(tmp_path, monkeypatch):
+def test_get_run_row_returns_cheap_outcome_and_accounting_columns(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     started = runs_route.create_run(RunRequest(message="prove it", autonomous=True))
     run_id = started["run_id"]
-    assert set(runs_route.get_run_row(run_id)) == {
-        "id", "status", "result_kind", "result_detail"
-    }
+    assert {"id", "status", "result_kind", "result_detail", "stop_reason",
+            "stop_requested_reason", "usage_status", "usage_revision", "cost_usd"} <= set(runs_route.get_run_row(run_id))
     store.update_run(run_id, "proved", result_kind="proved", result_detail="qed")
     row = runs_route.get_run_row(run_id)
     assert row["status"] == "proved"
@@ -401,9 +400,10 @@ def test_interrupt_pending_unadmitted_run_finalizes_it(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     started = runs_route.create_run(RunRequest(message="prove it", autonomous=True))
     broker = runbroker.create(started["run_id"])
-    assert runs_route.interrupt_run(started["run_id"]) == {"status": "interrupted"}
+    assert runs_route.interrupt_run(started["run_id"]) == {
+        "status": "interrupted", "stop_reason": "user_stop", "usage_status": "final"}
     run = store.get_run(started["run_id"])
-    assert run["status"] == "failed"
+    assert run["status"] == "cancelled"
     assert broker.closed
 
 
@@ -423,8 +423,8 @@ def test_interrupt_cancels_an_admitted_run_that_has_not_started(tmp_path, monkey
     started = runs_route.create_run(RunRequest(message="prove it", autonomous=True))
     reg.try_admit(started["run_id"], started["session_id"])
 
-    assert runs_route.interrupt_run(started["run_id"]) == {"status": "interrupted"}
-    assert store.get_run(started["run_id"])["status"] == "failed"
+    assert runs_route.interrupt_run(started["run_id"])["status"] == "interrupted"
+    assert store.get_run(started["run_id"])["status"] == "cancelled"
     # ...and the driver, arriving late, must decline to run it.
     assert store.claim_pending_run(started["run_id"]) is False
 
@@ -436,5 +436,30 @@ def test_interrupt_of_an_already_running_run_stays_cooperative(tmp_path, monkeyp
     started = runs_route.create_run(RunRequest(message="prove it", autonomous=True))
     assert store.claim_pending_run(started["run_id"]) is True  # the driver got there first
 
-    assert runs_route.interrupt_run(started["run_id"]) == {"status": "interrupting"}
+    assert runs_route.interrupt_run(started["run_id"]) == {
+        "status": "interrupting", "stop_reason": "user_stop", "usage_status": "pending"}
     assert store.get_run(started["run_id"])["status"] == "running"
+
+
+def test_queued_timeout_has_reason_and_confirmed_zero_usage(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    run_id = runs_route.create_run(RunRequest(message="queued"))["run_id"]
+    result = runs_route.interrupt_run(run_id, InterruptRequest(reason="timeout", source="companion"))
+    assert result == {"status": "interrupted", "stop_reason": "timeout", "usage_status": "final"}
+    row = store.get_run_status(run_id)
+    assert row["status"] == "cancelled"
+    assert row["cost_usd"] == 0
+    assert row["usage_revision"] == 1
+    assert runs_route._done_payload(row)["stop_reason"] == "timeout"
+
+
+def test_first_stop_reason_wins_and_terminal_completion_survives(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    run_id = runs_route.create_run(RunRequest(message="race"))["run_id"]
+    assert store.claim_pending_run(run_id)
+    assert runs_route.interrupt_run(run_id, InterruptRequest(reason="timeout", source="companion"))["stop_reason"] == "timeout"
+    assert runs_route.interrupt_run(run_id)["stop_reason"] == "timeout"
+    store.update_run(run_id, "proved", result_kind="proved", usage_status="final")
+    result = runs_route.interrupt_run(run_id, InterruptRequest(reason="user_stop"))
+    assert result["status"] == "proved"
+    assert store.get_run(run_id)["stop_reason"] is None

@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import pytest
 
 from app import db, store
 
@@ -904,8 +905,22 @@ def test_only_one_caller_can_claim_a_pending_run(tmp_path, monkeypatch):
     other = store.create_run(session["id"], "m", None, 3)
     assert store.fail_pending_run(other["id"], "interrupted before start") is True
     assert store.claim_pending_run(other["id"]) is False, "the driver must decline"
-    assert store.get_run(other["id"])["status"] == "failed"
+    assert store.get_run(other["id"])["status"] == "cancelled"
     assert store.get_run(other["id"])["result_detail"] == "interrupted before start"
+
+
+def test_usage_checkpoints_reject_old_revisions(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "usage.sqlite3")
+    db.init_db()
+    session = store.create_session("usage")
+    run = store.create_run(session["id"], "m", None, 3)
+    assert store.claim_pending_run(run["id"])
+    assert store.checkpoint_run_usage(run["id"], 10, 2, 0.02, 2)
+    assert not store.checkpoint_run_usage(run["id"], 1, 1, 0.001, 1)
+    row = store.get_run_status(run["id"])
+    assert row["usage_status"] == "partial"
+    assert row["cost_usd"] == pytest.approx(0.02)
+    assert store.total_spend_usd() == pytest.approx(0.02)
 
 
 def test_concurrent_claims_produce_exactly_one_winner(tmp_path, monkeypatch):
