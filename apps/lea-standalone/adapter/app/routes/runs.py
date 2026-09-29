@@ -9,8 +9,10 @@ in-memory broker has already been retired.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -27,6 +29,8 @@ from .. import runbroker
 from .. import runregistry
 from .. import settings as settings_service
 from .. import store
+from .. import runtime
+from .. import recovery
 
 router = APIRouter()
 
@@ -43,6 +47,8 @@ class NewFormalizationRequest(BaseModel):
 
 class RunRequest(BaseModel):
     message: str
+    idempotency_key: str | None = None
+    timeout_seconds: int | None = None
     session_id: str | None = None
     # The interactive picker sends the model explicitly so each run snapshots the
     # user's choice. Clients that omit it (including older Overleaf companions)
@@ -85,10 +91,15 @@ class InterruptRequest(BaseModel):
     source: str = "user"
 
 
-def sse(event_type: str, payload: dict, seq: int | None = None) -> str:
+class ResumeRequest(BaseModel):
+    acknowledge_uncertainty: bool = False
+    idempotency_key: str
+
+
+def sse(event_type: str, payload: dict, seq: int | None = None, attempt_id: str | None = None) -> str:
     # A monotonic `id:` lets the browser's native EventSource reconnect resume via
     # `Last-Event-ID` (no re-replay). Manual reattach omits it and replays from 0.
-    prefix = f"id: {seq}\n" if seq is not None else ""
+    prefix = f"id: {attempt_id or 'pending'}:{seq}\n" if seq is not None else ""
     return f"{prefix}event: {event_type}\ndata: {json.dumps(payload)}\n\n"
 
 
@@ -99,6 +110,8 @@ def _request_cursor(request: Request) -> int:
     pass ``?since=N``. Otherwise replay the broker from its first event.
     """
     last = request.headers.get("last-event-id")
+    if last and ":" in last:
+        last = last.rsplit(":", 1)[-1]
     if last and last.isdigit():
         return int(last)
     since = request.query_params.get("since")
@@ -114,19 +127,21 @@ def _done_payload(run: dict) -> dict:
     if run.get("stop_reason"):
         payload["stop_reason"] = run["stop_reason"]
     payload["recoverable"] = bool(run.get("recoverable"))
+    for key in ("attempt_id", "recovery_state", "recovery_reason", "checkpoint_at"):
+        payload[key] = run.get(key)
     for key in ("stop_requested_reason", "input_tokens", "output_tokens", "cost_usd",
                 "usage_status", "usage_revision", "usage_updated_at"):
         payload[key] = run.get(key)
     return payload
 
 
-async def _subscribe(broker: runbroker.RunBroker, cursor: int):
+async def _subscribe(broker: runbroker.RunBroker, cursor: int, attempt_id: str | None = None):
     """Replay after ``cursor`` and follow a live broker through ``done``."""
     while True:
         pending = broker.events_after(cursor)
         for event in pending:
             cursor = event["seq"]
-            yield sse(event["type"], event["payload"], seq=event["seq"])
+            yield sse(event["type"], event["payload"], seq=event["seq"], attempt_id=attempt_id)
             if event["type"] == "done":
                 return
         if broker.closed and not broker.events_after(cursor):
@@ -153,6 +168,24 @@ def create_run(request: RunRequest) -> dict:
     message = request.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message is required")
+    request_hash = hashlib.sha256(json.dumps(
+        request.model_dump(exclude={"idempotency_key", "timeout_seconds"}),
+        sort_keys=True, default=str,
+    ).encode()).hexdigest()
+    if request.idempotency_key:
+        prior = store.get_run_submission(request.idempotency_key)
+        if prior:
+            if (prior["run"].get("client_request_hash") not in {None, request_hash} or
+                    not prior["message"] or prior["message"]["content"] != message or
+                    (request.session_id and request.session_id != prior["session"]["id"])):
+                raise HTTPException(status_code=409, detail="Idempotency key belongs to a different request")
+            return _creation_response(prior)
+    if not runtime.accepting_work():
+        raise HTTPException(status_code=503, detail={"error": "adapter_draining",
+                                                     "message": "Adapter is waiting to restart."},
+                            headers={"Retry-After": "5"})
+    if request.timeout_seconds is not None and request.timeout_seconds < 1:
+        raise HTTPException(status_code=422, detail="timeout_seconds must be positive")
 
     config = load_config()
     if settings_service.spend_limit_reached(config.max_spend_usd):
@@ -238,6 +271,10 @@ def create_run(request: RunRequest) -> dict:
             purpose=purpose,
             source_bundle=request.source_bundle,
             allow_source_pause=request.allow_source_pause,
+            client_request_id=request.idempotency_key,
+            client_request_hash=request_hash if request.idempotency_key else None,
+            deadline_at=(datetime.now(timezone.utc) + timedelta(seconds=request.timeout_seconds)).isoformat()
+            if request.timeout_seconds is not None else None,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -247,7 +284,7 @@ def create_run(request: RunRequest) -> dict:
     run = bundle["run"]
     user_message = bundle["message"]
     project_id = session.get("project_id")
-    if project_error and not project_id:
+    if bundle.get("created", True) and project_error and not project_id:
         # B2: persisted, not streamed — this endpoint returns before any SSE stream is
         # attached, so there is no live channel yet. The client picks it up from
         # `session_detail` on attach, which is also how it survives a reload. Recorded
@@ -261,7 +298,7 @@ def create_run(request: RunRequest) -> dict:
             context={"project_slug": request.project_slug},
         ))
     raw_formalization = bundle.get("formalization")
-    if raw_formalization is not None and project_id and config.lea_root:
+    if bundle.get("created", True) and raw_formalization is not None and project_id and config.lea_root:
         project_for_adoption = store.get_project(project_id)
         if project_for_adoption:
             github_import_service.try_adopt_imported_declaration(
@@ -269,24 +306,32 @@ def create_run(request: RunRequest) -> dict:
                 raw_formalization,
                 config.lea_root / "workspace" / "proofs",
             )
-    bridge.enqueue_run(run["id"])
-    formalization = (
-        formalization_service.decorate([raw_formalization])[0]
-        if raw_formalization is not None
-        else None
-    )
+    if bundle.get("created", True):
+        bridge.enqueue_run(run["id"])
+    return _creation_response(bundle)
+
+
+def _creation_response(bundle: dict) -> dict:
+    session = bundle["session"]
+    run = bundle["run"]
+    raw_formalization = bundle.get("formalization")
+    formalization = (formalization_service.decorate([raw_formalization])[0]
+                     if raw_formalization is not None else None)
+    project_id = session.get("project_id")
     project = store.get_project(project_id) if project_id else None
     return {
         "session_id": session["id"],
         "run_id": run["id"],
-        "model": selected_model,
-        "message": user_message,
+        "model": run.get("model"),
+        "message": bundle.get("message"),
         "focus_formalization_id": run.get("focus_formalization_id"),
         "formalization": formalization,
         "project_id": project_id,
         "project_slug": project["slug"] if project else None,
         "project_namespace": project["namespace"] if project else None,
         "queue_position": store.queue_position(run["id"]),
+        "deadline_at": run.get("deadline_at"),
+        "attempt_id": run.get("attempt_id"),
     }
 
 
@@ -296,7 +341,62 @@ def get_run_row(run_id: str) -> dict:
     row = store.get_run_status(run_id)
     if not row:
         raise HTTPException(status_code=404, detail="Run not found")
+    row["available_recovery_action"] = (
+        "resume" if row.get("recovery_state") == "review" and row.get("recoverable") else None
+    )
     return row
+
+
+@router.post("/api/runs/{run_id}/resume")
+def resume_run(run_id: str, request: ResumeRequest) -> dict:
+    if not request.acknowledge_uncertainty:
+        raise HTTPException(status_code=409, detail="Acknowledge the possible prior model cost or tool effect before resuming")
+    prior = store.get_run_by_client_request_id(request.idempotency_key)
+    if prior:
+        if prior.get("resumes_run_id") != run_id:
+            raise HTTPException(status_code=409, detail="Idempotency key belongs to a different resume")
+        return {"run_id": prior["id"], "session_id": prior["session_id"],
+                "resumes_run_id": run_id, "queue_position": store.queue_position(prior["id"])}
+    if not runtime.accepting_work():
+        raise HTTPException(status_code=503, detail={"error": "adapter_draining"},
+                            headers={"Retry-After": "5"})
+    old = store.get_run(run_id)
+    if not old:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if old["status"] != "cancelled" or old.get("recovery_state") != "review":
+        raise HTTPException(status_code=409, detail="Run is not awaiting recovery review")
+    if old.get("deadline_at") and datetime.fromisoformat(old["deadline_at"]) <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=409, detail="The original run deadline has expired")
+    from .. import lea_status_store
+    old_context = lea_status_store.context(run_id)
+    safe_conversation = recovery.load_safe_conversation(run_id)
+    original_request = bridge._resolve_task(old) if safe_conversation is None else None
+    message = ("Resume from the saved progress of interrupted run " + run_id +
+               ". Inspect the current files and recorded action history before taking any new action. "
+               "An earlier model request or tool effect may have completed without a durable response; "
+               "do not assume it failed or repeat a mutating action blindly.")
+    if original_request:
+        message += "\n\nOriginal request:\n" + original_request
+    turns = int((recovery.load_checkpoint(run_id) or ({}, {}))[0].get("turn", 0))
+    allowance = old.get("max_turns")
+    remaining = max(0, int(allowance) - turns) if allowance is not None else None
+    if remaining == 0:
+        raise HTTPException(status_code=409, detail="The original turn allowance is exhausted")
+    bundle = store.create_run_bundle(
+        message=message, session_id=old["session_id"], project_id=old.get("project_id"),
+        session_origin="ui", session_origin_url=None, model=old.get("model") or load_config().model,
+        provider=old.get("provider"), max_turns=remaining, autonomous=bool(old.get("autonomous")),
+        focus_formalization_id=old.get("focus_formalization_id"),
+        focus_source_hash=old.get("focus_source_hash"), purpose="overleaf_continuation" if old_context else "general",
+        source_bundle=old_context.get("source_bundle") if old_context else None,
+        allow_source_pause=bool(old.get("allow_source_pause")),
+        client_request_id=request.idempotency_key, resumes_run_id=run_id,
+        deadline_at=old.get("deadline_at"),
+    )
+    if bundle.get("created", True):
+        bridge.enqueue_run(bundle["run"]["id"])
+    return {"run_id": bundle["run"]["id"], "session_id": bundle["session"]["id"],
+            "resumes_run_id": run_id, "queue_position": store.queue_position(bundle["run"]["id"])}
 
 
 @router.post("/api/runs/{run_id}/approvals/{approval_id}")
@@ -366,6 +466,14 @@ async def run_events(run_id: str, request: Request) -> StreamingResponse:
         raise HTTPException(status_code=404, detail="Run not found")
 
     cursor = _request_cursor(request)
+    old_cursor = request.headers.get("last-event-id") or request.query_params.get("since") or ""
+    attempt_id = run.get("attempt_id")
+    stale_attempt = bool(old_cursor) and (
+        (":" in old_cursor and old_cursor.rsplit(":", 1)[0] != (attempt_id or "pending"))
+        or (":" not in old_cursor and bool(attempt_id))
+    )
+    if stale_attempt:
+        cursor = 0
     broker = runbroker.get(run_id)
     if broker is None:
         # Terminal rows normally land here because run_lea retires the broker.
@@ -375,9 +483,12 @@ async def run_events(run_id: str, request: Request) -> StreamingResponse:
     queue_position = store.queue_position(run_id)
 
     async def stream_events():
+        if stale_attempt:
+            yield sse("resync", {"run_id": run_id, "attempt_id": attempt_id,
+                                  "reason": "execution_attempt_changed", "reload": True})
         if queue_position is not None and cursor == 0:
             yield sse("queued", {"run_id": run_id, "position": queue_position})
-        async for frame in _subscribe(broker, cursor):
+        async for frame in _subscribe(broker, cursor, attempt_id):
             yield frame
 
     return StreamingResponse(stream_events(), media_type="text/event-stream")

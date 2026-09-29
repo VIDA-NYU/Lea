@@ -15,11 +15,13 @@ from pathlib import Path
 from queue import Empty, Full, Queue
 import select
 import subprocess
+import sys
 import threading
 import time
 from uuid import uuid4
 
 from .check_runtime import CheckBudget, CheckFailure, lsp_disabled, stop_process
+from . import process_ownership
 
 _RESTART_AFTER = int(os.environ.get("LEA_LSP_RESTART_AFTER", "500"))
 _CHECK_TIMEOUT = float(os.environ.get("LEAN_CHECK_TIMEOUT", "900"))
@@ -62,18 +64,57 @@ class _Transport:
             if self._closed:
                 self.failure = CheckFailure("cancelled", "Lean transport was shut down", retryable=False)
                 return False
+            lease = None
+            gate_read = gate_write = None
             try:
+                lease = process_ownership.prepare()
+                command = self._command
+                pass_fds = ()
+                if lease is not None:
+                    # The child waits for one byte before execing Lean. If the
+                    # adapter crashes before its ownership receipt is durable,
+                    # EOF makes the child exit without starting any workers.
+                    gate_read, gate_write = os.pipe()
+                    startup_gate = (
+                        "import os,sys\n"
+                        "fd=int(sys.argv[1])\n"
+                        "signal=os.read(fd,1)\n"
+                        "os.close(fd)\n"
+                        "if signal != b'1': os._exit(1)\n"
+                        "os.execvp(sys.argv[2],sys.argv[2:])\n"
+                    )
+                    command = [sys.executable, "-c", startup_gate,
+                               str(gate_read), *self._command]
+                    pass_fds = (lease.fd, gate_read)
                 proc = subprocess.Popen(
-                    self._command, cwd=self._cwd, stdin=subprocess.PIPE,
+                    command, cwd=self._cwd, stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
                     start_new_session=True,
+                    pass_fds=pass_fds,
                 )
                 self._proc = proc
+                if gate_read is not None:
+                    os.close(gate_read)
+                    gate_read = None
+                process_ownership.register(proc.pid, lease)
                 os.set_blocking(proc.stdin.fileno(), False)
+                if gate_write is not None:
+                    os.write(gate_write, b"1")
             except OSError as exc:
                 self.failure = CheckFailure("executable_missing" if isinstance(exc, FileNotFoundError)
                                             else "startup", str(exc), phase="initialization",
                                             retryable=not isinstance(exc, FileNotFoundError))
+            except Exception as exc:
+                if self._proc is not None:
+                    stop_process(self._proc)
+                self.failure = CheckFailure("startup", str(exc), phase="initialization")
+            finally:
+                for gate in (gate_read, gate_write):
+                    if gate is not None:
+                        os.close(gate)
+                process_ownership.release_parent(lease, spawned=self._proc is not None)
+                if self.failure and lease is not None:
+                    lease.path.unlink(missing_ok=True)
             if not self.failure:
                 for fn in (self._reader, self._drain_stderr):
                     thread = threading.Thread(target=fn, args=(proc,), daemon=True)
@@ -94,8 +135,9 @@ class _Transport:
             if self._ended:
                 return
             self._ended = True
-            self.failure = exc if isinstance(exc, CheckFailure) else CheckFailure(
-                "transport", f"{type(exc).__name__}: {exc}", **self.evidence())
+            if self.failure is None:
+                self.failure = exc if isinstance(exc, CheckFailure) else CheckFailure(
+                    "transport", f"{type(exc).__name__}: {exc}", **self.evidence())
         if self._on_message:
             self._on_message(None)
 
@@ -143,6 +185,7 @@ class _Transport:
             if proc is None:
                 return
             stop_process(proc, deadline=deadline)
+            process_ownership.unregister(proc.pid)
             self._fail(CheckFailure("transport", "Lean transport closed", **self.evidence()))
             if self.failure:
                 self.failure.evidence.update(self.evidence())

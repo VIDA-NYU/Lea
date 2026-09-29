@@ -24,7 +24,6 @@ import { restoreFormalizationSelection } from '../lib/formalizations.mjs';
 // the Overleaf companion's already-proven retry loop.
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
-const RECONNECT_MAX_ATTEMPTS = 20;
 
 // Decorrelated-ish jitter: full exponential value minus up to 25%, so a fleet of
 // tabs that all dropped at once don't resynchronize onto the same retry tick.
@@ -67,6 +66,29 @@ export function useProofStream() {
     eventSourceRef.current?.close();
   }, []);
 
+  useEffect(() => {
+    const poll = async () => {
+      if (document.visibilityState === 'hidden' || !useProofSession.getState().isRunning) return;
+      try {
+        const response = await fetch('/api/health');
+        if (!response.ok) return;
+        const health = await response.json() as { lifecycle_state?: string };
+        if (health.lifecycle_state === 'draining') {
+          useProofSession.getState().setReconnecting('Waiting to restart…');
+        } else if (health.lifecycle_state === 'recovering') {
+          useProofSession.getState().setReconnecting('Recovering saved progress…');
+        } else if (health.lifecycle_state === 'ready' && eventSourceRef.current?.readyState === EventSource.OPEN) {
+          const current = useProofSession.getState().reconnecting;
+          if (current === 'Waiting to restart…' || current === 'Recovering saved progress…') {
+            useProofSession.getState().setReconnecting(undefined);
+          }
+        }
+      } catch { /* Connection errors are handled by the stream reconnect path. */ }
+    };
+    const timer = setInterval(() => { void poll(); }, 5000);
+    return () => clearInterval(timer);
+  }, []);
+
   const closeStream = () => {
     // Cancel any pending backoff so a switched-away run can't reconnect underneath
     // the newly-opened session. Attempt count is left to reset on a real open (or
@@ -97,6 +119,7 @@ export function useProofStream() {
       setRunStatusById,
       setRunResultKindById,
       setRunStopReasonById,
+      setRunRecoveryById,
       setRunFocusById,
       setEditedPath,
       setSafeVerify,
@@ -164,22 +187,26 @@ export function useProofStream() {
     const resultKinds: Record<string, string | null | undefined> = {};
     const stopReasons: Record<string, string | null | undefined> = {};
     const focuses: Record<string, string | null | undefined> = {};
+    const recoveries: Record<string, { state?: string | null; reason?: string | null }> = {};
     for (const r of detail.runs || []) {
       statuses[r.id] = r.status;
       resultKinds[r.id] = r.result_kind;
       stopReasons[r.id] = r.stop_reason || r.stop_requested_reason;
       focuses[r.id] = r.focus_formalization_id;
+      recoveries[r.id] = { state: r.recovery_state, reason: r.recovery_reason };
     }
     if (active) {
       statuses[active.id] = active.status;
       resultKinds[active.id] = active.result_kind;
       stopReasons[active.id] = active.stop_reason || active.stop_requested_reason;
       focuses[active.id] = active.focus_formalization_id;
+      recoveries[active.id] = { state: active.recovery_state, reason: active.recovery_reason };
     }
     setRunStatusById(statuses);
     setRunResultKindById(resultKinds);
     setRunStopReasonById(stopReasons);
     setRunFocusById(focuses);
+    setRunRecoveryById(recoveries);
     setEditedPath(undefined);
     setSafeVerify(detail.safe_verify || null);
     setVerifySurface(null);
@@ -215,19 +242,10 @@ export function useProofStream() {
   // settles quietly if it finished while we were away; gives up with an error
   // banner past the attempt cap. Reads setters via getState() to stay stale-free.
   const scheduleReconnect = (runId: string, sessionId: string) => {
-    const { setReconnecting, setError, setIsRunning, setCurrentRunId } =
-      useProofSession.getState();
+    const { setReconnecting } = useProofSession.getState();
     const prev = reconnectRef.current;
     const attempt = prev.runId === runId ? prev.count + 1 : 1;
     reconnectRef.current = { runId, count: attempt };
-    if (attempt > RECONNECT_MAX_ATTEMPTS) {
-      reconnectRef.current = { runId: '', count: 0 };
-      setReconnecting(undefined);
-      setIsRunning(false);
-      setCurrentRunId(undefined);
-      setError('Lost connection to the Lea backend.');
-      return;
-    }
     // B3: a browser EventSource cannot read an HTTP status, so the adapter's honest
     // capacity 409 ("Lea is at capacity, try again shortly") reaches us as a bare
     // `onerror` — indistinguishable from a dropped connection. But the run row tells
@@ -237,8 +255,8 @@ export function useProofStream() {
     const queued = useProofSession.getState().runStatus === 'pending';
     setReconnecting(
       queued
-        ? `Waiting for a free run slot… (attempt ${attempt}/${RECONNECT_MAX_ATTEMPTS})`
-        : `Reconnecting to the live run… (attempt ${attempt}/${RECONNECT_MAX_ATTEMPTS})`,
+        ? 'Waiting for a free run slot…'
+        : 'Waiting for the adapter to reconnect…',
     );
     reconnectTimerRef.current = setTimeout(() => {
       reconnectTimerRef.current = null;
@@ -268,6 +286,10 @@ export function useProofStream() {
     eventSourceRef.current = source;
     const liveId = `live-${runId}`;
     let sawDone = false;
+    source.addEventListener('resync', () => {
+      source.close();
+      getSession(sessionId).then(applyDetail).catch(() => scheduleReconnect(runId, sessionId));
+    });
 
     // A real open means any prior backoff succeeded: reset it and drop the
     // reconnecting chip, so a later drop starts fresh from the base delay.
@@ -583,11 +605,15 @@ export function useProofStream() {
       let status: RunStatus = 'proved';
       let resultKind: string | null | undefined;
       let stopReason: string | null | undefined;
+      let recoveryState: string | null | undefined;
+      let recoveryReason: string | null | undefined;
       try {
         const payload = JSON.parse((event as MessageEvent).data || '{}');
         status = (payload.status as RunStatus) || 'proved';
         resultKind = payload.result_kind;
         stopReason = payload.stop_reason;
+        recoveryState = payload.recovery_state;
+        recoveryReason = payload.recovery_reason;
       } catch {
         /* keep default */
       }
@@ -596,6 +622,9 @@ export function useProofStream() {
       setRunStatusById((prev) => ({ ...prev, [runId]: status }));
       setRunResultKindById((prev) => ({ ...prev, [runId]: resultKind }));
       setRunStopReasonById((prev) => ({ ...prev, [runId]: stopReason }));
+      useProofSession.getState().setRunRecoveryById((prev) => ({
+        ...prev, [runId]: { state: recoveryState, reason: recoveryReason },
+      }));
       setCurrentRunId(undefined);
       setApprovals((prev) => prev.filter((a) => a.decision));
       setApprovalBusy(false);

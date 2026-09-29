@@ -387,6 +387,18 @@ def lean_check_runtime(session_id: str) -> dict:
 
 @router.post("/api/sessions/{session_id}/lean-check")
 def lean_check_session(session_id: str, request: PathRequest) -> dict:
+    from .. import runtime
+    try:
+        with runtime.operation():
+            return _lean_check_session(session_id, request)
+    except RuntimeError as exc:
+        if str(exc) == "adapter_draining":
+            raise HTTPException(status_code=503, detail={"error": "adapter_draining"},
+                                headers={"Retry-After": "5"}) from None
+        raise
+
+
+def _lean_check_session(session_id: str, request: PathRequest) -> dict:
     """Standalone `lean_check` on a session's working file (LSP fast path, no run,
     D2). Back-fills the verdict onto that file's latest code_step so the canvas +
     derived session status reflect it.

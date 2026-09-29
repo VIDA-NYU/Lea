@@ -46,6 +46,11 @@ export interface RunSummary {
   usage_status?: 'pending' | 'partial' | 'final' | 'unknown' | null;
   usage_revision?: number;
   cost_usd?: number;
+  attempt_id?: string | null;
+  recovery_state?: 'recovering' | 'review' | null;
+  recovery_reason?: string | null;
+  checkpoint_at?: string | null;
+  available_recovery_action?: 'resume' | null;
 }
 // ── Per-tool approval gate (D19) ──────────────────────────────────────────────
 export type GatedTool = 'bash' | 'write_file' | 'edit_file';
@@ -78,6 +83,7 @@ export interface SessionSummary {
   // background run is live even when the derived `status` reads a settled verdict
   // (a re-run of an already-proved session), so the sidebar can show a running dot.
   active_run_count?: number;
+  latest_recovery_state?: 'recovering' | 'review' | null;
   primary_model?: string | null;
   models: string[];
   latest_check_status?: 'ok' | 'error' | 'unchecked' | null;
@@ -649,6 +655,8 @@ export interface ActiveRun {
   result_detail?: string | null;
   focus_formalization_id?: string | null;
   focus_source_hash?: string | null;
+  recovery_state?: 'recovering' | 'review' | null;
+  recovery_reason?: string | null;
 }
 
 /**

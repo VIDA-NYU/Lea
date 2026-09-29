@@ -43,6 +43,7 @@ import {
   getFormalization,
   listProjectFormalizations,
   interruptRun,
+  resumeInterruptedRun,
   leanCheckSession,
   submitApproval,
   verifySession,
@@ -774,6 +775,16 @@ export default function App() {
             onDraftChange={setDraft}
             onSubmit={handleSubmit}
             onInterrupt={handleInterrupt}
+            onResumeRun={async (runId) => {
+              if (!window.confirm('The interrupted model request may already have incurred cost, or a tool may already have acted. Review the saved progress and current files before continuing. Resume in a new run?')) return;
+              try {
+                const result = await resumeInterruptedRun(runId);
+                await loadSession(result.session_id);
+                await refreshSessions();
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err));
+              }
+            }}
             canvasCollapsed={canvasCollapsed}
             onToggleCanvas={() => setCanvasCollapsed((v) => !v)}
             onRenameSession={handleRenameSession}

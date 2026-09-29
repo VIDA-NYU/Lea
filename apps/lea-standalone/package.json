@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "node scripts/dev.mjs",
+    "dev": "node ../../scripts/supervisor.mjs ui",
     "doctor": "node scripts/doctor.mjs",
     "reset:local": "node scripts/reset-local-state.mjs",
     "test:frontend": "node --test src/app/*.test.mjs",

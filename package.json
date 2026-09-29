@@ -8,7 +8,7 @@
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "update-lean-deps": "node scripts/setup.mjs --refresh-lean-deps",
-    "start:adapter": "npm run start:api -w apps/lea-standalone",
+    "start:adapter": "node scripts/supervisor.mjs adapter",
     "dev:overleaf": "npm start -w apps/overleaf-extension",
     "dev:ui": "npm run dev -w apps/lea-standalone",
     "doctor": "npm run doctor -w apps/overleaf-extension && npm run doctor -w apps/lea-standalone",

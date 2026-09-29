@@ -599,12 +599,13 @@ test("runApiProofJob: stream drops with no done frame, run row is terminal → a
   assert.equal(result.costUsd, 0.002);
 });
 
-test("runApiProofJob: stream drops and the adapter is unreachable → gives up after the miss cap and interrupts", async () => {
+test("runApiProofJob: adapter outage keeps the run identity until its deadline", async () => {
   const calls = [];
+  const originalDeadline = new Date(Date.now() + 50).toISOString();
   const fetchImpl = async (url, options = {}) => {
     calls.push({ url, method: options.method || "GET" });
     if (url.endsWith("/api/runs") && options.method === "POST") {
-      return jsonResponse({ session_id: "sess-u", run_id: "run-u" });
+      return jsonResponse({ session_id: "sess-u", run_id: "run-u", deadline_at: originalDeadline });
     }
     if (url.includes("/api/runs/run-u/interrupt")) {
       return jsonResponse({ status: "interrupted" });
@@ -628,23 +629,23 @@ test("runApiProofJob: stream drops and the adapter is unreachable → gives up a
     fetchImpl,
     baseUrl: "http://127.0.0.1:8001",
     message: "Formalize unreachable",
-    timeoutMs: 5000,
+    timeoutMs: 5000, // a retry must honor the earlier adapter deadline
     busyRetryDelayMs: 3,
+    settleGraceMs: 20,
   });
 
   assert.equal(result.ok, false);
-  // It stopped on the miss cap, not the timeout.
-  assert.equal(result.timedOut, false);
+  assert.equal(result.timedOut, true);
   assert.ok(
     calls.some((c) => c.url.includes("/api/runs/run-u/interrupt") && c.method === "POST"),
-    "should best-effort interrupt the run it is abandoning"
+    "should request interruption only when the original deadline expires"
   );
-  // Bounded: one attach + one row read per miss, capped at 5 misses.
+  // The time budget bounds retries even when the adapter is unavailable.
   const eventAttempts = calls.filter((c) => c.url.includes("/events")).length;
-  assert.ok(eventAttempts <= 5, `expected <= 5 attach attempts, got ${eventAttempts}`);
+  assert.ok(eventAttempts > 0);
 });
 
-test("runApiProofJob: a malformed run row without status is bounded like a failed status read", async () => {
+test("runApiProofJob: a malformed run row remains unconfirmed until the deadline", async () => {
   const calls = [];
   const fetchImpl = async (url, options = {}) => {
     calls.push({ url, method: options.method || "GET" });
@@ -670,12 +671,13 @@ test("runApiProofJob: a malformed run row without status is bounded like a faile
     fetchImpl,
     baseUrl: "http://127.0.0.1:8001",
     message: "Formalize malformed row",
-    timeoutMs: 5000,
+    timeoutMs: 40,
     busyRetryDelayMs: 3,
+    settleGraceMs: 20,
   });
 
   assert.equal(result.ok, false);
-  assert.equal(result.timedOut, false);
+  assert.equal(result.timedOut, true);
   assert.ok(calls.some((c) => c.url.includes("/interrupt")));
-  assert.ok(calls.filter((c) => c.url.includes("/events")).length <= 5);
+  assert.ok(calls.filter((c) => c.url.includes("/events")).length > 0);
 });

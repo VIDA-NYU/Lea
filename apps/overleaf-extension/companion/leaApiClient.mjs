@@ -416,6 +416,8 @@ export async function startApiRun({
   purpose = "general",
   sourceBundle = null,
   allowSourcePause = false,
+  idempotencyKey = null,
+  timeoutSeconds = null,
 }) {
   // `autonomous: true` tells the adapter to run with no per-tool approval gate and
   // the non-interactive `default` prompt variant, so the Overleaf job formalizes
@@ -440,6 +442,8 @@ export async function startApiRun({
     if (!sourceBundle?.bundleHash) return { ok: false, status: 422, error: "Current LaTeX source context is required. Refresh the Overleaf pane before continuing." };
   }
   const body = { message, autonomous, purpose, allow_source_pause: allowSourcePause === true };
+  if (idempotencyKey) body.idempotency_key = idempotencyKey;
+  if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) body.timeout_seconds = Math.ceil(timeoutSeconds);
   if (sourceBundle) { body.source_bundle = sourceBundle; body.lea_status_version = 1; }
   if (sessionId) body.session_id = sessionId;
   if (projectSlug) {
@@ -618,6 +622,8 @@ export async function streamApiRun({
   let stopReason = null;
   let recoverable = false;
   let runError = null;
+  let recoveryState = null;
+  let recoveryReason = null;
   let buffer = "";
 
   const handleFrame = async (frame) => {
@@ -638,6 +644,8 @@ export async function streamApiRun({
       resultDetail = typeof data?.result_detail === "string" ? data.result_detail : null;
       stopReason = typeof data?.stop_reason === "string" ? data.stop_reason : null;
       recoverable = data?.recoverable === true;
+      recoveryState = data?.recovery_state || null;
+      recoveryReason = data?.recovery_reason || null;
     }
   };
 
@@ -665,6 +673,8 @@ export async function streamApiRun({
     resultDetail,
     stopReason,
     recoverable,
+    recoveryState,
+    recoveryReason,
     error: ok ? null : (runError || (doneStatus ? `Lea run ended with status: ${doneStatus}` : "Lea run ended without a terminal status.")),
   };
 }
@@ -673,7 +683,6 @@ export async function streamApiRun({
 // past this, the adapter is genuinely unreachable and the client gives up
 // (best-effort interrupting the run it may be orphaning) instead of spinning
 // until the job timeout.
-const MAX_RUN_ROW_MISSES = 5;
 
 // De-synchronize concurrent re-attachers after a transport drop (e.g. the
 // adapter restarting mid-run) so they don't hammer it in lockstep.
@@ -739,6 +748,9 @@ export async function runApiProofJob({
   sessionId = null,
   maxTurns = null,
   timeoutMs = 900000,
+  deadlineAt = null,
+  existingRunId = null,
+  idempotencyKey = null,
   settleGraceMs = 10000,
   busyRetryDelayMs = 3000,
   autoApprove = true,
@@ -764,7 +776,7 @@ export async function runApiProofJob({
     if (appendLog && logPath) await appendLog(logPath, line);
   };
 
-  const start = await startApiRun({
+  const start = existingRunId ? { ok: true, body: { run_id: existingRunId, session_id: sessionId } } : await startApiRun({
     fetchImpl,
     baseUrl,
     apiKey,
@@ -782,6 +794,8 @@ export async function runApiProofJob({
     purpose,
     sourceBundle,
     allowSourcePause,
+    idempotencyKey,
+    timeoutSeconds: timeoutMs / 1000,
   });
   if (!start.ok) return { ok: false, timedOut: false, error: start.error };
 
@@ -789,17 +803,19 @@ export async function runApiProofJob({
   const newSessionId = start.body?.session_id || sessionId;
   if (!runId) return { ok: false, timedOut: false, error: "Lea adapter did not return a run_id." };
   await log(`[backend] Lea adapter run started: ${runId} (session ${newSessionId})\n`);
-  if (onRunStarted) await onRunStarted(runId, newSessionId, start.body || {});
+  if (onRunStarted && !existingRunId) await onRunStarted(runId, newSessionId, start.body || {});
 
   const abort = new AbortController();
   let timedOut = false;
   let interruptPromise = null;
+  const adapterDeadline = start.body?.deadline_at || deadlineAt;
+  const remainingMs = adapterDeadline ? Math.max(1, Date.parse(adapterDeadline) - Date.now()) : timeoutMs;
   const timer = setTimeout(() => {
     timedOut = true;
     abort.abort();
     interruptPromise = interruptApiRun({ fetchImpl, baseUrl, apiKey, runId,
                                        reason: "timeout", source: "companion" });
-  }, Math.max(1, timeoutMs));
+  }, Math.max(1, remainingMs));
   if (typeof timer.unref === "function") timer.unref();
 
   // Phase 2 contract (PLAN-system-hardening): the adapter queues runs
@@ -812,9 +828,9 @@ export async function runApiProofJob({
   // error, mid-stream disconnect, or close without a `done` frame) does not
   // mean the run failed — it may still be executing adapter-side, so failing
   // the job here would abandon a live, billing run and mislabel its outcome.
-  // Consult the run row: re-attach while it reads pending/running, adopt its
-  // outcome once terminal, and give up (with a best-effort interrupt) only
-  // when the adapter is unreachable past MAX_RUN_ROW_MISSES.
+  // Consult the exact run row and keep reconnecting while the adapter is
+  // unavailable. The original run deadline, not a connection counter, decides
+  // when an interruption is requested.
   let loggedQueued = false;
   const observeEvent = async (type, data) => {
     if (type === "queued" && !loggedQueued) {
@@ -826,7 +842,6 @@ export async function runApiProofJob({
 
   let outcome;
   let loggedStreamDrop = false;
-  let rowMisses = 0;
   try {
     for (;;) {
       outcome = await streamApiRun({
@@ -850,28 +865,15 @@ export async function runApiProofJob({
           resultDetail: typeof row.result_detail === "string" ? row.result_detail : null,
           stopReason: typeof row.stop_reason === "string" ? row.stop_reason : null,
           recoverable: row.recoverable === true || row.recoverable === 1,
+          recoveryState: row.recovery_state || null,
+          recoveryReason: row.recovery_reason || null,
           error: ok ? null : `Lea run ended with status: ${rowStatus}`,
         };
         break;
       }
-      if (!rowStatus) {
-        // A missing row and a malformed row with no status are equally useless
-        // for deciding whether the detached run is still live. Bound both cases;
-        // otherwise an older/incompatible adapter can keep this loop alive forever.
-        rowMisses += 1;
-        if (rowMisses >= MAX_RUN_ROW_MISSES) {
-          await log("[backend] Lea run status is unavailable; giving up on this run and requesting an interrupt.\n");
-          interruptApiRun({ fetchImpl, baseUrl, apiKey, runId,
-                            reason: "transport_abandonment", source: "companion" }).catch(() => {});
-          break;
-        }
-      } else {
-        rowMisses = 0;
-      }
-
       if (!loggedStreamDrop) {
         loggedStreamDrop = true;
-        await log("[backend] Run event stream dropped while the run is still live; re-attaching...\n");
+        await log("[backend] Adapter connection dropped; waiting to reattach to the same run.\n");
       }
       if (!(await waitBeforeRetry(retryDelayWithJitter(busyRetryDelayMs), abort.signal))) {
         outcome = { ok: false, aborted: true, error: "Run stream aborted." };
@@ -914,6 +916,8 @@ export async function runApiProofJob({
         || (settledRow?.usage_status != null ? settledRow.stop_reason : null)
         || outcome?.stopReason || (completed ? null : "timeout"),
       recoverable: completed ? false : (settledRow?.recoverable ?? true),
+      recoveryState: settledRow?.recovery_state || outcome?.recoveryState || null,
+      recoveryReason: settledRow?.recovery_reason || outcome?.recoveryReason || null,
       formalizationId: start.body?.focus_formalization_id || start.body?.formalization?.id || null,
       error: completed ? null : "Time limit reached.",
       ...usage,
@@ -929,6 +933,8 @@ export async function runApiProofJob({
     resultDetail: outcome.resultDetail || null,
     stopReason: outcome.stopReason || null,
     recoverable: outcome.recoverable === true,
+    recoveryState: outcome.recoveryState || null,
+    recoveryReason: outcome.recoveryReason || null,
     formalizationId: start.body?.focus_formalization_id || start.body?.formalization?.id || null,
     error: outcome.ok ? undefined : outcome.error,
     ...usage,

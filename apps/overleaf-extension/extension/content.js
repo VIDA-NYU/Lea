@@ -7,7 +7,7 @@
   const DEFAULT_LEA_MODEL = "o4-mini";
   const DEFAULT_LEA_MAX_TURNS = 20;
   const DEFAULT_LEA_TEX_MIRROR_ENABLED = true;
-  const LEA_UI_VIEW_STATUSES = new Set(["formalized", "defined", "disproved", "in_progress", "sorry_stub", "stale"]);
+  const LEA_UI_VIEW_STATUSES = new Set(["formalized", "defined", "disproved", "in_progress", "paused", "sorry_stub", "stale"]);
   const TEX_MIRROR_SYNC_DELAY_MS = 1500;
   const TEX_MIRROR_FULL_SYNC_INTERVAL_MS = 10 * 60 * 1000;
   const TARGET_CONTEXT_RADIUS_LINES = 24;
@@ -5657,7 +5657,8 @@
       const leaUiLink = leaSession || getLeaUiBaseLink(statusInfo);
       const sessionButton = document.createElement("button");
       sessionButton.type = "button";
-      sessionButton.textContent = "View in Lea UI";
+      sessionButton.textContent = statusInfo?.recoveryState === "review"
+        ? "Review and resume in Lea" : "View in Lea UI";
       sessionButton.dataset.role = "open-lea-session";
       sessionButton.disabled = isExtensionContextInvalidated();
       sessionButton.addEventListener("click", async (event) => {
@@ -7103,7 +7104,11 @@
       case "unformalized":
         return "unformalized";
       case "in_progress":
-        return "in progress";
+        return statusInfo?.recoveryState === "recovering" ? "Recovering saved progress"
+          : statusInfo?.connectionState === "adapter_unavailable" ? "Waiting to restart"
+            : "in progress";
+      case "paused":
+        return statusInfo?.recoveryState === "review" ? "Interrupted — review" : "paused";
       case "formalized":
         return "formalized";
       case "stale":

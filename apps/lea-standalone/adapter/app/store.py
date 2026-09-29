@@ -275,6 +275,8 @@ def _list_sessions(
                     from runs r3
                     where r3.session_id = s.id and r3.status in ('pending', 'running')
                 ) as active_run_count,
+                (select rr.recovery_state from runs rr where rr.session_id = s.id
+                 order by rr.created_at desc, rr.id desc limit 1) as latest_recovery_state,
                 -- Sub-agents (bug-fix): a CHILD's final output — its last agent message —
                 -- so the coordinator's spawn box can show a collapsed preview + expand
                 -- without a second fetch. Gated on parent_id so a normal session's list
@@ -717,6 +719,10 @@ def create_run_bundle(
     purpose: str = "general",
     source_bundle: dict | None = None,
     allow_source_pause: bool = False,
+    client_request_id: str | None = None,
+    client_request_hash: str | None = None,
+    resumes_run_id: str | None = None,
+    deadline_at: str | None = None,
 ) -> dict:
     """Atomically create/resolve the conversation scope, run, and user message."""
     if focus_formalization_id and new_formalization:
@@ -727,6 +733,26 @@ def create_run_bundle(
         focus_source_hash = source_bundle["sourceIdentityHash"]
     now = utc_now()
     with write() as conn:
+        if client_request_id:
+            existing = conn.execute("select * from runs where client_request_id = ?",
+                                    (client_request_id,)).fetchone()
+            if existing:
+                old = row_to_dict(existing)
+                if client_request_hash and old.get("client_request_hash") and old["client_request_hash"] != client_request_hash:
+                    raise ValueError("Idempotency key belongs to a different request")
+                if session_id and old["session_id"] != session_id:
+                    raise ValueError("Idempotency key belongs to a different session")
+                old_message = conn.execute("""select * from timeline where run_id = ?
+                                           and kind = 'message' and author = 'user'
+                                           order by id limit 1""", (old["id"],)).fetchone()
+                if old_message is None or old_message["content"] != message:
+                    raise ValueError("Idempotency key belongs to a different request")
+                old_formalization = (_formalization_from_conn(conn, old["focus_formalization_id"])
+                                     if old.get("focus_formalization_id") else None)
+                return {"session": row_to_dict(conn.execute("select * from sessions where id = ?",
+                                                         (old["session_id"],)).fetchone()),
+                        "run": old, "formalization": old_formalization,
+                        "message": _message_from_row(old_message), "created": False}
         if session_id:
             session_row = conn.execute(
                 "select * from sessions where id = ?", (session_id,)
@@ -858,14 +884,16 @@ def create_run_bundle(
             insert into runs (
                 id, session_id, project_id, status, autonomous, model, provider,
                 max_turns, focus_formalization_id, focus_source_hash, purpose, allow_source_pause, usage_status,
+                client_request_id, client_request_hash, resumes_run_id, deadline_at,
                 created_at, updated_at
-            ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, session_id, project_id, 1 if autonomous else 0,
                 model, provider, max_turns, focus_formalization_id,
                 str(focus_source_hash or "").strip() or None, purpose,
-                1 if allow_source_pause else 0, now, now,
+                1 if allow_source_pause else 0, client_request_id, client_request_hash, resumes_run_id,
+                deadline_at, now, now,
             ),
         )
         if source_bundle is not None:
@@ -898,6 +926,7 @@ def create_run_bundle(
         "session": session,
         "formalization": formalization,
         "run": run,
+        "created": True,
         "message": user_message,
     }
 
@@ -2679,6 +2708,30 @@ def get_run(run_id: str) -> dict | None:
     return _normalize_run(row_to_dict(row)) if row else None
 
 
+def get_run_by_client_request_id(client_request_id: str) -> dict | None:
+    with connect() as conn:
+        row = conn.execute("select * from runs where client_request_id = ?",
+                           (client_request_id,)).fetchone()
+    return _normalize_run(row_to_dict(row)) if row else None
+
+
+def get_run_submission(client_request_id: str) -> dict | None:
+    with connect() as conn:
+        row = conn.execute("select * from runs where client_request_id = ?",
+                           (client_request_id,)).fetchone()
+        if not row:
+            return None
+        run = row_to_dict(row)
+        session = row_to_dict(conn.execute("select * from sessions where id = ?",
+                                           (run["session_id"],)).fetchone())
+        message = conn.execute("""select * from timeline where run_id = ? and kind = 'message'
+                                  and author = 'user' order by id limit 1""", (run["id"],)).fetchone()
+        formalization = (_formalization_from_conn(conn, run["focus_formalization_id"])
+                         if run.get("focus_formalization_id") else None)
+    return {"session": session, "run": run, "message": _message_from_row(message) if message else None,
+            "formalization": formalization, "created": False}
+
+
 def get_run_status(run_id: str) -> dict | None:
     """The cheap run-row read (v2.3 item 16): just the four outcome columns a
     poller needs — id + lifecycle status + terminal kind/detail. Deliberately
@@ -2692,7 +2745,9 @@ def get_run_status(run_id: str) -> dict | None:
             """select id, status, result_kind, result_detail, stop_reason,
                       stop_requested_reason, stop_requested_at, stop_requested_by,
                       recoverable, input_tokens, output_tokens, cost_usd,
-                      usage_status, usage_revision, usage_updated_at
+                      usage_status, usage_revision, usage_updated_at,
+                      attempt_id, recovery_state, recovery_reason, recovery_count,
+                      checkpoint_at, deadline_at, resumes_run_id
                from runs where id = ?""",
             (run_id,),
         ).fetchone()
@@ -3858,7 +3913,7 @@ def session_detail(session_id: str) -> dict | None:
         runs = conn.execute(
             "select id, status, result_kind, result_detail,"
             " input_tokens, output_tokens, cost_usd, focus_formalization_id,"
-            " focus_source_hash"
+            " focus_source_hash, attempt_id, recovery_state, recovery_reason, checkpoint_at"
             " from runs where session_id = ? order by created_at asc, id asc",
             (session_id,),
         ).fetchall()

@@ -181,6 +181,8 @@ export async function createServer({
     env,
     settings: applyEnvDefaults(await readJson(settingsPath, {}), env),
     jobs: await readJson(jobsPath, {}),
+    repairBatchesPath: `${jobsPath}.batches.json`,
+    repairBatches: reviveRepairBatches(await readJson(`${jobsPath}.batches.json`, {})),
     generatedTargetsPath: path.join(path.dirname(jobsPath), "generated-targets.json"),
     generatedTargets: await readJson(path.join(path.dirname(jobsPath), "generated-targets.json"), { version: 1, projects: {} }),
     chatSessions: await readJson(chatSessionsPath, {}),
@@ -192,6 +194,7 @@ export async function createServer({
   };
   await ensureStartupLeaRuntime(state);
   await recoverInterruptedJobs(state);
+  await reconcileRecoveredBatches(state);
   await pruneAndPersistJobs(state);
 
   // Jobs awaiting a terminal run/usage snapshot survive companion restarts.
@@ -200,7 +203,10 @@ export async function createServer({
   const reconciliationTimer = setInterval(async () => {
     if (reconciliationBusy) return;
     reconciliationBusy = true;
-    try { await reconcilePendingJobUsage(state); }
+    try {
+      await reconcilePendingJobUsage(state);
+      await reconcileRecoveredBatches(state);
+    }
     catch (error) { console.warn("[companion] Usage reconciliation failed:", error); }
     finally { reconciliationBusy = false; }
   }, 5000);
@@ -225,30 +231,155 @@ export async function createServer({
   return server;
 }
 
+
+function reviveRepairBatches(raw) {
+  const batches = raw && typeof raw === "object" ? raw : {};
+  for (const batch of Object.values(batches)) {
+    if (!batch || typeof batch !== "object") continue;
+    batch.importsByModule = new Map(batch.importsByModule || []);
+    batch.usesByLabel = new Map(batch.usesByLabel || []);
+    batch.running = false; // The old companion's loop no longer exists.
+    batch.reportSubmission = null;
+  }
+  return batches;
+}
+
+
+async function persistRepairBatches(state) {
+  if (!state.repairBatchesPath) return;
+  const payload = {};
+  for (const [id, batch] of Object.entries(state.repairBatches || {})) {
+    const { reportSubmission, ...saved } = batch;
+    payload[id] = {
+      ...saved,
+      importsByModule: [...(batch.importsByModule || new Map())],
+      usesByLabel: [...(batch.usesByLabel || new Map())]
+    };
+  }
+  await writeJson(state.repairBatchesPath, JSON.parse(JSON.stringify(payload)));
+}
+
+
+async function reconcileRecoveredBatches(state) {
+  for (const batch of Object.values(state.repairBatches || {})) {
+    if (!batch || batch.done || batch.running) continue;
+    const active = batch.items?.find((item) => item.state === "running");
+    if (active) {
+      const job = active.runJobId ? state.jobs?.[active.runJobId] : null;
+      if (!job || job.status === "in_progress") {
+        batch.pausedOn = { targetLabel: active.targetLabel, reason: "recovering_run" };
+        await persistRepairBatches(state);
+        continue;
+      }
+      const outcome = job.status === "formalized" ? "formalized"
+        : job.status === "sorry_stub" ? "stubbed"
+          : job.status === "disproved" ? "disproved"
+            : job.status === "repaired" ? "repaired"
+              : job.status === "needs_review" ? "needs_review" : "failed";
+      active.state = outcome;
+      active.reason = outcome === "failed" || outcome === "needs_review"
+        ? (job.resultDetail || job.error || outcome) : null;
+      if (outcome === "failed" || outcome === "needs_review") {
+        if (batch.operation === "formalize") {
+          for (const other of batch.items) {
+            if (other.state === "pending" && importsReach(other.targetLabel, active.targetLabel, batch.usesByLabel)) {
+              other.state = "skipped";
+              other.reason = `${outcome === "needs_review" ? "depends_on_review" : "depends_on_failed"}:${active.targetLabel}`;
+            }
+          }
+          batch.pausedOn = null;
+        } else {
+          batch.pausedOn = { targetLabel: active.targetLabel,
+                             reason: outcome === "needs_review" ? "dependency_review" : "recovery_review" };
+        }
+      } else if (batch.pausedOn?.reason === "recovering_run") {
+        batch.pausedOn = null;
+      }
+      await persistRepairBatches(state);
+    }
+    if (!batch.pausedOn && !batch.cancelRequested && batch.items?.some((item) => item.state === "pending")) {
+      void resumeBatch(state, batch);
+    }
+  }
+}
+
 export async function recoverInterruptedJobs(state) {
   const jobs = state.jobs || {};
-  const interruptedAt = new Date().toISOString();
   let changed = false;
 
   for (const job of Object.values(jobs)) {
     if (job.status !== "in_progress") continue;
-    job.status = "failed";
-    job.finalStatus = "interrupted";
-    job.error = "Companion restarted before this Lea job finished.";
-    job.finishedAt = interruptedAt;
-    if (job.logPath) {
-      await appendLog(job.logPath, `\n[backend] ${job.error}\n`);
+    job.connectionState = "reconnecting";
+    if (job.apiRunId) {
+      const row = await fetchApiRunRow({
+        fetchImpl: state.fetchImpl || fetch,
+        baseUrl: job.leaApiBaseUrl || state.settings?.leaApiBaseUrl || DEFAULT_LEA_API_BASE_URL,
+        apiKey: state.env?.LEA_API_KEY,
+        sessionId: job.leaSessionId,
+        runId: job.apiRunId
+      });
+      job.connectionState = row ? "connected" : "adapter_unavailable";
+      job.recoveryState = row?.recovery_state || null;
+      job.recoveryReason = row?.recovery_reason || null;
+      job.deadlineAt = row?.deadline_at || job.deadlineAt || null;
+    } else if (!job.requestPrompt) {
+      job.connectionState = "review";
+      job.recoveryReason = "The companion has no adapter run identity or saved request to reconcile.";
+      job.status = "paused";
+      job.finalStatus = "interrupted";
+      job.recoverable = true;
+      job.finishedAt = new Date().toISOString();
+      changed = true;
+      continue;
     }
-    // An interrupted re-formalize never got to produce a replacement for the
-    // artifact its pre-run cleanup deleted — restore it (AUDIT H2). The
-    // backups persist on job.retryCleanup precisely so this survives a
-    // restart.
-    await restorePreviousRunArtifacts({ state, job, target: { projectMarkdownPath: job.projectMarkdownPath } });
+    void resumePersistedJob(state, job);
     changed = true;
   }
 
   if (changed) {
     await writeJson(state.jobsPath, jobs);
+  }
+}
+
+
+async function resumePersistedJob(state, job) {
+  state.recoveryObservers ||= new Set();
+  if (state.recoveryObservers.has(job.jobId)) return;
+  state.recoveryObservers.add(job.jobId);
+  const target = buildLeaTarget({
+    leaRepoPath: job.leaRepoPath || state.settings.leaRepoPath,
+    overleafProjectId: job.overleafProjectId,
+    targetKind: job.targetKind,
+    targetLabel: job.targetLabel,
+    projectName: job.projectName,
+    projectNamespace: job.projectNamespace
+  });
+  try {
+    const common = { state, job, target, existingRunId: job.apiRunId || null,
+                     promptOverride: job.requestPrompt || "", resolvedUses: job.targetUses || [],
+                     sourceContext: job.sourceContext || {}, targetContext: job.targetContext || "",
+                     targetText: "" };
+    if (job.mode === "stub") {
+      await runLeaStubJob(common);
+    } else if (job.mode === "repair") {
+      if (!job.recoverySnapshot) throw new Error("Repair snapshot is unavailable for safe reconciliation.");
+      await runLeaRepairJob({ state, job, target, snapshot: job.recoverySnapshot,
+                             breakage: job.repairOf, prompt: job.requestPrompt || "",
+                             existingRunId: job.apiRunId || null });
+    } else {
+      await runLeaJob(common);
+    }
+    if (job.recoveryState !== "review") job.connectionState = "connected";
+  } catch (error) {
+    job.connectionState = "review";
+    job.recoveryReason = error instanceof Error ? error.message : String(error);
+    job.status = "paused";
+    job.finalStatus = "interrupted";
+    job.recoverable = true;
+    job.finishedAt = new Date().toISOString();
+    await persistJobs(state);
+  } finally {
+    state.recoveryObservers.delete(job.jobId);
   }
 }
 
@@ -2605,8 +2736,8 @@ function resolveRepairContext({ state, overleafProjectId, targetKind, targetLabe
   return { ok: true, alreadyFixed: false, leaSessionId, linkedJob, breakage, targetKind: resolvedKind };
 }
 
-async function runLeaRepairJob({ state, job, target, snapshot, breakage, prompt }) {
-  const exit = await runLeaProofJobForJob({ state, job, target, prompt });
+async function runLeaRepairJob({ state, job, target, snapshot, breakage, prompt, existingRunId = null }) {
+  const exit = await runLeaProofJobForJob({ state, job, target, prompt, existingRunId });
   if (exit.recoverable === true || exit.timedOut === true) {
     job.status = "paused";
     job.finalStatus = job.stopReason === "global_spend_cap" ? "max_spend" : "paused";
@@ -2814,6 +2945,8 @@ async function startRepairRun({ state, overleafProjectId, targetKind: requestedK
   );
 
   const job = await createRepairJob({ state, target, linkedJob, breakage, leaSessionId });
+  job.recoverySnapshot = snapshot;
+  job.requestPrompt = prompt;
   state.jobs[job.jobId] = job;
   await persistJobs(state);
 
@@ -2973,6 +3106,7 @@ export async function handleLeanPaneRepairAll(payload, state) {
   state.repairBatches ||= {};
   pruneRepairBatches(state.repairBatches);
   state.repairBatches[batch.batchId] = batch;
+  await persistRepairBatches(state);
 
   runRepairBatch(state, batch).catch((error) => {
     batch.pausedOn = { targetLabel: null, reason: "batch_error", detail: error instanceof Error ? error.message : String(error) };
@@ -2988,6 +3122,7 @@ export async function handleLeanPaneRepairAllContinue(payload, state) {
   if (batch.running) return { statusCode: 200, body: repairBatchSnapshot(batch) };
   if (batch.done) return { statusCode: 200, body: repairBatchSnapshot(batch) };
   batch.pausedOn = null;
+  await persistRepairBatches(state);
   resumeBatch(state, batch).catch((error) => {
     batch.pausedOn = { targetLabel: null, reason: "batch_error", detail: error instanceof Error ? error.message : String(error) };
     batch.running = false;
@@ -3016,6 +3151,7 @@ export async function handleBatchCancel(payload, state) {
   if (batch.done) return { statusCode: 200, body: repairBatchSnapshot(batch) };
   batch.cancelRequested = true;
   batch.pausedOn = null;
+  await persistRepairBatches(state);
   await interruptBatchActiveRun(state, batch);
   if (!batch.running) {
     finalizeCanceledBatch(batch);
@@ -3141,6 +3277,7 @@ async function startTargetBatch(payload, state, operation) {
   state.repairBatches ||= {};
   pruneRepairBatches(state.repairBatches);
   state.repairBatches[batch.batchId] = batch;
+  await persistRepairBatches(state);
 
   runTargetBatch(state, batch).catch((error) => {
     const detail = error instanceof Error ? error.message : String(error);
@@ -3221,6 +3358,7 @@ async function runFormalizeBatchItem(state, entry, batch) {
   // this id to interrupt the adapter run; assigning it only after await made a
   // running formalization temporarily uninterruptible.
   entry.runJobId = body.jobId;
+  await persistRepairBatches(state);
   // Stop may have landed during handleFormalize's startup awaits, before the
   // job id was available to handleBatchCancel. Retry the interrupt now that
   // the active adapter run can be identified.
@@ -3238,11 +3376,13 @@ async function runFormalizeBatchItem(state, entry, batch) {
 async function runTargetBatch(state, batch) {
   if (batch.running) return;
   batch.running = true;
-  const publishBatch = () => publishEvent(state, "repair-batch-updated", {
-    overleafProjectId: batch.overleafProjectId,
-    batchId: batch.batchId
-  });
-  publishBatch();
+  const publishBatch = async () => {
+    await persistRepairBatches(state);
+    publishEvent(state, "repair-batch-updated", {
+      overleafProjectId: batch.overleafProjectId, batchId: batch.batchId
+    });
+  };
+  await publishBatch();
   try {
     for (const entry of batch.items) {
       if (batch.cancelRequested || batch.pausedOn) break;
@@ -3262,7 +3402,7 @@ async function runTargetBatch(state, batch) {
       }
 
       entry.state = "running";
-      publishBatch();
+      await publishBatch();
       const outcome = batch.operation === "stub"
         ? await runStubBatchItem(state, entry)
         : await runFormalizeBatchItem(state, entry, batch);
@@ -3297,7 +3437,7 @@ async function runTargetBatch(state, batch) {
         entry.state = outcome.state;
         entry.reason = outcome.reason || null;
         entry.runJobId = outcome.jobId || null;
-        publishBatch();
+        await publishBatch();
         continue;
       }
 
@@ -3317,10 +3457,10 @@ async function runTargetBatch(state, batch) {
             other.reason = `${entry.state === "needs_review" ? "depends_on_review" : "depends_on_failed"}:${entry.targetLabel}`;
           }
         }
-        publishBatch();
+        await publishBatch();
         continue;
       }
-      publishBatch();
+      await publishBatch();
     }
   } finally {
     batch.running = false;
@@ -3330,7 +3470,7 @@ async function runTargetBatch(state, batch) {
       batch.done = batch.items.every((entry) => entry.state !== "pending" && entry.state !== "running") && !batch.pausedOn;
     }
     if (batch.operation === "formalize" && batch.done) void submitFormalizeBatchReport(state, batch);
-    publishBatch();
+    await publishBatch();
   }
 }
 
@@ -3449,11 +3589,13 @@ function importsReach(fromModule, toModule, importsByModule) {
 async function runRepairBatch(state, batch) {
   if (batch.running) return;
   batch.running = true;
-  const publishBatch = () => publishEvent(state, "repair-batch-updated", {
-    overleafProjectId: batch.overleafProjectId,
-    batchId: batch.batchId
-  });
-  publishBatch();
+  const publishBatch = async () => {
+    await persistRepairBatches(state);
+    publishEvent(state, "repair-batch-updated", {
+      overleafProjectId: batch.overleafProjectId, batchId: batch.batchId
+    });
+  };
+  await publishBatch();
   try {
     for (const entry of batch.items) {
       if (batch.cancelRequested || batch.pausedOn) break;
@@ -3484,7 +3626,7 @@ async function runRepairBatch(state, batch) {
 
       entry.state = "running";
       entry.runJobId = started.job.jobId;
-      publishBatch();
+      await publishBatch();
       if (batch.cancelRequested) await interruptBatchActiveRun(state, batch);
       await started.runPromise;
 
@@ -3531,7 +3673,7 @@ async function runRepairBatch(state, batch) {
     } else {
       batch.done = batch.items.every((entry) => entry.state !== "pending" && entry.state !== "running") && !batch.pausedOn;
     }
-    publishBatch();
+    await publishBatch();
   }
 }
 
@@ -5583,7 +5725,11 @@ async function removeProjectTheoremEntries({ projectMarkdownPath, retiredProofPa
 // Run one autonomous proof job against the standalone adapter, returning the
 // `exit` contract ({ ok, timedOut, apiRunId, error, usage, costUsd }) the rest of
 // the orchestration consumes.
-async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null }) {
+async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null, existingRunId = null }) {
+  if (!existingRunId) {
+    job.requestPrompt = prompt;
+    await persistJobs(state);
+  }
   await appendLog(job.logPath, `$ POST ${job.leaApiBaseUrl}/api/runs\n\n${prompt}\n\n`);
   const exit = await runApiProofJob({
     fetchImpl: state.fetchImpl || fetch,
@@ -5593,6 +5739,9 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
     sessionId: job.leaSessionId || null,
     maxTurns: job.leaMaxTurns,
     timeoutMs: job.leaJobTimeoutSeconds * 1000,
+    deadlineAt: job.deadlineAt || null,
+    existingRunId,
+    idempotencyKey: job.jobId,
     autoApprove: true,
     projectSlug: target.projectSlug || null,
     projectTitle: target.projectName || target.projectSlug || null,
@@ -5616,6 +5765,7 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
     logPath: job.logPath,
     onRunStarted: async (apiRunId, sessionId, startBody = {}) => {
       job.apiRunId = apiRunId;
+      job.deadlineAt = startBody.deadline_at || job.deadlineAt || null;
       job.usageRunId = apiRunId;
       job.usageStatus = "pending";
       job.usageRevision = 0;
@@ -5656,6 +5806,9 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
       await persistJobs(state);
     }
   });
+  job.recoveryState = exit.recoveryState || null;
+  job.recoveryReason = exit.recoveryReason || null;
+  if (exit.recoveryState === "review") job.connectionState = "review";
   if (exit.resultKind === "max_spend") {
     // The adapter stopped this run mid-flight at the spend cap (bridge-side
     // enforcement, PLAN-system-hardening 0.1). Mirror the between-runs
@@ -6056,9 +6209,11 @@ async function runLeaJob({
   targetText,
   targetContext = "",
   sourceContext = {},
-  resolvedUses = []
+  resolvedUses = [],
+  existingRunId = null,
+  promptOverride = null
 }) {
-  const prompt = buildLeaPrompt({
+  const prompt = promptOverride || buildLeaPrompt({
     targetKind: target.targetKind,
     projectSlug: target.projectSlug,
     projectName: target.projectName,
@@ -6073,7 +6228,7 @@ async function runLeaJob({
     stubToComplete: job.stubToComplete || null,
     bestEffort: job.bestEffort === true
   });
-  const exit = await runLeaProofJobForJob({ state, job, target, prompt });
+  const exit = await runLeaProofJobForJob({ state, job, target, prompt, existingRunId });
   await applyProofOutcomeToJob({ state, job, target, exit, resolvedUses });
 
   // Self-repair Phase 1: a re-formalize is an agent-driven change to an
@@ -6104,10 +6259,12 @@ async function runLeaStubJob({
   targetText,
   targetContext = "",
   sourceContext = {},
-  resolvedUses = []
+  resolvedUses = [],
+  existingRunId = null,
+  promptOverride = null
 }) {
   const observedCodeSteps = new Map();
-  const prompt = buildLeaStubPrompt({
+  const prompt = promptOverride || buildLeaStubPrompt({
     projectSlug: target.projectSlug,
     projectName: target.projectName,
     projectNamespace: target.projectNamespace,
@@ -6122,6 +6279,7 @@ async function runLeaStubJob({
     job,
     target,
     prompt,
+    existingRunId,
     onEvent: (type, data) => {
       if (type !== "code_step" || !data?.id) return;
       observedCodeSteps.set(data.id, { ...(observedCodeSteps.get(data.id) || {}), ...data });
@@ -6884,7 +7042,10 @@ function buildJobResponse({ job, status, target }) {
     moduleName: job.moduleName || null,
     leanStatement: job.leanStatement || "",
     logTail: "",
-    message: (job.settling ? pausedMessage : null) || job.error || job.resultDetail || pausedMessage || (status === "disproved"
+    message: (job.recoveryState === "review" ? `Interrupted — review before resuming. ${job.recoveryReason || ""}`
+      : job.recoveryState === "recovering" ? "Recovering saved progress."
+      : job.connectionState === "adapter_unavailable" ? "Adapter unavailable — waiting to reconnect to this run."
+      : null) || (job.settling ? pausedMessage : null) || job.error || job.resultDetail || pausedMessage || (status === "disproved"
       ? "Lea found a verified counterexample or disproof. The original theorem was not proven."
       : status === "needs_review"
         ? "Lea produced a checked, sorry-free proof but flagged its own result for human review."
@@ -6902,6 +7063,9 @@ function buildJobResponse({ job, status, target }) {
     adapterOutcomeStatus: job.adapterOutcomeStatus || null,
     outcomeNeedsReview: job.outcomeNeedsReview === true,
     recoverable: job.recoverable === true,
+    connectionState: job.connectionState || null,
+    recoveryState: job.recoveryState || null,
+    recoveryReason: job.recoveryReason || null,
     leaSessionId,
     leaSessionUrl: leaSessionId
       ? buildLeaSessionUrl(job.leaUiBaseUrl, leaSessionId, job.formalizationId)

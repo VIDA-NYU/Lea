@@ -34,6 +34,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Queue
@@ -71,7 +72,7 @@ from .target_completion import checked_target, target_declaration
 from .config import LeaConfig, configured_provider_keys, load_config
 from .diagnostics import analyze_exception, resolve as resolve_diagnostic
 from .gitstore import GitStore, GitStoreError
-from . import collation, formalizations as formalization_service, projects, roles_catalog, runbroker, runregistry, skills_catalog, store, subagent_overrides, uploads
+from . import collation, formalizations as formalization_service, projects, roles_catalog, runbroker, runregistry, skills_catalog, store, subagent_overrides, uploads, recovery, runtime
 
 logger = logging.getLogger("lea-interface.bridge")
 _FORMALIZATION_CONTEXT_MARKER = "<!-- lea:formalization-context -->"
@@ -179,10 +180,18 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
     `_DISPATCHED` (a driver thread is running it), or `_DEFER` (not admissible *yet*).
     """
     run = store.get_run(run_id)
+    if not runtime.accepting_work():
+        return _DEFER
     if not run or run["status"] != "pending":
         if run:
             publish_terminal_from_row(run_id)
             runbroker.drop(run_id)
+        return _SETTLED
+    if run.get("deadline_at") and datetime.fromisoformat(run["deadline_at"]) <= datetime.now(timezone.utc):
+        store.record_stop_request(run_id, "timeout", "adapter")
+        store.fail_pending_run(run_id, "Time limit reached before the run started.")
+        publish_terminal_from_row(run_id)
+        runbroker.drop(run_id)
         return _SETTLED
 
     task = _resolve_task(run)
@@ -197,12 +206,12 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
     if admission.outcome == runregistry.ADMITTED:
         superseded.pop(run_id, None)
         broker = runbroker.get(run_id) or runbroker.create(run_id)
-        # Run creation snapshots the selected model. Reload every other
-        # live setting at admission time, but never let a later settings
-        # or environment change switch a queued run to another model.
+        # Creation snapshots the model and turn allowance. A queued or
+        # recovered run must consume its original allowance, even if the UI
+        # settings change before dispatch.
         config = load_config()
-        if run.get("model"):
-            config = replace(config, model=run["model"])
+        config = replace(config, model=run.get("model") or config.model,
+                         max_turns=run.get("max_turns"))
         context = RunnerContext(
             session_id=run["session_id"],
             run_id=run_id,
@@ -329,7 +338,8 @@ def publish_terminal_from_row(run_id: str) -> None:
         payload["result_kind"] = run["result_kind"]
     if run.get("result_detail"):
         payload["result_detail"] = run["result_detail"]
-    for key in ("stop_reason", "stop_requested_reason", "recoverable", "input_tokens",
+    for key in ("stop_reason", "stop_requested_reason", "recoverable", "attempt_id",
+                "recovery_state", "recovery_reason", "checkpoint_at", "input_tokens",
                 "output_tokens", "cost_usd", "usage_status", "usage_revision", "usage_updated_at"):
         payload[key] = run.get(key)
     broker.put({"type": "done", "payload": payload})
@@ -1656,6 +1666,7 @@ def run_lea(context: RunnerContext) -> None:
     final_recoverable = False
     focus_formalization_id: str | None = None
     focus_source_hash: str | None = None
+    attempt_id: str | None = None
 
     # Mid-run spend enforcement (PLAN-system-hardening 0.1): the cap used to be
     # checked only at POST /api/runs, so one run could overshoot it by its entire
@@ -1818,6 +1829,12 @@ def run_lea(context: RunnerContext) -> None:
             logger.info("Run %s was finalized before it started (%s); not running it",
                         run_id, final_status)
             return
+        attempt_id = recovery.start_attempt(run_id)
+        if run_row and run_row.get("recovery_count"):
+            observed_input = int(run_row.get("input_tokens") or 0)
+            observed_output = int(run_row.get("output_tokens") or 0)
+            observed_cost = float(run_row.get("cost_usd") or 0)
+            usage_revision = int(run_row.get("usage_revision") or 0)
         if subagent_override_error:
             # F2: reported AFTER the claim — a diagnostic needs a live run row to hang
             # off, and a run cancelled before it started has nothing to report against.
@@ -1828,7 +1845,10 @@ def run_lea(context: RunnerContext) -> None:
         # continues with full context — the prover is stateless, so the adapter
         # feeds it the faithful transcript (tool_call/tool_result parts intact) of
         # the last Finished run, then the new user turn. A cold first run gets [].
-        prior = store.latest_transcript_for_session(session_id, exclude_run_id=run_id) or []
+        prior = (
+            recovery.load_safe_conversation(run_row["resumes_run_id"])
+            if run_row and run_row.get("resumes_run_id") else None
+        ) or store.latest_transcript_for_session(session_id, exclude_run_id=run_id) or []
         # Diff-on-divergence (D12): if the human edited the proof outside a run since
         # the agent last acted, prepend their diff (+ notes) to the task so the agent
         # works from the current canvas, not its stale memory.
@@ -1842,7 +1862,7 @@ def run_lea(context: RunnerContext) -> None:
         # may not be the run that actually ran last — a crash mid-turn stores none and
         # vanishes from the replay. Say so rather than presenting a history with a
         # silent hole in it. Prepended last so it is the first thing the model reads.
-        gap = _transcript_gap_context(session_id, run_id)
+        gap = None if run_row and run_row.get("resumes_run_id") else _transcript_gap_context(session_id, run_id)
         if gap:
             task_content = f"{gap}\n\n{task_content}"
         # Project context (D25): prepend ONE composed message (instructions + memory +
@@ -1877,9 +1897,40 @@ def run_lea(context: RunnerContext) -> None:
                           prompt_variant=("overleaf_continuation" if context.purpose == "overleaf_continuation" else "overleaf_faithful"),
                           extra_tools=list(dict.fromkeys([*cfg.extra_tools, "update_lea_status"])),
                           tools=([*cfg.tools, "update_lea_status"] if cfg.tools is not None else None))
-        gen = run_events(cfg, messages, namespace=namespace, session_id=session_id,
-                         working_dir=str(repo), should_stop=stop_event.is_set,
-                         gate=(None if context.autonomous else _make_gate(session_id)))
+        current_run = store.get_run(run_id)
+        manifest_provider = lambda: recovery.manifest(run=current_run, config=cfg, repo=repo)
+        resume_state = None
+        if run_row and run_row.get("recovery_state") == "recovering":
+            saved = recovery.load_checkpoint(run_id)
+            if not saved or saved[1] != manifest_provider():
+                reason = "Saved source, files, dependencies, or tool configuration changed before recovery."
+                recovery.pause_for_mismatch(run_id, reason)
+                final_status = "cancelled"
+                final_result_kind = "interrupted"
+                final_result_detail = reason
+                final_recoverable = True
+                return
+            resume_state = saved[0]
+            emit(events, "status", {"status": "recovering", "message": "Recovering saved progress"})
+        recorder = recovery.Recorder(run_id, attempt_id, manifest_provider)
+        def should_stop_run() -> bool:
+            current = store.get_run_status(run_id)
+            if current and current.get("deadline_at") and datetime.fromisoformat(current["deadline_at"]) <= datetime.now(timezone.utc):
+                request_stop(run_id, reason="timeout", source="adapter")
+            return stop_event.is_set()
+
+        import inspect
+        event_options = {
+            "namespace": namespace, "session_id": session_id, "working_dir": str(repo),
+            "should_stop": should_stop_run,
+            "gate": None if context.autonomous else _make_gate(session_id),
+        }
+        signature = inspect.signature(run_events)
+        if "resume_state" in signature.parameters or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values()
+        ):
+            event_options.update(resume_state=resume_state, checkpoint_callback=recorder)
+        gen = run_events(cfg, messages, **event_options)
         to_send = None
         while True:
             try:
@@ -2425,6 +2476,14 @@ def run_lea(context: RunnerContext) -> None:
                                  completion_verified=final_result_kind in {"proved", "defined"},
                                  source_hash=focus_source_hash))
 
+    except recovery.CheckpointWriteError as exc:
+        logger.exception("Run %s paused because its checkpoint could not be saved", run_id)
+        reason = _public_error_detail(exc)
+        recovery.pause_for_mismatch(run_id, reason)
+        final_status = "cancelled"
+        final_result_kind = "interrupted"
+        final_result_detail = reason
+        final_recoverable = True
     except Exception as exc:  # noqa: BLE001 — surface any failure as an error event, never hang the stream
         logger.exception("Lea run %s failed", run_id)
         flush_narration()
@@ -2496,6 +2555,11 @@ def run_lea(context: RunnerContext) -> None:
             final_result_kind = "failed"
             final_result_detail = error_detail
     finally:
+        if attempt_id:
+            try:
+                recovery.finish_attempt(run_id, attempt_id, final_status)
+            except Exception:
+                logger.exception("Could not finish attempt %s", attempt_id)
         # Publish any trailing streamed text before the terminal `done` (P1) — a run
         # that ends mid-batch must not drop its last words.
         deltas.flush()
@@ -2532,7 +2596,8 @@ def run_lea(context: RunnerContext) -> None:
             done_payload["stop_reason"] = final_stop_reason
         done_payload["recoverable"] = final_recoverable
         settled = store.get_run_status(run_id) or {}
-        for key in ("stop_requested_reason", "input_tokens", "output_tokens", "cost_usd",
+        for key in ("stop_requested_reason", "attempt_id", "recovery_state", "recovery_reason",
+                    "checkpoint_at", "input_tokens", "output_tokens", "cost_usd",
                     "usage_status", "usage_revision", "usage_updated_at"):
             done_payload[key] = settled.get(key)
         emit(events, "done", done_payload)

@@ -10,7 +10,7 @@ from app import db, runbroker, runregistry, store
 from app.config import LeaConfig
 from app.runregistry import RunRegistry
 from app.routes import runs as runs_route
-from app.routes.runs import InterruptRequest, NewFormalizationRequest, RunRequest
+from app.routes.runs import InterruptRequest, NewFormalizationRequest, ResumeRequest, RunRequest
 
 
 class _Req:
@@ -71,6 +71,45 @@ def test_create_run_tags_session_and_run_with_project_slug(tmp_path, monkeypatch
         s for s in store.usage_stats()["sessions"] if s["project_slug"] == "doc-a"
     ]
     assert len(doc_sessions) == 2
+
+
+def test_run_creation_idempotency_survives_a_lost_response(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    request = RunRequest(message="prove it", idempotency_key="client-job-1", timeout_seconds=90)
+    first = runs_route.create_run(request)
+    repeated = runs_route.create_run(RunRequest(message="prove it", idempotency_key="client-job-1",
+                                                  timeout_seconds=60))
+    assert repeated["run_id"] == first["run_id"]
+    assert repeated["session_id"] == first["session_id"]
+    with db.connect() as conn:
+        assert conn.execute("select count(*) from runs").fetchone()[0] == 1
+    with pytest.raises(HTTPException) as different:
+        runs_route.create_run(RunRequest(message="prove it", idempotency_key="client-job-1",
+                                         focus_source_hash="different"))
+    assert different.value.status_code == 409
+
+
+def test_manual_resume_preserves_original_request_and_requires_acknowledgement(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    first = runs_route.create_run(RunRequest(message="Prove the missing target"))
+    with db.write() as conn:
+        conn.execute("""update runs set status = 'cancelled', recoverable = 1,
+                       recovery_state = 'review', recovery_reason = 'Lost model response'
+                       where id = ?""", (first["run_id"],))
+    with pytest.raises(HTTPException) as unacknowledged:
+        runs_route.resume_run(first["run_id"], ResumeRequest(
+            acknowledge_uncertainty=False, idempotency_key="resume-once"))
+    assert unacknowledged.value.status_code == 409
+
+    result = runs_route.resume_run(first["run_id"], ResumeRequest(
+        acknowledge_uncertainty=True, idempotency_key="resume-once"))
+    assert result["run_id"] != first["run_id"]
+    assert result["session_id"] == first["session_id"]
+    assert runs_route.resume_run(first["run_id"], ResumeRequest(
+        acknowledge_uncertainty=True, idempotency_key="resume-once"))["run_id"] == result["run_id"]
+    detail = store.session_detail(first["session_id"])
+    resumed_message = next(m["content"] for m in detail["messages"] if m["run_id"] == result["run_id"])
+    assert "Prove the missing target" in resumed_message
 
 
 def test_create_run_records_overleaf_origin(tmp_path, monkeypatch):
@@ -347,7 +386,7 @@ def test_run_events_replays_buffered_history_then_tails_live(tmp_path, monkeypat
     out = asyncio.run(run_case())
     assert "event: status" in out
     assert "event: done" in out
-    assert "id: 1" in out
+    assert "id: pending:1" in out
 
 
 def test_reattach_cursor_skips_seen_events(tmp_path, monkeypatch):
@@ -366,6 +405,23 @@ def test_reattach_cursor_skips_seen_events(tmp_path, monkeypatch):
     assert "event: message" not in out
     assert "event: code_step" in out
     assert "event: done" in out
+
+
+def test_cursor_from_previous_attempt_resynchronizes_before_replay(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    started = runs_route.create_run(RunRequest(message="prove it", autonomous=True))
+    run_id = started["run_id"]
+    with db.write() as conn:
+        conn.execute("update runs set status = 'running', attempt_id = 'new-attempt' where id = ?", (run_id,))
+    broker = runbroker.create(run_id)
+    broker.put({"type": "message", "payload": {"id": "first"}})
+    broker.put({"type": "done", "payload": {"status": "proved"}})
+
+    response = asyncio.run(runs_route.run_events(run_id, _Req(last_event_id="old-attempt:9")))
+    out = _collect_through_done(response)
+    assert "event: resync" in out
+    assert "id: new-attempt:1" in out
+    assert '"id": "first"' in out
 
 
 def test_terminal_run_without_broker_synthesizes_done(tmp_path, monkeypatch):

@@ -159,6 +159,8 @@ export function Sidebar({
               <button
                 key={session.id}
                 className={`row ${selectedSessionId === session.id ? 'active' : ''}`}
+                title={session.latest_recovery_state === 'review' ? 'Interrupted — review before resuming'
+                  : session.latest_recovery_state === 'recovering' ? 'Recovering saved progress' : undefined}
                 onClick={() => onSelectSession(session.id)}
               >
                 <span className={`dot ${dotClass(session, runningSessionId)}`} />
@@ -227,6 +229,7 @@ function dotClass(session: SessionSummary, runningSessionId?: string): string {
   // start/finish. Either one lights the running dot (v2.3 item 13).
   if (session.id === runningSessionId) return 'run';
   if ((session.active_run_count ?? 0) > 0) return 'run';
+  if (session.latest_recovery_state === 'review') return 'warn';
   if (session.status === 'ok' || session.status === 'proved' || session.status === 'defined') return 'ok';
   if (session.status === 'disproved') return 'run';
   if (session.status === 'needs_review') return 'warn';

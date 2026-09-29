@@ -1861,7 +1861,7 @@ test("records targetSyntax on the job for telemetry, defaulting to comment", asy
   // targetKind/targetLabel/targetText/targetUses/targetContext produce
   // identical jobs apart from this one telemetry field and the inputs that
   // differ by construction (jobId/timestamps/label/jobKey/hash).
-  for (const key of ["jobId", "jobKey", "targetLabel", "targetSyntax", "targetTextHash", "formalizationInputHash", "sourceBundle", "sourceContext", "startedAt", "logPath", "absolutePath", "relativePath", "declarationName"]) {
+  for (const key of ["jobId", "jobKey", "targetLabel", "targetSyntax", "targetTextHash", "formalizationInputHash", "sourceBundle", "sourceContext", "startedAt", "logPath", "absolutePath", "relativePath", "declarationName", "requestPrompt"]) {
     delete defaultJob[key];
     delete tagJob[key];
   }
@@ -4125,7 +4125,7 @@ test("formalize pauses a Lea job that exceeds the job timeout", async () => {
   assert.match(statuses.body.statuses["theorem:timeout_test"].message, /paused.*time limit/i);
 });
 
-test("startup recovery fails interrupted in-progress jobs", async () => {
+test("startup recovery pauses legacy jobs lacking an adapter identity", async () => {
   const leaRepo = await makeLeaRepo();
   const state = await makeState({ leaRepoPath: leaRepo });
   const logPath = path.join(path.dirname(state.jobsPath), "interrupted.log");
@@ -4143,11 +4143,11 @@ test("startup recovery fails interrupted in-progress jobs", async () => {
 
   await recoverInterruptedJobs(state);
 
-  assert.equal(state.jobs.interrupted_job.status, "failed");
+  assert.equal(state.jobs.interrupted_job.status, "paused");
   assert.equal(state.jobs.interrupted_job.finalStatus, "interrupted");
-  assert.match(state.jobs.interrupted_job.error, /Companion restarted/);
+  assert.match(state.jobs.interrupted_job.recoveryReason, /no adapter run identity/i);
   assert.ok(state.jobs.interrupted_job.finishedAt);
-  assert.match(await fs.readFile(logPath, "utf8"), /Companion restarted/);
+  await assert.rejects(fs.readFile(logPath, "utf8"), { code: "ENOENT" });
 
   const statuses = await handleGetStatuses({
     overleafProjectId: "project-1",
@@ -4155,7 +4155,34 @@ test("startup recovery fails interrupted in-progress jobs", async () => {
   }, state);
 
   assert.equal(statuses.statusCode, 200);
-  assert.equal(statuses.body.statuses["theorem:interrupted_status_test"].status, "failed");
+  assert.equal(statuses.body.statuses["theorem:interrupted_status_test"].status, "paused");
+});
+
+test("startup recovery reattaches to the exact adapter run without creating another", async () => {
+  const leaRepo = await makeLeaRepo();
+  const calls = [];
+  const state = await makeState({
+    leaRepoPath: leaRepo,
+    env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: makeLeaApiFetch(calls)
+  });
+  const started = await handleFormalize({
+    overleafProjectId: "project-1", targetKind: "theorem",
+    targetLabel: "reattach_test", targetText: "A theorem."
+  }, state);
+  const job = state.jobs[started.body.jobId];
+  await waitFor(() => job.status === "formalized");
+  assert.equal(job.apiRunId, "api-run-1");
+  const before = calls.filter((call) => String(call.url).endsWith("/api/runs") && call.options?.method === "POST").length;
+  assert.equal(before, 1);
+
+  job.status = "in_progress";
+  job.finishedAt = null;
+  await recoverInterruptedJobs(state);
+  await waitFor(() => job.status === "formalized");
+  const after = calls.filter((call) => String(call.url).endsWith("/api/runs") && call.options?.method === "POST").length;
+  assert.equal(after, before);
+  assert.equal(job.apiRunId, "api-run-1");
 });
 
 async function makeLeaRepo() {

@@ -10,11 +10,12 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 
 from .db import init_db
 from .routes import (alignment_checks, lea_status, formalize_batch_reports, custom_tools, formalizations, mcp_servers, projects, runs, search,
                      sessions, settings, skills, subagents)
-from . import alignment_store, bridge, formalize_batch_reports as batch_report_service, github_import_service, netguard, store
+from . import alignment_store, bridge, formalize_batch_reports as batch_report_service, github_import_service, netguard, store, recovery, runtime
 from .config import load_config
 
 app = FastAPI(title="Lea Interface API")
@@ -63,29 +64,57 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup() -> None:
-    init_db()
-    alignment_store.recover_interrupted()
-    batch_report_service.recover_interrupted()
-    # No worker survives a restart: reap orphaned 'running' rows (their derived
-    # session status would read 'thinking' forever), then re-enqueue the
-    # still-pending queue so a restart doesn't strand queued work (Phase 2).
-    store.fail_stale_active_runs()
-    bridge.recover_runs_at_startup()
-    config = load_config()
-    proofs_root = config.lea_root / "workspace" / "proofs" if config.lea_root else None
-    github_import_service.recover_github_imports_at_startup(proofs_root)
+    runtime.set_state("starting")
+    runtime.acquire_data_lock()
+    try:
+        from lea import process_ownership
+        os.environ["LEA_OWNED_PROCESS_DIR"] = str(runtime.owned_process_dir())
+        process_ownership.reap_previous()
+        init_db()
+        runtime.set_state("recovering")
+        recovery.recover_running()
+        alignment_store.recover_interrupted()
+        batch_report_service.recover_interrupted()
+        bridge.recover_runs_at_startup()
+        config = load_config()
+        proofs_root = config.lea_root / "workspace" / "proofs" if config.lea_root else None
+        github_import_service.recover_github_imports_at_startup(proofs_root)
+        runtime.set_state("ready")
+    except BaseException:
+        runtime.release_data_lock()
+        raise
 
 
 @app.get("/api/health")
 def health() -> dict:
     from .lea_status import admission_enabled
-    return {"ok": True, "capabilities": {"lea_status": {"version": 1, "admission_enabled": admission_enabled(), "independent_checks": False, "source_pause_policy": 1}}}
+    return {"ok": True, **runtime.snapshot(), "capabilities": {"lea_status": {"version": 1, "admission_enabled": admission_enabled(), "independent_checks": False, "source_pause_policy": 1}}}
+
+
+class RestartRequest(BaseModel):
+    force: bool = False
+    cancel: bool = False
+    shutdown: bool = False
+
+
+@app.post("/api/runtime/restart")
+def restart_adapter(request: RestartRequest) -> dict:
+    if request.cancel:
+        return runtime.cancel_drain()
+    return runtime.begin_drain(force=request.force, restart=not request.shutdown)
 
 
 @app.on_event("shutdown")
 def shutdown_lean_checks() -> None:
     from lea.lsp_daemon import _shutdown_all
-    _shutdown_all()
+    from lea.mcp import shutdown_pool
+    try:
+        try:
+            _shutdown_all()
+        finally:
+            shutdown_pool()
+    finally:
+        runtime.release_data_lock()
 
 
 app.include_router(sessions.router)

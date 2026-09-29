@@ -86,6 +86,10 @@ CATALOG: dict[str, tuple[str, str | None]] = {
         "Pick a different model in Settings — the configured model id was rejected.",
     ),
     "run.crashed": ("The run stopped on an unexpected error", None),
+    "run.restart_requested": ("Adapter restart requested", "Active work will finish before the adapter restarts."),
+    "run.recovering": ("Recovering saved progress", None),
+    "run.recovery_review": ("Interrupted run needs review", "Inspect the saved progress and uncertain action before choosing Resume."),
+    "run.recovery_stopped": ("Interrupted run reached its original limit", None),
     "run.project_unavailable": (
         "This run is not attached to its project",
         "The run continues without project context, instructions, or skills. Re-check "

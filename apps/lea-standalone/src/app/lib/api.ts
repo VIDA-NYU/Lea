@@ -103,6 +103,15 @@ export async function createRun(
   return response.json();
 }
 
+export async function resumeInterruptedRun(runId: string): Promise<{ run_id: string; session_id: string }> {
+  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/resume`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ acknowledge_uncertainty: true, idempotency_key: `resume:${runId}` }),
+  });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Could not resume the interrupted run.'));
+  return response.json();
+}
+
 export async function listProjectFormalizations(
   projectId: string,
 ): Promise<{ formalizations: Formalization[]; summary: Record<string, number> }> {

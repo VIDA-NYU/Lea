@@ -77,6 +77,7 @@ export function ChatThread({
   onDraftChange,
   onSubmit,
   onInterrupt,
+  onResumeRun,
   onOpenLibrary,
   onOpenSettings,
   canvasCollapsed,
@@ -94,6 +95,7 @@ export function ChatThread({
   onDraftChange: (value: string) => void;
   onSubmit: () => void;
   onInterrupt: () => void;
+  onResumeRun?: (runId: string) => Promise<void> | void;
   onOpenSettings?: () => void;
   onOpenLibrary?: (focus?: string) => void;
   canvasCollapsed: boolean;
@@ -187,6 +189,7 @@ export function ChatThread({
   const runStatusById = useProofSession((s) => s.runStatusById);
   const runResultKindById = useProofSession((s) => s.runResultKindById);
   const runStopReasonById = useProofSession((s) => s.runStopReasonById);
+  const runRecoveryById = useProofSession((s) => s.runRecoveryById);
   const runFocusById = useProofSession((s) => s.runFocusById);
   const formalizations = useProofSession((s) => s.formalizations);
   const formalizationScope = useProofSession((s) => s.formalizationScope);
@@ -402,8 +405,11 @@ export function ChatThread({
   );
   const stopReasons = Object.values(runStopReasonById);
   const latestStopReason = stopReasons.length ? stopReasons[stopReasons.length - 1] : undefined;
+  const runIds = Object.keys(runStatusById);
+  const latestRunId = runIds.length ? runIds[runIds.length - 1] : undefined;
   const headChip = isRunning
-    ? { cls: 'run', text: '● proving' }
+    ? { cls: 'run', text: currentRunId && runRecoveryById[currentRunId]?.state === 'recovering'
+      ? '● recovering saved progress' : '● proving' }
     : (session?.status === 'needs_review' || formalizations.some((item) =>
         item.validity_status === 'needs_review' &&
         (formalizationScope === item.id || (formalizationScope === 'project' && formalizations.length === 1))))
@@ -424,7 +430,8 @@ export function ChatThread({
     : runStatus === 'failed' || runStatus === 'max_turns'
     ? { cls: 'fail', text: '✕ unproved' }
     : runStatus === 'cancelled'
-    ? { cls: 'fail', text: latestStopReason === 'timeout' ? '◼ time limit reached'
+    ? { cls: 'fail', text: latestRunId && runRecoveryById[latestRunId]?.state === 'review'
+      ? 'Interrupted — review before resuming' : latestStopReason === 'timeout' ? '◼ time limit reached'
       : latestStopReason === 'user_stop' ? '◼ stopped by user' : '◼ stopped' }
     : null;
 
@@ -629,6 +636,15 @@ export function ChatThread({
                         ? `Working on ${focused.declaration_name || focused.display_title}`
                         : 'Project discussion'}
                     </strong>
+                    {runRecoveryById[group.runId]?.state === 'recovering' && <span>Recovering saved progress</span>}
+                    {runRecoveryById[group.runId]?.state === 'review' && (
+                      <span title={runRecoveryById[group.runId]?.reason || undefined}>
+                        Interrupted — review before resuming. {runRecoveryById[group.runId]?.reason}
+                        {onResumeRun && <button type="button" onClick={() => void onResumeRun(group.runId!)}>
+                          Resume after review
+                        </button>}
+                      </span>
+                    )}
                   </div>
                 )}
                 {coalesceUnits(group.nodes).map((unit) =>

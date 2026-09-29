@@ -60,7 +60,7 @@ def _fake_run_events(events):
     """Build a fake run_events that writes a file into working_dir then replays
     `events` (a callable taking the absolute proof path, returning the sequence)."""
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         proof = Path(working_dir) / "Lea" / "Misc" / "proof.lean"
         proof.parent.mkdir(parents=True, exist_ok=True)
         proof.write_text("import Mathlib\n\ntheorem t : True := by trivial\n")
@@ -298,7 +298,7 @@ def test_project_run_uses_shared_repo_namespace_and_context(tmp_path, monkeypatc
     )
     captured: dict = {}
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         captured["namespace"] = namespace
         captured["working_dir"] = working_dir
         captured["messages"] = list(messages)
@@ -356,7 +356,7 @@ def _policy_recording_fake(received: dict):
     """A fake run_events that records the prompt_variant + gate it was handed,
     then finishes cleanly. Lets us assert the autonomous policy without a model."""
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         received["prompt_variant"] = config.prompt_variant
         received["gate"] = gate
         yield TurnStarted(1)
@@ -442,7 +442,7 @@ def test_done_emitted_and_run_failed_on_exception(tmp_path, monkeypatch):
 
     def boom(
         config, messages, *, namespace=None, session_id=None, working_dir=None,
-        should_stop=None, gate=None,
+        should_stop=None, gate=None, **kwargs,
     ):
         yield TurnStarted(1)
         raise RuntimeError("model exploded")
@@ -470,7 +470,7 @@ def test_exception_detail_is_redacted_before_streaming_or_persistence(tmp_path, 
 
     def boom(
         config, messages, *, namespace=None, session_id=None, working_dir=None,
-        should_stop=None, gate=None,
+        should_stop=None, gate=None, **kwargs,
     ):
         raise RuntimeError(f"provider rejected {secret}")
         yield  # pragma: no cover — keep this a generator like run_events
@@ -490,7 +490,7 @@ def _recording_fake(received: list, transcript_messages: list):
     """A fake run_events that records the `messages` it was handed, then Finishes
     with a given transcript (so the bridge persists it for the next activation)."""
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         received.append(messages)
         yield TurnStarted(1)
         yield Finished("completed", "done", 1, session_id, "gemini/test",
@@ -551,7 +551,7 @@ def test_followup_replays_prior_transcript(tmp_path, monkeypatch):
 def test_interrupt_maps_finished_interrupted_to_cancelled(tmp_path, monkeypatch):
     ctx, queue = _context(tmp_path, monkeypatch)
 
-    def interrupted(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def interrupted(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         yield TurnStarted(1)
         yield Finished("interrupted", "Run interrupted by the user.", 1, session_id,
                        "gemini/test", Usage(input_tokens=2, output_tokens=1), 0.0, {"messages": []})
@@ -570,7 +570,7 @@ def test_request_stop_flag_reaches_the_run(tmp_path, monkeypatch):
     # Stop was hit before the run loop got going — the endpoint pre-set the flag.
     bridge.request_stop(ctx.run_id)
 
-    def stops_when_asked(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def stops_when_asked(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         # the agent honors should_stop at its turn boundary
         if should_stop():
             yield Finished("interrupted", "stopped", 0, session_id, "gemini/test",
@@ -651,7 +651,7 @@ def test_resolve_approval_matches_and_rejects_stale():
 def _gated_fake(received: dict, decision_sink: str = "decision"):
     """A fake run_events that gates one bash call, records the decision it gets
     back, then Finishes."""
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         received[decision_sink] = yield ToolApprovalRequested("bash", {"command": "ls"})
         yield Finished("completed", "done", 1, session_id, "gemini/test",
                        Usage(input_tokens=1, output_tokens=1), 0.0, {"messages": []})
@@ -797,7 +797,7 @@ def _skills_recording_fake(received: dict):
     reads each file's content *while the temp dir still exists* (before the run's
     finally cleans it up), then finishes cleanly."""
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         received["skills"] = list(config.skills)
         received["bodies"] = {Path(p).name: Path(p).read_text() for p in config.skills}
         yield TurnStarted(1)
@@ -911,7 +911,7 @@ def test_mid_run_spend_cap_requests_stop_and_labels_result(tmp_path, monkeypatch
     # result_kind="max_spend" (status stays "cancelled" — vocabulary unchanged).
     ctx, queue = _context(tmp_path, monkeypatch, max_spend_usd=0.02)
 
-    def capped(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def capped(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         yield TurnStarted(1)
         yield AssistantTextDelta("Working on it.")
         yield UsageUpdated(10, 5, 0.03)
@@ -945,7 +945,7 @@ def test_spend_cap_baseline_includes_prior_runs(tmp_path, monkeypatch):
     prior_run = store.create_run(ctx.session_id, "gemini/test", None, 3)
     store.update_run(prior_run["id"], "proved", input_tokens=100, output_tokens=50, cost_usd=0.095)
 
-    def capped(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def capped(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         yield TurnStarted(1)
         yield UsageUpdated(10, 5, 0.01)
         assert should_stop()
@@ -1003,7 +1003,7 @@ def test_enqueued_runs_execute_fifo(tmp_path, monkeypatch):
     runbroker._brokers.clear()
     executed = []
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         executed.append(messages[-1]["content"])
         yield TurnStarted(1)
         yield Finished("completed", "done", 1, session_id, "gemini/test",
@@ -1048,7 +1048,7 @@ def test_queued_run_executes_its_snapshotted_model(tmp_path, monkeypatch):
         session_id=None,
         working_dir=None,
         should_stop=None,
-        gate=None,
+        gate=None, **kwargs,
     ):
         executed_models.append(config.model)
         yield TurnStarted(1)
@@ -1077,7 +1077,7 @@ def test_finished_broker_buffer_ends_in_done(tmp_path, monkeypatch):
         lambda: LeaConfig(model="gemini/test", max_turns=3, lea_root=tmp_path),
     )
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         yield TurnStarted(1)
         yield AssistantTextDelta("thinking…")
         yield Finished("completed", "done", 1, session_id, "gemini/test",
@@ -1143,7 +1143,7 @@ def test_run_records_structured_artifact_rows(tmp_path, monkeypatch):
         session_id=session["id"], run_id=run["id"], task="prove foo", config=config, events=queue,
     )
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         proof = Path(working_dir) / "chapter" / "foo_theorem.lean"
         proof.parent.mkdir(parents=True, exist_ok=True)
         proof.write_text("import Mathlib\n\ntheorem foo_theorem : True := by trivial\n")
@@ -1187,7 +1187,7 @@ def test_reformalize_updates_the_artifact_row_in_place(tmp_path, monkeypatch):
             config=config, events=Queue(),
         )
 
-        def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+        def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
             proof = Path(working_dir) / path_name
             proof.write_text("import Mathlib\n\ntheorem same_decl : True := by trivial\n")
             yield TurnStarted(1)
@@ -1368,7 +1368,7 @@ def test_a_session_busy_run_does_not_block_a_different_session(tmp_path, monkeyp
     started: list[str] = []
 
     def fake(config, messages, *, namespace=None, session_id=None, working_dir=None,
-             should_stop=None, gate=None):
+             should_stop=None, gate=None, **kwargs):
         task = messages[-1]["content"]
         started.append(task)
         yield TurnStarted(1)
@@ -1425,7 +1425,7 @@ def test_deferred_runs_keep_their_relative_order(tmp_path, monkeypatch):
     started: list[str] = []
 
     def fake(config, messages, *, namespace=None, session_id=None, working_dir=None,
-             should_stop=None, gate=None):
+             should_stop=None, gate=None, **kwargs):
         task = messages[-1]["content"]
         started.append(task)
         yield TurnStarted(1)
@@ -1596,7 +1596,7 @@ def _finishing_run(tmp_path, monkeypatch, *, result="proved"):
     config = LeaConfig(model="gemini/test", max_turns=3, lea_root=tmp_path)
 
     def fake(config, messages, *, namespace=None, session_id=None, working_dir=None,
-             should_stop=None, gate=None):
+             should_stop=None, gate=None, **kwargs):
         proof = Path(working_dir) / "Lea" / "Misc" / "p.lean"
         proof.parent.mkdir(parents=True, exist_ok=True)
         proof.write_text("import Mathlib\n\ntheorem t : True := by trivial\n")
