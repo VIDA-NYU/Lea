@@ -7,6 +7,7 @@
   const DEFAULT_LEA_MODEL = "o4-mini";
   const DEFAULT_LEA_MAX_TURNS = 20;
   const DEFAULT_LEA_TEX_MIRROR_ENABLED = true;
+  const REFORMALIZE_HELP_TEXT = "Try again using the previous attempt and current LaTeX, keeping existing Lean work.";
   const LEA_UI_VIEW_STATUSES = new Set(["formalized", "defined", "disproved", "in_progress", "paused", "sorry_stub", "stale"]);
   const TEX_MIRROR_SYNC_DELAY_MS = 1500;
   const TEX_MIRROR_FULL_SYNC_INTERVAL_MS = 10 * 60 * 1000;
@@ -4827,6 +4828,10 @@
       ? "Resume"
       : item.status === "missing-stub" ? "Formalize" : "Re-formalize");
     button.textContent = idleLabel;
+    if (idleLabel === "Re-formalize" || idleLabel === "Regenerate definition") {
+      button.title = REFORMALIZE_HELP_TEXT;
+      button.setAttribute("aria-description", REFORMALIZE_HELP_TEXT);
+    }
     button.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -4935,6 +4940,10 @@
       entry.className = "ol-lean-overflow-item";
       entry.setAttribute("role", "menuitem");
       entry.textContent = action.label;
+      if (action.label === "Re-formalize") {
+        entry.title = REFORMALIZE_HELP_TEXT;
+        entry.setAttribute("aria-description", REFORMALIZE_HELP_TEXT);
+      }
       entry.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -5673,6 +5682,10 @@
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = spec.label;
+      if (spec.label === "Re-formalize" || spec.label === "Regenerate definition") {
+        button.title = REFORMALIZE_HELP_TEXT;
+        button.setAttribute("aria-description", REFORMALIZE_HELP_TEXT);
+      }
       button.dataset.role = spec.role;
       if (spec.primary) {
         button.dataset.primary = "true";

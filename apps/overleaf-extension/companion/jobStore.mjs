@@ -31,10 +31,10 @@ export function findLatestFinishedJob(jobs, jobKey) {
 }
 
 // The newest job whose terminal result can be the provenance of an artifact
-// that still exists. Failed attempts are deliberately excluded: a retry retires
-// the previous proof before running and restores it on failure, so attributing
-// the restored proof to the failed retry's source hash would incorrectly make
-// it look current.
+// that still exists. A failed attempt can leave the previous proof untouched
+// (or, for legacy retries, restore it), so its source hash must not automatically
+// become the unchanged artifact's provenance. Current file evidence lives in
+// the adapter ledger; the checked-stub exception below carries real provenance.
 const ARTIFACT_JOB_STATUSES = new Set([
   "formalized",
   "repaired",

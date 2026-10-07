@@ -2,6 +2,7 @@ import { runtimeNeedsPolling, runtimeStatusMessage, checkExecutionMessage } from
 import { acceptStatusEvent } from "./leaStatus.mjs";
 import { resolveSharedDependencies, mergeDependencyProgress } from "./dependencyCoordinator.mjs";
 import { normalizeLeaStatus } from "../shared/leaStatus.mjs";
+import { buildRetryContext, appendRetryInstructions } from "./retryContext.mjs";
 import { canonicalSourceTargetKind, sourceHashInputs } from "../extension/sourceIdentityCore.mjs";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -556,8 +557,9 @@ async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
     previousJob?.declarationNameHint,
     target.targetLabel
   ].filter(Boolean))];
-  const ledger = await fetchTargetStatusFromAdapter({ state, target, declarations });
-  if (Object.values(ledger || {}).some((entry) => entry?.recorded && entry.exists && entry.shared_file)) {
+  const ledger = await fetchTargetStatusFromAdapter({ state, target, declarations,
+    formalizationIds: previousJob?.formalizationId ? [previousJob.formalizationId] : [] });
+  if (Object.values(ledger || {}).some((entry) => entry?.exists && entry.shared_file)) {
     return errorResponse(409, "shared_artifact", "This Lean file contains other declarations; formalizing one item could overwrite them. Move the target into its own file first.");
   }
   if (batch) {
@@ -672,16 +674,51 @@ async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
     return { statusCode: 200, body: buildJobResponse({ job, status: "in_progress", target }) };
   }
 
-  // Self-repair Phase 1: when this target already has a recorded artifact
-  // (the re-formalize case), snapshot its declaration state NOW -- before
-  // cleanupPreviousRunArtifacts below may delete the old file -- so the run's
-  // terminal handler can classify what changed and cascade over dependents.
+  // Retry from the current working file. Its previous versions already live in
+  // Git; retiring it here discards exactly the progress the next attempt needs.
+  const linkedJob = findLatestJobWithLeaSession(state.jobs || {}, target.jobKey);
+  const evidence = Object.values(ledger || {}).find((entry) =>
+    entry?.formalization_id && entry.formalization_id === linkedJob?.formalizationId)
+    || Object.values(ledger || {}).find((entry) => entry?.path
+      && entry.declaration_name === (linkedJob?.declarationName || previousJob?.declarationName || target.targetLabel))
+    || Object.values(ledger || {}).find((entry) => entry?.path);
+  const leaSessionId = linkedJob?.leaSessionId || linkedJob?.recorderSessionId || evidence?.session_id || null;
+  const formalizationId = linkedJob?.formalizationId || evidence?.formalization_id || previousJob?.formalizationId || null;
+  let sessionDetail = null;
+  if (leaSessionId) {
+    try {
+      const detail = await fetchApiSessionDetail({ fetchImpl: state.fetchImpl || fetch,
+        baseUrl: state.settings.leaApiBaseUrl || DEFAULT_LEA_API_BASE_URL,
+        apiKey: state.env?.LEA_API_KEY, sessionId: leaSessionId });
+      if (detail.ok) sessionDetail = detail.body;
+    } catch { /* Retry can still use current files and the legacy job record. */ }
+  }
+  const currentFormalization = sessionDetail?.formalizations?.find((item) => item.id === formalizationId);
+  const previousProofPath = linkedJob?.recordedProofPath || previousJob?.recordedProofPath || null;
+  const primaryPath = evidence?.path || currentFormalization?.primary_path
+    || (previousProofPath ? repoRelativeProofPath(target, previousProofPath) : null);
+  const recordedProofPath = primaryPath ? ledgerProofPath(target, primaryPath) : previousProofPath;
+  const artifact = primaryPath ? {
+    path: primaryPath,
+    declarationName: evidence?.declaration_name || currentFormalization?.declaration_name
+      || linkedJob?.declarationName || previousJob?.declarationName || target.targetLabel,
+    exists: evidence?.exists ?? existsSync(buildLeaProofPath({ leaRepoPath: state.settings.leaRepoPath, proofPath: recordedProofPath }) || ""),
+    checkStatus: evidence?.check_status || null,
+    checkCurrent: evidence?.check_current ?? null,
+    checkDetail: evidence?.check_detail || null
+  } : null;
+  const retryContext = buildRetryContext({ jobKey: target.jobKey, formalizationId, previousJob,
+    sessionDetail, artifact, currentSource: sourceContext.sourceBundle,
+    historyAvailable: Boolean(sessionDetail) });
+
+  // Snapshot the old declaration header so dependent checks can classify the
+  // retry's final change without persisting another copy of its proof bytes.
   let preRunLean = null;
-  const previous = resolveEditSession({ state, overleafProjectId, targetKind, targetLabel });
-  if (previous.leaSessionId) {
+  if (leaSessionId) {
     try {
       preRunLean = await snapshotPreRunLeanState({
-        state, leaSessionId: previous.leaSessionId, overleafProjectId, targetKind, targetLabel
+        state, leaSessionId, overleafProjectId, targetKind, targetLabel, sessionDetail,
+        declarationName: artifact?.declarationName
       });
     } catch {
       preRunLean = null;
@@ -700,19 +737,6 @@ async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
         jobs: state.jobs || {}
       })
     : null;
-  let cleanup;
-  try {
-    cleanup = resume || reusableStub
-      ? { removedProofPaths: [], removedProjectEntries: [] }
-      : await cleanupPreviousRunArtifacts({
-          state,
-          leaRepoPath: state.settings.leaRepoPath,
-          target,
-          jobs: state.jobs || {}
-        });
-  } catch (error) {
-    return errorResponse(409, "artifact_retirement_blocked", error instanceof Error ? error.message : String(error));
-  }
   const job = await createLeaJob({
     state,
     target,
@@ -730,6 +754,18 @@ async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
   // Only the parsed header + module identity ride on the job (persisted with
   // jobs.json); never the full file content -- see snapshotPreRunLeanState.
   if (preRunLean) job.preRunLean = preRunLean;
+  if (leaSessionId) job.leaSessionId = leaSessionId;
+  if (formalizationId) job.formalizationId = formalizationId;
+  if (recordedProofPath) {
+    job.recordedProofPath = recordedProofPath;
+    job.declarationName = artifact?.declarationName || job.declarationName;
+    job.moduleName = evidence?.module_name || linkedJob?.moduleName
+      || (primaryPath ? moduleNameFromProjectStep({ namespace: targetNamespace(target), stepPath: primaryPath }) : null);
+    // Preserve a manually renamed declaration unless the source explicitly
+    // supplies a different name. The marker remains the stable job identity.
+    job.declarationNameHint = inferLeanDeclarationName(targetText) || job.declarationName;
+  }
+  if (retryContext) job.retryContext = retryContext;
   if (reusableStub) {
     job.leaSessionId = reusableStub.leaSessionId || null;
     job.recordedProofPath = reusableStub.recordedProofPath;
@@ -742,7 +778,7 @@ async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
       leanStatement: reusableStub.leanStatement || ""
     };
   }
-  job.retryCleanup = cleanup;
+  job.retryCleanup = { removedProofPaths: [], removedProjectEntries: [] };
   job.resumed = resume;
   state.jobs[job.jobId] = job;
   await persistJobs(state);
@@ -2202,9 +2238,9 @@ function pickSessionLeanStep(codeSteps, declarationName) {
 // `linkedJob.declarationName`, not the LaTeX label; searching by the old
 // label here served a stale pre-rename snapshot into the editor (and a save
 // would have written it back over the renamed file).
-async function loadEditableSessionFile({ state, leaSessionId, overleafProjectId, declarationName, linkedJob }) {
+async function loadEditableSessionFile({ state, leaSessionId, overleafProjectId, declarationName, linkedJob, sessionDetail = null }) {
   const baseUrl = chatBaseUrls(state).baseUrl;
-  const detail = await fetchApiSessionDetail({
+  const detail = sessionDetail ? { ok: true, body: sessionDetail } : await fetchApiSessionDetail({
     fetchImpl: state.fetchImpl || fetch,
     baseUrl,
     apiKey: state.env?.LEA_API_KEY,
@@ -2596,13 +2632,13 @@ function buildCascadeDeps({ fetchImpl, baseUrl, apiKey }) {
 // classification). Returns null when there is nothing recorded to snapshot
 // (first formalization, chat on a never-formalized item): with no "before"
 // there is nothing dependents could have elaborated against.
-async function snapshotPreRunLeanState({ state, leaSessionId, overleafProjectId, targetKind, targetLabel }) {
+async function snapshotPreRunLeanState({ state, leaSessionId, overleafProjectId, targetKind, targetLabel, sessionDetail = null, declarationName = null }) {
   if (!leaSessionId) return null;
   const { linkedJob } = resolveEditSession({ state, overleafProjectId, targetKind, targetLabel });
-  const effectiveName = linkedJob?.declarationName || targetLabel;
+  const effectiveName = declarationName || linkedJob?.declarationName || targetLabel;
   let file;
   try {
-    file = await loadEditableSessionFile({ state, leaSessionId, overleafProjectId, declarationName: effectiveName, linkedJob });
+    file = await loadEditableSessionFile({ state, leaSessionId, overleafProjectId, declarationName: effectiveName, linkedJob, sessionDetail });
   } catch {
     return null;
   }
@@ -5700,6 +5736,8 @@ function repoRelativeProofPath(target, proofPath) {
   return normalized.startsWith(prefix) ? normalized.slice(prefix.length) : null;
 }
 
+// Legacy retirement support. New attempts keep their working files; persisted
+// jobs admitted by older companions can still carry these restoration records.
 async function cleanupPreviousRunArtifacts({ state = null, leaRepoPath, target, jobs }) {
   const previousJob = findLatestFinishedJob(jobs, target.jobKey);
   if (!previousJob) {
@@ -6511,7 +6549,7 @@ async function runLeaJob({
   existingRunId = null,
   promptOverride = null
 }) {
-  const prompt = job.continuationRequest ? "" : promptOverride || buildLeaPrompt({
+  const prompt = job.continuationRequest ? "" : promptOverride || appendRetryInstructions(buildLeaPrompt({
     targetKind: target.targetKind,
     projectSlug: target.projectSlug,
     projectName: target.projectName,
@@ -6525,7 +6563,7 @@ async function runLeaJob({
     resolvedUses,
     stubToComplete: job.stubToComplete || null,
     bestEffort: job.bestEffort === true
-  });
+  }), job.retryContext);
   const exit = await runLeaProofJobForJob({ state, job, target, prompt, existingRunId });
   await applyProofOutcomeToJob({ state, job, target, exit, resolvedUses });
 

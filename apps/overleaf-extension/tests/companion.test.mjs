@@ -3673,7 +3673,7 @@ test("usage from the adapter flags the spend cap from all-time cost", async () =
   assert.equal(result.body.leaSpendLimitReached, true);
 });
 
-test("formalize cleans previous failed Lea artifacts before retrying", async () => {
+test("formalize keeps the previous Lean artifact and registry entry while retrying", async () => {
   const leaRepo = await makeLeaRepo();
   const calls = [];
   const proofPath = path.join("workspace", "proofs", "Lea", "Project1", "retry_target.lean");
@@ -3689,8 +3689,7 @@ test("formalize cleans previous failed Lea artifacts before retrying", async () 
 
   const restorePath = await installFakeLake();
   try {
-    // The retire candidates come from the adapter's ledger (4.3) — the
-    // registry markdown is only the agent-facing view the cleanup splices.
+    // Existing progress and its agent-facing registry entry remain available.
     const artifacts = [];
     const targetStatus = {
       retry_target: ledgerEntry("retry_target", {
@@ -3704,8 +3703,8 @@ test("formalize cleans previous failed Lea artifacts before retrying", async () 
       artifacts,
       targetStatus,
       onStatusRequest: async () => {
-        assert.equal(await fileExists(path.join(leaRepo, proofPath)), false);
-        assert.doesNotMatch(
+        assert.equal(await fileExists(path.join(leaRepo, proofPath)), true);
+        assert.match(
           await fs.readFile(path.join(leaRepo, "workspace", "projects", "project-1.md"), "utf8"),
           /retry_target/
         );
@@ -3736,8 +3735,7 @@ test("formalize cleans previous failed Lea artifacts before retrying", async () 
       env: { OPENAI_API_KEY: "test-key" },
       fetchImpl: async (url, options) => {
         if (String(url).endsWith("/artifacts/retire")) {
-          await fs.rm(path.join(leaRepo, proofPath));
-          return jsonResponse(200, { retire_commit: "a".repeat(40) });
+          assert.fail("A retry must not retire the existing proof");
         }
         return adapterFetch(url, options);
       }
@@ -3774,10 +3772,11 @@ test("formalize cleans previous failed Lea artifacts before retrying", async () 
         && state.jobs[result.body.jobId]?.status !== "in_progress"));
     const job = state.jobs[result.body.jobId];
     assert.equal(job.status, "formalized", job.error);
-    assert.deepEqual(job.retryCleanup.removedProofPaths, [proofPath]);
-    assert.deepEqual(job.retryCleanup.removedProjectEntries, ["retry_target"]);
+    assert.deepEqual(job.retryCleanup.removedProofPaths, []);
+    assert.deepEqual(job.retryCleanup.removedProjectEntries, []);
     assert.equal(job.declarationName, "retry_target");
     assert.equal(job.recordedProofPath, proofPath);
+    assert.match(job.requestPrompt, /Try this formalization again/);
   } finally {
     restorePath();
   }
@@ -3923,7 +3922,7 @@ test("formalize all resumes an item that pauses while waiting in the queue", asy
   assert.equal(resumedJob.resumed, true);
 });
 
-test("formalize all cannot bypass a shared-file retirement refusal", async () => {
+test("formalize all cannot bypass the shared-file guard", async () => {
   const leaRepo = await makeLeaRepo();
   const proofPath = path.join("workspace", "proofs", "Lea", "Project1", "shared.lean");
   const original = "theorem already_proved : True := by trivial\ntheorem needs_retry : True := by sorry\n";
@@ -3932,7 +3931,7 @@ test("formalize all cannot bypass a shared-file retirement refusal", async () =>
   const adapterFetch = makeAdapterApiFetch(calls, {
     targetStatus: {
       needs_retry: ledgerEntry("needs_retry", {
-        path: "shared.lean", has_sorry: true, check_status: "error", content: original
+        path: "shared.lean", has_sorry: true, check_status: "error", content: original, shared_file: true
       })
     }
   });
@@ -3962,7 +3961,7 @@ test("formalize all cannot bypass a shared-file retirement refusal", async () =>
   }, state, { batch: true });
 
   assert.equal(result.statusCode, 409);
-  assert.equal(result.body.error, "artifact_retirement_blocked");
+  assert.equal(result.body.error, "shared_artifact");
   assert.equal(await fs.readFile(path.join(leaRepo, proofPath), "utf8"), original);
   assert.ok(!calls.some((call) => String(call.url).endsWith("/api/runs")));
 });
@@ -5341,7 +5340,13 @@ test("re-formalize creates a new run in the target's existing Lea session", asyn
     fetchImpl: makeAdapterApiFetch(calls, {
       sessionId: "sess-existing",
       sessionDetail: {
-        runs: [{ id: "api-run-1", input_tokens: 10, output_tokens: 5, cost_usd: 0.001 }],
+        runs: [
+          { id: "prior-run", focus_formalization_id: "formalization-existing", status: "failed",
+            result_kind: "failed", result_detail: "Could not close the final goal", focus_source_hash: "old-source",
+            created_at: "2026-01-01T00:00:00Z" },
+          { id: "other-run", focus_formalization_id: "other-target", status: "failed",
+            result_detail: "Unrelated error", created_at: "2026-01-02T00:00:00Z" }
+        ],
         code_steps: []
       }
     })
@@ -5358,6 +5363,7 @@ test("re-formalize creates a new run in the target's existing Lea session", asyn
     projectNamespace: "Lea.Project1",
     leaSessionId: "sess-existing",
     formalizationId: "formalization-existing",
+    apiRunId: "prior-run",
     startedAt: "2026-01-01T00:00:00.000Z",
     finishedAt: "2026-01-01T00:01:00.000Z"
   };
@@ -5375,6 +5381,99 @@ test("re-formalize creates a new run in the target's existing Lea session", asyn
   assert.equal(runCall.body.session_id, "sess-existing");
   assert.equal(runCall.body.focus_formalization_id, "formalization-existing");
   assert.equal(runCall.body.new_formalization, undefined);
+  assert.match(runCall.body.message, /Try this formalization again/);
+  assert.match(runCall.body.message, /Could not close the final goal/);
+  assert.match(runCall.body.message, /"comparison": "changed"/);
+  assert.doesNotMatch(runCall.body.message, /Unrelated error/);
+  assert.equal(state.jobs[result.body.jobId].requestPrompt, runCall.body.message);
+});
+
+for (const exists of [true, false]) test(`an artifact-only retry keeps its adapter identity when the file ${exists ? "exists" : "is missing"}`, async () => {
+  const leaRepo = await makeLeaRepo();
+  const calls = [];
+  const targetStatus = { imported: ledgerEntry("imported", { recorded: false, exists,
+    formalization_id: "imported-form", session_id: "imported-session", check_status: "error", check_current: false }) };
+  if (exists) await writeLeaProjectProof(leaRepo, "workspace/proofs/Lea/Project1/imported.lean", "theorem imported : True := by\n");
+  const state = await makeState({ leaRepoPath: leaRepo, env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: makeAdapterApiFetch(calls, { targetStatus, sessionId: "imported-session", doneStatus: "failed",
+      sessionDetail: { runs: [], code_steps: [] } }) });
+  const result = await handleFormalize({ overleafProjectId: "project-1", targetKind: "theorem",
+    targetLabel: "imported", targetText: "Current source." }, state);
+  assert.equal(result.statusCode, 200);
+  await waitFor(() => Boolean(state.jobs[result.body.jobId]?.finishedAt));
+  const run = calls.find((call) => String(call.url).endsWith("/api/runs") && call.options?.method === "POST");
+  assert.equal(run.body.session_id, "imported-session");
+  assert.equal(run.body.focus_formalization_id, "imported-form");
+  assert.equal(run.body.new_formalization, undefined);
+  assert.match(run.body.message, /No previous attempt record is available/);
+  assert.match(run.body.message, new RegExp(`"exists": ${exists}`));
+  assert.match(run.body.message, /imported\.lean/);
+});
+
+for (const scenario of [
+  { kind: "theorem", status: "failed", resultKind: "failed", stopReason: null, batch: false },
+  { kind: "theorem", status: "cancelled", resultKind: "interrupted", stopReason: "timeout", batch: false },
+  { kind: "theorem", status: "cancelled", resultKind: "max_turns", stopReason: "turn_cap", batch: true },
+  { kind: "definition", status: "failed", resultKind: "failed", stopReason: null, batch: false }
+]) test(`${scenario.kind} retry retains renamed partial work after ${scenario.stopReason || scenario.resultKind}${scenario.batch ? " in a batch" : ""}`, async () => {
+  const leaRepo = await makeLeaRepo();
+  const calls = [];
+  const name = "renamed_target";
+  const proofPath = `workspace/proofs/Lea/Project1/${name}.lean`;
+  const original = scenario.kind === "definition" ? `def ${name} : Nat := 1\n` : `theorem ${name} : True := by trivial\n`;
+  const partial = scenario.kind === "definition" ? `def ${name} : Nat := by\n` : `theorem ${name} : True := by\n`;
+  await writeLeaProjectProof(leaRepo, proofPath, original);
+  await writeLeaProjectMarkdown(leaRepo, "project-1", { theoremName: name, proofPath });
+  const registryPath = path.join(leaRepo, "workspace/projects/project-1.md");
+  const registry = await fs.readFile(registryPath, "utf8");
+  const priorRun = { id: "prior-run", status: "failed", result_kind: "failed",
+    focus_formalization_id: "retry-form", focus_source_hash: "prior-source", created_at: "2026-01-01" };
+  const targetStatus = { [name]: ledgerEntry(name, { formalization_id: "retry-form", check_status: "error",
+    check_current: false, check_detail: "Previous diagnostic", validity_status: "failing", content: original }) };
+  const options = {
+    targetStatus, doneStatus: scenario.status,
+    sessionBody: { project_namespace: "Lea.Project1", runs: [priorRun], code_steps: [] },
+    eventFrames: [{ type: "done", status: scenario.status, result_kind: scenario.resultKind,
+      stop_reason: scenario.stopReason, recoverable: Boolean(scenario.stopReason) }],
+    onStatusRequest: async () => {
+      assert.equal(await fs.readFile(path.join(leaRepo, proofPath), "utf8"), original);
+      assert.equal(await fs.readFile(registryPath, "utf8"), registry);
+      await writeLeaProjectProof(leaRepo, proofPath, partial);
+      targetStatus[name] = { ...targetStatus[name], content: partial, check_detail: "New unsolved goal" };
+      options.sessionBody.runs = [priorRun, { id: "api-run-1", status: scenario.status,
+        result_kind: scenario.resultKind, stop_reason: scenario.stopReason, recoverable: Boolean(scenario.stopReason) }];
+    }
+  };
+  const fakeAdapter = makeLeaApiFetch(calls, options);
+  const state = await makeState({ leaRepoPath: leaRepo, env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: async (url, request) => {
+      assert.ok(!String(url).includes("/artifacts/retire") && !String(url).includes("/artifacts/restore"));
+      return fakeAdapter(url, request);
+    } });
+  state.jobs.previous = { jobId: "previous", jobKey: `project-1:${scenario.kind}:marker`, status: "failed",
+    targetLabel: "marker", targetKind: scenario.kind, declarationName: name, recordedProofPath: proofPath,
+    leaSessionId: "existing-session", formalizationId: "retry-form", apiRunId: "prior-run",
+    startedAt: "2026-01-01", finishedAt: "2026-01-01" };
+  const result = await handleFormalize({ overleafProjectId: "project-1", targetKind: scenario.kind,
+    targetLabel: "marker", targetText: "Current mathematical source." }, state, { batch: scenario.batch });
+  assert.equal(result.statusCode, 200);
+  await waitFor(() => Boolean(state.jobs[result.body.jobId]?.finishedAt));
+  const job = state.jobs[result.body.jobId];
+  assert.equal(job.status, scenario.stopReason ? "paused" : "failed");
+  assert.equal(job.recordedProofPath, proofPath);
+  assert.equal(job.declarationName, name);
+  assert.equal(job.declarationNameHint, name);
+  assert.equal(job.resumed, false);
+  assert.equal(await fs.readFile(path.join(leaRepo, proofPath), "utf8"), partial);
+  assert.equal(await fs.readFile(registryPath, "utf8"), registry);
+  assert.match(job.requestPrompt, /Previous diagnostic/);
+  assert.match(job.requestPrompt, /Try this formalization again/);
+  assert.match(job.requestPrompt, /renamed_target\.lean/);
+  assert.equal(JSON.parse(await fs.readFile(state.jobsPath, "utf8"))[job.jobId].requestPrompt, job.requestPrompt);
+  const run = calls.find((call) => String(call.url).endsWith("/api/runs") && call.options?.method === "POST");
+  assert.equal(run.body.session_id, "existing-session");
+  assert.equal(run.body.focus_formalization_id, "retry-form");
+  assert.equal(run.body.purpose, "overleaf_solver");
 });
 
 test("resolveProofOutcome does not certify a bare successful stream outcome", async () => {

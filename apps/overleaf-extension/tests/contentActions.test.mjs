@@ -186,6 +186,8 @@ test("a current formalization still offers Re-formalize in its popover", async (
   assert.equal(harness.hasButtonText("Re-formalize"), true);
   assert.equal(harness.hasButtonText("Check status"), false);
   assert.equal(harness.hasViewInLeaUiButton(), true);
+  assert.equal(harness.buttonHelpText("Re-formalize"),
+    "Try again using the previous attempt and current LaTeX, keeping existing Lean work.");
 });
 
 test("definition targets use definition copy and do not show Stub", async () => {
@@ -3199,6 +3201,10 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
       return document.body
         .querySelectorAll("button")
         .some((button) => button.textContent === text);
+    },
+    buttonHelpText(text) {
+      return document.body.querySelectorAll("button")
+        .find((button) => button.textContent === text)?.title || "";
     },
     hasButtonLabel(label) {
       return document.body

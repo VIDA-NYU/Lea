@@ -11,9 +11,10 @@ order — ending with `done`.
 
 import sqlite3
 import time
+from dataclasses import replace
 from pathlib import Path
 from queue import Queue
-from threading import Event, Thread
+from threading import Event, Thread, enumerate as enumerate_threads
 
 import pytest
 
@@ -240,6 +241,57 @@ def test_focused_run_cannot_certify_a_compiling_helper_instead_of_target(tmp_pat
     assert not any(item["declaration_name"] == "thmB" for item in store.list_artifacts_for_scope(ctx.session_id))
     assert any(item["role"] == "support" for item in formalizations.get(target["id"])["files"])
     assert _drain(queue)[-1]["payload"]["result_kind"] == "needs_review"
+
+
+@pytest.mark.parametrize("recheck", [True, False])
+def test_retry_of_unchanged_proof_requires_a_check_in_the_new_run(tmp_path, monkeypatch, recheck):
+    ctx, queue = _context(tmp_path, monkeypatch, task="Prove t")
+    target = store.create_formalization(
+        project_id=None, loose_session_id=ctx.session_id,
+        display_title="t", declaration_name="t", kind="theorem",
+    )
+    with db.write() as conn:
+        conn.execute("update runs set focus_formalization_id = ? where id = ?",
+                     (target["id"], ctx.run_id))
+
+    def first(proof_path):
+        yield TurnStarted(1)
+        yield FileChanged(proof_path)
+        yield CheckResult(proof_path, "ok", None)
+        yield Finished("completed", "Proved.", 1, ctx.session_id, "gemini/test",
+                       Usage(input_tokens=1, output_tokens=1), 0.0, {}, result_kind="proved")
+
+    monkeypatch.setattr(bridge, "run_events", _fake_run_events(first))
+    bridge.run_lea(ctx)
+    assert store.get_run(ctx.run_id)["status"] == "proved"
+    previous_step = store.session_detail(ctx.session_id)["code_steps"][-1]
+
+    second = store.create_run(ctx.session_id, "gemini/test", None, 3,
+                              focus_formalization_id=target["id"])
+    retry_queue = Queue()
+
+    def retry(config, messages, *, working_dir=None, **kwargs):
+        proof = Path(working_dir) / previous_step["path"]
+        assert proof.read_text() == previous_step["code"]
+        yield TurnStarted(1)
+        # No FileChanged event: the retry can keep a good proof untouched.
+        if recheck:
+            yield CheckResult(str(proof), "ok", None)
+        yield Finished("completed", "Existing proof reviewed.", 1, ctx.session_id, "gemini/test",
+                       Usage(input_tokens=1, output_tokens=1), 0.0, {}, result_kind="proved")
+
+    monkeypatch.setattr(bridge, "run_events", retry)
+    bridge.run_lea(replace(ctx, run_id=second["id"], task="Try again", events=retry_queue))
+    expected = "proved" if recheck else "needs_review"
+    assert store.get_run(second["id"])["status"] == expected
+    assert formalizations.get(target["id"])["validity_status"] == expected
+    steps = store.session_detail(ctx.session_id)["code_steps"]
+    current = [step for step in steps if step["run_id"] == second["id"]]
+    assert len(current) == (1 if recheck else 0)
+    if recheck:
+        assert current[0]["check_status"] == "ok"
+        assert current[0]["code"] == previous_step["code"]
+    assert _drain(retry_queue)[-1]["payload"]["result_kind"] == expected
 
 
 def test_disproof_result_persists_and_streams_distinct_outcome(tmp_path, monkeypatch):
@@ -1453,6 +1505,13 @@ def test_deferred_runs_keep_their_relative_order(tmp_path, monkeypatch):
         store.get_run(r)["status"] not in {"pending", "running"} for r in waiting
     ), timeout=15.0)
     assert [t for t in started if t.startswith("q")] == ["q1", "q2", "q3"]
+    # Terminal status is persisted before the driver's final bookkeeping.
+    # Finish those threads before monkeypatch restores the database path.
+    worker_names = {f"lea-run-{run_id[:8]}" for run_id in [holder, *waiting]}
+    for thread in enumerate_threads():
+        if thread.name in worker_names:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
 
 
 def test_a_supersede_is_requested_once_per_incumbent(tmp_path, monkeypatch):
