@@ -5,6 +5,7 @@ import json
 import re
 import sqlite3
 import threading
+from contextlib import nullcontext
 from collections import Counter
 from uuid import uuid4
 
@@ -13,6 +14,7 @@ from . import authoring as _authoring
 from typing import Any
 
 from .db import ROOT, connect, row_to_dict, utc_now, write
+from .public_errors import redact, run_detail
 
 
 RAW_EVENT_LOG_DIR = ROOT / "data" / "lea-api-events"
@@ -2352,6 +2354,8 @@ def update_run(
     usage_status: str | None = None,
 ) -> None:
     now = utc_now()
+    if result_detail:
+        result_detail = redact(result_detail)
     with connect() as conn:
         conn.execute(
             """
@@ -2524,9 +2528,18 @@ def record_verification_event(
     detail: str | None,
     code_step_id: str | int | None,
     run_id: str | None = None,
-) -> dict:
+    expected: dict | None = None,
+    require_current: bool = False,
+    persist_session: bool = False,
+) -> dict | None:
     event_id = str(uuid4())
     with write() as conn:
+        if require_current:
+            current = current_proof_step(session_id, path, conn=conn)
+            if ((expected is None) != (current is None) or (expected and (
+                current["id"] != expected["id"] or current["blob_id"] != expected["blob_id"]
+            ))):
+                return None
         conn.execute(
             """
             insert into verification_events (
@@ -2543,6 +2556,11 @@ def record_verification_event(
         row = conn.execute(
             "select * from verification_events where id = ?", (event_id,)
         ).fetchone()
+        if persist_session:
+            conn.execute("update runs set safe_verify_status=?,safe_verify_detail=? "
+                "where id=(select id from runs where session_id=? order by created_at desc,id desc limit 1)",
+                (status, detail, session_id))
+    _bump_sessions_changed()
     return row_to_dict(row)
 
 
@@ -2558,6 +2576,64 @@ def latest_code_step_for_path(session_id: str, path: str) -> dict | None:
             (session_id, path),
         ).fetchone()
     return _code_step_from_row(row) if row else None
+
+
+def current_proof_step(session_id: str, path: str, *, conn=None) -> dict | None:
+    """Canonical path record with immutable blob identity, optionally in a write transaction."""
+    with nullcontext(conn) if conn is not None else connect() as connection:
+        session = connection.execute("select project_id from sessions where id=?", (session_id,)).fetchone()
+        if not session:
+            return None
+        scope, scope_id = ("s.project_id", session["project_id"]) if session["project_id"] else ("t.session_id", session_id)
+        row = connection.execute(
+            f"{TIMELINE_WITH_BLOB} join sessions s on s.id=t.session_id "
+            f"where t.kind='code' and t.path=? and {scope}=? order by t.created_at desc,t.id desc limit 1",
+            (path, scope_id),
+        ).fetchone()
+        if not row:
+            return None
+        result = _code_step_from_row(row)
+        result["blob_id"] = row["after_blob_id"]
+        result["blob_sha256"] = hashlib.sha256(result["code"].encode()).hexdigest()
+        return result
+
+
+def persist_pinned_check(session_id: str, path: str, expected: dict | None, *,
+                         status: str, detail: str | None, artifact_kind: str | None,
+                         formalization_id: str | None = None, author: str | None = None,
+                         summary: str | None = None) -> tuple[bool, dict | None]:
+    """Compare canonical head + blob and record its verdict in one write transaction."""
+    with write() as conn:
+        current = current_proof_step(session_id, path, conn=conn)
+        if ((expected is None) != (current is None) or (expected and (
+            current["id"] != expected["id"] or current["blob_id"] != expected["blob_id"]
+        ))):
+            return False, None
+        if expected is None:
+            return True, None
+        create = author or current["session_id"] != session_id or (
+            formalization_id and current.get("formalization_id") != formalization_id)
+        kind = artifact_kind if status == "ok" else None
+        if create:
+            source = author or current["author"]
+            reason = source if source not in {"user", "agent", "environment"} else None
+            cursor = conn.execute(
+                "insert into timeline (session_id,run_id,kind,author,path,after_blob_id,summary,"
+                "check_status,check_detail,artifact_kind,data,formalization_id,created_at,content_lost) "
+                "values (?,NULL,'code',?,?,?,?,?,?,?,?,?,?,0)",
+                (session_id, "agent" if reason else source, path, current["blob_id"], summary,
+                 status, detail, kind, json.dumps({"reason": reason}) if reason else None,
+                 formalization_id or current.get("formalization_id"), utc_now()),
+            )
+            step_id = cursor.lastrowid
+        else:
+            step_id = int(current["id"])
+            conn.execute("update timeline set check_status=?,check_detail=?,artifact_kind=? where id=? and after_blob_id=?",
+                         (status, detail, kind, step_id, expected["blob_id"]))
+        row = conn.execute(f"{TIMELINE_WITH_BLOB} where t.id=?", (step_id,)).fetchone()
+        result = _code_step_from_row(row)
+    _bump_sessions_changed()
+    return True, result
 
 
 def current_code_steps_for_formalization(
@@ -2795,7 +2871,7 @@ def get_run_status(run_id: str) -> dict | None:
                from runs where id = ?""",
             (run_id,),
         ).fetchone()
-    return row_to_dict(row) if row else None
+    return run_detail(row_to_dict(row)) if row else None
 
 
 def list_runs_by_status(status: str) -> list[dict]:
@@ -3749,6 +3825,7 @@ def upsert_user_code_step(
     *,
     content: str,
     formalization_id: str | None = None,
+    coalesce: bool = True,
 ) -> dict:
     """Record a user edit, coalescing rapid successive edits into one timeline step.
 
@@ -3766,21 +3843,25 @@ def upsert_user_code_step(
     addressed, so an intermediate state that recurs anywhere else is still reachable."""
     latest = latest_code_step_for_path(session_id, path)
     if (
-        latest
+        coalesce and latest
         and latest.get("author") == "user"
         and latest.get("run_id") is None
         and latest.get("formalization_id") == formalization_id
     ):
         with write() as conn:
-            blob_id = _put_blob(conn, content)
-            conn.execute(
-                "update timeline set after_blob_id = ?, content_lost = 0, check_status = NULL, "
-                "check_detail = NULL, artifact_kind = NULL where id = ?",
-                (blob_id, int(latest["id"])),
-            )
-            row = conn.execute("select * from timeline where id = ?", (int(latest["id"]),)).fetchone()
-        touch_session(session_id)
-        return _code_step_from_row(row, code=content)
+            row = conn.execute("select * from timeline where id=?", (int(latest["id"]),)).fetchone()
+            verified = conn.execute("select 1 from verification_events where code_step_id=? limit 1",
+                                    (int(latest["id"]),)).fetchone()
+            if row and row["check_status"] is None and not verified:
+                blob_id = _put_blob(conn, content)
+                conn.execute("update timeline set after_blob_id=?,content_lost=0,check_detail=NULL,artifact_kind=NULL where id=?",
+                             (blob_id, int(latest["id"])))
+                row = conn.execute("select * from timeline where id=?", (int(latest["id"]),)).fetchone()
+            else:
+                row = None
+        if row is not None:
+            touch_session(session_id)
+            return _code_step_from_row(row, code=content)
     return add_code_step(
         session_id, None, path, content=content, author="user",
         formalization_id=formalization_id,
@@ -3969,7 +4050,7 @@ def session_detail(session_id: str) -> dict | None:
                 (session["project_id"],),
             ).fetchone()
     from .recovery import available_action
-    runs = [{**dict(r), "available_recovery_action": available_action(dict(r))} for r in runs]
+    runs = [{**run_detail(dict(r)), "available_recovery_action": available_action(dict(r))} for r in runs]
     # Split back into the two lists the API exposes. Code rows carry their content
     # already — a read no longer needs a second store to be reachable, so there is
     # no separate hydrate step that can silently come back empty.
@@ -4401,6 +4482,7 @@ def _normalize_usage_breakdown_row(row: dict) -> dict:
 
 
 def _normalize_run(row: dict) -> dict:
+    row = run_detail(row)
     raw_pending = row.get("pending_approval")
     if isinstance(raw_pending, str) and raw_pending:
         try:

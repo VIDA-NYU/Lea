@@ -35,6 +35,25 @@ from .. import recovery
 from .. import overleaf_source
 from ..db import connect
 
+from .. import project_coordination
+
+
+def _admission_project(arguments):
+    request = arguments["request"]
+    if "run_id" in arguments:
+        run = store.get_run(arguments["run_id"])
+        return run.get("project_id") if run else None
+    if request.project_slug:
+        try:
+            project = store.get_project_by_slug(request.project_slug)
+        except ValueError:
+            project = None
+        if project:
+            return project["id"]
+    session = store.get_session(request.session_id) if request.session_id else None
+    return session.get("project_id") if session else None
+
+
 router = APIRouter()
 
 
@@ -182,6 +201,7 @@ async def _passive_done(run_id: str):
 
 
 @router.post("/api/runs")
+@project_coordination.guarded(_admission_project, write=True, admission=True)
 def create_run(request: RunRequest) -> dict:
     message = request.message.strip()
     if not message:
@@ -386,6 +406,7 @@ def get_run_row(run_id: str) -> dict:
 
 
 @router.post("/api/runs/{run_id}/resume")
+@project_coordination.guarded(_admission_project, write=True, admission=True)
 def resume_run(run_id: str, request: ResumeRequest) -> dict:
     if not request.acknowledge_uncertainty:
         raise HTTPException(status_code=409, detail="Acknowledge the possible prior model cost or tool effect before resuming")
@@ -447,6 +468,7 @@ def resume_run(run_id: str, request: ResumeRequest) -> dict:
 
 
 @router.post("/api/runs/{run_id}/continue")
+@project_coordination.guarded(_admission_project, write=True, admission=True)
 def continue_run(run_id: str, request: ContinueRequest) -> dict:
     """Continue a clean Overleaf pause from its pinned execution checkpoint."""
     from .. import lea_status, lea_status_store

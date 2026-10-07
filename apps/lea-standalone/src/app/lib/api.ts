@@ -58,8 +58,8 @@ export async function listSessions(): Promise<SessionSummary[]> {
   return Array.isArray(data.sessions) ? data.sessions : [];
 }
 
-export async function getSession(sessionId: string): Promise<SessionDetail> {
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+export async function getSession(sessionId: string, signal?: AbortSignal): Promise<SessionDetail> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { signal });
   if (!response.ok) throw new Error(`Failed to load session: ${response.statusText}`);
   return response.json();
 }
@@ -967,7 +967,7 @@ export async function writeSessionFile(
   });
   if (!response.ok) {
     if (response.status === 409) {
-      const body = await response.json().catch(() => ({} as any));
+      const body = await response.clone().json().catch(() => ({} as any));
       if (body.detail?.code === 'revision_conflict') {
         throw new RevisionConflictError(
           body.detail.message || 'This formalization changed in another conversation.',

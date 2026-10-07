@@ -40,7 +40,6 @@ import {
   type StatusEvent,
   type Formalization,
   createRun,
-  getSession,
   getFormalization,
   listProjectFormalizations,
   interruptRun,
@@ -169,7 +168,7 @@ export default function App() {
 
   // The run EventSource lifecycle + session-detail hydration live in a hook now
   // (R2); it reads the proofSession + sessions stores directly.
-  const { attachStream, applyDetail, reconcile, closeStream } = useProofStream();
+  const { attachStream, reconcile, closeStream, loadSession: loadOwnedSession, captureSelection } = useProofStream();
 
   useEffect(() => {
     const restore = async () => {
@@ -245,10 +244,8 @@ export default function App() {
   }, []);
 
   const loadSession = async (sessionId: string) => {
-    closeStream();
-    const detail = await getSession(sessionId);
-    applyDetail(detail);
-    window.localStorage.setItem(SELECTED_SESSION_KEY, detail.id);
+    const detail = await loadOwnedSession(sessionId);
+    if (detail) window.localStorage.setItem(SELECTED_SESSION_KEY, detail.id);
   };
 
   // Open a project's window (F1/F2). Loading its detail also sets it as the
@@ -574,6 +571,7 @@ export default function App() {
   ): Promise<CheckOutcome> => {
     const target = path ?? sortedCode[sortedCode.length - 1]?.path;
     if (!selectedSessionId || !target) return { status: 'error', detail: 'No file to edit.' };
+    const owned = captureSelection();
     const focusId =
       formalizationScope === 'project' || formalizationScope === 'new'
         ? undefined : formalizationScope;
@@ -587,24 +585,26 @@ export default function App() {
         baseRevision || currentFormalizationSnapshot?.revision_token || undefined,
       );
     } catch (err) {
-      if (err instanceof RevisionConflictError) {
+      if (owned() && err instanceof RevisionConflictError) {
         setCanvasRevisionMode('current');
         bumpFormalizationRefresh();
         setError(err.message);
       }
       throw err;
     }
-    useProofSession.setState({ manualCheckSessionId: selectedSessionId });
+    if (owned()) useProofSession.setState({ manualCheckSessionId: selectedSessionId });
     let result;
     try {
       result = await leanCheckSession(selectedSessionId, target, focusId);
     } finally {
-      if (useProofSession.getState().manualCheckSessionId === selectedSessionId) {
+      if (owned() && useProofSession.getState().manualCheckSessionId === selectedSessionId) {
         useProofSession.setState({ manualCheckSessionId: undefined });
       }
     }
+    if (!owned()) return result;
     await reconcile(selectedSessionId);
     await refreshSessions();
+    if (!owned()) return result;
     setEditedPath(target); // after reconcile (which clears it) — surface the nudge
     setSafeVerify(null); // the edit invalidates any prior SafeVerify verdict
     setCanvasRevisionMode('current');
@@ -615,10 +615,12 @@ export default function App() {
   const handleVerify = async (path?: string): Promise<CheckOutcome> => {
     const target = path ?? sortedCode[sortedCode.length - 1]?.path;
     if (!selectedSessionId) return { status: 'error', detail: 'No session.' };
+    const owned = captureSelection();
     const focusId =
       formalizationScope === 'project' || formalizationScope === 'new'
         ? undefined : formalizationScope;
     const result = await verifySession(selectedSessionId, target, focusId);
+    if (!owned()) return result;
     setSafeVerify({ status: result.status, detail: result.detail });
     bumpFormalizationRefresh();
     return result;
@@ -863,6 +865,8 @@ export default function App() {
           )}
 
           <Canvas
+            key={`${selectedSessionId}:${formalizationScope}`}
+            captureSelection={captureSelection}
             sessionId={selectedSessionId}
             onClose={() => setCanvasCollapsed(true)}
             onSaveAndCheck={handleSaveAndCheck}

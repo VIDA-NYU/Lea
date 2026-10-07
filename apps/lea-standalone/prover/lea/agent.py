@@ -345,7 +345,7 @@ def _classify_final_result(
                 usage.output_tokens += event.usage.output_tokens
                 cost += event.cost
     except Exception as exc:
-        return "needs_review", f"Result classification failed: {type(exc).__name__}: {exc}", usage, cost
+        return "needs_review", f"Result classification failed ({type(exc).__name__}). Review the result or retry.", usage, cost
     kind = _parse_result_kind(text)
     detail = text.strip() or None
     return kind, detail, usage, cost

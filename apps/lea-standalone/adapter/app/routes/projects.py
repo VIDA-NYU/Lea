@@ -30,11 +30,24 @@ from .. import github_import_service
 from ..github_project_import import ImportPlanningError, TaggedTarget
 from ..github_source import GitHubSourceError
 from .. import projects as project_service
-from .. import store
+from .. import store, project_coordination, proof_files
 from .. import uploads
 from ..alignment_schemas import SourceBundle
 
 router = APIRouter()
+
+
+def _guard_project(*, by_slug=False, write=False, metadata=False):
+    def resolve(arguments):
+        if by_slug:
+            try:
+                project = store.get_project_by_slug(arguments["slug"])
+            except ValueError:
+                return None  # Preserve the route's existing invalid-slug response.
+            return project["id"] if project else None
+        return arguments["project_id"]
+    return project_coordination.guarded(resolve, write=write, metadata=metadata)
+
 
 
 class ProjectCreate(BaseModel):
@@ -214,6 +227,7 @@ def get_project(project_id: str) -> dict:
 
 
 @router.put("/api/projects/{project_id}")
+@_guard_project(by_slug=False, write=True, metadata=False)
 def update_project(project_id: str, request: ProjectUpdate) -> dict:
     updated = store.update_project(
         project_id, title=request.title, description=request.description
@@ -262,6 +276,7 @@ def _get_doc(project_id: str, name: str) -> dict:
     return {"content": project_service.read_doc(project, _proofs_root(), name)}
 
 
+@_guard_project(by_slug=False, write=True, metadata=False)
 def _put_doc(project_id: str, name: str, content: str) -> dict:
     project = store.get_project(project_id)
     if project is None:
@@ -305,11 +320,13 @@ def _blueprint_payload(project: dict) -> dict:
 
 
 @router.get("/api/projects/{project_id}/blueprint")
+@_guard_project(by_slug=False, write=False, metadata=True)
 def get_blueprint(project_id: str) -> dict:
     return _blueprint_payload(_require_project(project_id))
 
 
 @router.put("/api/projects/{project_id}/blueprint")
+@_guard_project(by_slug=False, write=True, metadata=False)
 def put_blueprint(project_id: str, request: DocUpdate) -> dict:
     project = _require_project(project_id)
     sha = project_service.write_doc(project, _proofs_root(), "blueprint.md", request.content)
@@ -317,6 +334,7 @@ def put_blueprint(project_id: str, request: DocUpdate) -> dict:
 
 
 @router.get("/api/projects/{project_id}/graph")
+@_guard_project(by_slug=False, write=False, metadata=True)
 def get_graph(project_id: str) -> dict:
     # T2: parse the blueprint + derive each node's live status and session
     # attribution (D28/D29). Cheap — reuses stored verdicts, never recompiles.
@@ -325,6 +343,7 @@ def get_graph(project_id: str) -> dict:
 
 
 @router.post("/api/projects/{project_id}/blueprint/generate")
+@_guard_project(by_slug=False, write=True, metadata=True)
 def generate_blueprint(project_id: str) -> dict:
     # Populate the blueprint from formalized artifacts (additive, idempotent).
     # Writes + commits .lea/blueprint.md; returns {added, skipped, warnings, graph}.
@@ -346,6 +365,7 @@ _FS_ERROR_STATUS = {"bad_path": 400, "not_found": 404, "binary": 415}
 
 
 @router.get("/api/projects/{project_id}/tree")
+@_guard_project(by_slug=False, write=False, metadata=True)
 def get_tree(project_id: str) -> dict:
     project = _require_project(project_id)
     repo = project_service.project_repo_dir(project, _proofs_root())
@@ -353,6 +373,7 @@ def get_tree(project_id: str) -> dict:
 
 
 @router.get("/api/projects/{project_id}/file")
+@_guard_project(by_slug=False, write=False, metadata=True)
 def read_project_file(project_id: str, path: str) -> dict:
     project = _require_project(project_id)
     repo = project_service.project_repo_dir(project, _proofs_root())
@@ -364,6 +385,7 @@ def read_project_file(project_id: str, path: str) -> dict:
 
 
 @router.put("/api/projects/{project_id}/file")
+@_guard_project(by_slug=False, write=True, metadata=False)
 def write_project_file(project_id: str, request: FilePut) -> dict:
     """Write + commit any file under the project repo (path-guarded, author=user).
     Editing a `.lean` returns its standalone `check` verdict so the editor can flag
@@ -378,16 +400,38 @@ def write_project_file(project_id: str, request: FilePut) -> dict:
             },
         )
     proofs_root = _proofs_root()
+    repo = project_service.project_repo_dir(project, proofs_root)
     try:
-        sha = fs_service.write_text_file(project, proofs_root, request.path, request.content)
+        absolute = fs_service.safe_abs(repo, request.path)
     except fs_service.FilesystemError as exc:
-        raise HTTPException(status_code=_FS_ERROR_STATUS.get(exc.code, 400), detail=str(exc))
-    check = None
-    if request.path.endswith(".lean"):
-        repo = project_service.project_repo_dir(project, proofs_root)
-        result = interface_check(str(repo / request.path))
-        check = {"status": result.status, "detail": result.detail}
-    return {"path": request.path, "commit_sha": sha, "check": check}
+        raise HTTPException(status_code=_FS_ERROR_STATUS.get(exc.code, 400), detail=str(exc)) from None
+    rel = absolute.relative_to(repo.resolve()).as_posix()
+    records = store.code_steps_for_project_path(project_id, rel, include_content=False) if rel.endswith(".lean") else []
+    if records:
+        session_id = records[0]["session_id"]
+        formalization_id = records[0].get("formalization_id")
+        with project_coordination.file_edit(project_id), proof_files.file_guard(absolute):
+            proof_files.save(session_id, rel, absolute, request.content,
+                formalization_id=formalization_id, note="Edited in the project filesystem editor.")
+            expected = store.current_proof_step(session_id, rel)
+            try:
+                sha = GitStore(proofs_root).commit_all(repo, f"edit {rel}", paths=[rel])
+            except GitStoreError:
+                raise HTTPException(500, detail={"code": "content_saved_commit_failed",
+                    "message": "Your edit was saved in history, but its Git commit failed. Refresh and retry.",
+                    "code_step_id": expected["id"], "content_sha256": expected["blob_sha256"]}) from None
+        check = proof_files.check(session_id, rel, absolute, interface_check,
+            formalization_id=formalization_id, expected=expected)
+    else:
+        try:
+            sha = fs_service.write_text_file(project, proofs_root, rel, request.content)
+        except fs_service.FilesystemError as exc:
+            raise HTTPException(status_code=_FS_ERROR_STATUS.get(exc.code, 400), detail=str(exc)) from None
+        check = None
+        if rel.endswith(".lean"):
+            result = interface_check(str(absolute))
+            check = {"status": result.status, "detail": result.detail}
+    return {"path": rel, "commit_sha": sha, "check": check}
 
 
 def _export_project_response(project: dict) -> Response:
@@ -404,6 +448,7 @@ def _export_project_response(project: dict) -> Response:
 
 
 @router.get("/api/projects/{project_id}/export")
+@_guard_project(by_slug=False, write=False, metadata=True)
 def export_project(project_id: str) -> Response:
     """Stream a zip of the whole project repo (source + .lea assets; .git/.lake
     excluded) so the project is shareable as a single download (D34)."""
@@ -449,6 +494,7 @@ def preview_project_github_import(project_id: str, request: GithubImportPreviewR
 
 
 @router.post("/api/projects/{project_id}/github-imports", status_code=202)
+@_guard_project(by_slug=False, write=True, metadata=False)
 def confirm_project_github_import(project_id: str, request: GithubImportConfirmRequest) -> dict:
     return _confirm_github_import(_require_project(project_id), request)
 
@@ -482,6 +528,7 @@ def preview_project_github_import_by_slug(
 
 
 @router.post("/api/projects/by-slug/{slug}/github-imports", status_code=202)
+@_guard_project(by_slug=True, write=True, metadata=False)
 def confirm_project_github_import_by_slug(
     slug: str, request: GithubImportConfirmRequest
 ) -> dict:
@@ -494,6 +541,7 @@ def get_project_github_import_by_slug(slug: str, import_id: str) -> dict:
 
 
 @router.post("/api/projects/by-slug/{slug}/formalizations/sync")
+@_guard_project(by_slug=True, write=True, metadata=False)
 def sync_project_formalizations_by_slug(
     slug: str, request: FormalizationTargetSyncRequest
 ) -> dict:
@@ -584,6 +632,7 @@ def _push_project(project: dict) -> dict:
 
 
 @router.put("/api/projects/{project_id}/git/remote")
+@_guard_project(by_slug=False, write=True)
 def set_project_remote(project_id: str, request: RemoteUpdate) -> dict:
     """Set the project's GitHub remote URL (D34). Stored on the project row; the
     token stays global in Settings. Returns the (token-free) remote."""
@@ -591,6 +640,7 @@ def set_project_remote(project_id: str, request: RemoteUpdate) -> dict:
 
 
 @router.post("/api/projects/{project_id}/git/push")
+@_guard_project(by_slug=False, write=True)
 def push_project(project_id: str) -> dict:
     """Push the project repo to its configured GitHub remote using the global token
     (D34). Explicit user action only. 400 if no remote or no token is configured;
@@ -616,6 +666,7 @@ def _require_project_by_slug(slug: str) -> dict:
 
 
 @router.get("/api/projects/by-slug/{slug}/identity")
+@_guard_project(by_slug=True, write=False, metadata=True)
 def get_project_identity_by_slug(slug: str) -> dict:
     return project_service.project_identity(_require_project_by_slug(slug))
 
@@ -649,9 +700,11 @@ def update_project_identity_by_slug(slug: str, request: ProjectIdentityUpdate) -
         raise HTTPException(status_code=400, detail="Project name is required")
 
     if request.mode == "display-only":
-        project_service.refresh_project_title_docs(project, _proofs_root(), title)
-        updated = store.update_project(project["id"], title=title)
-        return {"identity": project_service.project_identity(updated)}
+        with project_coordination.mutation(project["id"]):
+            project = store.get_project(project["id"])
+            project_service.refresh_project_title_docs(project, _proofs_root(), title)
+            updated = store.update_project(project["id"], title=title)
+            return {"identity": project_service.project_identity(updated)}
 
     try:
         result = project_service.migrate_project_namespace(
@@ -692,16 +745,19 @@ def get_share_status_by_slug(slug: str) -> dict:
 
 
 @router.get("/api/projects/by-slug/{slug}/blueprint")
+@_guard_project(by_slug=True, write=False, metadata=True)
 def get_blueprint_by_slug(slug: str) -> dict:
     return _blueprint_payload(_require_project_by_slug(slug))
 
 
 @router.get("/api/projects/by-slug/{slug}/graph")
+@_guard_project(by_slug=True, write=False, metadata=True)
 def get_graph_by_slug(slug: str) -> dict:
     return graph_service.build_graph(_require_project_by_slug(slug), _proofs_root())
 
 
 @router.post("/api/projects/by-slug/{slug}/blueprint/generate")
+@_guard_project(by_slug=True, write=True, metadata=True)
 def generate_blueprint_by_slug(slug: str) -> dict:
     # The Overleaf "Generate from formalized theorems" button lands here (slug-resolved,
     # never creates a project). Same additive synthesis as the by-id route, backfill included.
@@ -727,6 +783,7 @@ def _ensure_artifacts_backfilled(project: dict) -> None:
 
 
 @router.get("/api/projects/by-slug/{slug}/artifacts")
+@_guard_project(by_slug=True, write=False, metadata=True)
 def project_artifacts_by_slug(slug: str) -> dict:
     """Structured artifact index (PLAN-system-hardening 4.1): which declaration
     lives in which file, as recorded by the run finalizer. The Overleaf
@@ -766,6 +823,7 @@ def _shared_artifact(project_id: str, proof_path: str, content: str, owners: lis
 
 
 @router.get("/api/projects/by-slug/{slug}/target-status")
+@_guard_project(by_slug=True, write=False, metadata=True)
 def project_target_status_by_slug(slug: str, declarations: str = "", formalization_ids: str = "") -> dict:
     """Ledger-side target evidence (PLAN-system-hardening 4.4): for each named
     declaration, what the adapter's own records say — the artifact row, whether
@@ -943,6 +1001,7 @@ def _resolve_repo_file(project: dict, rel: str) -> tuple[Path, Path, str]:
 
 
 @router.post("/api/projects/by-slug/{slug}/artifacts/retire")
+@_guard_project(by_slug=True, write=True, metadata=False)
 def retire_project_artifact_by_slug(slug: str, request: ArtifactRetireRequest) -> dict:
     """Single-writer retirement (PLAN-system-hardening 4.5): a retry deletes the
     previous proof file through the adapter, then records that filesystem change
@@ -996,6 +1055,7 @@ def retire_project_artifact_by_slug(slug: str, request: ArtifactRetireRequest) -
 
 
 @router.post("/api/projects/by-slug/{slug}/artifacts/restore")
+@_guard_project(by_slug=True, write=True, metadata=False)
 def restore_project_artifact_by_slug(slug: str, request: ArtifactRestoreRequest) -> dict:
     """Undo a retirement after a retry that produced no verified replacement:
     restore the latest verified SQL snapshot, with the retire commit's parent as
@@ -1034,16 +1094,19 @@ def restore_project_artifact_by_slug(slug: str, request: ArtifactRestoreRequest)
 
 
 @router.get("/api/projects/by-slug/{slug}/export")
+@_guard_project(by_slug=True, write=False, metadata=True)
 def export_project_by_slug(slug: str) -> Response:
     return _export_project_response(_require_project_by_slug(slug))
 
 
 @router.put("/api/projects/by-slug/{slug}/git/remote")
+@_guard_project(by_slug=True, write=True)
 def set_project_remote_by_slug(slug: str, request: RemoteUpdate) -> dict:
     return _set_remote_on(_require_project_by_slug(slug), request.remote_url)
 
 
 @router.post("/api/projects/by-slug/{slug}/git/push")
+@_guard_project(by_slug=True, write=True)
 def push_project_by_slug(slug: str) -> dict:
     return _push_project(_require_project_by_slug(slug))
 
@@ -1070,6 +1133,7 @@ def list_files(project_id: str) -> dict:
 
 
 @router.post("/api/projects/by-slug/{slug}/mirror")
+@_guard_project(by_slug=True, write=True)
 def mirror_overleaf_tex(slug: str, request: MirrorRequest, background_tasks: BackgroundTasks) -> dict:
     """Mirror the Overleaf project's `.tex`/`.sty`/`.cls` sources into the matching project's
     `.lea/files/overleaf/` (resolving/creating the project by slug, like `/api/runs`).
@@ -1116,6 +1180,7 @@ async def _read_capped(file: UploadFile, cap: int) -> bytes:
 
 
 @router.post("/api/projects/{project_id}/files", status_code=201)
+@_guard_project(by_slug=False, write=True, metadata=False)
 async def upload_file(project_id: str, file: UploadFile = File(...)) -> dict:
     project = _require_project(project_id)
     try:
@@ -1143,6 +1208,7 @@ def download_file(project_id: str, file_id: str) -> FileResponse:
 
 
 @router.delete("/api/projects/{project_id}/files/{file_id}")
+@_guard_project(by_slug=False, write=True, metadata=False)
 def delete_file(project_id: str, file_id: str) -> dict:
     project = _require_project(project_id)
     row = store.get_project_file(file_id)

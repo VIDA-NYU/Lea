@@ -34,6 +34,7 @@ import json
 import logging
 import re
 import time
+from fastapi import HTTPException
 from datetime import datetime, timezone
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -75,13 +76,11 @@ from .config import LeaConfig, configured_provider_keys, load_config
 from .diagnostics import analyze_exception, resolve as resolve_diagnostic
 from .gitstore import GitStore, GitStoreError
 from . import collation, formalizations as formalization_service, projects, roles_catalog, runbroker, runregistry, skills_catalog, store, subagent_overrides, uploads, recovery, runtime
+from .public_errors import redact
+from . import project_coordination
 
 logger = logging.getLogger("lea-interface.bridge")
 _FORMALIZATION_CONTEXT_MARKER = "<!-- lea:formalization-context -->"
-_CREDENTIAL_LIKE = re.compile(
-    r"(?:sk-(?:ant-)?[A-Za-z0-9_./+\-=]{8,}|AIza[A-Za-z0-9_-]{20,}|"
-    r"github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,})"
-)
 
 
 def _redact(text: str) -> str:
@@ -97,7 +96,7 @@ def _redact(text: str) -> str:
                 text = text.replace(secret, "[redacted]")
     except Exception:  # noqa: BLE001 — redaction is best-effort on an error path
         pass
-    return _CREDENTIAL_LIKE.sub("[redacted]", text)[:2000]
+    return redact(text)
 
 
 def _public_error_detail(exc: Exception) -> str:
@@ -154,6 +153,7 @@ def request_subagent_stop(child_session_id: str) -> bool:
 _run_queue: "Queue[str]" = Queue()
 _worker_guard = Lock()
 _worker_thread: Thread | None = None
+_DISPATCH_STOP = object()
 
 
 def _resolve_task(run: dict[str, Any]) -> str | None:
@@ -204,27 +204,32 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
         runbroker.drop(run_id)
         return _SETTLED
 
-    admission = runregistry.registry.try_admit(run_id, run["session_id"])
+    session = store.get_session(run["session_id"])
+    project_id = (session or {}).get("project_id") or run.get("project_id")
+    try:
+        admission = runregistry.registry.try_admit(run_id, run["session_id"], project_id=project_id)
+    except HTTPException as exc:
+        return _DEFER if exc.status_code == 409 else _SETTLED
     if admission.outcome == runregistry.ADMITTED:
         superseded.pop(run_id, None)
-        broker = runbroker.get(run_id) or runbroker.create(run_id)
         # Creation snapshots the model and turn allowance. A queued or
         # recovered run must consume its original allowance, even if the UI
         # settings change before dispatch.
-        config = load_config()
-        config = replace(config, model=run.get("model") or config.model,
-                         max_turns=run.get("max_turns"))
-        context = RunnerContext(
-            session_id=run["session_id"],
-            run_id=run_id,
-            task=task,
-            config=config,
-            events=broker,
-            autonomous=bool(run.get("autonomous")),
-            purpose=str(run.get("purpose") or "general"),
-            allow_source_pause=bool(run.get("allow_source_pause")),
-        )
         try:
+            broker = runbroker.get(run_id) or runbroker.create(run_id)
+            config = load_config()
+            config = replace(config, model=run.get("model") or config.model,
+                             max_turns=run.get("max_turns"))
+            context = RunnerContext(
+                session_id=run["session_id"],
+                run_id=run_id,
+                task=task,
+                config=config,
+                events=broker,
+                autonomous=bool(run.get("autonomous")),
+                purpose=str(run.get("purpose") or "general"),
+                allow_source_pause=bool(run.get("allow_source_pause")),
+            )
             Thread(target=run_lea, args=(context,), daemon=True,
                    name=f"lea-run-{run_id[:8]}").start()
         except BaseException:
@@ -280,6 +285,9 @@ def _worker_loop() -> None:
             arrived = _run_queue.get(timeout=_DISPATCH_RETRY_SECONDS if deferred else None)
         except Empty:
             arrived = None
+
+        if arrived is _DISPATCH_STOP:
+            return
 
         # Deferred first: they have been waiting longest.
         batch, deferred = deferred, []
@@ -1642,6 +1650,14 @@ def validate_continuation_runtime(old: dict, config: LeaConfig, checkpoint_id: i
 
 
 def run_lea(context: RunnerContext) -> None:
+    # Keep the worker lease through all final bookkeeping, including SSE.
+    try:
+        _run_lea(context)
+    finally:
+        runregistry.registry.release(context.run_id)
+
+
+def _run_lea(context: RunnerContext) -> None:
     """Run one Lea activation, streaming normalized SSE events onto the queue.
 
     Always terminates the stream with a `done` event (the SSE endpoint breaks on
@@ -2042,6 +2058,8 @@ def run_lea(context: RunnerContext) -> None:
             recorder("checkpoint", resume_state)
         def should_stop_run() -> bool:
             current = store.get_run_status(run_id)
+            if current is None:
+                return True
             if current and current.get("deadline_at") and datetime.fromisoformat(current["deadline_at"]) <= datetime.now(timezone.utc):
                 request_stop(run_id, reason="timeout", source="adapter")
             return stop_event.is_set()
@@ -2585,6 +2603,8 @@ def run_lea(context: RunnerContext) -> None:
                         final_result_detail = "Time limit reached; the run stopped at a turn boundary."
                 final_stop_reason = stop_reason
                 final_recoverable = recoverable
+                if final_result_detail:
+                    final_result_detail = _redact(final_result_detail)
                 store.update_run(
                     run_id, final_status, final_text=final_text,
                     input_tokens=ev.usage.input_tokens, output_tokens=ev.usage.output_tokens,
@@ -2731,10 +2751,6 @@ def run_lea(context: RunnerContext) -> None:
         subagent_children.clear()
         _stop_events.pop(run_id, None)
         _pending_approvals.pop(run_id, None)
-        # Release the admission slot (paired with the dispatcher's try_admit). Idempotent,
-        # so a run that reaches here unadmitted — e.g. a direct unit-test call to
-        # run_lea, which never goes through the endpoint — is a harmless no-op.
-        runregistry.registry.release(run_id)
         try:
             from .project_dependencies import settle_run
             settle_run(run_id)
@@ -2756,6 +2772,7 @@ def run_lea(context: RunnerContext) -> None:
         if final_result_kind:
             done_payload["result_kind"] = final_result_kind
         if final_result_detail:
+            final_result_detail = _redact(final_result_detail)
             done_payload["result_detail"] = final_result_detail
         if final_stop_reason:
             done_payload["stop_reason"] = final_stop_reason

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   getCurrentFormalization,
   type CodeStep,
@@ -31,10 +31,12 @@ export function Canvas({
   onSaveAndCheck,
   onVerify,
   onOpenSession,
+  captureSelection,
 }: {
   // Present once the session is persisted; the Live editor needs it for the
   // per-session LSP WebSocket. Absent on a brand-new, unsaved session.
   sessionId?: string;
+  captureSelection: () => () => boolean;
   onClose: () => void;
   onSaveAndCheck: (
     content: string,
@@ -214,16 +216,23 @@ export function Canvas({
     [hlReady, step?.code],
   );
 
+  const verifyGeneration = useRef(0);
+  useEffect(() => { verifyGeneration.current += 1; setBusy(false); }, [shownPath, step?.id]);
   const runVerify = async () => {
+    const owned = captureSelection();
+    const generation = verifyGeneration.current;
+    const current = () => owned() && generation === verifyGeneration.current;
     setBusy(true);
     setVerify({ status: 'running' });
     try {
       const result = await onVerify(shownPath);
+      if (!current()) return;
       setVerify({ status: result.status as SafeVerifyStatus, detail: result.detail });
     } catch (err) {
+      if (!current()) return;
       setVerify({ status: 'error', detail: err instanceof Error ? err.message : String(err) });
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   };
 
@@ -331,6 +340,7 @@ export function Canvas({
       {mode === 'live' && sessionId ? (
         <LiveEditor
           sessionId={sessionId}
+          captureSelection={captureSelection}
           locked={isRunning}
           onSave={(content, path) => onSaveAndCheck(
             content,

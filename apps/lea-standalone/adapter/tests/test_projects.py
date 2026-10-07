@@ -139,7 +139,8 @@ def test_delete_project_removes_tree_and_cascades_rows(tmp_path, monkeypatch):
 
     # A session + run inside the project, to prove the cascade reaches dependents.
     sess = store.create_session("s", project_id=pid)
-    store.create_run(sess["id"], "gpt-4o", "openai", 3, project_id=pid)
+    run = store.create_run(sess["id"], "gpt-4o", "openai", 3, project_id=pid)
+    store.update_run(run["id"], "proved")
     assert repo.is_dir()
 
     assert projects.delete_project(pid, proofs) is True

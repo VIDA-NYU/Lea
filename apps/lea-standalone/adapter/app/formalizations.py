@@ -14,6 +14,7 @@ from .artifacts import contains_sorry_marker
 from .target_completion import checked_target, target_declaration
 from .db import connect, row_to_dict
 from . import store
+from .public_errors import run_detail
 
 
 def _certified_namespace_revision(formalization: dict, certified: dict, current: dict) -> bool:
@@ -322,8 +323,8 @@ def decorate(rows: list[dict]) -> list[dict]:
         str(item["resolved_formalization_id"]): item for item in latest_steps
     }
     active_by_id = {str(item["focus_formalization_id"]): item for item in active_runs}
-    run_by_id = {str(item["focus_formalization_id"]): item for item in latest_runs}
-    completion_by_id = {str(item["focus_formalization_id"]): item for item in completion_runs}
+    run_by_id = {str(item["focus_formalization_id"]): run_detail(item) for item in latest_runs}
+    completion_by_id = {str(item["focus_formalization_id"]): run_detail(item) for item in completion_runs}
     verify_by_id = {str(item["formalization_id"]): item for item in verifications}
 
     result = []

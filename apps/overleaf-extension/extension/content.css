@@ -3860,3 +3860,21 @@ body.ol-lean-settings-resizing {
 .ol-lean-shared-results pre { background: var(--ol-code-bg); padding: 8px; border-radius: 6px; font: 11px/1.5 var(--ol-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .ol-lean-shared-results button { margin: 6px 8px 0 0; }
 .ol-lean-shared-results summary:focus-visible { outline: 2px solid var(--ol-ink-2); outline-offset: 3px; }
+
+/* A project operation is separate from each proof's confirmed verdict. */
+.ol-lean-project-rename-notice {
+  margin: 4px 0 0;
+  color: var(--ol-ink-2);
+  font: 500 12px/1.5 var(--ol-sans);
+}
+.ol-lean-project-rename-notice.is-floating {
+  position: fixed;
+  right: 66px;
+  bottom: 72px;
+  z-index: 2147483646;
+  margin: 0;
+  padding: 4px 10px;
+  border: 1px solid var(--ol-line);
+  border-radius: 6px;
+  background: var(--ol-panel);
+}

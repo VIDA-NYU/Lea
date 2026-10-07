@@ -1,0 +1,54 @@
+{
+  "targets": 2,
+  "checks": [
+    {
+      "formalization_id": "2075d8c3-b0a4-4161-b3ec-741072db142b",
+      "path": "propcritical.lean",
+      "status": "ok",
+      "content_sha256": "3c70fa31312e386cee960be71b30f0375197ff2fe7162c9729d81af9af6071e4"
+    },
+    {
+      "formalization_id": "2075d8c3-b0a4-4161-b3ec-741072db142b",
+      "path": "propcritical_validation.lean",
+      "status": "ok",
+      "content_sha256": "1c70c43b04440f31a6b63ca86b0f2aebe56fd456bf970ad15e4bca0a742b8e3a"
+    },
+    {
+      "formalization_id": "b5f955a1-a1ce-43eb-9e20-15d93c09282f",
+      "path": "proppolynomialtobohr_checked.lean",
+      "status": "ok",
+      "content_sha256": "00e298af4a3db40ae3e90332ebd68e233b2c24dcbba53943348b5e2ee75b5853"
+    },
+    {
+      "formalization_id": "b5f955a1-a1ce-43eb-9e20-15d93c09282f",
+      "path": "Lea/P6ab4a31176d5a9a6a80883b3/candidate.lean",
+      "status": "ok",
+      "content_sha256": "34e22d82d4155059c0430d73c4517a1765120ccdd57b1dd6e92f2289d3fc151d"
+    },
+    {
+      "formalization_id": "b5f955a1-a1ce-43eb-9e20-15d93c09282f",
+      "path": "proppolynomialtobohr.lean",
+      "status": "ok",
+      "content_sha256": "f658a58ceb15deb40aa05e1687f2a1d641f9c119da3b97a04decf54250c9e31c"
+    },
+    {
+      "formalization_id": "b5f955a1-a1ce-43eb-9e20-15d93c09282f",
+      "path": "proppolynomialtobohrLarge.lean",
+      "status": "ok",
+      "content_sha256": "bc3e2842f65e7ea2fcb21f3838c3d6e9a87acd313524b02ea8d07ea05fe6ca1a"
+    },
+    {
+      "formalization_id": "b5f955a1-a1ce-43eb-9e20-15d93c09282f",
+      "path": "proppolynomialtobohrSigma.lean",
+      "status": "ok",
+      "content_sha256": "e5d0eec3be26ca236747a48d19dba653fafa152ff77e88eabb0656bd5ddeee11"
+    },
+    {
+      "formalization_id": "b5f955a1-a1ce-43eb-9e20-15d93c09282f",
+      "path": "proppolynomialtobohrSmall.lean",
+      "status": "ok",
+      "content_sha256": "5eec3895488fbaf0c891aef1726c0f9158102118a92e19205890718ab3552d9a"
+    }
+  ],
+  "persisted": false
+}

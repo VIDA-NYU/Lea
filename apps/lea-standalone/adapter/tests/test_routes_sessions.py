@@ -14,16 +14,27 @@ error. `test_code_survives_without_the_repo` is the direct inversion of the old
 
 import asyncio
 import shutil
+import hashlib
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
-from lea.interface import CheckResult, VerifyResult
+from lea.interface import CheckResult as InterfaceCheckResult, VerifyResult
 
 from app import db, store
 from app.config import LeaConfig
 from app.gitstore import GitStore
 from app.routes import sessions as sessions_route
 from app.routes.sessions import FileWriteRequest, PathRequest
+
+
+def CheckResult(path, status, detail=None, **kwargs):
+    # Model the real check contract: compiler evidence pins the bytes it checked.
+    execution = kwargs.pop("execution", None)
+    if execution is None:
+        execution = {}
+    execution["content_sha256"] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    return InterfaceCheckResult(path, status, detail, execution=execution, **kwargs)
 
 
 PROOF = "import Mathlib\n\ntheorem t : True := by trivial\n"
@@ -651,6 +662,7 @@ def test_manual_check_persists_execution_and_transition_diagnostics(tmp_path, mo
     execution = {'check_id': 'manual', 'backend': 'cold', 'cold_reason': 'fallback', 'attempts': 2,
                  'failure': {'kind': 'transport', 'message': 'broken pipe'}, 'timings_ms': {'total': 123}}
     def check(path):
+        execution['content_sha256'] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
         diagnostics.report('degraded', 'lean.lsp_cold_fallback', 'Checking with full compilation',
                            path=path, episode_id='outage', failure=execution['failure'])
         diagnostics.report('notice', 'lean.check_execution', 'Lean check finished', execution=execution)

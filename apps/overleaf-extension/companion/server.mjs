@@ -7,6 +7,7 @@ import { canonicalSourceTargetKind, sourceHashInputs } from "../extension/source
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import http from "node:http";
+import { isAllowedHost } from "./netguard.mjs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -173,6 +174,7 @@ const ADAPTER_SHARED_SCALARS = {
 
 export async function createServer({
   settingsPath = SETTINGS_PATH,
+  envPath = ENV_PATH,
   jobsPath = JOBS_PATH,
   chatSessionsPath = CHAT_SESSIONS_PATH,
   fetchImpl = fetch,
@@ -180,6 +182,7 @@ export async function createServer({
 } = {}) {
   const state = {
     settingsPath,
+    envPath,
     jobsPath,
     chatSessionsPath,
     fetchImpl,
@@ -391,7 +394,48 @@ async function resumePersistedJob(state, job) {
   }
 }
 
+class ProjectRenamingError extends Error {
+  constructor() {
+    super("Project identity is changing. Refresh shortly.");
+    this.code = "project_renaming";
+    this.statusCode = 409;
+  }
+}
+
+function throwIfProjectRenaming(result) {
+  if (adapterErrorCode(result, "") === "project_renaming" || result?.body?.renameInProgress) {
+    throw new ProjectRenamingError();
+  }
+}
+
+// Never publish a mixed manifest (old identity + new paths, or vice versa).
+async function withProjectSnapshot(payload, state, build) {
+  const overleafProjectId = payload.overleafProjectId || "unknown";
+  try {
+    if (state.projectRenames?.has(overleafProjectId)) throw new ProjectRenamingError();
+    const identity = await resolveRunProjectIdentity({ state, overleafProjectId, refresh: true });
+    if (identity.renameInProgress) throw new ProjectRenamingError();
+    const result = await build(identity);
+    if (state.projectRenames?.has(overleafProjectId)) throw new ProjectRenamingError();
+    if (identity.namespaceRevision) {
+      const current = await resolveRunProjectIdentity({ state, overleafProjectId, refresh: true, requireFresh: true });
+      if (current.renameInProgress || current.namespaceRevision !== identity.namespaceRevision) {
+        throw new ProjectRenamingError();
+      }
+      if (result.body) result.body.namespaceRevision = identity.namespaceRevision;
+    }
+    return result;
+  } catch (error) {
+    if (error?.code !== "project_renaming") throw error;
+    return errorResponse(409, "project_renaming", error.message);
+  }
+}
+
 export async function handleGetStatuses(payload, state) {
+  return withProjectSnapshot(payload, state, (identity) => getStatusesSnapshot(payload, state, identity));
+}
+
+async function getStatusesSnapshot(payload, state, identity) {
   const leaValidation = validateLeaRuntime(state, { requireApiKey: false });
   if (!leaValidation.ok) {
     return errorResponse(400, leaValidation.error, leaValidation.message);
@@ -402,7 +446,8 @@ export async function handleGetStatuses(payload, state) {
   const overleafProjectId = payload.overleafProjectId || "unknown";
   const approvalContext = await loadFormalizationApprovalContext({
     state,
-    overleafProjectId
+    overleafProjectId,
+    projectNamespace: identity.namespace
   });
 
   for (const rawTarget of targets) {
@@ -421,6 +466,8 @@ export async function handleGetStatuses(payload, state) {
       state,
       leaRepoPath: state.settings.leaRepoPath,
       overleafProjectId,
+      projectName: identity.projectName,
+      projectNamespace: identity.namespace,
       targetKind,
       targetLabel,
       jobs: state.jobs || {}
@@ -434,6 +481,8 @@ export async function handleGetStatuses(payload, state) {
     const freshness = attachSourceFreshness({
       state,
       overleafProjectId,
+      projectName: identity.projectName,
+      projectNamespace: identity.namespace,
       targetKind,
       targetLabel,
       currentSourceHash: hashTargetText(targetText),
@@ -447,6 +496,8 @@ export async function handleGetStatuses(payload, state) {
     const approvalTarget = buildLeaTarget({
       leaRepoPath: state.settings.leaRepoPath,
       overleafProjectId,
+      projectName: identity.projectName,
+      projectNamespace: identity.namespace,
       targetKind,
       targetLabel
     });
@@ -455,6 +506,7 @@ export async function handleGetStatuses(payload, state) {
       : await readLeanPaneArtifactFromSession({
           state,
           job: findLatestFinishedJob(state.jobs || {}, approvalTarget.jobKey),
+          projectNamespace: identity.namespace,
           declarationName: statusInfo?.declarationName || targetLabel
         });
     const effectiveArtifact = artifact.content ? artifact : sessionArtifact;
@@ -1042,6 +1094,7 @@ function normalizeCompanionIdentity(identity, overleafProjectId) {
       repoPath: identity.repoPath || null,
       hasRecordedProofs: Boolean(identity.hasRecordedProofs),
       exists: identity.exists !== false,
+      namespaceRevision: identity.namespaceRevision || null,
       renameInProgress: Boolean(identity.renameInProgress)
     };
   }
@@ -1063,6 +1116,7 @@ export async function handleProjectIdentity(payload, state) {
   if (target.error) return target.error;
   const overleafProjectId = String(payload.overleafProjectId || "");
   const result = await fetchProjectIdentityBySlug(target);
+  if (adapterErrorCode(result, "") === "project_renaming") return errorResponse(409, "project_renaming", adapterDetail(result, "Renaming project…"));
   if (!result.ok) {
     if (result.status === 404) {
       return { statusCode: 200, body: { ok: true, identity: normalizeCompanionIdentity(null, overleafProjectId) } };
@@ -1070,9 +1124,22 @@ export async function handleProjectIdentity(payload, state) {
     return errorResponse(result.status || 502, "project_identity_failed", adapterDetail(result, "Could not load project identity."));
   }
   const identity = normalizeCompanionIdentity(result.body, overleafProjectId);
+  await cacheProjectIdentity(state, identity);
+  return { statusCode: 200, body: { ok: true, identity } };
+}
+
+async function cacheProjectIdentity(state, identity) {
   state.projectIdentities ||= {};
   state.projectIdentities[identity.slug] = identity;
-  return { statusCode: 200, body: { ok: true, identity } };
+  let changed = false;
+  for (const job of Object.values(state.jobs || {})) {
+    if (job?.projectSlug !== identity.slug && job?.overleafProjectId !== identity.overleafProjectId) continue;
+    if (job.projectNamespace && job.projectNamespace !== identity.namespace) {
+      changed = rebaseJobProjectIdentity(job, { oldNamespace: job.projectNamespace,
+        newNamespace: identity.namespace, projectName: identity.projectName }) || changed;
+    }
+  }
+  if (changed) await persistJobs(state);
 }
 
 function cachedProjectIdentity({ state, overleafProjectId, projectSlug = "" }) {
@@ -1103,7 +1170,7 @@ function fallbackRunProjectIdentity({ overleafProjectId, projectSlug = "", proje
   };
 }
 
-async function resolveRunProjectIdentity({ state, overleafProjectId, projectSlug = "", projectName = "", projectNamespace = "", refresh = false }) {
+async function resolveRunProjectIdentity({ state, overleafProjectId, projectSlug = "", projectName = "", projectNamespace = "", refresh = false, requireFresh = false }) {
   const slug = projectSlug || slugProjectId(overleafProjectId);
   const cached = cachedProjectIdentity({ state, overleafProjectId, projectSlug: slug });
   if (!refresh && isAuthoritativeProjectIdentity(cached)) return cached;
@@ -1111,13 +1178,16 @@ async function resolveRunProjectIdentity({ state, overleafProjectId, projectSlug
   const target = resolveShareTarget({ overleafProjectId }, state);
   if (!target.error) {
     const result = await fetchProjectIdentityBySlug(target);
+    throwIfProjectRenaming(result);
     if (result.ok) {
       const identity = normalizeCompanionIdentity(result.body, overleafProjectId);
-      state.projectIdentities ||= {};
-      state.projectIdentities[identity.slug] = identity;
+      await cacheProjectIdentity(state, identity);
       return identity;
     }
+    if (requireFresh) throw new Error(adapterDetail(result, "Could not reconcile project identity."));
   }
+
+  if (requireFresh) throw new Error(target.error?.body?.message || "Could not reconcile project identity.");
 
   if (isCompleteProjectIdentity(cached)) return cached;
   return fallbackRunProjectIdentity({ overleafProjectId, projectSlug: slug, projectName, projectNamespace });
@@ -1209,6 +1279,23 @@ export async function handleProjectIdentityPreview(payload, state) {
 }
 
 export async function handleProjectIdentityUpdate(payload, state) {
+  const projectId = String(payload.overleafProjectId || "");
+  const migrate = payload.mode === "rename-namespace";
+  state.projectRenames ||= new Set();
+  if (state.projectRenames.has(projectId)) return errorResponse(409, "project_renaming", "Renaming project…");
+  if (migrate) {
+    state.projectRenames.add(projectId);
+    publishEvent(state, "project-identity-changed", { overleafProjectId: projectId, phase: "started" });
+  }
+  try {
+    return await updateProjectIdentitySnapshot(payload, state);
+  } finally {
+    if (migrate) state.projectRenames.delete(projectId);
+    publishEvent(state, "project-identity-changed", { overleafProjectId: projectId, phase: "finished", namespaceChanged: migrate });
+  }
+}
+
+async function updateProjectIdentitySnapshot(payload, state) {
   const target = resolveShareTarget(payload, state);
   if (target.error) return target.error;
   const overleafProjectId = String(payload.overleafProjectId || "");
@@ -1283,6 +1370,7 @@ export async function handleProjectGraph(payload, state) {
   const target = resolveShareTarget(payload, state);
   if (target.error) return target.error;
   const result = await fetchProjectGraphBySlug(target);
+  if (adapterErrorCode(result, "") === "project_renaming") return errorResponse(409, "project_renaming", adapterDetail(result, "Renaming project…"));
   if (!result.ok) {
     if (result.status === 404) {
       return { statusCode: 200, body: { ok: true, exists: false, nodes: [], edges: [] } };
@@ -1294,6 +1382,7 @@ export async function handleProjectGraph(payload, state) {
     body: {
       ok: true,
       exists: true,
+      ...((result.body?.namespace_revision || result.body?.graph?.namespace_revision) ? { namespaceRevision: result.body.namespace_revision || result.body.graph.namespace_revision } : {}),
       nodes: Array.isArray(result.body?.nodes) ? result.body.nodes : [],
       edges: Array.isArray(result.body?.edges) ? result.body.edges : []
     }
@@ -1307,6 +1396,7 @@ export async function handleProjectBlueprintGenerate(payload, state) {
   const target = resolveShareTarget(payload, state);
   if (target.error) return target.error;
   const result = await generateProjectBlueprintBySlug(target);
+  if (adapterErrorCode(result, "") === "project_renaming") return errorResponse(409, "project_renaming", adapterDetail(result, "Renaming project…"));
   if (!result.ok) {
     if (result.status === 404) {
       return { statusCode: 200, body: { ok: true, exists: false, added: 0, skipped: 0, nodes: [], edges: [] } };
@@ -1319,6 +1409,7 @@ export async function handleProjectBlueprintGenerate(payload, state) {
     body: {
       ok: true,
       exists: true,
+      ...((result.body?.namespace_revision || result.body?.graph?.namespace_revision) ? { namespaceRevision: result.body.namespace_revision || result.body.graph.namespace_revision } : {}),
       added: Number(result.body?.added || 0),
       skipped: Number(result.body?.skipped || 0),
       warnings: Array.isArray(result.body?.warnings) ? result.body.warnings : [],
@@ -1500,6 +1591,10 @@ export async function handleLeanCheckRuntime(sessionId, state) {
 }
 
 export async function handleLeanPaneManifest(payload, state) {
+  return withProjectSnapshot(payload, state, (identity) => leanPaneManifestSnapshot(payload, state, identity));
+}
+
+async function leanPaneManifestSnapshot(payload, state, identity) {
   const overleafProjectId = payload.overleafProjectId || "unknown";
   const reservedLabels = legacyExplicitJobLabels(state, overleafProjectId);
   let generatedChanged = false;
@@ -1538,11 +1633,6 @@ export async function handleLeanPaneManifest(payload, state) {
     };
   }
 
-  const identity = await resolveRunProjectIdentity({
-    state,
-    overleafProjectId,
-    refresh: true
-  });
   let targetSyncWarning = null;
   if (identity.exists !== false && manifest.items.length) {
     const target = resolveShareTarget({ overleafProjectId }, state);
@@ -1565,6 +1655,7 @@ export async function handleLeanPaneManifest(payload, state) {
           })),
         ),
       });
+      throwIfProjectRenaming(sync);
       if (!sync.ok) targetSyncWarning = adapterDetail(sync, "Imported declarations could not be synchronized.");
     }
   }
@@ -4441,6 +4532,10 @@ export async function ensureStartupLeaRuntime(state) {
 }
 
 async function routeRequest(request, response, state) {
+  if (!isAllowedHost(request.headers?.host, state.env)) {
+    sendJson(response, 403, { error: "forbidden_host", message: "Requests must address a permitted local host." });
+    return;
+  }
   setCorsHeaders(response, request);
 
   if (request.method === "OPTIONS") {
@@ -7625,7 +7720,8 @@ async function loadFormalizationApprovalContext({ state, overleafProjectId, proj
       namespace
     });
     return buildApprovalRevisionContext(files);
-  } catch {
+  } catch (error) {
+    if (error?.code === "project_renaming") throw error;
     return buildApprovalRevisionContext();
   }
 }
@@ -8042,6 +8138,7 @@ async function readLeanPaneArtifactFromSession({ state, job, declarationName, pr
     apiKey: state.env?.LEA_API_KEY,
     sessionId
   });
+  throwIfProjectRenaming(detail);
   if (!detail.ok || !detail.body || typeof detail.body !== "object") {
     return { relativePath: "", content: "" };
   }
@@ -8170,8 +8267,12 @@ async function fetchTargetStatusFromAdapter({ state, target, declarations, forma
     declarations,
     formalizationIds
   });
+  throwIfProjectRenaming(result);
   if (!result.ok || !Array.isArray(result.body?.targets)) return null;
-  return Object.fromEntries(result.body.targets.map((entry) => [entry.declaration_name, entry]));
+  return Object.fromEntries(result.body.targets.map((entry) => [entry.declaration_name, {
+    ...entry, project_namespace: result.body.project_namespace,
+    namespace_revision: result.body.namespace_revision
+  }]));
 }
 
 // The adapter ledger supplies current target validity and checked revision;
@@ -8204,6 +8305,7 @@ async function getTheoremStatus({
   const evidence = (linkedJob?.formalizationId
     ? Object.values(ledger || {}).find((entry) => entry?.formalization_id === linkedJob.formalizationId)
     : null) || candidates.map((name) => ledger?.[name]).find((entry) => entry?.formalization_id) || null;
+  if (evidence?.project_namespace) target.projectNamespace = evidence.project_namespace;
   const artifactEvidence = evidence
     ? {
         artifactRecorded: true,
@@ -8530,6 +8632,7 @@ async function identifyArtifactFromAdapter({ state, job, target }) {
     baseUrl,
     slug: target.projectSlug
   });
+  throwIfProjectRenaming(result);
   if (!result.ok || !Array.isArray(result.body?.artifacts)) return null;
 
   // Only the expected identity from this run may supply a completed artifact.
@@ -8541,7 +8644,7 @@ async function identifyArtifactFromAdapter({ state, job, target }) {
 
   // The adapter's path is repo-relative (repo root IS the project namespace
   // dir); the companion's entries are leaRepoPath-relative.
-  const namespacePath = String(job.projectNamespace || target.projectNamespace || "")
+  const namespacePath = String(result.body.project_namespace || job.projectNamespace || target.projectNamespace || "")
     .split(".")
     .filter(Boolean)
     .join("/");
@@ -8833,6 +8936,7 @@ function writeJson(filePath, value) {
 }
 
 function sendJson(response, statusCode, body) {
+  if (body?.error === "project_renaming") response.setHeader("Retry-After", "1");
   response.writeHead(statusCode, { "Content-Type": "application/json" });
   response.end(JSON.stringify(body));
 }

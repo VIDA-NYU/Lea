@@ -83,6 +83,137 @@
   // only the active buffer; the zip refresh happens on this cadence.
   let lastTexMirrorFullSyncAt = 0;
   let latestStatuses = {};
+  // One project-scoped reconciliation loop. Request generations prevent an old
+  // response from repainting statuses or code after a rename (or navigation).
+  let displayProjectId = "";
+  let displayGeneration = 0;
+  let displayNamespaceRevision = "";
+  const displayRequests = {};
+  let projectRenaming = false;
+  let renameNotice = null;
+  let renameRetryTimer = null;
+  let renameReconcileRunning = false;
+
+  function selectDisplayProject(projectId) {
+    if (displayProjectId === projectId) return;
+    const hadProject = Boolean(displayProjectId);
+    displayProjectId = projectId;
+    displayGeneration += 1;
+    displayNamespaceRevision = "";
+    projectRenaming = false;
+    clearTimeout(renameRetryTimer);
+    renameRetryTimer = null;
+    if (hadProject) {
+      latestBaseStatuses = {};
+      latestStatuses = {};
+      lastProjectIdentity = null;
+      lastLeanPaneManifest = null;
+      leanPaneBlueprintGraph = null;
+    }
+    renderRenameNotice();
+  }
+
+  function displayRequest(surface) {
+    const projectId = extractOverleafProjectId();
+    selectDisplayProject(projectId);
+    const sequence = (displayRequests[surface] || 0) + 1;
+    displayRequests[surface] = sequence;
+    return { projectId, generation: displayGeneration, surface, sequence };
+  }
+
+  function currentDisplayRequest(request) {
+    return request.projectId === extractOverleafProjectId()
+      && request.projectId === displayProjectId
+      && request.generation === displayGeneration
+      && request.sequence === displayRequests[request.surface];
+  }
+
+  function acceptDisplayResponse(request, revision) {
+    if (!currentDisplayRequest(request)) return false;
+    if (revision && displayNamespaceRevision && revision !== displayNamespaceRevision) {
+      markProjectRenaming(request.projectId, true);
+    }
+    if (revision) displayNamespaceRevision = revision;
+    return true;
+  }
+
+  function renderRenameNotice() {
+    if (!projectRenaming) {
+      renameNotice?.remove();
+      renameNotice = null;
+      return;
+    }
+    if (!renameNotice) {
+      renameNotice = document.createElement("p");
+      renameNotice.className = "ol-lean-project-rename-notice";
+      renameNotice.setAttribute("role", "status");
+      renameNotice.setAttribute("aria-live", "polite");
+      renameNotice.textContent = "Renaming project…";
+    }
+    const header = leanPane?.querySelector(".ol-lean-project-pane-titlewrap");
+    renameNotice.classList.toggle("is-floating", !header);
+    (header || document.body).appendChild(renameNotice);
+  }
+
+  function markProjectRenaming(projectId = extractOverleafProjectId(), invalidate = false) {
+    if (projectId !== extractOverleafProjectId()) return;
+    selectDisplayProject(projectId);
+    if (!projectRenaming || invalidate) displayGeneration += 1;
+    projectRenaming = true;
+    clearTimeout(statusRefreshTimer);
+    clearTimeout(leanPaneRefreshTimer);
+    clearTimeout(leanPanePollTimer);
+    renderRenameNotice();
+    scheduleRenameReconciliation();
+  }
+
+  function scheduleRenameReconciliation(delay = 1000) {
+    if (!projectRenaming || document.hidden || renameRetryTimer != null || renameReconcileRunning) return;
+    renameRetryTimer = setTimeout(() => {
+      renameRetryTimer = null;
+      reconcileProjectRename().catch(() => {});
+    }, delay);
+  }
+
+  async function reconcileProjectRename() {
+    if (renameReconcileRunning || document.hidden) return false;
+    clearTimeout(renameRetryTimer);
+    renameRetryTimer = null;
+    renameReconcileRunning = true;
+    const projectId = extractOverleafProjectId();
+    try {
+      const settings = await getSettings();
+      const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
+      const identity = await loadProjectIdentity({ baseUrl, projectId });
+      if (projectId !== extractOverleafProjectId()) return false;
+      lastProjectIdentity = identity;
+      renderLeanPaneProjectIdentity(identity);
+      const generation = displayGeneration;
+      const statusesReady = await refreshStatusesNow();
+      const paneReady = !leanPane ? true : leanPaneMainView === "blueprint"
+        ? await renderLeanPaneBlueprint({ background: true })
+        : await refreshLeanPaneNow({ background: true });
+      if (statusesReady && paneReady && generation === displayGeneration && projectId === extractOverleafProjectId()) {
+        projectRenaming = false;
+        renderRenameNotice();
+        return true;
+      }
+      return false;
+    } catch (error) {
+      if (error?.code === "project_renaming") markProjectRenaming(projectId);
+      else if (error?.code !== "superseded" && projectId === extractOverleafProjectId()) {
+        projectRenaming = false;
+        renderRenameNotice();
+        postStatusError(error);
+        if (leanPane) renderLeanPaneError(error);
+      }
+      return false;
+    } finally {
+      renameReconcileRunning = false;
+      scheduleRenameReconciliation();
+    }
+  }
+
   // Server-provided target truth is kept separately from the short-lived UI
   // overlay used while imported proofs are being checked. This prevents an
   // ordinary /statuses refresh from re-enabling a matched target mid-import.
@@ -262,6 +393,7 @@
     if (event.data?.type === "OL_LEAN_TARGETS_VISIBLE") {
       const nextActiveTex = typeof event.data.activeTex === "string" ? event.data.activeTex : "";
       const nextProjectId = extractOverleafProjectId();
+      selectDisplayProject(nextProjectId);
       const activeTexChanged = nextActiveTex !== latestActiveTex || nextProjectId !== latestActiveTexProjectId;
       latestTargets = event.data.targets || [];
       latestDiagnostics = event.data.diagnostics || [];
@@ -568,6 +700,7 @@
     leanPane.appendChild(leanPaneStatus);
     leanPane.appendChild(leanPaneBody);
     document.body.appendChild(leanPane);
+    renderRenameNotice();
     leanPane.focus({ preventScroll: true });
     if (!deferRefresh) {
       clearTimeout(leanPaneStartupWatchdogTimer);
@@ -611,6 +744,7 @@
     if (!leanPane) return;
     leanPane.remove();
     leanPane = null;
+    renderRenameNotice();
     leanPaneBody = null;
     leanPaneStatus = null;
     leanPaneProjectTitle = null;
@@ -1791,8 +1925,9 @@
   async function renderLeanPaneBlueprint({ background = false } = {}) {
     if (!leanPane || !leanPaneBody || !leanPaneStatus) return;
     if (leanPaneMainView !== "blueprint") return;
+    const request = displayRequest("blueprint");
     await ensureBlueprintPaneView();
-    if (!background) {
+    if (!background && !leanPaneBlueprintGraph) {
       leanPaneStatus.textContent = "Loading blueprint…";
       leanPaneBody.replaceChildren();
     }
@@ -1802,9 +1937,13 @@
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
     try {
       const identity = await loadProjectIdentity({ baseUrl, projectId });
+      if (!currentDisplayRequest(request)) return false;
       lastProjectIdentity = identity;
       renderLeanPaneProjectIdentity(identity);
-    } catch {}
+    } catch (error) {
+      if (error?.code === "project_renaming") { markProjectRenaming(); return false; }
+      if (error?.code === "superseded") return false;
+    }
 
     let payload;
     try {
@@ -1813,18 +1952,21 @@
       );
       payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+        throw companionRequestError(response, payload);
       }
     } catch (error) {
+      if (!currentDisplayRequest(request)) return false;
+      if (error?.code === "project_renaming") { markProjectRenaming(); return false; }
       if (leanPaneMainView !== "blueprint" || !leanPaneBody) return;
       leanPaneStatus.textContent = "Blueprint unavailable.";
       leanPaneBody.replaceChildren(buildBlueprintToolbar(), buildBlueprintMessage(errorText(error), "error"));
       return;
     }
 
-    if (leanPaneMainView !== "blueprint") return; // toggled away mid-fetch
+    if (leanPaneMainView !== "blueprint" || !acceptDisplayResponse(request, payload.namespaceRevision)) return false;
     leanPaneBlueprintGraph = payload;
     renderBlueprintBody(payload);
+    return true;
   }
 
   // Render the cached graph payload into the body: no-project / empty / populated.
@@ -1907,6 +2049,7 @@
   // POST the generate request, then render the returned graph and report what changed.
   async function generateBlueprint() {
     if (!leanPane || !leanPaneBody || !leanPaneStatus || leanPaneMainView !== "blueprint") return;
+    const request = displayRequest("blueprint");
     if (leanPaneBlueprintGenerateBtn) {
       leanPaneBlueprintGenerateBtn.disabled = true;
       leanPaneBlueprintGenerateBtn.textContent = "Generating…";
@@ -1925,16 +2068,22 @@
       });
       payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+        throw companionRequestError(response, payload);
       }
     } catch (error) {
+      if (!currentDisplayRequest(request)) return;
+      if (error?.code === "project_renaming") {
+        if (leanPaneBlueprintGraph) renderBlueprintBody(leanPaneBlueprintGraph);
+        markProjectRenaming();
+        return;
+      }
       if (leanPaneMainView !== "blueprint" || !leanPaneBody) return;
       leanPaneStatus.textContent = "Blueprint unavailable.";
       leanPaneBody.replaceChildren(buildBlueprintToolbar(), buildBlueprintMessage(errorText(error), "error"));
       return;
     }
 
-    if (leanPaneMainView !== "blueprint") return;
+    if (leanPaneMainView !== "blueprint" || !acceptDisplayResponse(request, payload.namespaceRevision)) return;
     leanPaneBlueprintGraph = payload;
     leanPaneBlueprintSelectedKey = null;
     renderBlueprintBody(payload); // rebuilds the toolbar (button re-enabled) + graph
@@ -1970,6 +2119,7 @@
   // Edits to the open document re-render the pane from the cached file set with the
   // live buffer overlaid — a cheap, no-blink background refresh (no project download).
   function scheduleLeanPaneRefresh() {
+    if (projectRenaming) { scheduleRenameReconciliation(); return; }
     clearTimeout(leanPaneRefreshTimer);
     leanPaneRefreshTimer = setTimeout(() => {
       refreshLeanPaneNow({ background: true }).catch(renderLeanPaneError);
@@ -1978,7 +2128,18 @@
 
   // `forceFetch` re-downloads the project archive; `background` skips the blanking
   // "Loading…" state and preserves scroll, for edit-driven and poll refreshes.
-  async function refreshLeanPaneNow({ forceFetch = false, background = false } = {}) {
+  async function refreshLeanPaneNow(options = {}) {
+    const request = displayRequest("manifest");
+    try { return await refreshLeanPaneSnapshot({ ...options, request }); }
+    catch (error) {
+      if (!currentDisplayRequest(request)) return false;
+      if (error?.code !== "project_renaming") throw error;
+      markProjectRenaming();
+      return false;
+    }
+  }
+
+  async function refreshLeanPaneSnapshot({ forceFetch = false, background = false, request } = {}) {
     if (!leanPane || !leanPaneBody || !leanPaneStatus || (background && document.hidden)) return;
     clearTimeout(leanPaneRefreshTimer);
     leanPaneRefreshTimer = null;
@@ -1994,7 +2155,7 @@
       return;
     }
     await ensureLeanPaneView();
-    if (!background) {
+    if (!background && !lastLeanPaneManifest) {
       leanPaneStatus.textContent = "Loading project inventory...";
       leanPaneBody.replaceChildren();
     }
@@ -2009,10 +2170,11 @@
     // always settle into either content or a useful error state.
     loadProjectIdentity({ baseUrl, projectId })
       .then((identity) => {
+        if (!currentDisplayRequest(request)) return;
         lastProjectIdentity = identity;
         renderLeanPaneProjectIdentity(identity);
       })
-      .catch(() => {});
+      .catch((error) => { if (error?.code === "project_renaming") markProjectRenaming(); });
     const files = await getLeanPaneProjectFiles({
       projectId,
       forceFetch,
@@ -2033,9 +2195,9 @@
       timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
       timeoutMessage: "The Lea companion timed out while loading the project inventory."
     });
-    if (!response.ok) {
-      throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
-    }
+    if (!currentDisplayRequest(request)) return false;
+    if (!response.ok) throw companionRequestError(response, payload);
+    if (!acceptDisplayResponse(request, payload.namespaceRevision)) return false;
     // The pane may load more files than the live editor resolver knew about.
     // If that inventory disambiguates a generated ID, update the badge's key
     // before its next status request so both UI surfaces keep one identity.
@@ -2071,6 +2233,8 @@
       if (
         changed
         &&
+        currentDisplayRequest(request)
+        &&
         leanPane
         && leanPaneMainView === "items"
         && lastLeanPaneManifest
@@ -2081,14 +2245,20 @@
     }).catch(() => {});
     renderLeanPaneManifest(payload);
     scheduleLeanPanePollIfNeeded(payload);
+    return true;
   }
 
   // Keep refreshing while any item is still being formalized; stop once it settles.
   document.addEventListener("visibilitychange", () => {
+    clearTimeout(renameRetryTimer);
+    renameRetryTimer = null;
+    if (!document.hidden && projectRenaming) { scheduleRenameReconciliation(0); return; }
     clearTimeout(leanPanePollTimer);
     clearTimeout(leanPaneChatPollTimer);
     if (!document.hidden) {
-      if (leanPane) refreshLeanPaneNow({ background: true }).catch(() => {});
+      scheduleStatusRefresh();
+      if (leanPaneMainView === "blueprint" && leanPane) renderLeanPaneBlueprint({ background: true }).catch(() => {});
+      else if (leanPane) refreshLeanPaneNow({ background: true }).catch(() => {});
       if (leanPaneChatPanel) pollChatSession().catch(() => {});
     }
   });
@@ -2430,6 +2600,7 @@
   }
 
   async function loadProjectIdentity({ baseUrl, projectId }) {
+    const request = displayRequest("identity");
     const { response, payload } = await fetchJsonWithTimeout(
       `${baseUrl}/project/identity?overleafProjectId=${encodeURIComponent(projectId)}`,
       {},
@@ -2438,7 +2609,12 @@
         timeoutMessage: "The Lea companion timed out while loading the project identity."
       }
     );
-    if (!response.ok) throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+    if (!currentDisplayRequest(request)) throw Object.assign(new Error("A newer project request superseded this response."), { code: "superseded" });
+    if (!response.ok) throw companionRequestError(response, payload);
+    if (!acceptDisplayResponse(request, payload.identity?.namespaceRevision)) {
+      throw Object.assign(new Error("A newer project request superseded this response."), { code: "superseded" });
+    }
+    if (payload.identity?.renameInProgress) throw Object.assign(new Error("Renaming project…"), { code: "project_renaming" });
     return payload.identity || null;
   }
 
@@ -2848,6 +3024,7 @@
     state.previewError = "";
     renderProjectIdentityEditor(state);
     let result;
+    if (migrate) markProjectRenaming(state.projectId, true);
     try {
       result = await saveProjectIdentity({
         baseUrl: state.baseUrl,
@@ -2859,6 +3036,7 @@
         createIfMissing: true
       });
     } catch (error) {
+      if (migrate) { displayGeneration += 1; scheduleRenameReconciliation(0); }
       if (state !== projectIdentityEditorState) return false;
       state.saving = false;
       state.previewError = normalizeErrorMessage(error);
@@ -2874,22 +3052,12 @@
       ? `Project name saved. Lean files still use namespace ${savedNamespace}.`
       : "Project name and Lean namespace saved.";
     let feedbackKind = "success";
-    if (migrate && leanPane) {
-      try {
-        // The rename endpoint migrates the files synchronously. Re-fetch the
-        // manifest before dismissing the dialog so already-rendered code uses
-        // those rewritten working files immediately.
-        if (leanPaneMainView === "blueprint") {
-          // No Lean source is visible in Blueprint, but its cached Items view
-          // would otherwise resurrect the pre-rename manifest when selected.
-          lastLeanPaneManifest = null;
-        } else {
-          await refreshLeanPaneNow({ background: true });
-        }
-      } catch (error) {
-        message += ` The Lean pane could not refresh: ${normalizeErrorMessage(error)}`;
-        feedbackKind = "error";
-      }
+    if (migrate) {
+      displayGeneration += 1;
+      const refreshed = await reconcileProjectRename();
+      if (!refreshed) message += " Project statuses are refreshing.";
+    } else {
+      scheduleStatusRefresh();
     }
     const { source, popover } = state;
     closeProjectIdentityEditor();
@@ -5567,6 +5735,8 @@
   }
 
   function renderLeanPaneError(error) {
+    if (error?.code === "superseded") return;
+    if (error?.code === "project_renaming") { markProjectRenaming(); return; }
     if (!leanPaneBody || !leanPaneStatus) return;
     leanPaneStatus.textContent = "Could not load Lean pane.";
     leanPaneBody.replaceChildren();
@@ -6663,6 +6833,7 @@
   }
 
   function scheduleStatusRefresh(delayMs = STATUS_REFRESH_DEBOUNCE_MS) {
+    if (projectRenaming) { scheduleRenameReconciliation(); return; }
     clearTimeout(statusRefreshTimer);
     statusRefreshTimer = setTimeout(() => {
       refreshStatusesNow().catch((error) => {
@@ -6672,9 +6843,19 @@
   }
 
   async function refreshStatusesNow() {
+    if (document.hidden) return false;
+    const request = displayRequest("statuses");
+    try { return await refreshStatusesSnapshot(request); }
+    catch (error) {
+      if (!currentDisplayRequest(request)) return false;
+      throw error;
+    }
+  }
+
+  async function refreshStatusesSnapshot(request) {
     if (latestTargets.length === 0) {
       postStatuses({});
-      return;
+      return true;
     }
 
     await resolveVisibleTargets();
@@ -6702,14 +6883,20 @@
     });
 
     const payload = await response.json().catch(() => ({}));
+    if (!currentDisplayRequest(request)) return false;
     if (!response.ok) {
-      throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+      const error = companionRequestError(response, payload);
+      if (error.code === "project_renaming") { markProjectRenaming(); return false; }
+      throw error;
     }
+    if (!acceptDisplayResponse(request, payload.namespaceRevision)) return false;
     const statuses = withFallbackStatuses(payload.statuses || {});
     await reconcileHumanApprovals(latestTargets.map((target) => ({
       target,
       statusInfo: statuses[targetKey(target)]
     })));
+    // Storage reconciliation can also outlive a rename.
+    if (request.generation !== displayGeneration || request.projectId !== extractOverleafProjectId()) return false;
     postStatuses(statuses);
     if (activePopover?.dataset.targetKey) {
       const target = latestTargets.find((item) => targetKey(item) === activePopover.dataset.targetKey);
@@ -6719,7 +6906,12 @@
       status.status === "in_progress" && !status.githubImportPending
     ))) {
       scheduleStatusRefresh(pushConnected ? STATUS_REFRESH_RECONCILE_MS : STATUS_REFRESH_IN_PROGRESS_MS);
+    } else {
+      // The bus has no replay. Even settled proofs reconcile occasionally so a
+      // rename whose start AND finish events were missed is discovered by revision.
+      scheduleStatusRefresh(STATUS_REFRESH_RECONCILE_MS);
     }
+    return true;
   }
 
   async function resolveVisibleTargets() {
@@ -6954,6 +7146,8 @@
   }
 
   function postStatusError(error) {
+    if (error?.code === "superseded") return;
+    if (error?.code === "project_renaming") { markProjectRenaming(); return; }
     const message = normalizeErrorMessage(error);
     const statuses = {};
     for (const target of latestTargets) {
@@ -8062,6 +8256,7 @@
         onConnectionChange: (connected) => {
           pushConnected = connected;
           if (connected) {
+            if (projectRenaming) scheduleRenameReconciliation(0);
             // Reconcile pending refreshes too: the event bus has no replay.
             chatCompanionBaseUrl().then(async (baseUrl) => {
               const response = await fetch(`${baseUrl}/source-context/pending?projectId=${encodeURIComponent(extractOverleafProjectId())}`);
@@ -8071,7 +8266,8 @@
             // Reconcile once on (re)connect: anything that changed while the
             // stream was down is picked up now instead of on the slow poll.
             scheduleStatusRefresh();
-            if (leanPane) scheduleLeanPaneRefresh();
+            if (leanPaneMainView === "blueprint" && leanPane) renderLeanPaneBlueprint({ background: true }).catch(renderLeanPaneError);
+            else if (leanPane) scheduleLeanPaneRefresh();
           }
         },
         // Bind EventSource + timers to the content-script scope: the module's
@@ -8090,6 +8286,22 @@
   }
 
   function handlePushEvent(type, data) {
+    if (type === "project-identity-changed") {
+      if (data?.overleafProjectId !== extractOverleafProjectId()) return;
+      if (data.phase === "started") markProjectRenaming(data.overleafProjectId, true);
+      else if (data.phase === "finished") {
+        displayGeneration += 1;
+        if (data.namespaceChanged || projectRenaming) {
+          markProjectRenaming(data.overleafProjectId);
+          scheduleRenameReconciliation(0);
+        } else {
+          scheduleStatusRefresh();
+          if (leanPane) scheduleLeanPaneRefresh();
+        }
+      }
+      return;
+    }
+
     if (type === "source-refresh-requested") {
       sourceRefreshHandler?.(data).catch(() => {});
       return;

@@ -35,6 +35,13 @@ DEFAULT_TIMEOUT = 20
 MAX_RESPONSE_CHARS = 20_000
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        # Validate only the endpoint the user configured. A redirect must never
+        # become a second request carrying its authentication to another origin.
+        return None
+
+
 class UrlRefused(ToolError):
     """The target address is not one we are willing to fetch."""
 
@@ -124,6 +131,7 @@ def make_handler(spec: dict):
         for key, value in (spec.get("headers") or {}).items():
             headers[str(key)] = str(value)
         key_name = spec.get("auth_key_name")
+        secret = None
         if key_name:
             secret = os.environ.get(str(key_name))
             if not secret:
@@ -148,14 +156,20 @@ def make_handler(spec: dict):
 
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         timeout = int(spec.get("timeout") or DEFAULT_TIMEOUT)
+        def public_text(value: str) -> str:
+            return value.replace(secret, "[redacted]") if secret else value
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-                return _truncate(response.read().decode("utf-8", errors="replace"))
+            with urllib.request.build_opener(_NoRedirect()).open(request, timeout=timeout) as response:
+                return _truncate(public_text(response.read().decode("utf-8", errors="replace")))
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:600]
-            return f"Error: the service returned {exc.code} {exc.reason}. {detail}"
+            if 300 <= exc.code < 400:
+                exc.close()
+                return "Error: the endpoint redirected. Configure its final public HTTPS URL; redirects are not followed."
+            detail = public_text(exc.read().decode("utf-8", errors="replace"))[:600]
+            exc.close()
+            return public_text(f"Error: the service returned {exc.code} {exc.reason}. {detail}")
         except Exception as exc:  # noqa: BLE001 — a failed call is a tool result, not a crash
-            return f"Error: could not reach the service ({type(exc).__name__}: {exc})."
+            return public_text(f"Error: could not reach the service ({type(exc).__name__}: {exc}).")
 
     return handler
 

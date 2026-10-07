@@ -49,6 +49,7 @@ import {
 } from "../shared/leanStub.mjs";
 import { hashFormalizationInput, hashTargetText } from "../shared/theoremParser.mjs";
 import { buildLeanPaneManifest } from "../shared/leanPaneManifest.mjs";
+import { createEventBus } from "../companion/eventBus.mjs";
 
 test("buildOverleafDocumentUrl builds the canonical public-Overleaf URL", () => {
   assert.equal(
@@ -106,6 +107,7 @@ test("createServer recovers from a corrupt jobs.json instead of crashing (AUDIT 
   // the companion would refuse to boot until the file was deleted by hand.
   const server = await createServer({
     settingsPath: path.join(appDir, "settings.json"),
+    envPath: path.join(appDir, ".env"),
     jobsPath,
     chatSessionsPath: path.join(appDir, "chatSessions.json"),
     env
@@ -7029,4 +7031,91 @@ test("ledger engine: an unconfirmed historical formalized job remains unavailabl
   const preIndex = await ledgerStatusFor(state, "ledger_preindex");
   assert.equal(preIndex.status, "unavailable",
     "a historical job cannot certify the current target without adapter evidence");
+});
+
+test("rename snapshot: a busy target defers the whole status response instead of fabricating unformalized", async () => {
+  const leaRepo = await makeLeaRepo();
+  const state = await makeState({ leaRepoPath: leaRepo, fetchImpl: async (url) => {
+    if (String(url).endsWith("/identity")) return jsonResponse(200, {
+      projectId: "p1", slug: "project-1", projectName: "Notes", namespace: "Lea.Notes", namespaceRevision: "revision-1"
+    });
+    if (String(url).includes("/target-status")) {
+      const name = new URL(url).searchParams.get("declarations");
+      if (name === "beta") return jsonResponse(409, { detail: { error: "project_renaming", message: "Renaming project…" } });
+      return jsonResponse(200, { targets: [ledgerEntry(name)], project_namespace: "Lea.Notes", namespace_revision: "revision-1" });
+    }
+    return jsonResponse(200, {});
+  } });
+  const response = await handleGetStatuses({ overleafProjectId: "project-1", targets: ["alpha", "beta"].map((targetLabel) => ({
+    targetKind: "theorem", targetLabel, targetText: "A theorem."
+  })) }, state);
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.error, "project_renaming");
+  assert.equal(response.body.statuses, undefined);
+});
+
+test("rename snapshot: manifests and badges reject an identity revision changed during assembly", async () => {
+  const leaRepo = await makeLeaRepo();
+  let revision = "old";
+  const state = await makeState({ leaRepoPath: leaRepo, fetchImpl: async (url) => {
+    if (String(url).endsWith("/identity")) return jsonResponse(200, {
+      projectId: "p1", slug: "project-1", projectName: "Notes", namespace: "Lea.Notes", namespaceRevision: revision
+    });
+    if (String(url).includes("/target-status")) {
+      revision = "new";
+      return jsonResponse(200, { targets: [ledgerEntry("alpha")], project_namespace: "Lea.Notes", namespace_revision: revision });
+    }
+    return jsonResponse(200, {});
+  } });
+  const targets = [{ targetKind: "theorem", targetLabel: "alpha", targetText: "A theorem." }];
+  const badges = await handleGetStatuses({ overleafProjectId: "project-1", targets }, state);
+  assert.equal(badges.body.error, "project_renaming");
+  revision = "old";
+  const manifest = await handleLeanPaneManifest({ overleafProjectId: "project-1", activePath: "main.tex", files: [{
+    path: "main.tex", content: "\\begin{theorem}\n% lea: formalize label=alpha\nA theorem.\n\\end{theorem}"
+  }] }, state);
+  assert.equal(manifest.body.error, "project_renaming");
+  assert.equal(manifest.body.items, undefined);
+});
+
+test("rename snapshot: refreshed identity repairs cached pointers and uses the ledger namespace", async () => {
+  const leaRepo = await makeLeaRepo();
+  const state = await makeState({ leaRepoPath: leaRepo, fetchImpl: async (url) => {
+    if (String(url).endsWith("/identity")) return jsonResponse(200, {
+      projectId: "p1", slug: "project-1", projectName: "New Notes", namespace: "Lea.NewNotes", namespaceRevision: "new"
+    });
+    if (String(url).includes("/target-status")) return jsonResponse(200, {
+      targets: [ledgerEntry("alpha")], project_namespace: "Lea.NewNotes", namespace_revision: "new"
+    });
+    return jsonResponse(200, {});
+  } });
+  state.jobs.old = { jobId: "old", jobKey: "project-1:theorem:alpha", status: "formalized",
+    projectSlug: "project-1", projectNamespace: "Lea.OldNotes", overleafProjectId: "project-1",
+    declarationName: "alpha", recordedProofPath: "workspace/proofs/Lea/OldNotes/alpha.lean" };
+  const response = await handleGetStatuses({ overleafProjectId: "project-1", targets: [{
+    targetKind: "theorem", targetLabel: "alpha", targetText: "A theorem."
+  }] }, state);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.namespaceRevision, "new");
+  assert.equal(response.body.statuses["theorem:alpha"].recordedProofPath, "workspace/proofs/Lea/NewNotes/alpha.lean");
+  assert.equal(state.jobs.old.recordedProofPath, "workspace/proofs/Lea/NewNotes/alpha.lean");
+});
+
+test("rename snapshot: start/finish events bracket failed renames and clear local deferral", async () => {
+  const leaRepo = await makeLeaRepo();
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const state = await makeState({ leaRepoPath: leaRepo, fetchImpl: async () => { await pending; return jsonResponse(500, { detail: "rename failed" }); } });
+  const events = [];
+  state.eventBus = createEventBus();
+  state.eventBus.subscribe((event) => events.push(event));
+  const rename = handleProjectIdentityUpdate({ overleafProjectId: "project-1", projectName: "New Notes", mode: "rename-namespace" }, state);
+  assert.equal(events[0].phase, "started");
+  assert.equal(events[0].type, "project-identity-changed");
+  const during = await handleGetStatuses({ overleafProjectId: "project-1", targets: [] }, state);
+  assert.equal(during.body.error, "project_renaming");
+  release();
+  assert.equal((await rename).statusCode, 500);
+  assert.equal(events.at(-1).phase, "finished");
+  assert.equal(state.projectRenames.size, 0);
 });

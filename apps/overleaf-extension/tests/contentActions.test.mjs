@@ -2893,6 +2893,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
 
   const context = {
     AbortController,
+    EventSource: options.EventSource,
     URL,
     URLSearchParams,
     TextEncoder,
@@ -2902,6 +2903,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
       if (index !== -1) timers.splice(index, 1);
     },
     crypto: {
+      randomUUID: () => "test-source-client",
       subtle: {
         async digest(_algorithm, input) {
           const digest = createHash("sha256").update(Buffer.from(input)).digest();
@@ -2912,6 +2914,8 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
     document,
     fetch: async (url, fetchOptions) => {
       fetchCalls.push({ url: String(url), options: fetchOptions });
+      const override = await options.fetchOverride?.(String(url), fetchOptions, fetchCalls);
+      if (override !== undefined) return override;
       if (options.hangProjectIdentity && String(url).includes("/project/identity?")) {
         return new Promise((_resolve, reject) => {
           const rejectOnAbort = () => reject(new Error("Project identity request aborted."));
@@ -3099,9 +3103,9 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
       };
     },
     globalThis: null,
-    setTimeout(callback) {
+    setTimeout(callback, delay) {
       const id = nextTimerId++;
-      timers.push({ id, callback });
+      timers.push({ id, callback, delay });
       return id;
     },
     window,
@@ -3170,7 +3174,14 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
   return {
     target,
     window,
+    document,
     runtimeMessages,
+    pendingTimers() { return timers.map(({ delay }) => delay); },
+    async setVisibility(hidden) {
+      document.hidden = hidden;
+      document.dispatchEvent({ type: "visibilitychange" });
+      await flushPromises();
+    },
     async loadStatusForVisibleTheorem() {
       await this.loadVisibleTheorems();
     },
@@ -3426,6 +3437,12 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
       }
       await flushPromises();
     },
+    async runTimersAt(delay) {
+      const ready = timers.filter((timer) => timer.delay === delay);
+      for (const timer of ready) timers.splice(timers.indexOf(timer), 1);
+      for (const timer of ready) timer.callback();
+      await flushPromises();
+    },
     fetchCalls,
     promptCalls,
     confirmCalls,
@@ -3622,6 +3639,10 @@ class FakeDocument {
 
   createElement(tagName) {
     return new FakeElement(tagName);
+  }
+
+  createElementNS(_namespace, tagName) {
+    return this.createElement(tagName);
   }
 
   createTextNode(text) {
@@ -3859,13 +3880,14 @@ class FakeElement {
   }
 
   appendChild(child) {
+    child.remove?.();
     child.parentNode = this;
     this.children.push(child);
     return child;
   }
 
   append(...children) {
-    for (const child of children) this.appendChild(child);
+    for (const child of children) this.appendChild(typeof child === "string" ? new FakeText(child) : child);
   }
 
   insertBefore(child, reference) {
@@ -4356,4 +4378,261 @@ test("live Lea Status renders ongoing findings, history and Pause even for stale
   await flushPromises();
   const pause = harness.fetchCalls.find(call => call.url.includes("/lean-pane/chat/interrupt"));
   assert.equal(JSON.parse(pause.options.body).runId, "active-status-run");
+});
+
+function renameDisplayFixture() {
+  const state = { busy: false, revision: "old", namespace: "Lea.TestProject", status: "formalized" };
+  class EventSource {
+    static instances = [];
+    constructor() { this.listeners = new Map(); EventSource.instances.push(this); }
+    addEventListener(type, fn) { this.listeners.set(type, fn); }
+    close() {}
+    emit(phase, projectId = "unknown", namespaceChanged = true) {
+      this.listeners.get("project-identity-changed")?.({ data: JSON.stringify({ overleafProjectId: projectId, phase, namespaceChanged }) });
+    }
+  }
+  const response = (body, status = 200) => ({ ok: status === 200, status, async json() { return body; } });
+  const options = { locationPath: "/project/unknown", EventSource, fetchOverride: async (url) => {
+    if (!/\/project\/(identity\?|graph\?)|\/statuses$|\/lean-pane\/manifest$/.test(url)) return;
+    if (state.busy) return response({ error: "project_renaming", message: "Renaming project…" }, 409);
+    if (url.includes("/identity?")) return response({ identity: {
+      projectId: "p1", overleafProjectId: "unknown", slug: "unknown", projectName: "Test Project",
+      namespace: state.namespace, namespaceRevision: state.revision, exists: true, hasRecordedProofs: true
+    } });
+    if (url.includes("/graph?")) return response({ exists: true, namespaceRevision: state.revision,
+      nodes: [{ key: "demo", kind: "theorem", title: "Demo theorem", status: "proved", uses: [], lean_decl: `${state.namespace}.demo_theorem` }], edges: [] });
+    if (url.endsWith("/manifest")) return response({ ok: true, namespaceRevision: state.revision, rootFile: "main.tex", diagnostics: [], items: [{
+      id: "theorem:demo_theorem:0", kind: "theorem", label: "demo_theorem", title: "Demo theorem",
+      status: state.status === "formalized" ? "valid" : "unformalized", sourceFile: "main.tex", sourceStartLine: 1,
+      sourceEndLine: 4, documentOrder: 0, naturalLanguageLatex: "A theorem.", leanKind: "theorem",
+      leanDeclarationName: "demo_theorem", leanArtifactContent: `namespace ${state.namespace}\n\ntheorem demo_theorem : True := by trivial\n\nend ${state.namespace}`
+    }] });
+    return response({ namespaceRevision: state.revision, statuses: { "theorem:demo_theorem": { status: state.status } } });
+  } };
+  return { state, options, EventSource, response };
+}
+
+test("rename display retains confirmed badges, counts and code until reconciliation succeeds", async () => {
+  const f = renameDisplayFixture();
+  const h = createContentHarness({}, {}, f.options);
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  h.clickPaneTreeRowText("main.tex");
+  h.clickFirstPaneItem();
+  await flushPromises();
+  const before = h.paneText();
+  assert.match(before, /Lea.TestProject/);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+  f.state.busy = true;
+  f.EventSource.instances[0].emit("started");
+  await h.runTimersAt(1000);
+  assert.match(h.bodyText(), /Renaming project…/);
+  assert.equal(h.paneText(), before);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+  assert.equal(h.pendingTimers().filter((delay) => delay === 1000).length, 1);
+  f.state.busy = false;
+  f.state.revision = "new";
+  f.state.namespace = "Lea.NewNotes";
+  f.EventSource.instances[0].emit("finished");
+  await h.runTimersAt(1000);
+  await h.runTimersAt(1000);
+  assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+  assert.match(h.paneText(), /Lea.NewNotes/);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+});
+
+test("rename display shows loading on first load and pauses retries while hidden", async () => {
+  const f = renameDisplayFixture();
+  f.state.busy = true;
+  const h = createContentHarness({}, {}, f.options);
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  assert.match(h.bodyText(), /Renaming project…/);
+  assert.match(h.bodyText(), /Loading project inventory/);
+  assert.equal(h.countSelector(".ol-lean-status-unformalized"), 0);
+  await h.setVisibility(true);
+  const count = h.fetchCalls.length;
+  await h.runTimersAt(1000);
+  assert.equal(h.fetchCalls.length, count);
+  f.state.busy = false;
+  f.state.revision = "new";
+  await h.setVisibility(false);
+  await h.runTimersAt(0);
+  await h.runTimersAt(1000);
+  assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+});
+
+test("rename display recovers by polling after missed events and preserves real missing-file statuses", async () => {
+  const f = renameDisplayFixture();
+  const h = createContentHarness({}, {}, f.options);
+  await h.loadVisibleTheorems();
+  f.state.busy = true;
+  await h.loadVisibleTheorems();
+  assert.match(h.bodyText(), /Renaming project…/);
+  f.state.busy = false;
+  f.state.revision = "new";
+  f.state.status = "unformalized";
+  await h.runTimersAt(1000);
+  await h.runTimersAt(1000);
+  assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+  assert.equal(h.countSelector(".ol-lean-status-unformalized"), 1);
+});
+
+test("rename display discards delayed badge responses after rename events and navigation", async () => {
+  const f = renameDisplayFixture();
+  let release;
+  let delayed = false;
+  const normalFetch = f.options.fetchOverride;
+  f.options.fetchOverride = async (url, options, calls) => {
+    if (delayed && url.endsWith("/statuses")) return new Promise((resolve) => { release = () => resolve(f.response({
+      namespaceRevision: "old", statuses: { "theorem:demo_theorem": { status: "unformalized" } }
+    })); });
+    return normalFetch(url, options, calls);
+  };
+  const h = createContentHarness({}, {}, f.options);
+  await h.loadVisibleTheorems();
+  delayed = true;
+  await h.loadVisibleTheorems();
+  assert.ok(release);
+  f.EventSource.instances[0].emit("started");
+  release();
+  await flushPromises();
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+  delayed = false;
+  f.state.revision = "new";
+  f.EventSource.instances[0].emit("finished");
+  await h.runTimersAt(1000);
+  await h.runTimersAt(1000);
+  delayed = true;
+  await h.loadVisibleTheorems();
+  h.window.location.pathname = "/project/another-project";
+  release();
+  await flushPromises();
+  assert.equal(h.countSelector(".ol-lean-status-unformalized"), 0);
+});
+
+test("rename events synchronize two tabs and ignore unrelated projects", async () => {
+  const f = renameDisplayFixture();
+  const first = createContentHarness({}, {}, f.options);
+  const second = createContentHarness({}, {}, f.options);
+  await first.loadVisibleTheorems();
+  await second.loadVisibleTheorems();
+  for (const source of f.EventSource.instances) source.emit("started", "another-project");
+  assert.doesNotMatch(first.bodyText() + second.bodyText(), /Renaming project…/);
+  f.state.busy = true;
+  for (const source of f.EventSource.instances) source.emit("started");
+  assert.match(first.bodyText(), /Renaming project…/);
+  assert.match(second.bodyText(), /Renaming project…/);
+  f.state.busy = false;
+  f.state.revision = "new";
+  for (const source of f.EventSource.instances) source.emit("finished");
+  for (const h of [first, second]) {
+    await h.runTimersAt(1000);
+    await h.runTimersAt(1000);
+    assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+    assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+  }
+});
+
+test("rename display retains the populated Blueprint during retryable reads", async () => {
+  const f = renameDisplayFixture();
+  const h = createContentHarness({}, {}, f.options);
+  const oldDocument = globalThis.document;
+  globalThis.document = h.document;
+  try {
+    await h.loadVisibleTheorems();
+    h.clickPaneTrigger();
+    await flushPromises();
+    h.clickButtonText("Blueprint");
+    await flushPromises();
+    assert.match(h.paneText(), /demotheorem/);
+    const before = h.paneText();
+    f.state.busy = true;
+    f.EventSource.instances[0].emit("started");
+    await h.runTimersAt(1000);
+    assert.equal(h.paneText(), before);
+    f.state.busy = false;
+    f.state.revision = "new";
+    f.EventSource.instances[0].emit("finished");
+    await h.runTimersAt(1000);
+    await h.runTimersAt(1000);
+    assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+    assert.match(h.paneText(), /demotheorem/);
+  } finally { globalThis.document = oldDocument; }
+});
+
+for (const surface of ["manifest", "graph"]) {
+  test(`rename display discards a delayed ${surface} instead of clearing the confirmed pane`, async () => {
+    const f = renameDisplayFixture();
+    const fetchNormal = f.options.fetchOverride;
+    let delayed = false, release;
+    f.options.fetchOverride = async (url, ...args) => {
+      if (delayed && url.includes(surface === "manifest" ? "/lean-pane/manifest" : "/project/graph?")) {
+        return new Promise(resolve => { release = () => resolve(f.response({ namespaceRevision: "old", items: [], nodes: [], edges: [] })); });
+      }
+      return fetchNormal(url, ...args);
+    };
+    const h = createContentHarness({}, {}, f.options);
+    const oldDocument = globalThis.document;
+    globalThis.document = h.document;
+    try {
+      await h.loadVisibleTheorems();
+      h.clickPaneTrigger();
+      await flushPromises();
+      if (surface === "graph") { h.clickButtonText("Blueprint"); await flushPromises(); }
+      const before = h.paneText();
+      delayed = true;
+      if (surface === "graph") h.clickButtonText("Refresh");
+      else h.clickButtonLabel("Refresh Lean pane");
+      await flushPromises();
+      assert.ok(release);
+      f.EventSource.instances[0].emit("started");
+      release();
+      await flushPromises();
+      assert.equal(h.paneText(), before);
+      assert.match(h.bodyText(), /Renaming project…/);
+    } finally { globalThis.document = oldDocument; }
+  });
+}
+
+test("display-only identity events refresh without a rename notice", async () => {
+  const f = renameDisplayFixture();
+  const h = createContentHarness({}, {}, f.options);
+  await h.loadVisibleTheorems();
+  f.EventSource.instances[0].emit("finished", "unknown", false);
+  await h.runScheduledTimers();
+  assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+});
+
+test("rename reconciliation resumes immediately when the event stream reconnects", async () => {
+  const f = renameDisplayFixture();
+  const h = createContentHarness({}, {}, f.options);
+  await h.loadVisibleTheorems();
+  f.state.busy = true;
+  await h.loadVisibleTheorems();
+  f.state.busy = false;
+  f.state.revision = "new";
+  f.EventSource.instances[0].onopen();
+  await h.runTimersAt(0);
+  await h.runTimersAt(1000);
+  assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+});
+
+test("settled badges detect a complete rename when both push events were missed", async () => {
+  const f = renameDisplayFixture();
+  const h = createContentHarness({}, {}, f.options);
+  await h.loadVisibleTheorems();
+  f.state.revision = "new";
+  f.state.namespace = "Lea.NewNotes";
+  await h.runTimersAt(30000);
+  assert.match(h.bodyText(), /Renaming project…/);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+  await h.runTimersAt(1000);
+  assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
 });

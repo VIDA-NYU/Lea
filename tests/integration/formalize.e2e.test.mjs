@@ -10,7 +10,7 @@
 // Run with: npm run test:integration  (needs the adapter venv provisioned)
 
 import assert from "node:assert/strict";
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -317,7 +317,7 @@ test("companion push channel: /events streams jobs-changed during a formalize (P
   }
 });
 
-test("retry lifecycle: a failed re-formalize restores the previous SQL-owned proof snapshot (PLAN 4.5)", async () => {
+test("retry lifecycle: a failed changed-source attempt retains the previous proof as stale history", async () => {
   const target = { targetKind: "theorem", targetLabel: "int_retry_true", targetText: "True is true." };
   const first = await postJson(`${companionBaseUrl}/formalize`, { overleafProjectId: "itest-doc", ...target });
   assert.equal(first.status, 200);
@@ -331,9 +331,8 @@ test("retry lifecycle: a failed re-formalize restores the previous SQL-owned pro
   const original = await fs.readFile(absoluteProof, "utf8");
   assert.match(original, /theorem int_retry_true/);
 
-  // Retry the same target with a scripted failure: the pre-run cleanup must
-  // retire the previous proof through the adapter, and the failed outcome must
-  // bring back the verified SQL timeline snapshot.
+  // New attempts keep working files. Failure preserves earlier proof history,
+  // while changed source makes that proof stale for the current target.
   const retry = await postJson(`${companionBaseUrl}/formalize`, {
     overleafProjectId: "itest-doc",
     ...target,
@@ -346,19 +345,15 @@ test("retry lifecycle: a failed re-formalize restores the previous SQL-owned pro
   }, { timeoutMs: 45000, label: "retry to reach failed" });
 
   const restoredContent = await fs.readFile(absoluteProof, "utf8");
-  assert.equal(restoredContent, original, "the previous verified proof is back on disk");
-
-  // Both filesystem operations remain recorded in the project repo, while the
-  // SQL snapshot — not bytes stashed on the job record — is the restore source.
-  const repoDir = path.dirname(absoluteProof);
-  const gitLog = execSync(`git -C ${JSON.stringify(repoDir)} log --format=%s`, { encoding: "utf8" });
-  assert.match(gitLog, /retire .* for retry/);
-  assert.match(gitLog, /restore .* after unverified retry/);
+  assert.equal(restoredContent, original, "the previous proof is retained on disk");
+  const detail = await fetchApiSessionDetail({ fetchImpl: fetch, baseUrl: adapterBaseUrl, sessionId: firstJob.leaSessionId });
+  assert.equal(detail.ok, true);
+  assert.ok(detail.body.code_steps.some((step) => step.code === original), "SQL retains proof history");
 
   const retryJob = JSON.parse(await fs.readFile(companionJobsPath, "utf8"))[retry.body.jobId];
-  assert.ok(retryJob.retryCleanup?.backups?.retiredFiles?.length >= 1,
-    "the retire went through the adapter");
-  assert.equal((retryJob.retryCleanup.backups.proofFiles || []).length, 0,
+  assert.equal((retryJob.retryCleanup?.backups?.retiredFiles || []).length, 0,
+    "new attempts do not retire the prior proof");
+  assert.equal((retryJob.retryCleanup?.backups?.proofFiles || []).length, 0,
     "no proof bytes stashed on the job record");
 });
 
@@ -378,7 +373,7 @@ test("companion end-to-end: a failing run surfaces as failed, not as a hang", as
   assert.equal(info.status, "failed");
 });
 
-test("the ledger engine answers the scripted scenarios, including the settled retry-restore semantic (PLAN 4.4)", async () => {
+test("the ledger engine keeps a changed-source failed retry stale", async () => {
   const targets = [
     { targetKind: "theorem", targetLabel: "int_e2e_true", targetText: "True is true." },
     { targetKind: "theorem", targetLabel: "int_push_true", targetText: "True is true." },
@@ -391,10 +386,38 @@ test("the ledger engine answers the scripted scenarios, including the settled re
   assert.equal(statuses["theorem:int_e2e_true"], "formalized");
   assert.equal(statuses["theorem:int_push_true"], "formalized");
   assert.equal(statuses["theorem:int_e2e_fails"], "failed");
-  // The settled semantic (4.4's one recorded engine divergence, decided when
-  // the ledger became the only engine): after a failed retry restores the
-  // previous verified proof, status reports the restored file's validity —
-  // file truth — not the failed run. The failed attempt stays reachable via
-  // the job history / session link; dependents may `uses=` this target again.
-  assert.equal(statuses["theorem:int_retry_true"], "formalized");
+  assert.equal(statuses["theorem:int_retry_true"], "stale");
+});
+
+test("a checked target with an explicit review result stays needs_review", async () => {
+  const target = { targetKind: "theorem", targetLabel: "int_review", targetText: "True is true. [stub:review]" };
+  const response = await postJson(`${companionBaseUrl}/formalize`, { overleafProjectId: "itest-doc", ...target });
+  assert.equal(response.status, 200);
+  const info = await pollStatus("itest-doc", target, ["needs_review", "failed"]);
+  assert.equal(info.status, "needs_review");
+});
+
+
+test("Overleaf manual edits preserve the adapter's pinned proof history", async () => {
+  const target = {targetKind: "theorem", targetLabel: "int_manual_edit", targetText: "True is true."};
+  const identity = {overleafProjectId: "itest-manual-edit", ...target};
+  const started = await postJson(`${companionBaseUrl}/formalize`, identity);
+  assert.equal(started.status, 200);
+  assert.equal((await pollStatus(identity.overleafProjectId, target, ["formalized", "failed"])).status, "formalized");
+  const opened = await postJson(`${companionBaseUrl}/lean-pane/edit/start`, identity);
+  assert.equal(opened.status, 200);
+  const original = opened.body.content;
+  const broken = original.replace("trivial", "bad_tactic");
+  assert.notEqual(broken, original);
+  const saved = await postJson(`${companionBaseUrl}/lean-pane/edit/save`, {...identity, content: broken});
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const detail = await fetchApiSessionDetail({fetchImpl: fetch, baseUrl: adapterBaseUrl, sessionId: opened.body.leaSessionId});
+  assert.equal(detail.body.code_steps.at(-1).code, broken);
+  assert.equal(detail.body.code_steps.at(-1).check_status, "error");
+  const restored = await postJson(`${companionBaseUrl}/lean-pane/edit/save`, {...identity, content: original});
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  const history = await fetchApiSessionDetail({fetchImpl: fetch, baseUrl: adapterBaseUrl, sessionId: opened.body.leaSessionId});
+  assert.equal(history.body.code_steps.at(-1).code, original);
+  assert.equal(history.body.code_steps.at(-1).check_status, "ok");
+  assert.ok(history.body.code_steps.some(step => step.code === broken && step.check_status === "error"));
 });
