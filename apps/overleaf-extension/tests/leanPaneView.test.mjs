@@ -162,6 +162,10 @@ test("canViewPaneItemInLeaUi requires a target identity and a real run or artifa
   assert.equal(canViewPaneItemInLeaUi({ ...base, status: "missing-stub" }), false);
   assert.equal(canViewPaneItemInLeaUi({ ...base, status: "unknown" }), false);
   assert.equal(canViewPaneItemInLeaUi({ ...base, status: "error" }), false);
+  for (const status of ["needs-review", "unknown", "error", "missing-stub"]) {
+    assert.equal(canViewPaneItemInLeaUi({ ...base, status, leaSessionId: "saved-session" }), true);
+  }
+  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "needs-review", leanArtifactPath: "Target.lean" }), true);
   // Without a declaration name or label the session can't be resolved.
   assert.equal(canViewPaneItemInLeaUi({ status: "valid" }), false);
   assert.equal(canViewPaneItemInLeaUi(undefined), false);
@@ -221,7 +225,15 @@ test("paneItemActions offers best-effort continuation for an eligible source obs
   };
   const actions = paneItemActions(item);
   assert.deepEqual(actions.primary, { id: "best-effort", label: "Continue best effort" });
-  assert.deepEqual(actions.overflow, [{ id: "formalize", label: "Resume faithfully" }]);
+  assert.deepEqual(actions.overflow, [{ id: "formalize", label: "Resume faithfully" },
+    { id: "reformalize", label: "Re-formalize" }]);
+});
+
+test("a paused solver keeps Resume and separate Re-formalize when its source becomes stale", () => {
+  const actions = paneItemActions({ formalizable: true, status: "stale", label: "target",
+    leanCheck: { status: "paused", stopReason: "turn_cap" } });
+  assert.equal(actions.primary.label, "Resume");
+  assert.ok(actions.overflow.some((action) => action.id === "reformalize"));
 });
 
 test("paneItemActions suppresses state-changing actions while the item is being edited or running", () => {

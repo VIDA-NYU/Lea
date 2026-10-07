@@ -1568,6 +1568,61 @@ def _run_is_terminal(run_id: str) -> bool:
     return bool(run) and run["status"] not in {"pending", "running"}
 
 
+def _skill_resolution_task(run: dict | None, fallback: str) -> str:
+    """A checkpoint continuation retains the original skill selection."""
+    seen = set()
+    while run and run.get("resume_checkpoint_id") and run.get("resumes_run_id"):
+        if run["id"] in seen:
+            raise ValueError("Invalid checkpoint continuation lineage")
+        seen.add(run["id"])
+        run = store.get_run(run["resumes_run_id"])
+    return (_resolve_task(run) if run else None) or fallback
+
+
+def validate_continuation_runtime(old: dict, config: LeaConfig, checkpoint_id: int,
+                                  source: dict, allow_source_pause: bool) -> None:
+    """Check the same executable inputs as the driver before admitting a run.
+
+    No model or external tool is invoked. The driver checks again at dispatch,
+    since configuration may change while the run waits for capacity.
+    """
+    from lea.errors import LeaError
+    session = store.get_session(old["session_id"])
+    if not session:
+        raise ValueError("The saved formalization session is unavailable. Use Re-formalize.")
+    project = store.get_project(session["project_id"]) if session.get("project_id") else None
+    lea_root = config.lea_root or (Path(__file__).resolve().parents[2] / "prover")
+    repo = projects.repo_for_session(session, Path(lea_root) / "workspace" / "proofs", project)
+    paths, tempdir = skills_catalog.materialize_run_skills(
+        project["id"] if project else None, old["session_id"], _skill_resolution_task(old, _resolve_task(old) or ""))
+    try:
+        cfg = replace(config, model=old["model"], prompt_variant="overleaf_faithful",
+                      status_reporting=True, narrate_tool_steps=False,
+                      allow_source_pause=allow_source_pause,
+                      extra_tools=list(dict.fromkeys([*config.extra_tools, "update_lea_status"])),
+                      tools=(list(dict.fromkeys([*config.tools, "update_lea_status"])) if config.tools is not None else None))
+        if paths:
+            cfg = replace(cfg, skills=paths, skills_root=tempdir)
+        specs = store.mcp_server_specs(project["id"] if project else None, old["session_id"])
+        if specs:
+            cfg = replace(cfg, mcp_servers=specs)
+        http_tools = store.custom_tool_specs(project["id"] if project else None)
+        if http_tools:
+            cfg = replace(cfg, http_tools=http_tools)
+        roles_tempdir, skipped_roles = roles_catalog.materialize_roles()
+        if skipped_roles:
+            raise ValueError("Saved agent roles cannot be loaded. Restore the roles or use Re-formalize.")
+        if roles_tempdir:
+            cfg = replace(cfg, agent_dirs=[roles_tempdir])
+        candidate = {**old, "resumes_run_id": old["id"], "resume_checkpoint_id": checkpoint_id,
+                     "focus_source_hash": source["sourceIdentityHash"]}
+        recovery.prepare_continuation(candidate, cfg, repo, {"source_bundle": source}, "Continue")
+    except (LeaError, OSError) as exc:
+        raise ValueError("Saved agent configuration could not be loaded. Restore its tools and skills or use Re-formalize.") from exc
+    finally:
+        skills_catalog.cleanup(tempdir)
+
+
 def run_lea(context: RunnerContext) -> None:
     """Run one Lea activation, streaming normalized SSE events onto the queue.
 
@@ -1765,7 +1820,7 @@ def run_lea(context: RunnerContext) -> None:
         # a loose session can use skills too — before, `project is None` meant no skills at
         # all and there was no way to opt one in.
         skill_paths, skills_tempdir = skills_catalog.materialize_run_skills(
-            project["id"] if project else None, session_id, context.task
+            project["id"] if project else None, session_id, _skill_resolution_task(run_row, context.task)
         )
         if skill_paths:
             # H7: the materialized tree is also a READ root, so a multi-file skill's
@@ -1847,7 +1902,7 @@ def run_lea(context: RunnerContext) -> None:
         # the last Finished run, then the new user turn. A cold first run gets [].
         prior = (
             recovery.load_safe_conversation(run_row["resumes_run_id"])
-            if run_row and run_row.get("resumes_run_id") else None
+            if run_row and run_row.get("resumes_run_id") and not run_row.get("resume_checkpoint_id") else None
         ) or store.latest_transcript_for_session(session_id, exclude_run_id=run_id) or []
         # Diff-on-divergence (D12): if the human edited the proof outside a run since
         # the agent last acted, prepend their diff (+ notes) to the task so the agent
@@ -1896,7 +1951,7 @@ def run_lea(context: RunnerContext) -> None:
                           narrate_tool_steps=False,
                           prompt_variant=("overleaf_continuation" if context.purpose == "overleaf_continuation" else "overleaf_faithful"),
                           extra_tools=list(dict.fromkeys([*cfg.extra_tools, "update_lea_status"])),
-                          tools=([*cfg.tools, "update_lea_status"] if cfg.tools is not None else None))
+                          tools=(list(dict.fromkeys([*cfg.tools, "update_lea_status"])) if cfg.tools is not None else None))
         current_run = store.get_run(run_id)
         manifest_provider = lambda: recovery.manifest(run=current_run, config=cfg, repo=repo)
         resume_state = None
@@ -1912,7 +1967,38 @@ def run_lea(context: RunnerContext) -> None:
                 return
             resume_state = saved[0]
             emit(events, "status", {"status": "recovering", "message": "Recovering saved progress"})
+        elif run_row and run_row.get("resume_checkpoint_id"):
+            resume_state, changed = recovery.prepare_continuation(
+                run_row, cfg, repo, lea_status.seed(run_id), task_content)
+            current_turn = int(resume_state.get("turn", 0))
+            emit(events, "status", {"status": "resuming", "message": "Continuing saved agent state",
+                                     "turn": current_turn, "max_turns": cfg.max_turns,
+                                     "resumes_run_id": run_row["resumes_run_id"]})
+        if resume_state is not None:
+            current_turn = int(resume_state.get("turn", 0))
+            proof = resume_state.get("proof_state", {})
+            if focus_formalization_id and proof.get("latest_check_passed") is True and not proof.get("unchecked_write"):
+                # Restore matching durable evidence for both ordinary continuation
+                # and automatic recovery of that continuation. Changed source or
+                # dependencies already cleared this verification state above.
+                checked_path = _relativize(proof.get("latest_check_path") or "", repo)
+                for step in store.current_code_steps_for_formalization(focus_formalization_id, session_id=session_id):
+                    path = step.get("path")
+                    if path != checked_path or step.get("check_status") != "ok":
+                        continue
+                    try:
+                        if (repo / path).read_text() != step.get("code"):
+                            continue
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    step_id_by_path[path] = step["id"]
+                    checked_artifact_kind = step.get("artifact_kind") or _classify(step.get("code") or "")
+                    produced_clean = True
         recorder = recovery.Recorder(run_id, attempt_id, manifest_provider)
+        if resume_state is not None:
+            # Persist the rebased seed before the next paid request or tool, so
+            # subsequent automatic recovery uses this segment's own state.
+            recorder("checkpoint", resume_state)
         def should_stop_run() -> bool:
             current = store.get_run_status(run_id)
             if current and current.get("deadline_at") and datetime.fromisoformat(current["deadline_at"]) <= datetime.now(timezone.utc):

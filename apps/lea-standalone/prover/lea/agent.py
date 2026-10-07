@@ -7,6 +7,7 @@ so existing callers (CLI, eval) keep working unchanged.
 """
 
 import contextvars
+import hashlib
 import json
 import threading
 import time
@@ -265,7 +266,12 @@ def _content_text(content) -> str:
 
 def _latest_user_request(messages: list) -> str:
     for msg in reversed(messages):
+        if msg.get("mathematical_request"):
+            return json.dumps(msg["mathematical_request"], ensure_ascii=False)
         if msg.get("role") != "user" or msg.get("lea_status_context"):
+            continue
+        if msg.get("lea_continuation_context") or (isinstance(msg.get("content"), list)
+                and any(p.get("type") == "tool_result" for p in msg["content"] if isinstance(p, dict))):
             continue
         text = _content_text(msg.get("content")).strip()
         if text:
@@ -306,7 +312,8 @@ def _classify_final_result(
     This is intentionally conservative: parse failures, provider errors, or any
     non-conforming answer become needs_review, not proof success.
     """
-    request = _latest_user_request(messages)
+    source = config.status_context.get("source_bundle") if config.status_reporting else None
+    request = json.dumps(source, ensure_ascii=False) if source else _latest_user_request(messages)
     classifier_messages = [{
         "role": "user",
         "content": (
@@ -734,6 +741,10 @@ def _run_events_inner(
     if config.status_reporting:
         tools_schema = [schema for schema in tools_schema if schema["name"] != "spawn_subagent"]
         tool_handlers.pop("spawn_subagent", None)
+    tool_schema_digest = hashlib.sha256(json.dumps(tools_schema, sort_keys=True).encode()).hexdigest()
+    if (resume_state and resume_state.get("tool_schema_digest")
+            and resume_state["tool_schema_digest"] != tool_schema_digest):
+        raise ValueError("Saved agent tools are incompatible with the current runtime. Use Re-formalize to start a new attempt.")
 
     # Stateless (D16): the caller owns the transcript. Work on a private copy so we
     # never mutate the caller's list in place; the final state rides out via the
@@ -767,6 +778,7 @@ def _run_events_inner(
                       material_publication_rejected=None) -> None:
         state = {
             "stage": stage, "messages": messages, "turn": turn,
+            "tool_schema_digest": tool_schema_digest,
             "input_tokens": total_usage.input_tokens,
             "output_tokens": total_usage.output_tokens, "cost_usd": total_cost,
             "max_turns": config.max_turns, "max_cost_usd": config.max_cost_usd,

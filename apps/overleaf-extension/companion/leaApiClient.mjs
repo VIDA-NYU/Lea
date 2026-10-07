@@ -471,6 +471,17 @@ export function resolveApiApproval({ fetchImpl, baseUrl, apiKey, runId, approval
   });
 }
 
+export function startApiContinuation({ fetchImpl, baseUrl, apiKey, runId, sourceBundle,
+  idempotencyKey, timeoutSeconds, bestEffort = false, allowSourcePause = false }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/runs/${encodeURIComponent(runId)}/continue`, {
+    method: "POST",
+    headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ idempotency_key: idempotencyKey, source_bundle: sourceBundle,
+      lea_status_version: 1, timeout_seconds: Math.ceil(timeoutSeconds),
+      best_effort: bestEffort === true, allow_source_pause: allowSourcePause === true }),
+  });
+}
+
 export function interruptApiRun({ fetchImpl, baseUrl, apiKey, runId, reason = "user_stop", source = "user", signal }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/runs/${encodeURIComponent(runId)}/interrupt`, {
     method: "POST",
@@ -750,6 +761,7 @@ export async function runApiProofJob({
   timeoutMs = 900000,
   deadlineAt = null,
   existingRunId = null,
+  startResponse = null,
   idempotencyKey = null,
   settleGraceMs = 10000,
   busyRetryDelayMs = 3000,
@@ -776,7 +788,7 @@ export async function runApiProofJob({
     if (appendLog && logPath) await appendLog(logPath, line);
   };
 
-  const start = existingRunId ? { ok: true, body: { run_id: existingRunId, session_id: sessionId } } : await startApiRun({
+  const start = startResponse || (existingRunId ? { ok: true, body: { run_id: existingRunId, session_id: sessionId } } : await startApiRun({
     fetchImpl,
     baseUrl,
     apiKey,
@@ -796,7 +808,7 @@ export async function runApiProofJob({
     allowSourcePause,
     idempotencyKey,
     timeoutSeconds: timeoutMs / 1000,
-  });
+  }));
   if (!start.ok) return { ok: false, timedOut: false, error: start.error };
 
   const runId = start.body?.run_id;

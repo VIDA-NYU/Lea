@@ -4794,11 +4794,12 @@
       event.stopPropagation();
       clearLeanPaneActionError(item);
       button.disabled = true;
-      button.textContent = "Starting…";
+      button.textContent = item.status === "paused" || item.leanCheck?.status === "paused" ? "Resuming…" : "Starting…";
       try {
         await formalize({
           ...leanPaneView.paneItemToFormalizeTarget(item),
-          resume: item.leanCheck?.status === "paused",
+          resume: item.status === "paused" || item.leanCheck?.status === "paused",
+          resumeRunId: item.leaStatus?.run_id || item.apiRunId || null,
           bestEffort
         });
         clearLeanPaneActionError(item);
@@ -4836,10 +4837,16 @@
   function renderPaneItemIconAction(item, action) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "ol-lean-icon-action";
+    button.className = action.id === "view-in-lea"
+      ? "ol-lean-secondary-button ol-lean-open-chat" : "ol-lean-icon-action";
     button.title = action.label;
     button.setAttribute("aria-label", action.label);
     button.innerHTML = PANE_ICON_SVG[action.id] || "";
+    if (action.id === "view-in-lea") {
+      const label = document.createElement("span");
+      label.textContent = action.label;
+      button.appendChild(label);
+    }
     button.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -4930,17 +4937,18 @@
       openLeanPaneEdit(item);
       return;
     }
-    if (!["formalize", "best-effort", "stub"].includes(action.id)) return;
+    if (!["formalize", "reformalize", "best-effort", "stub"].includes(action.id)) return;
     clearLeanPaneActionError(item);
     if (leanPaneStatus) {
       leanPaneStatus.textContent = action.id === "stub"
         ? "Creating Lean stub..."
-        : "Starting formalization...";
+        : action.id !== "reformalize" && (item.status === "paused" || item.leanCheck?.status === "paused") ? "Resuming…" : "Starting formalization...";
     }
     try {
       const target = {
         ...leanPaneView.paneItemToFormalizeTarget(item),
-        resume: item.leanCheck?.status === "paused",
+        resume: action.id !== "reformalize" && (item.status === "paused" || item.leanCheck?.status === "paused"),
+        resumeRunId: item.leaStatus?.run_id || item.apiRunId || null,
         bestEffort: action.id === "best-effort"
       };
       await (action.id === "stub" ? stubTheorem(target) : formalize(target));
@@ -4996,6 +5004,12 @@
   // session has been recorded yet, fall back to the Lea UI itself, matching
   // the popover's base-link fallback.
   async function openLeaUiForPaneItem(item) {
+    if (item.leaSessionUrl || item.leaSessionId) {
+      const settings = await getSettings();
+      const link = getLeaSessionLink({ ...item, leaUiBaseUrl: settings.leaUiBaseUrl });
+      await openLeaSession(link);
+      return { sessionOpened: true };
+    }
     const baseUrl = await chatCompanionBaseUrl();
     const target = leanPaneView.paneItemToChatTarget(item, itemsProjectId(lastLeanPaneManifest?.items || []));
     const response = await fetch(`${baseUrl}/lean-pane/chat/session`, {
@@ -5616,7 +5630,7 @@
       return;
     }
     const disabled = currentStatus === "in_progress" || isExtensionContextInvalidated();
-    const actionSpecs = actionSpecsForStatus(actionStatus, target);
+    const actionSpecs = actionSpecsForStatus(actionStatus, target, statusInfo);
     for (const spec of actionSpecs) {
       const button = document.createElement("button");
       button.type = "button";
@@ -5642,7 +5656,7 @@
         } catch (error) {
           renderPopoverActionError(status, error);
           const latestStatus = latestStatuses[targetKey(target)] || { status: currentStatus };
-          renderTargetActions(actions, target, latestStatus.status || currentStatus, status, leanStatement, getActionStatus(latestStatus));
+          renderTargetActions(actions, target, latestStatus.status || currentStatus, status, leanStatement, getActionStatus(latestStatus), latestStatus);
         }
       });
       actions.appendChild(button);
@@ -5809,8 +5823,17 @@
     }, 1800);
   }
 
-  function actionSpecsForStatus(status, target) {
+  function actionSpecsForStatus(status, target, statusInfo = {}) {
     const definition = isDefinitionTarget(target);
+    if (status === "paused") {
+      const specs = statusInfo.recoveryState === "review" ? [] : [{
+        role: "theorem-action", label: "Resume", primary: true, pendingText: "Resuming…",
+        run: (current) => formalize({ ...current, resume: true,
+          resumeRunId: statusInfo.leaStatus?.run_id || statusInfo.apiRunId || null })
+      }];
+      return [...specs, { role: "theorem-reformalize-action", label: "Re-formalize",
+        primary: specs.length === 0, pendingText: "Starting Lea...", run: formalize }];
+    }
     if (status === "unformalized") {
       const specs = [{
         role: "target-action",
@@ -6400,9 +6423,41 @@
     };
   }
 
+  async function currentResumeTarget(target) {
+    const { parseTargets } = await import(chrome.runtime.getURL("targetParserCore.mjs"));
+    const path = normalizeDocPath(target.sourceFile || latestActiveTexPath);
+    const file = [...(lastMirrorFiles || []), ...(lastLeanPaneFiles || [])]
+      .find((candidate) => normalizeDocPath(candidate.path) === path);
+    const content = path === normalizeDocPath(latestActiveTexPath) ? latestActiveTex : file?.content;
+    let parsed = parseTargets(content || "", { sourcePath: path });
+    if (parsed.some((candidate) => candidate.labelSource === "generated"
+      || candidate.targetUses.some((use) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(use)))) {
+      const settings = await getSettings();
+      const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
+      const response = await fetch(`${baseUrl}/targets/resolve`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(), sourceFile: path,
+          source: content, files: lastLeanPaneFiles || [] })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw companionRequestError(response, payload);
+      parsed = payload.targets || [];
+    }
+    const matches = parsed.filter((candidate) =>
+      candidate.targetKind === target.targetKind && (candidate.targetLabel === target.targetLabel
+        || (target.labelSource === "generated" && candidate.labelSource === "generated"
+          && target.latexLabel && candidate.latexLabel === target.latexLabel)));
+    if (matches.length !== 1) throw new Error("The paused target cannot be identified in the current source. Refresh the pane before resuming.");
+    const current = matches[0];
+    return { ...target, ...current, targetLabel: target.targetLabel, sourceFile: path,
+      sourceStartLine: String(content).slice(0, current.from).split("\n").length,
+      sourceEndLine: String(content).slice(0, current.to).split("\n").length };
+  }
+
   async function formalize(target) {
     // A run must never begin against a mirror that failed to accept the live buffer.
     const mirrorResult = await syncTexMirrorNow({ force: true });
+    if (target.resume === true) target = await currentResumeTarget(target);
     const sourceContext = await buildFormalizationSourceContext(target, {
       verifyMirror: mirrorResult?.disabled !== true,
       mirrorSnapshot: mirrorResult
@@ -6426,6 +6481,7 @@
         projectNamespace: lastProjectIdentity?.namespace || "",
         sourceHash: await sha256(normalizeTargetText(target.targetText)),
         resume: target.resume === true,
+        resumeRunId: target.resumeRunId || null,
         bestEffort: target.bestEffort === true,
         ...sourceContext
       })
@@ -6482,7 +6538,8 @@
     const projectName = lastProjectIdentity?.projectName || guessProjectName(lastLeanPaneFiles || []);
     const projectNamespace = lastProjectIdentity?.namespace || "";
     return Promise.all(items.map(async (item) => {
-      const target = leanPaneView.paneItemToFormalizeTarget(item);
+      let target = leanPaneView.paneItemToFormalizeTarget(item);
+      if (item.status === "paused" || item.leanCheck?.status === "paused") target = await currentResumeTarget(target);
       const sourceContext = await buildFormalizationSourceContext(target, { verifyMirror, mirrorSnapshot });
       return {
         overleafProjectId,
@@ -7246,6 +7303,7 @@
 
   function getActionStatus(statusInfo) {
     if (statusInfo?.status === "needs_review") return "needs_review";
+    if (statusInfo?.status === "paused") return "paused";
     if (statusInfo?.sourceFreshness === "stale") {
       return "stale";
     }

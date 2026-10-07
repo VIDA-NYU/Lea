@@ -95,6 +95,7 @@ import {
   pushProjectBySlug,
   putAdapterSettings,
   runApiProofJob,
+  startApiContinuation,
   runApiSessionLeanCheck,
   rebuildApiSessionModule,
   setProjectRemoteBySlug,
@@ -322,7 +323,7 @@ export async function recoverInterruptedJobs(state) {
       job.recoveryState = row?.recovery_state || null;
       job.recoveryReason = row?.recovery_reason || null;
       job.deadlineAt = row?.deadline_at || job.deadlineAt || null;
-    } else if (!job.requestPrompt) {
+    } else if (!job.requestPrompt && !job.continuationRequest) {
       job.connectionState = "review";
       job.recoveryReason = "The companion has no adapter run identity or saved request to reconcile.";
       job.status = "paused";
@@ -467,6 +468,18 @@ export async function handleGetStatuses(payload, state) {
 }
 
 export async function handleFormalize(payload, state, { batch = false } = {}) {
+  // Serialize admission for a target; two clicks can otherwise both pass the
+  // active-job check while source/settings lookups are awaiting the adapter.
+  state.formalizationStarts ||= new Map();
+  const key = `${payload?.overleafProjectId}:${payload?.targetKind}:${payload?.targetLabel}`;
+  const previous = state.formalizationStarts.get(key) || Promise.resolve();
+  const request = previous.catch(() => {}).then(() => handleFormalizeUnlocked(payload, state, { batch }));
+  state.formalizationStarts.set(key, request);
+  try { return await request; }
+  finally { if (state.formalizationStarts.get(key) === request) state.formalizationStarts.delete(key); }
+}
+
+async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
   const validation = validateTargetPayload(payload);
   if (!validation.ok) {
     return errorResponse(400, validation.error, validation.message);
@@ -501,7 +514,10 @@ export async function handleFormalize(payload, state, { batch = false } = {}) {
   // honored on this run.
   await syncSharedSettingsFromAdapter(state);
 
-  const leaValidation = validateLeaRuntime(state, { requireApiKey: true });
+  const savedTargetJob = findLatestFinishedJob(state.jobs || {}, `${overleafProjectId}:${targetKind}:${targetLabel}`);
+  const continuingSavedRun = payload.resume === true || (batch && savedTargetJob?.status === "paused");
+  const leaValidation = validateLeaRuntime(state, { requireApiKey: true,
+    modelId: continuingSavedRun ? savedTargetJob?.leaModel : null });
   if (!leaValidation.ok) {
     return errorResponse(400, leaValidation.error, leaValidation.message);
   }
@@ -588,6 +604,65 @@ export async function handleFormalize(payload, state, { batch = false } = {}) {
   });
   if (!usesResolution.ok) {
     return errorResponse(400, usesResolution.error, usesResolution.message);
+  }
+
+  if (resume) {
+    if (payload.resumeRunId && payload.resumeRunId !== previousJob?.apiRunId) {
+      return errorResponse(409, "stale_resume_target", "The paused run changed. Refresh the pane before resuming.");
+    }
+    if (previousJob?.status !== "paused" || !previousJob.apiRunId || previousJob.settling) {
+      return errorResponse(409, "checkpoint_unavailable", "Saved agent state is unavailable or still settling. Refresh the pane, or use Re-formalize to start a new attempt.");
+    }
+    const job = await createLeaJob({ state, target, targetText, targetContext, targetSyntax, labelSource,
+      latexLabel, sourceContext: { ...sourceContext, mirrorRevision: mirrorValidation.mirrorRevision || null },
+      sourceUses: targetUses, resolvedUses: usesResolution.resolvedUses, bestEffort,
+      allowSourcePause: !batch && state.settings.leaPauseOnSourceIssue === true });
+    job.resumed = true;
+    job.resumesRunId = previousJob.apiRunId;
+    job.leaSessionId = previousJob.leaSessionId || job.leaSessionId;
+    job.formalizationId = previousJob.formalizationId || job.formalizationId;
+    job.recordedProofPath = previousJob.recordedProofPath || null;
+    job.declarationName = previousJob.declarationName || job.declarationName;
+    job.leaModel = previousJob.leaModel || job.leaModel;
+    job.leaProvider = previousJob.leaProvider || job.leaProvider;
+    job.retryCleanup = { removedProofPaths: [], removedProjectEntries: [] };
+    job.continuationRequest = { runId: previousJob.apiRunId, sourceBundle: job.sourceBundle,
+      idempotencyKey: `continue:${previousJob.apiRunId}`, timeoutSeconds: job.leaJobTimeoutSeconds,
+      bestEffort, allowSourcePause: job.allowSourcePause };
+    state.jobs[job.jobId] = job;
+    await persistJobs(state);
+    const admission = await startApiContinuation({ fetchImpl: state.fetchImpl || fetch,
+      baseUrl: job.leaApiBaseUrl, apiKey: state.env?.LEA_API_KEY, ...job.continuationRequest });
+    if (!admission.ok && admission.status != null) {
+      delete state.jobs[job.jobId];
+      await persistJobs(state);
+      const message = admission.status === 404
+        ? "Exact continuation is unavailable: the saved run or checkpoint-continuation endpoint was not found. Restart the updated adapter, or use Re-formalize."
+        : admission.error;
+      return errorResponse(admission.status, "checkpoint_continuation_rejected", message);
+    }
+    if (admission.ok) {
+      job.continuationAdmission = admission;
+      job.apiRunId = admission.body.run_id;
+      job.deadlineAt = admission.body.deadline_at;
+      job.leaMaxTurns = admission.body.max_turns ?? null;
+      job.leaCurrentTurn = admission.body.saved_turn || 0;
+      job.leaSessionId = admission.body.session_id || job.leaSessionId;
+      job.leaModel = admission.body.model || job.leaModel;
+      await persistJobs(state);
+    } else {
+      job.connectionState = "adapter_unavailable";
+      await persistJobs(state);
+    }
+    // A continuation never constructs or sends a new formalization prompt.
+    runLeaJob({ state, job, target, targetText, targetContext, sourceContext: job.sourceContext,
+      resolvedUses: usesResolution.resolvedUses }).catch(async (error) => {
+      job.status = "failed";
+      job.error = error instanceof Error ? error.message : String(error);
+      job.finishedAt = new Date().toISOString();
+      await persistJobs(state);
+    });
+    return { statusCode: 200, body: buildJobResponse({ job, status: "in_progress", target }) };
   }
 
   // Self-repair Phase 1: when this target already has a recorded artifact
@@ -1251,7 +1326,7 @@ function normalizeGithubImportTargets(overleafProjectId, targets) {
         kind: targetKind,
         display_title: String(target?.displayTitle || declarationName),
         statement: String(target?.statement || "") || null,
-        source_hash: String(target?.sourceHash || "") || null,
+        source_hash: String(target?.sourceBundle?.sourceIdentityHash || target?.sourceHash || "") || null,
         source_bundle: target?.sourceBundle && typeof target.sourceBundle === "object"
           ? target.sourceBundle
           : null,
@@ -1439,7 +1514,11 @@ export async function handleLeanPaneManifest(payload, state) {
             declarationName: item?.leanDeclarationName || item?.label || "",
             displayTitle: item?.leanDeclarationName || item?.label || "",
             statement: item?.naturalLanguageLatex || "",
-            sourceHash: item?.sourceHash || "",
+            // Runs and artifacts store this identity, including uses/context
+            // and proof association. A statement-only hash would falsely make
+            // every completed artifact stale as soon as the pane refreshed.
+            sourceHash: item?.formalizationInputHash || item?.sourceHash || "",
+            sourceBundle: item?.sourceBundle,
           })),
         ),
       });
@@ -5379,7 +5458,7 @@ async function resolveTheoremUses({ state, leaRepoPath, overleafProjectId, proje
   return { ok: true, resolvedUses };
 }
 
-function validateLeaRuntime(state, { requireApiKey }) {
+function validateLeaRuntime(state, { requireApiKey, modelId = null }) {
   if (!state.settings.leaRepoPath || !path.isAbsolute(state.settings.leaRepoPath)) {
     return { ok: false, error: "lea_unconfigured", message: "Configure an absolute Lea repo path first." };
   }
@@ -5395,7 +5474,7 @@ function validateLeaRuntime(state, { requireApiKey }) {
   } catch {
     return { ok: false, error: "invalid_lea_api_url", message: "Lea API base URL must be an absolute http(s) URL." };
   }
-  const model = normalizeLeaModelId(state.settings.leaModel || DEFAULT_LEA_MODEL).trim();
+  const model = normalizeLeaModelId(modelId || state.settings.leaModel || DEFAULT_LEA_MODEL).trim();
   if (!model) {
     return { ok: false, error: "invalid_lea_model", message: "Lea model must not be empty." };
   }
@@ -5726,11 +5805,31 @@ async function removeProjectTheoremEntries({ projectMarkdownPath, retiredProofPa
 // `exit` contract ({ ok, timedOut, apiRunId, error, usage, costUsd }) the rest of
 // the orchestration consumes.
 async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null, existingRunId = null }) {
+  let startResponse = null;
+  if (!existingRunId && job.continuationRequest) {
+    // Retry an unknown admission outcome with its persisted request identity.
+    // It may already be executing; never fall back to POST /api/runs.
+    for (;;) {
+      startResponse = job.continuationAdmission || await startApiContinuation({
+        fetchImpl: state.fetchImpl || fetch, baseUrl: job.leaApiBaseUrl,
+        apiKey: state.env?.LEA_API_KEY, ...job.continuationRequest });
+      if (startResponse.ok || startResponse.status != null) break;
+      job.connectionState = "adapter_unavailable";
+      await persistJobs(state);
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+    if (startResponse.ok) {
+      job.continuationAdmission = startResponse;
+      job.leaMaxTurns = startResponse.body.max_turns ?? null;
+    }
+  }
   if (!existingRunId) {
     job.requestPrompt = prompt;
     await persistJobs(state);
   }
-  await appendLog(job.logPath, `$ POST ${job.leaApiBaseUrl}/api/runs\n\n${prompt}\n\n`);
+  await appendLog(job.logPath, job.continuationRequest
+    ? `[backend] Continue saved agent state from ${job.resumesRunId}\n`
+    : `$ POST ${job.leaApiBaseUrl}/api/runs\n\n${prompt}\n\n`);
   const exit = await runApiProofJob({
     fetchImpl: state.fetchImpl || fetch,
     baseUrl: job.leaApiBaseUrl,
@@ -5741,6 +5840,7 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
     timeoutMs: job.leaJobTimeoutSeconds * 1000,
     deadlineAt: job.deadlineAt || null,
     existingRunId,
+    startResponse,
     idempotencyKey: job.jobId,
     autoApprove: true,
     projectSlug: target.projectSlug || null,
@@ -5780,6 +5880,7 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
       job.usage = null;
       job.costUsd = null;
       job.leaSessionId = sessionId || job.leaSessionId || null;
+      job.leaModel = startBody.model || job.leaModel;
       job.projectNamespace = startBody.project_namespace || job.projectNamespace || null;
       job.projectSlug = startBody.project_slug || job.projectSlug || target.projectSlug;
       job.adapterProjectId = startBody.project_id || job.adapterProjectId || null;
@@ -6213,7 +6314,7 @@ async function runLeaJob({
   existingRunId = null,
   promptOverride = null
 }) {
-  const prompt = promptOverride || buildLeaPrompt({
+  const prompt = job.continuationRequest ? "" : promptOverride || buildLeaPrompt({
     targetKind: target.targetKind,
     projectSlug: target.projectSlug,
     projectName: target.projectName,
@@ -7678,6 +7779,7 @@ function mapLeanPaneStatus(statusInfo, item) {
   if (status === "formalized") return item?.leanKind === "def" ? "defined" : "valid";
   if (status === "disproved") return "disproved";
   if (status === "needs_review") return "needs-review";
+  if (status === "stale") return "stale";
   if (status === "failed") return "invalid";
   if (status === "in_progress") return "in-progress";
   if (status === "paused") return "paused";

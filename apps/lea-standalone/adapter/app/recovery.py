@@ -7,8 +7,10 @@ activation: no paid request or tool is allowed to follow an unrecorded intent.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +48,40 @@ def _file_fingerprint(path: Path) -> str | None:
         return None
 
 
+def _dependency_fingerprints(repo: Path) -> dict:
+    """Record the enclosing Lake configuration and installed package revisions."""
+    root = next((p for p in [repo, *repo.parents]
+                 if (p / "lakefile.lean").exists() or (p / "lakefile.toml").exists()), None)
+    if root is None:
+        return {}
+    values = {name: _file_fingerprint(root / name) for name in
+              ("lakefile.lean", "lakefile.toml", "lake-manifest.json", "lean-toolchain")}
+    for packages in (root / ".lake/packages", root / "lake-packages"):
+        if not packages.is_dir():
+            continue
+        for package in sorted(packages.iterdir()):
+            gitdir = package / ".git"
+            if gitdir.is_file():
+                entry = gitdir.read_text().strip()
+                if entry.startswith("gitdir: "):
+                    gitdir = (package / entry[8:]).resolve()
+            head = gitdir / "HEAD"
+            values[f"{package.name}:HEAD"] = _file_fingerprint(head)
+            if head.exists():
+                ref = head.read_text().strip()
+                if ref.startswith("ref: "):
+                    values[f"{package.name}:revision"] = _file_fingerprint(gitdir / ref[5:])
+                    values[f"{package.name}:packed-refs"] = _file_fingerprint(gitdir / "packed-refs")
+    # Sibling proof modules share this Lake project and may be imported by the
+    # target. Their content is outside the target's own Git repository.
+    proofs = root / "proofs"
+    if proofs.is_dir():
+        for path in sorted(proofs.rglob("*.lean")):
+            if not path.is_relative_to(repo):
+                values[str(path.relative_to(root))] = _file_fingerprint(path)
+    return values
+
+
 def manifest(*, run: dict, config, repo: Path) -> dict:
     """Bind a checkpoint to inputs whose changes can alter a resumed action."""
     settings = asdict(config)
@@ -71,6 +107,30 @@ def manifest(*, run: dict, config, repo: Path) -> dict:
     from lea import agent, mcp, registry, tools
     tool_code = [_file_fingerprint(Path(module.__file__))
                  for module in (agent, tools, registry, mcp)]
+    tool_modules = {}
+    for name in config.tool_modules:
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ValueError):
+            spec = None
+        tool_modules[name] = _file_fingerprint(Path(spec.origin)) if spec and spec.origin else None
+    # Allowances and source revisions can change on an explicit continuation;
+    # executable configuration must still match the saved agent.
+    execution_settings = {k: v for k, v in settings.items() if k not in {
+        "max_turns", "max_cost_usd", "max_spend_usd", "allow_source_pause",
+    }}
+    session = store.get_session(run["session_id"]) or {}
+    project = store.get_project(session["project_id"]) if session.get("project_id") else None
+    prompt = agent.load_system_prompt(config.prompt_variant, config.skills, workspace=str(repo),
+                                     namespace=project.get("namespace") if project else None)
+    # Per-run materialization paths change even when skill contents do not.
+    if config.skills_root:
+        prompt = prompt.replace(str(config.skills_root), "<skills-root>")
+    skill_resources = {}
+    if config.skills_root:
+        root = Path(config.skills_root)
+        skill_resources = {str(p.relative_to(root)): _file_fingerprint(p)
+                           for p in sorted(root.rglob("*")) if p.is_file()}
     return {
         "schema": SCHEMA_VERSION,
         "session_id": run["session_id"],
@@ -78,11 +138,99 @@ def manifest(*, run: dict, config, repo: Path) -> dict:
         "source_hash": run.get("focus_source_hash"),
         "model": run.get("model"),
         "config_digest": _digest(settings),
+        "execution_digest": _digest(execution_settings),
+        "prompt_digest": _digest(prompt),
         "skill_digests": [_file_fingerprint(Path(p)) for p in skill_paths],
+        "skill_resource_digests": skill_resources,
         "role_digests": sorted(role_contents),
         "tool_code_digests": tool_code,
+        "tool_module_digests": tool_modules,
         "files": files,
+        "dependencies": _dependency_fingerprints(repo),
     }
+
+
+def continuation_checkpoint(run_id: str, checkpoint_id: int | None = None) -> tuple[dict, dict, int]:
+    """Ordinary pauses resume only a complete, durably journaled turn."""
+    with db.connect() as conn:
+        row = conn.execute("""select * from run_checkpoints where run_id = ?
+                              and (? is null or id = ?) order by id desc limit 1""",
+                           (run_id, checkpoint_id, checkpoint_id)).fetchone()
+        if not row or row["schema_version"] != SCHEMA_VERSION:
+            raise ValueError("Saved agent state is unavailable. Use Re-formalize to start a new attempt.")
+        try:
+            state = json.loads(row["payload"])
+            saved_manifest = json.loads(row["manifest"])
+        except (ValueError, TypeError) as exc:
+            raise ValueError("Saved agent state is unreadable. Use Re-formalize to start a new attempt.") from exc
+        if (not isinstance(state, dict) or not isinstance(saved_manifest, dict)
+                or not isinstance(saved_manifest.get("files", {}), dict)
+                or not isinstance(state.get("status_context", {}), dict)
+                or not isinstance(state.get("proof_state", {}), dict)):
+            raise ValueError("Saved checkpoint format is incompatible. Use Re-formalize to start a new attempt.")
+        if (state.get("stage") != "turn_boundary" or not isinstance(state.get("messages"), list)
+                or type(state.get("turn")) is not int or state["turn"] < 0
+                or any(not isinstance(m, dict) for m in state["messages"])):
+            raise ValueError("The saved execution point is not a complete turn. Review interrupted work before continuing.")
+        uncertain = conn.execute("""select id from run_invocations where run_id = ?
+            and (completed_at is null or completed_at > ?) limit 1""", (run_id, row["created_at"])).fetchone()
+        if uncertain:
+            raise ValueError("An action may have completed outside the saved state. Review interrupted work before continuing.")
+    return state, saved_manifest, row["id"]
+
+
+def prepare_continuation(run: dict, config, repo: Path, status_context: dict, task: str) -> tuple[dict, bool]:
+    """Rebase a pinned execution snapshot into a new accounting segment."""
+    saved, old_manifest, _ = continuation_checkpoint(run["resumes_run_id"], run["resume_checkpoint_id"])
+    current = manifest(run=run, config=config, repo=repo)
+    keys = ("schema", "session_id", "target_id", "model", "skill_digests", "role_digests", "tool_code_digests")
+    compatible = all(old_manifest.get(k) == current.get(k) for k in keys)
+    if "execution_digest" in old_manifest:
+        compatible = compatible and all(old_manifest.get(k) == current.get(k) for k in ("execution_digest", "prompt_digest"))
+        compatible = compatible and old_manifest.get("skill_resource_digests", {}) == current["skill_resource_digests"]
+        compatible = compatible and old_manifest.get("tool_module_digests", {}) == current["tool_module_digests"]
+    else:
+        # Legacy snapshots can be resumed only when their original configuration
+        # is still reproducible. Never treat an absent digest as a match.
+        from dataclasses import replace
+        original = replace(config, max_turns=saved.get("max_turns"), max_cost_usd=saved.get("max_cost_usd"))
+        compatible = compatible and old_manifest.get("config_digest") == manifest(run=run, config=original, repo=repo)["config_digest"]
+    if config.mcp_servers and not saved.get("tool_schema_digest"):
+        compatible = False
+    if not compatible:
+        raise ValueError("Saved agent configuration is incompatible with the current runtime. Use Re-formalize to start a new attempt.")
+    state = deepcopy(saved)
+    changed_files = sorted(k for k in old_manifest.get("files", {}).keys() | current["files"].keys()
+                           if old_manifest.get("files", {}).get(k) != current["files"].get(k))
+    source_changed = old_manifest.get("source_hash") != current.get("source_hash")
+    previous_source = saved.get("status_context", {}).get("source_bundle", {})
+    new_source = status_context.get("source_bundle", {})
+    source_changes = {k: {"before": previous_source.get(k), "after": new_source.get(k)}
+                      for k in ("statement", "proof", "uses", "context", "proofAssociation", "relevantSource")
+                      if previous_source.get(k) != new_source.get(k)}
+    dependencies_changed = old_manifest.get("dependencies", {}) != current["dependencies"]
+    changed = source_changed or bool(changed_files) or bool(source_changes) or dependencies_changed
+    state.update(input_tokens=0, output_tokens=0, cost_usd=0.0, reporting_stop=None,
+                 max_turns=config.max_turns, max_cost_usd=config.max_cost_usd,
+                 status_context=deepcopy(status_context))
+    state["status_context"]["instruction"] = status_context.get("instruction", "") + (
+        " This continuation has explicit best-effort authorization for disclosed conventional inferred context; "
+        "explicit source text remains authoritative."
+        if run.get("continuation_best_effort") else
+        " Continue faithfully. Best-effort permission from earlier segments does not apply to this continuation.")
+    if not source_changed and saved.get("status_context", {}).get("assessment"):
+        state["status_context"]["assessment"] = saved["status_context"]["assessment"]
+    if changed and state.get("proof_state"):
+        state["proof_state"].update(unchecked_write=True, latest_check_passed=None)
+    state["messages"] = [m for m in state["messages"] if not m.get("lea_status_context")]
+    state["messages"].append({"role": "user", "lea_continuation_context": True,
+        "mathematical_request": status_context.get("source_bundle"),
+        "content": task + "\n\nSource revision changed: " + str(source_changed)
+            + ". Changed project files: " + json.dumps(changed_files)
+            + ". Dependency revision changed: " + str(dependencies_changed)
+            + ". Source changes: " + json.dumps(source_changes, ensure_ascii=False)
+            + ". Reassess affected work against the current source; earlier findings remain prior evidence."})
+    return state, changed
 
 
 def start_attempt(run_id: str) -> str:

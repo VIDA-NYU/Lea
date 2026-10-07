@@ -748,6 +748,23 @@ def project_artifacts_by_slug(slug: str) -> dict:
 _TARGET_STATUS_CONTENT_CAP = 64 * 1024
 
 
+def _shared_artifact(project_id: str, proof_path: str, content: str, owners: list[dict]) -> bool:
+    from ..artifacts import has_unrelated_declarations
+    from ..db import connect
+
+    # Explicitly linked targets remain separate owners even when one happens
+    # to be declared inside another definition's namespace.
+    with connect() as conn:
+        linked = conn.execute(
+            """select count(distinct f.id) from formalization_files ff
+               join formalizations f on f.id = ff.formalization_id
+               where f.project_id = ? and ff.path = ?""",
+            (project_id, proof_path),
+        ).fetchone()[0]
+    owner_name = owners[0]["declaration_name"] if len(owners) == 1 else None
+    return len(owners) > 1 or linked > 1 or has_unrelated_declarations(content, owner_name)
+
+
 @router.get("/api/projects/by-slug/{slug}/target-status")
 def project_target_status_by_slug(slug: str, declarations: str = "", formalization_ids: str = "") -> dict:
     """Ledger-side target evidence (PLAN-system-hardening 4.4): for each named
@@ -816,9 +833,9 @@ def project_target_status_by_slug(slug: str, declarations: str = "", formalizati
                 content = absolute.read_text()
             except OSError:
                 exists = False
-        shared_file = exists and (
-            sum(candidate["path"] == proof_path for candidate in rows.values()) > 1
-            or len(artifacts_service.scan_lean_declarations(content)) > 1
+        shared_file = exists and _shared_artifact(
+            project["id"], proof_path, content,
+            [candidate for candidate in rows.values() if candidate["path"] == proof_path],
         )
         check = store.latest_check_for_project_path(project["id"], proof_path) if proof_path else None
         current_step = None
@@ -947,20 +964,17 @@ def retire_project_artifact_by_slug(slug: str, request: ArtifactRetireRequest) -
             status_code=422,
             detail="That path is not a recorded proof artifact for this project.",
         )
-    # Retirement deletes a file, while the artifact index is keyed by
-    # declaration. A file may contain several declarations (including ones
-    # the index has not seen yet), so never retire it for a single retry.
-    from .. import artifacts as artifacts_service
-
+    # A definition may include its own namespace helpers. Separate target
+    # owners or unrelated declarations still prevent a whole-file retry.
     owners = [
         row for row in store.list_artifacts_for_scope(project["id"])
         if row["path"] == rel
     ]
     try:
-        declarations = artifacts_service.scan_lean_declarations(absolute.read_text())
+        shared = _shared_artifact(project["id"], rel, absolute.read_text(), owners)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Could not inspect {rel}: {exc}") from exc
-    if len(owners) > 1 or len(declarations) > 1:
+    if shared:
         raise HTTPException(
             status_code=409,
             detail="This Lean file contains multiple declarations; it cannot be retired for one formalization.",

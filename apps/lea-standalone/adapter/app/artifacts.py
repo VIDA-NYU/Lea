@@ -198,6 +198,26 @@ def scan_lean_declarations(code: str) -> list[LeanDeclaration]:
     return result
 
 
+def has_unrelated_declarations(code: str, owner_name: str | None) -> bool:
+    """A definition's namespace helpers belong to its artifact, not other targets.
+
+    Keep multi-target files protected. Only a uniquely named definition with
+    every other declaration inside its own namespace forms one bundled target.
+    """
+    declarations = scan_lean_declarations(code)
+    if len(declarations) <= 1:
+        return False
+    owners = [decl for decl in declarations if (
+        decl.full_name == owner_name if owner_name and "." in owner_name
+        else decl.short_name == owner_name
+    )]
+    if len(owners) != 1 or owners[0].kind != "definition":
+        return True
+    owner = owners[0]
+    return any(decl != owner and not decl.full_name.startswith(owner.full_name + ".")
+               for decl in declarations)
+
+
 def extract_declaration_name(code: str | None) -> str | None:
     """The first top-level declaration's name, or None.
 

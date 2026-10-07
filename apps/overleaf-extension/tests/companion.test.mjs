@@ -624,6 +624,43 @@ test("lean pane manifest returns missing-stub items without artifacts", async ()
   assert.equal(res.body.items[0].leanDeclarationName, "compactness_criterion");
 });
 
+test("lean pane refresh syncs the source identity and preserves a stale artifact's passing Lean check", async () => {
+  const leaRepo = await makeLeaRepo();
+  const files = [{ path: "main.tex", content: [
+    "\\begin{definition}", "% lea: define label=CapacityEncoding",
+    "A finite binary encoding.", "\\end{definition}"
+  ].join("\n") }];
+  const item = buildLeanPaneManifest({ overleafProjectId: "project-1", files }).items[0];
+  let syncedHash;
+  let syncedBundle;
+  const adapterFetch = makeAdapterApiFetch([], { targetStatus: {
+    CapacityEncoding: ledgerEntry("CapacityEncoding", {
+      kind: "definition", validity_status: "stale", session_id: "saved-session",
+      content: "structure CapacityEncoding where\n  size : Nat\n",
+      validity_reason: "The source statement changed after this artifact was recorded."
+    })
+  } });
+  const state = await makeState({ leaRepoPath: leaRepo, fetchImpl: async (url, options = {}) => {
+    if (String(url).endsWith("/identity")) return jsonResponse(200, {
+      project_id: "adapter-project-1", slug: "project-1", title: "Project1", namespace: "Lea.Project1"
+    });
+    if (String(url).endsWith("/formalizations/sync")) {
+      const target = JSON.parse(options.body).targets[0];
+      syncedHash = target.source_hash;
+      syncedBundle = target.source_bundle;
+      return jsonResponse(200, { targets: [] });
+    }
+    return adapterFetch(url, options);
+  } });
+  const result = await handleLeanPaneManifest({ overleafProjectId: "project-1", files }, state);
+  assert.notEqual(item.sourceHash, item.formalizationInputHash);
+  assert.equal(syncedHash, item.formalizationInputHash);
+  assert.equal(syncedBundle.sourceIdentityHash, item.formalizationInputHash);
+  assert.equal(result.body.items[0].status, "stale");
+  assert.equal(result.body.items[0].leanCheck.status, "checked");
+  assert.equal(result.body.items[0].leaSessionId, "saved-session");
+});
+
 test("lean pane manifest preserves a terminal max-spend failure for item-level feedback", async () => {
   const leaRepo = await makeLeaRepo();
   const state = await makeState({ leaRepoPath: leaRepo });
@@ -3792,7 +3829,7 @@ test("formalize all resumes a paused proof without retiring its partial artifact
     leaRepoPath: leaRepo,
     env: { OPENAI_API_KEY: "test-key" },
     fetchImpl: async (url, options) => {
-      if (String(url).endsWith("/api/runs") && options?.method === "POST") {
+      if (String(url).endsWith("/continue") && options?.method === "POST") {
         contentAtRunStart = await fs.readFile(path.join(leaRepo, proofPath), "utf8");
       }
       return adapterFetch(url, options);
@@ -3800,6 +3837,7 @@ test("formalize all resumes a paused proof without retiring its partial artifact
   });
   state.jobs.paused_target = {
     jobId: "paused_target",
+    apiRunId: "paused-api-run",
     jobKey: "project-1:theorem:paused_target",
     status: "paused",
     targetKind: "theorem",
@@ -3819,9 +3857,10 @@ test("formalize all resumes a paused proof without retiring its partial artifact
   assert.equal(result.statusCode, 200);
   await waitFor(() => state.repairBatches[result.body.batchId].done);
   const resumedJob = Object.values(state.jobs).find((job) => job.jobId !== "paused_target");
-  const runCall = calls.find((call) => String(call.url).endsWith("/api/runs") && call.options?.method === "POST");
+  const runCall = calls.find((call) => String(call.url).endsWith("/paused-api-run/continue") && call.options?.method === "POST");
   assert.ok(runCall);
-  assert.equal(runCall.body.session_id, "sess-paused");
+  assert.equal(resumedJob.leaSessionId, "sess-paused");
+  assert.ok(!calls.some((call) => String(call.url).endsWith("/api/runs")));
   assert.equal(resumedJob.resumed, true);
   assert.deepEqual(resumedJob.retryCleanup.removedProofPaths, []);
   assert.equal(contentAtRunStart, partial);
@@ -3861,6 +3900,7 @@ test("formalize all resumes an item that pauses while waiting in the queue", asy
     await waitFor(() => firstRunWaiting);
     state.jobs.queued_pause = {
       jobId: "queued_pause",
+      apiRunId: "queued-paused-run",
       jobKey: "project-1:theorem:queued_target",
       status: "paused",
       targetKind: "theorem",
@@ -3876,10 +3916,10 @@ test("formalize all resumes an item that pauses while waiting in the queue", asy
 
   await waitFor(() => state.repairBatches[result.body.batchId].done);
   const resumedJob = Object.values(state.jobs).find((job) => job.targetLabel === "queued_target" && job.jobId !== "queued_pause");
-  const queuedRun = calls.find((call) => String(call.url).endsWith("/api/runs")
-    && call.options?.method === "POST" && call.body.message.includes("labeled queued_target"));
+  const queuedRun = calls.find((call) => String(call.url).endsWith("/queued-paused-run/continue")
+    && call.options?.method === "POST");
   assert.ok(queuedRun);
-  assert.equal(queuedRun.body.session_id, "sess-paused");
+  assert.equal(resumedJob.leaSessionId, "sess-paused");
   assert.equal(resumedJob.resumed, true);
 });
 
@@ -4614,6 +4654,12 @@ function makeAdapterApiFetch(calls, options = {}) {
     if (String(url).endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, independent_checks: false, source_pause_policy: 1 } } });
     const body = requestOptions.body ? JSON.parse(requestOptions.body) : null;
     calls.push({ url, options: requestOptions, body });
+    if (String(url).endsWith("/continue") && requestOptions.method === "POST") {
+      return jsonResponse(200, { session_id: options.sessionId || "sess-api-1",
+        run_id: options.runId || "api-run-1", focus_formalization_id: "formalization-1",
+        project_namespace: options.projectNamespace || "Lea.Project1", saved_turn: 20, max_turns: 40,
+        deadline_at: new Date(Date.now() + 900000).toISOString() });
+    }
     if (String(url).endsWith("/api/runs") && requestOptions.method === "POST") {
       return jsonResponse(200, {
         session_id: options.sessionId || "sess-api-1",
@@ -4678,6 +4724,113 @@ function makeAdapterApiFetch(calls, options = {}) {
     throw new Error(`unexpected adapter fetch: ${url}`);
   };
 }
+
+async function pausedContinuationFixture(fetchOverride) {
+  const calls = [];
+  const adapterFetch = makeAdapterApiFetch(calls, { sessionId: "saved-session", doneStatus: "failed" });
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(),
+    env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: fetchOverride ? (url, options) => fetchOverride(url, options, adapterFetch) : adapterFetch });
+  state.jobs.paused = { jobId: "paused", jobKey: "project-1:theorem:saved_target", status: "paused",
+    targetKind: "theorem", targetLabel: "saved_target", declarationName: "saved_target",
+    overleafProjectId: "project-1", apiRunId: "saved-run", leaSessionId: "saved-session",
+    leaModel: "saved-model", stopReason: "turn_cap", startedAt: "2026-01-01T00:00:00Z",
+    finishedAt: "2026-01-01T00:01:00Z" };
+  const payload = { overleafProjectId: "project-1", targetKind: "theorem", targetLabel: "saved_target",
+    targetText: "Current theorem.", resume: true, resumeRunId: "saved-run" };
+  return { state, calls, payload };
+}
+
+test("checkpoint Resume reports admission failure and keeps the paused attempt without a restart", async () => {
+  const { state, calls, payload } = await pausedContinuationFixture(async (url, options, adapterFetch) => {
+    if (String(url).endsWith("/continue")) {
+      calls.push({ url, options, body: JSON.parse(options.body) });
+      return jsonResponse(409, { detail: "Saved agent state is unavailable. Use Re-formalize." });
+    }
+    return adapterFetch(url, options);
+  });
+  const result = await handleFormalize(payload, state);
+  assert.equal(result.statusCode, 409);
+  assert.match(result.body.message, /Saved agent state.*Re-formalize/);
+  assert.deepEqual(Object.keys(state.jobs), ["paused"]);
+  assert.equal(state.jobs.paused.status, "paused");
+  assert.equal(calls.filter((call) => String(call.url).endsWith("/continue")).length, 1);
+  assert.ok(!calls.some((call) => String(call.url).endsWith("/api/runs") || String(call.url).endsWith("/artifacts/retire")));
+});
+
+test("concurrent checkpoint Resume clicks share one admission and retain the saved model", async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const { state, calls, payload } = await pausedContinuationFixture(async (url, options, adapterFetch) => {
+    if (String(url).endsWith("/events")) await gate;
+    return adapterFetch(url, options);
+  });
+  try {
+    const results = await Promise.all([handleFormalize(payload, state), handleFormalize(payload, state)]);
+    assert.ok(results.every((result) => result.statusCode === 200));
+    assert.equal(results[0].body.jobId, results[1].body.jobId);
+    assert.equal(calls.filter((call) => String(call.url).endsWith("/continue")).length, 1);
+    const continuation = state.jobs[results[0].body.jobId];
+    assert.equal(continuation.leaModel, "saved-model");
+    assert.equal(continuation.leaMaxTurns, 40);
+    assert.equal(continuation.leaCurrentTurn, 20);
+  } finally { release(); }
+  await waitFor(() => Object.values(state.jobs).every((job) => job.status !== "in_progress"));
+});
+
+test("a dropped checkpoint admission response retries the persisted identity without a fresh run", async () => {
+  let attempts = 0;
+  const { state, calls, payload } = await pausedContinuationFixture(async (url, options, adapterFetch) => {
+    const response = await adapterFetch(url, options);
+    if (String(url).endsWith("/continue") && ++attempts === 1) throw new Error("response lost after admission");
+    return response;
+  });
+  assert.equal((await handleFormalize(payload, state)).statusCode, 200);
+  await waitFor(() => Object.values(state.jobs).some((job) => job.resumed && job.status !== "in_progress"));
+  const admissions = calls.filter((call) => String(call.url).endsWith("/continue"));
+  assert.equal(admissions.length, 2);
+  assert.deepEqual(admissions[0].body, admissions[1].body);
+  const persisted = JSON.parse(await fs.readFile(state.jobsPath, "utf8"));
+  const continuation = Object.values(persisted).find((job) => job.resumed);
+  assert.equal(continuation.continuationRequest.idempotencyKey, "continue:saved-run");
+  assert.equal(continuation.apiRunId, "api-run-1");
+  assert.ok(!calls.some((call) => String(call.url).endsWith("/api/runs")));
+});
+
+test("Resume validates the saved model's key even when the default model has changed", async () => {
+  const { state, calls, payload } = await pausedContinuationFixture();
+  state.jobs.paused.leaModel = "o4-mini";
+  state.settings.leaModel = "gemini/gemini-2.5-pro";
+  const result = await handleFormalize(payload, state);
+  assert.equal(result.statusCode, 200, result.body.message);
+  await waitFor(() => Object.values(state.jobs).every((job) => job.status !== "in_progress"));
+  assert.ok(calls.some((call) => String(call.url).endsWith("/saved-run/continue")));
+  assert.equal(state.jobs[result.body.jobId].leaModel, "o4-mini");
+});
+
+test("companion restart recovers a persisted checkpoint admission before its run ID was saved", async () => {
+  const { state, calls, payload } = await pausedContinuationFixture();
+  // Capture the admission intent in exactly the crash window before the response.
+  const upstream = state.fetchImpl;
+  let savedJob;
+  state.fetchImpl = async (url, options) => {
+    if (String(url).endsWith("/continue") && !savedJob) {
+      savedJob = structuredClone(Object.values(JSON.parse(await fs.readFile(state.jobsPath, "utf8")))
+        .find((job) => job.resumed));
+    }
+    return upstream(url, options);
+  };
+  await handleFormalize(payload, state);
+  await waitFor(() => Object.values(state.jobs).every((job) => job.status !== "in_progress"));
+  assert.ok(savedJob.continuationRequest && !savedJob.apiRunId && !savedJob.requestPrompt);
+  state.jobs = { paused: state.jobs.paused, [savedJob.jobId]: savedJob };
+  calls.length = 0;
+  await recoverInterruptedJobs(state);
+  await waitFor(() => savedJob.status !== "in_progress");
+  assert.equal(calls.filter((call) => String(call.url).endsWith("/continue")).length, 1);
+  assert.equal(savedJob.apiRunId, "api-run-1");
+  assert.ok(!calls.some((call) => String(call.url).endsWith("/api/runs")));
+});
 
 test("formalize on the /api backend posts to /api/runs and runs autonomously (no /v1 calls)", async () => {
   const leaRepo = await makeLeaRepo();
@@ -4803,6 +4956,7 @@ test("best-effort continuation is scoped to a proofless source-obstruction pause
   });
   state.jobs["paused-source-obstruction"] = {
     jobId: "paused-source-obstruction",
+    apiRunId: "paused-source-run",
     jobKey: "project-1:theorem:compactness_criterion",
     status: "paused",
     stopReason: "source_obstruction",
@@ -4834,10 +4988,9 @@ test("best-effort continuation is scoped to a proofless source-obstruction pause
   }, state);
 
   assert.equal(result.statusCode, 200);
-  await waitFor(() => calls.some((c) => String(c.url).endsWith("/api/runs") && c.options?.method === "POST"));
-  const runCall = calls.find((c) => String(c.url).endsWith("/api/runs"));
-  assert.ok(runCall.body.message.includes("## Author-authorized best-effort continuation"));
-  assert.ok(runCall.body.message.includes("Do not pause again merely because that missing context or proof method must be inferred"));
+  const runCall = calls.find((c) => String(c.url).endsWith("/paused-source-run/continue"));
+  assert.equal(runCall.body.best_effort, true);
+  assert.ok(!calls.some((c) => String(c.url).endsWith("/api/runs")));
   const launchedJob = Object.values(state.jobs).find((job) => job.jobId !== "paused-source-obstruction");
   assert.equal(launchedJob.bestEffort, true);
   assert.equal(launchedJob.resumed, true);

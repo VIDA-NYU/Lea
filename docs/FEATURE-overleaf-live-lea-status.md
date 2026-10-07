@@ -283,7 +283,11 @@ For a paused item whose structured stop reason is `source_obstruction` and whose
 
 If the proof completed before the pause request won the race, keep the completed outcome. **Formalize all** starts each item with automatic source pauses disabled. A failed item causes its dependents to be skipped, while independent items continue and the batch reaches a terminal summary. Unrelated user-started runs retain their own snapshotted setting.
 
-After editing LaTeX, starting again creates a new run against a newly captured source bundle. Existing Lean work and prior findings can be supplied as context, but Lea must reassess them against the changed source. Never resume an old mathematical contract merely by relabeling its source hash.
+Resume restores the saved agent execution state at a complete, durable turn boundary through `POST /api/runs/{run_id}/continue`. It keeps the session, formalization, conversation, completed tool results, proof paths, compaction state, and saved turn. The linked continuation records `resumes_run_id` and pins `resume_checkpoint_id`; its usage starts at zero. It receives the configured additional turn allowance and a fresh time window, while the cumulative spending cap remains in force. An unfinished provider response cannot be resumed mid-generation.
+
+Before Resume, the extension synchronizes and reparses the live LaTeX. Changed source is supplied with an explicit before/after description, and earlier findings remain available for reassessment. Changed proof files, dependency source, or Lake dependency revisions invalidate saved verification. Unchanged artifacts can retain matching Lean-check evidence. The model and executable prompt/tool/skill configuration must remain compatible. Missing or incompatible checkpoints produce an explicit error and leave **Re-formalize** available as a separate action; Resume never silently starts a fresh formalization. Uncertain crash recovery retains the existing review and `/resume` path.
+
+The companion persists the continuation admission request before submitting it, retries unknown outcomes with the same idempotency key, and observes the returned run through the existing SSE and usage machinery. Duplicate and concurrent submissions cannot create two successors for the same predecessor. Formalize all uses the same continuation path for paused targets.
 
 **8. Immediate event delivery and storage**
 

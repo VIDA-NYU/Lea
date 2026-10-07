@@ -1460,6 +1460,29 @@ test("Lean pane expanded detail shows copy actions only for generated content", 
   assert.match(harness.bodyText(), /workspace\/proofs\/Main\.lean/);
 });
 
+test("Lean pane keeps a visible LeaChat button for a saved session whose status is unknown", async () => {
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    manifest: { ok: true, rootFile: "main.tex", diagnostics: [], items: [{
+      id: "definition:CapacityEncoding", label: "CapacityEncoding", kind: "definition",
+      status: "unknown", sourceFile: "main.tex", leanKind: "def",
+      leanDeclarationName: "CapacityEncoding", leaSessionId: "saved-session",
+      leanCheck: { status: "checked" }
+    }] }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickPaneTreeRowText("main.tex");
+  harness.clickFirstPaneItem();
+  assert.equal(harness.hasButtonText("Open in LeaChat"), true);
+  assert.equal(harness.hasButtonLabel("Open in LeaChat"), true);
+  harness.clickButtonText("Open in LeaChat");
+  await flushPromises();
+  const opened = harness.runtimeMessages.find((message) => message.type === "OPEN_LEA_SESSION");
+  assert.equal(new URL(opened.url).searchParams.get("session"), "saved-session");
+  assert.ok(!harness.fetchCalls.some((call) => call.url.endsWith("/lean-pane/chat/session")));
+});
+
 test("Lean pane shows navigable uses and used-by relationships across project files", async () => {
   const harness = createContentHarness(
     { status: "unformalized" },
@@ -2001,7 +2024,7 @@ test("Lean pane 'Continue best effort' resumes an eligible source obstruction wi
       }
     }
   );
-  await harness.loadVisibleTheorems();
+  await harness.loadVisibleTheorems({ activeTex: "\\begin{theorem}\n% lea: formalize label=compactness_criterion\nEvery open cover has a finite subcover.\n\\end{theorem}" });
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
@@ -2015,6 +2038,63 @@ test("Lean pane 'Continue best effort' resumes an eligible source obstruction wi
   assert.equal(body.targetLabel, "compactness_criterion");
   assert.equal(body.resume, true);
   assert.equal(body.bestEffort, true);
+});
+
+function pausedSourceManifest() {
+  return { ok: true, rootFile: "main.tex", diagnostics: [], items: [{
+    id: "theorem:demo_theorem:0", kind: "theorem", label: "demo_theorem", status: "paused",
+    sourceFile: "main.tex", sourceStartLine: 1, sourceEndLine: 4,
+    naturalLanguageLatex: "Old statement.", leanKind: "theorem", formalizable: true,
+    apiRunId: "saved-run", leanCheck: { status: "paused", stopReason: "turn_cap" }
+  }] };
+}
+
+test("Resume reparses live statement, proof and source hashes instead of cached pane text", async () => {
+  const harness = createContentHarness({ status: "paused" }, {}, {
+    locationPath: "/project/unknown", manifest: pausedSourceManifest()
+  });
+  await harness.loadVisibleTheorems({ activeTex: "\\begin{theorem}\n% lea: formalize label=demo_theorem\nNew statement.\n\\end{theorem}\n\\begin{proof}\nNew author proof.\n\\end{proof}" });
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickPaneTreeRowText("main.tex");
+  harness.clickFirstPaneItem();
+  harness.clickButtonText("Resume");
+  assert.ok(harness.hasButtonText("Resuming…"));
+  await flushPromises();
+  const call = harness.fetchCalls.find((entry) => entry.url.endsWith("/formalize"));
+  assert.ok(call);
+  const body = JSON.parse(call.options.body);
+  assert.equal(body.resume, true);
+  assert.equal(body.resumeRunId, "saved-run");
+  assert.match(body.targetText, /New statement\./);
+  assert.doesNotMatch(body.targetText, /Old statement/);
+  assert.match(body.sourceBundle.proof, /New author proof\./);
+  assert.equal(body.sourceBundle.proofAssociation.status, "associated");
+  assert.equal(body.sourceHash, createHash("sha256").update(body.targetText.trim()).digest("hex"));
+});
+
+test("checkpoint failure stays inline and Re-formalize remains an explicit fresh action", async () => {
+  const harness = createContentHarness({ status: "paused" }, {}, {
+    locationPath: "/project/unknown", manifest: pausedSourceManifest(),
+    formalizeFailure: { status: 409, error: "checkpoint_continuation_rejected",
+      message: "Saved agent state is unavailable. Use Re-formalize." }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickPaneTreeRowText("main.tex");
+  harness.clickFirstPaneItem();
+  harness.clickButtonText("Resume");
+  await flushPromises();
+  assert.match(harness.paneText(), /Saved agent state is unavailable/);
+  assert.ok(harness.hasButtonText("Resume"));
+  assert.ok(harness.hasButtonText("Re-formalize"));
+  harness.clickButtonText("Re-formalize");
+  await flushPromises();
+  const calls = harness.fetchCalls.filter((entry) => entry.url.endsWith("/formalize"));
+  assert.equal(calls.length, 2);
+  assert.equal(JSON.parse(calls[0].options.body).resume, true);
+  assert.equal(JSON.parse(calls[1].options.body).resume, false);
 });
 
 test("Lean pane keeps Formalize after an upstream dependency blocks startup", async () => {
@@ -2740,6 +2820,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
   const document = new FakeDocument();
   const timers = [];
   const fetchCalls = [];
+  const runtimeMessages = [];
   const postedMessages = [];
   const promptCalls = [];
   const confirmCalls = [];
@@ -3030,7 +3111,8 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
         getURL: (file) => file.endsWith(".mjs")
           ? path.join(repoRoot, "apps/overleaf-extension/extension", file)
           : `chrome-extension://test/${file}`,
-        sendMessage(_message, callback) {
+        sendMessage(message, callback) {
+          runtimeMessages.push(message);
           callback?.({ ok: true });
         },
         lastError: null
@@ -3086,6 +3168,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
   return {
     target,
     window,
+    runtimeMessages,
     async loadStatusForVisibleTheorem() {
       await this.loadVisibleTheorems();
     },

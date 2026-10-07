@@ -16,6 +16,55 @@ from .db import connect, row_to_dict
 from . import store
 
 
+def _certified_namespace_revision(formalization: dict, certified: dict, current: dict) -> bool:
+    """Accept only recorded, checked namespace replacements of certified bytes.
+
+    Manual checks of identical bytes and successive renames are allowed. A
+    semantic edit, unverified migration, or unrelated project cannot inherit a
+    successful run's certification.
+    """
+    from .projects import rewrite_namespace_text
+
+    if certified.get("path") != current.get("path"):
+        return False
+    if certified.get("code") == current.get("code"):
+        return True
+    project_id = formalization.get("project_id")
+    if not project_id:
+        return False
+    with connect() as conn:
+        rows = conn.execute(
+            """select t.*, b.content as blob_content from timeline t
+               join sessions s on s.id = t.session_id
+               left join artifact_blobs b on b.id = t.after_blob_id
+               where s.project_id = ? and t.kind = 'code' and t.path = ?
+                 and t.id <= ? order by t.id desc""",
+            (project_id, current["path"], current["id"]),
+        ).fetchall()
+    by_id = {str(row["id"]): row for row in rows}
+    expected = current.get("code")
+    for row in rows:
+        if row["blob_content"] != expected or row["content_lost"]:
+            continue
+        if row["author"] != "environment" or row["run_id"] is not None or row["check_status"] != "ok":
+            continue
+        try:
+            migration = json.loads(row["data"] or "{}").get("namespace_migration") or {}
+            old = store.validate_project_namespace(migration["old_namespace"])
+            new = store.validate_project_namespace(migration["new_namespace"])
+            parent = by_id.get(str(migration["from_step_id"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not parent or parent["id"] >= row["id"] or parent["content_lost"]:
+            continue
+        if rewrite_namespace_text(parent["blob_content"] or "", old, new) != expected:
+            continue
+        expected = parent["blob_content"]
+        if expected == certified.get("code"):
+            return True
+    return False
+
+
 def _validity(
     formalization: dict,
     *,
@@ -71,8 +120,9 @@ def _validity(
         return "needs_review", "The run reported a definition rather than proving this theorem.", True, kind
     if match.get("run_id") != latest_run.get("id"):
         # A manual check of identical bytes may become the latest timeline
-        # row. Verify the successful run's own checked snapshot by content,
-        # so the later check neither creates nor erases certification.
+        # row. Verify the successful run's own checked snapshot by content (or
+        # a checked mechanical namespace migration), so a later check neither
+        # creates nor erases certification.
         with connect() as conn:
             rows = conn.execute(
                 """select t.*, b.content as blob_content from timeline t
@@ -88,7 +138,7 @@ def _validity(
                 seen_paths.add(row["path"])
                 run_steps.append(store._code_step_from_row(row))
         certified, _ = checked_target(formalization, run_steps)
-        if not certified or certified.get("path") != match.get("path") or certified.get("code") != match.get("code"):
+        if not certified or not _certified_namespace_revision(formalization, certified, match):
             return "needs_review", "The successful run did not check this target revision.", True, kind
     return ("defined" if formalization.get("kind") == "definition" else "proved"), "The requested declaration passed Lean in a successful target run.", True, kind
 

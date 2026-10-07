@@ -580,13 +580,9 @@ export function githubImportMatchedTargetKeys(preview, targets) {
   return githubImportMatchedTargets(preview, targets).map((target) => target.key);
 }
 
-// Pane statuses that correspond to a real Lea run or saved proof artifact.
-// Same rule the in-document popover applies before offering "View in Lea UI"
-// (companion statuses formalized / defined / disproved / in_progress /
-// sorry_stub), translated to the pane vocabulary and extended with the
-// pane-only artifact states (stale / invalid), which also imply
-// a recorded run. missing-stub / unknown / error stay excluded so stale
-// session metadata can't make unformalized items appear viewable.
+// These statuses imply a recorded run or artifact. A saved session also stays
+// reachable when source freshness, review, or an unavailable check changes the
+// item's status: navigation to its history does not certify the formalization.
 const LEA_UI_VIEWABLE_PANE_STATUSES = new Set([
   "valid", "defined", "disproved", "in-progress",
   "stub-generated", "stale", "invalid", "paused"
@@ -596,7 +592,8 @@ const LEA_UI_VIEWABLE_PANE_STATUSES = new Set([
 // stable target identity (like chat) to resolve the associated Lea session.
 export function canViewPaneItemInLeaUi(item) {
   if (!item || !(item.leanDeclarationName || item.label)) return false;
-  return LEA_UI_VIEWABLE_PANE_STATUSES.has(item.status);
+  return Boolean(item.leaSessionId || item.leaSessionUrl || item.leanArtifactPath)
+    || LEA_UI_VIEWABLE_PANE_STATUSES.has(item.status);
 }
 
 // --- Lean-pane chat mirror -------------------------------------------------
@@ -687,13 +684,11 @@ export function canEditPaneItem(item) {
 //               capability is lost when Repair takes the primary slot.
 // Copy actions are absent by design: they belong on the code blocks they copy.
 export function paneItemFormalizeAction(item) {
+  const paused = item?.status === "paused" || item?.leanCheck?.status === "paused";
   return {
     id: "formalize",
-    label: item?.status === "missing-stub"
-      ? "Formalize"
-      : item?.status === "paused"
-        ? canContinueBestEffort(item) ? "Resume faithfully" : "Resume"
-        : "Re-formalize"
+    label: paused ? canContinueBestEffort(item) ? "Resume faithfully" : "Resume"
+      : item?.status === "missing-stub" ? "Formalize" : "Re-formalize"
   };
 }
 
@@ -714,11 +709,12 @@ export function paneItemActions(item, { editing = false } = {}) {
 
   const rail = [{ id: "go-to-source", label: "Go to source" }];
   if (canChatPaneItem(item)) rail.push({ id: "chat", label: "Chat" });
-  if (canViewPaneItemInLeaUi(item)) rail.push({ id: "view-in-lea", label: "Open in Lea UI" });
+  if (canViewPaneItemInLeaUi(item)) rail.push({ id: "view-in-lea", label: "Open in LeaChat" });
 
   const overflow = [];
   if (primary?.id === "repair" && canBestEffort) overflow.push(bestEffortAction);
   if (["repair", "best-effort"].includes(primary?.id) && canFormalize) overflow.push(formalizeAction);
+  if ((item?.status === "paused" || item?.leanCheck?.status === "paused") && canFormalize) overflow.push({ id: "reformalize", label: "Re-formalize" });
   if (canStubPaneItem(item)) overflow.push({ id: "stub", label: "Stub" });
   if (!editing && canEditPaneItem(item)) overflow.push({ id: "edit", label: "Edit" });
 

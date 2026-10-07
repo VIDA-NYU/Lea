@@ -590,6 +590,44 @@ def _project_has_active_runs(project_id: str) -> bool:
     return store.project_has_active_run(project_id) or store.project_has_active_import(project_id)
 
 
+def record_namespace_migration_check(
+    project_id: str,
+    path: str,
+    content: str,
+    *,
+    old_namespace: str,
+    new_namespace: str,
+    commit_sha: str | None,
+    result=None,
+) -> dict | None:
+    """Append the migrated snapshot without changing the original run's history.
+
+    The parent snapshot and exact namespace replacement let the read model
+    preserve an existing certification; a passing check alone cannot create one.
+    Files without a timeline have no conversation to attribute the migration to.
+    """
+    steps = store.code_steps_for_project_path(project_id, path)
+    if not steps:
+        return None
+    previous = steps[0]
+    return store.add_code_step(
+        previous["session_id"], None, path,
+        content=content,
+        author="environment",
+        summary=f"Rename project namespace: {old_namespace} -> {new_namespace}",
+        check_status=getattr(result, "status", None),
+        check_detail=getattr(result, "detail", None),
+        artifact_kind=previous.get("artifact_kind"),
+        formalization_id=previous.get("formalization_id"),
+        provenance={"namespace_migration": {
+            "old_namespace": old_namespace,
+            "new_namespace": new_namespace,
+            "from_step_id": previous["id"],
+            "commit_sha": commit_sha,
+        }},
+    )
+
+
 def migrate_project_namespace(
     project: dict,
     proofs_root: Path,
@@ -667,15 +705,30 @@ def migrate_project_namespace(
 
     failed_files = []
     checked_files = 0
-    if check_fn is not None:
-        for lean_path in sorted(repo.rglob("*.lean")):
+    for lean_path in sorted(repo.rglob("*.lean")):
+        if ".git" in lean_path.relative_to(repo).parts:
+            continue
+        relative_path = lean_path.relative_to(repo).as_posix()
+        try:
+            content = lean_path.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue  # already reported in skippedFiles above
+        result = None
+        if check_fn is not None:
             checked_files += 1
             result = check_fn(str(lean_path))
             if getattr(result, "status", None) != "ok":
                 failed_files.append({
-                    "path": lean_path.relative_to(repo).as_posix(),
+                    "path": relative_path,
                     "message": getattr(result, "detail", "") or "Lean check failed.",
                 })
+        record_namespace_migration_check(
+            project["id"], relative_path, content,
+            old_namespace=old_namespace,
+            new_namespace=new_namespace,
+            commit_sha=commit_sha,
+            result=result,
+        )
 
     return {
         "project": updated_project,

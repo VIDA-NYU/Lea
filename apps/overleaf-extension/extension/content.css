@@ -3004,6 +3004,12 @@ body.ol-lean-settings-resizing {
   background: var(--ol-panel-2);
 }
 
+.ol-lean-open-chat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* Accent the status-derived action in the summary or expanded details. */
 .ol-lean-item-primary-action {
   border-color: var(--ol-accent);

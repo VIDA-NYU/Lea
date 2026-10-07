@@ -722,6 +722,8 @@ def create_run_bundle(
     client_request_id: str | None = None,
     client_request_hash: str | None = None,
     resumes_run_id: str | None = None,
+    resume_checkpoint_id: int | None = None,
+    continuation_best_effort: bool = False,
     deadline_at: str | None = None,
 ) -> dict:
     """Atomically create/resolve the conversation scope, run, and user message."""
@@ -753,6 +755,23 @@ def create_run_bundle(
                                                          (old["session_id"],)).fetchone()),
                         "run": old, "formalization": old_formalization,
                         "message": _message_from_row(old_message), "created": False}
+        if resume_checkpoint_id is not None:
+            predecessor = conn.execute("select * from runs where id = ?", (resumes_run_id,)).fetchone()
+            checkpoint = conn.execute("select * from run_checkpoints where id = ? and run_id = ?",
+                                      (resume_checkpoint_id, resumes_run_id)).fetchone()
+            if (not predecessor or not checkpoint or predecessor["session_id"] != session_id
+                    or predecessor["focus_formalization_id"] != focus_formalization_id
+                    or predecessor["status"] not in {"cancelled", "max_turns"}
+                    or predecessor["stop_reason"] == "superseded"
+                    or not predecessor["recoverable"] or predecessor["recovery_state"] == "review"):
+                raise ValueError("This run is not available for checkpoint continuation.")
+            successor = conn.execute("select id from runs where resumes_run_id = ?", (resumes_run_id,)).fetchone()
+            newer = conn.execute("select id from runs where focus_formalization_id = ? and id != ? and created_at >= ?",
+                                 (focus_formalization_id, resumes_run_id, predecessor["created_at"])).fetchone()
+            active = conn.execute("select id from runs where session_id = ? and status in ('pending', 'running')",
+                                  (session_id,)).fetchone()
+            if successor or newer or active:
+                raise ValueError("This paused run has been superseded. Refresh the pane before resuming.")
         if session_id:
             session_row = conn.execute(
                 "select * from sessions where id = ?", (session_id,)
@@ -884,15 +903,16 @@ def create_run_bundle(
             insert into runs (
                 id, session_id, project_id, status, autonomous, model, provider,
                 max_turns, focus_formalization_id, focus_source_hash, purpose, allow_source_pause, usage_status,
-                client_request_id, client_request_hash, resumes_run_id, deadline_at,
+                client_request_id, client_request_hash, resumes_run_id, resume_checkpoint_id, continuation_best_effort, deadline_at,
                 created_at, updated_at
-            ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, session_id, project_id, 1 if autonomous else 0,
                 model, provider, max_turns, focus_formalization_id,
                 str(focus_source_hash or "").strip() or None, purpose,
                 1 if allow_source_pause else 0, client_request_id, client_request_hash, resumes_run_id,
+                resume_checkpoint_id, int(continuation_best_effort),
                 deadline_at, now, now,
             ),
         )
@@ -2747,7 +2767,7 @@ def get_run_status(run_id: str) -> dict | None:
                       recoverable, input_tokens, output_tokens, cost_usd,
                       usage_status, usage_revision, usage_updated_at,
                       attempt_id, recovery_state, recovery_reason, recovery_count,
-                      checkpoint_at, deadline_at, resumes_run_id
+                      checkpoint_at, deadline_at, resumes_run_id, resume_checkpoint_id
                from runs where id = ?""",
             (run_id,),
         ).fetchone()
@@ -3913,7 +3933,7 @@ def session_detail(session_id: str) -> dict | None:
         runs = conn.execute(
             "select id, status, result_kind, result_detail,"
             " input_tokens, output_tokens, cost_usd, focus_formalization_id,"
-            " focus_source_hash, attempt_id, recovery_state, recovery_reason, checkpoint_at"
+            " focus_source_hash, attempt_id, recovery_state, recovery_reason, checkpoint_at, resumes_run_id"
             " from runs where session_id = ? order by created_at asc, id asc",
             (session_id,),
         ).fetchall()
