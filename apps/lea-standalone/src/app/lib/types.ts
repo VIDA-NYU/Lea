@@ -50,7 +50,7 @@ export interface RunSummary {
   recovery_state?: 'recovering' | 'review' | null;
   recovery_reason?: string | null;
   checkpoint_at?: string | null;
-  available_recovery_action?: 'resume' | null;
+  available_recovery_action?: 'resume' | 'continue' | null;
 }
 // ── Per-tool approval gate (D19) ──────────────────────────────────────────────
 export type GatedTool = 'bash' | 'write_file' | 'edit_file';

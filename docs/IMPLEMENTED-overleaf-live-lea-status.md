@@ -54,6 +54,20 @@ The UI action regression checks live confidence, stale-source labeling, retained
 
 ## Activation and rollout
 
+### 2026-10-07 LeaChat source handoff
+
+A LeaChat turn focused on a specific Overleaf formalization now requests current source before admission. The shared adapter records a short-lived request; the companion relays it over the document's existing SSE stream. Reconnecting extensions pull outstanding requests because the event bus has no replay. The extension downloads a fresh project archive, overlays the active editor buffer, reparses the target and proof association, synchronizes the mirror when enabled, and replies through the companion. Explicit document/target bindings come from validated run origins or tagged-target synchronization; existing runs backfill bindings without guessing from chat text.
+
+The adapter validates source hashes, the document and target, and the full mirror when enabled. It freezes the source into the normal run context, rechecks it atomically at admission, and rejects known source changes before dispatch. A prepared source expires after 90 seconds; an already admitted run keeps its frozen provenance. Concurrent tabs, deleted or ambiguous targets, editor changes during acquisition, and unavailable source produce actionable errors without admitting a run. Refresh waits at most 45 seconds, including transport and archive acquisition.
+
+These turns use `interactive_overleaf`: normal discussion and interactive tool approvals plus the source-scoped `update_lea_status` capability. Text-only discussion does not force a status assessment. Accepted status calls use the existing durable publication and extension update path. Project discussion, new/local formalizations, and the explicit **Send as general chat** fallback use the normal chat toolset. The composer retains failed drafts and disables duplicate submissions while preparing. Unknown admission outcomes retry the identical source reference and idempotency key.
+
+**Resume faithfully** is a separate action for settled recoverable Overleaf solver checkpoints. It requests current source, then calls `/api/runs/{id}/continue`; it preserves the saved execution state, model and approval policy, retains the source-pause policy unless explicitly changed, and grants another configured turn/time allowance. The older review-required recovery action retains its uncertainty confirmation. Both actions are derived from current run/checkpoint state and revalidated by the mutation route.
+
+Migration `0028_overleaf_handoff` adds explicit bindings, temporary requests and per-run source references. It retains proof storage and status derivation. Migration `0027_checkpoint_continuation` now also tolerates columns already present when adopting an unstamped database. Restart the adapter and companion and reload the extension together to activate the handoff. Leave the relevant Overleaf document open with one connected extension tab.
+
+Regression coverage includes source acquisition, scope routing, wrong/expired/stale evidence, dependency mirror changes, interactive publication and approvals, general/discussion behavior, reconnect/deduplication, multi-tab rejection, uncertain delivery retries, and checkpoint continuation through a prepared reference. Browser checks use isolated fixture data and mocked source availability; no paid model request or real Overleaf proof pilot is implied.
+
 Restart the updated adapter so its normal startup applies the additive migration. Restart the companion and reload the unpacked Chrome extension so the new web-accessible modules are available together. A new companion refuses reporting runs against an older/incompatible adapter.
 
 `LEA_LIVE_STATUS_ENABLED=1` enables new admissions (the implementation default). Set it to `0` to stop new reporting admissions during a staged rollout or incident. Runs already admitted retain their reporting contract and can continue to publish. Disabling admission does not restart the old evaluator. Do not downgrade away accepted status tables.

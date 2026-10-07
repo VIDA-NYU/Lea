@@ -187,13 +187,13 @@ export function useProofStream() {
     const resultKinds: Record<string, string | null | undefined> = {};
     const stopReasons: Record<string, string | null | undefined> = {};
     const focuses: Record<string, string | null | undefined> = {};
-    const recoveries: Record<string, { state?: string | null; reason?: string | null }> = {};
+    const recoveries: Record<string, { state?: string | null; reason?: string | null; action?: 'resume' | 'continue' | null }> = {};
     for (const r of detail.runs || []) {
       statuses[r.id] = r.status;
       resultKinds[r.id] = r.result_kind;
       stopReasons[r.id] = r.stop_reason || r.stop_requested_reason;
       focuses[r.id] = r.focus_formalization_id;
-      recoveries[r.id] = { state: r.recovery_state, reason: r.recovery_reason };
+      recoveries[r.id] = { state: r.recovery_state, reason: r.recovery_reason, action: r.available_recovery_action };
     }
     if (active) {
       statuses[active.id] = active.status;

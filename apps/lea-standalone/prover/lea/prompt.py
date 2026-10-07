@@ -43,9 +43,10 @@ def load_system_prompt(
         "interactive": INTERACTIVE_PROMPT,
         "overleaf_faithful": OVERLEAF_FAITHFUL_PROMPT,
         "overleaf_continuation": OVERLEAF_CONTINUATION_PROMPT,
+        "interactive_overleaf": INTERACTIVE_OVERLEAF_PROMPT,
     }
     prompt = prompts[variant]
-    if variant in {"overleaf_faithful", "overleaf_continuation"}:
+    if variant in {"overleaf_faithful", "overleaf_continuation", "interactive_overleaf"}:
         prompt += ("\n\n## Source-obstruction pause policy\n"
                    + ("A blocking Lea Status finding pauses this run after publication."
                       if allow_source_pause else
@@ -506,4 +507,15 @@ OVERLEAF_CONTINUATION_PROMPT = (
     "questions directly without forcing proof work. If doing formalization work, "
     "preserve the supplied claim and any explicitly supplied proof approach and use the live reporting tool.\n"
     + _WORKSPACE + _TOOLS + _IMPORT_POLICY + _HARD_RULES + OVERLEAF_STATUS_INSTRUCTION
+)
+INTERACTIVE_OVERLEAF_PROMPT = (
+    INTERACTIVE_PROMPT
+    + "\n\n## Selected Overleaf formalization\n"
+    "This conversation is bound to the supplied Overleaf source and target. "
+    "Keep the normal interactive discussion and approval workflow. Answer questions directly; "
+    "a discussion or explanation alone must not publish a new Lea Status assessment. "
+    "When actually formalizing or changing this target's proof, preserve the supplied claim "
+    "and any explicitly supplied mathematical proof approach, and publish live assessments. "
+    "Prior findings are evidence to reassess against the current source, not permission to change the claim.\n"
+    + OVERLEAF_STATUS_INSTRUCTION
 )

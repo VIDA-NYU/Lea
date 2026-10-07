@@ -76,6 +76,9 @@ export function ChatThread({
   draft,
   onDraftChange,
   onSubmit,
+  onSubmitGeneral,
+  submissionBusy = false,
+  sourceConnection,
   onInterrupt,
   onResumeRun,
   onOpenLibrary,
@@ -94,8 +97,11 @@ export function ChatThread({
   draft: string;
   onDraftChange: (value: string) => void;
   onSubmit: () => void;
+  onSubmitGeneral?: () => void;
+  submissionBusy?: boolean;
+  sourceConnection?: { targetId: string; label: string; state: 'preparing' | 'connected' | 'error' } | null;
   onInterrupt: () => void;
-  onResumeRun?: (runId: string) => Promise<void> | void;
+  onResumeRun?: (runId: string, action?: 'resume' | 'continue') => Promise<void> | void;
   onOpenSettings?: () => void;
   onOpenLibrary?: (focus?: string) => void;
   canvasCollapsed: boolean;
@@ -460,7 +466,7 @@ export function ChatThread({
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (!isRunning && draft.trim()) onSubmit();
+      if (!isRunning && !submissionBusy && draft.trim()) onSubmit();
     }
   };
 
@@ -640,10 +646,15 @@ export function ChatThread({
                     {runRecoveryById[group.runId]?.state === 'review' && (
                       <span title={runRecoveryById[group.runId]?.reason || undefined}>
                         Interrupted — review before resuming. {runRecoveryById[group.runId]?.reason}
-                        {onResumeRun && <button type="button" onClick={() => void onResumeRun(group.runId!)}>
+                        {onResumeRun && <button type="button" disabled={isRunning || submissionBusy} onClick={() => void onResumeRun(group.runId!, 'resume')}>
                           Resume after review
                         </button>}
                       </span>
+                    )}
+                    {runRecoveryById[group.runId]?.action === 'continue' && onResumeRun && (
+                      <button type="button" disabled={isRunning || submissionBusy} onClick={() => void onResumeRun(group.runId!, 'continue')}>
+                        Resume faithfully
+                      </button>
                     )}
                   </div>
                 )}
@@ -836,7 +847,17 @@ export function ChatThread({
             </div>
           );
         })()}
-        <div className="composer-inner">
+        {sourceConnection && (
+          <div className="composer-source" role="status" aria-live="polite">
+            <span>{sourceConnection.state === 'preparing' ? 'Refreshing Overleaf source' : sourceConnection.state === 'connected' ? 'Overleaf source refreshed' : 'Overleaf source unavailable'} · {sourceConnection.label}</span>
+            {sourceConnection.state === 'error' && onSubmitGeneral && draft.trim() && (
+              <button type="button" disabled={isRunning || submissionBusy} onClick={onSubmitGeneral} title="Send this message without publishing an Overleaf status assessment">
+                Send as general chat
+              </button>
+            )}
+          </div>
+        )}
+        <div className="composer-inner" aria-busy={submissionBusy}>
           <textarea
             ref={textareaRef}
             value={draft}
@@ -848,6 +869,7 @@ export function ChatThread({
                 : 'Ask a follow-up, or state a theorem to prove…'
             }
             rows={1}
+            disabled={submissionBusy}
           />
           <div className="crow">
             <ComposerScopeChip session={session} />
@@ -856,7 +878,7 @@ export function ChatThread({
                 ◼
               </button>
             ) : (
-              <button className="send" onClick={onSubmit} disabled={!draft.trim()} title="Send">
+              <button className="send" onClick={onSubmit} disabled={!draft.trim() || submissionBusy} title={submissionBusy ? 'Preparing your message' : 'Send'}>
                 ↑
               </button>
             )}

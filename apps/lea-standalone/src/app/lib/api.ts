@@ -83,6 +83,8 @@ export async function createRun(
       origin_key?: string;
       source_hash?: string;
     };
+    source_context_ref?: string;
+    idempotency_key?: string;
   },
 ): Promise<{
   session_id: string;
@@ -98,7 +100,7 @@ export async function createRun(
     body: JSON.stringify({ message, session_id: sessionId, model, ...scope }),
   });
   if (!response.ok) {
-    throw new Error(await detailMessage(response, `Failed to start run: ${response.statusText}`));
+    throw Object.assign(new Error(await detailMessage(response, `Failed to start run: ${response.statusText}`)), { status: response.status });
   }
   return response.json();
 }
@@ -109,6 +111,21 @@ export async function resumeInterruptedRun(runId: string): Promise<{ run_id: str
     body: JSON.stringify({ acknowledge_uncertainty: true, idempotency_key: `resume:${runId}` }),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Could not resume the interrupted run.'));
+  return response.json();
+}
+
+export async function prepareOverleafSource(formalizationId: string): Promise<{ source_context_ref: string; captured_at: string }> {
+  const response = await fetch(`/api/formalizations/${encodeURIComponent(formalizationId)}/overleaf-source/prepare`, { method: 'POST' });
+  if (!response.ok) throw Object.assign(new Error(await detailMessage(response, 'Could not connect to the Overleaf document.')), { status: response.status });
+  return response.json();
+}
+
+export async function continueOverleafRun(runId: string, reference: string, idempotencyKey: string): Promise<{ run_id: string; session_id: string }> {
+  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/continue`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_context_ref: reference, idempotency_key: idempotencyKey })
+  });
+  if (!response.ok) throw Object.assign(new Error(await detailMessage(response, 'Could not continue the saved Overleaf formalization.')), { status: response.status });
   return response.json();
 }
 

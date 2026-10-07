@@ -150,8 +150,8 @@ interface ProofSessionState {
   setRunResultKindById: (update: Updater<Record<string, string | null | undefined>>) => void;
   runStopReasonById: Record<string, string | null | undefined>;
   setRunStopReasonById: (update: Updater<Record<string, string | null | undefined>>) => void;
-  runRecoveryById: Record<string, { state?: string | null; reason?: string | null }>;
-  setRunRecoveryById: (update: Updater<Record<string, { state?: string | null; reason?: string | null }>>) => void;
+  runRecoveryById: Record<string, { state?: string | null; reason?: string | null; action?: 'resume' | 'continue' | null }>;
+  setRunRecoveryById: (update: Updater<Record<string, { state?: string | null; reason?: string | null; action?: 'resume' | 'continue' | null }>>) => void;
   runFocusById: Record<string, string | null | undefined>;
   setRunFocusById: (update: Updater<Record<string, string | null | undefined>>) => void;
 

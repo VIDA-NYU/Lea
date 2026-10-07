@@ -1885,6 +1885,22 @@ def run_lea(context: RunnerContext) -> None:
                         run_id, final_status)
             return
         attempt_id = recovery.start_attempt(run_id)
+        from . import overleaf_source
+        try:
+            overleaf_source.validate_run(run_id, proofs_root)
+        except ValueError as exc:
+            final_result_detail = str(exc)
+            if run_row.get("recovery_count"):
+                recovery.pause_for_mismatch(run_id, final_result_detail)
+                final_status, final_result_kind, final_recoverable = "cancelled", "interrupted", True
+            else:
+                final_status, final_result_kind, final_stop_reason = "failed", "failed", "source_changed"
+                store.update_run(run_id, "failed", result_kind="failed", result_detail=final_result_detail,
+                                 stop_reason=final_stop_reason, recoverable=False,
+                                 input_tokens=0, output_tokens=0, cost_usd=0, usage_status="final")
+            emit(events, "run_error", {"message": final_result_detail})
+            diagnose(events, session_id, run_id, "step_error", "overleaf.source_changed", final_result_detail)
+            return
         if run_row and run_row.get("recovery_count"):
             observed_input = int(run_row.get("input_tokens") or 0)
             observed_output = int(run_row.get("output_tokens") or 0)
@@ -1949,7 +1965,9 @@ def run_lea(context: RunnerContext) -> None:
             cfg = replace(cfg, status_reporting=True, status_context=lea_status.seed(run_id),
                           allow_source_pause=context.allow_source_pause,
                           narrate_tool_steps=False,
-                          prompt_variant=("overleaf_continuation" if context.purpose == "overleaf_continuation" else "overleaf_faithful"),
+                          prompt_variant=(
+                              "interactive_overleaf" if context.purpose == "overleaf_continuation" and (not context.autonomous or run_row.get("source_context_ref"))
+                              else "overleaf_continuation" if context.purpose == "overleaf_continuation" else "overleaf_faithful"),
                           extra_tools=list(dict.fromkeys([*cfg.extra_tools, "update_lea_status"])),
                           tools=(list(dict.fromkeys([*cfg.tools, "update_lea_status"])) if cfg.tools is not None else None))
         current_run = store.get_run(run_id)

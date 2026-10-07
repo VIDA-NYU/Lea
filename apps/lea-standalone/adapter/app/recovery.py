@@ -233,6 +233,27 @@ def prepare_continuation(run: dict, config, repo: Path, status_context: dict, ta
     return state, changed
 
 
+def available_action(run: dict) -> str | None:
+    """Derived UI action; eligibility is checked again by the mutation route."""
+    if run.get("recovery_state") == "review" and run.get("recoverable"):
+        return "resume"
+    if (run.get("purpose") != "overleaf_solver" or not run.get("recoverable")
+            or run.get("status") not in {"cancelled", "max_turns"}
+            or run.get("stop_reason") == "superseded"):
+        return None
+    with db.connect() as conn:
+        if conn.execute("select 1 from runs where resumes_run_id = ? or (focus_formalization_id = ? and id != ? and created_at >= ?)",
+                        (run["id"], run.get("focus_formalization_id"), run["id"], run["created_at"])).fetchone():
+            return None
+        if conn.execute("select 1 from runs where session_id = ? and status in ('pending', 'running')", (run["session_id"],)).fetchone():
+            return None
+    try:
+        continuation_checkpoint(run["id"])
+    except (ValueError, LookupError):
+        return None
+    return "continue"
+
+
 def start_attempt(run_id: str) -> str:
     attempt_id = uuid4().hex
     now = db.utc_now()

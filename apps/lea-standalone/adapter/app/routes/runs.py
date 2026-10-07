@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -31,6 +32,8 @@ from .. import settings as settings_service
 from .. import store
 from .. import runtime
 from .. import recovery
+from .. import overleaf_source
+from ..db import connect
 
 router = APIRouter()
 
@@ -78,6 +81,7 @@ class RunRequest(BaseModel):
     new_formalization: NewFormalizationRequest | None = None
     purpose: str = "general"
     source_bundle: dict | None = None
+    source_context_ref: str | None = None
     lea_status_version: int | None = None
     allow_source_pause: StrictBool = False
 
@@ -98,11 +102,12 @@ class ResumeRequest(BaseModel):
 
 class ContinueRequest(BaseModel):
     idempotency_key: str
-    source_bundle: dict
+    source_bundle: dict | None = None
+    source_context_ref: str | None = None
     lea_status_version: int = 1
-    timeout_seconds: int
+    timeout_seconds: int | None = None
     best_effort: StrictBool = False
-    allow_source_pause: StrictBool = False
+    allow_source_pause: StrictBool | None = None
 
 
 def sse(event_type: str, payload: dict, seq: int | None = None, attempt_id: str | None = None) -> str:
@@ -189,6 +194,15 @@ def create_run(request: RunRequest) -> dict:
                     (request.session_id and request.session_id != prior["session"]["id"])):
                 raise HTTPException(status_code=409, detail="Idempotency key belongs to a different request")
             return _creation_response(prior)
+    if request.source_context_ref:
+        if not request.focus_formalization_id or request.new_formalization or request.source_bundle:
+            raise HTTPException(422, detail="Prepared source requires one selected formalization.")
+        try:
+            with connect() as conn:
+                source = overleaf_source.resolve(conn, request.source_context_ref, request.focus_formalization_id)
+        except ValueError as exc:
+            raise HTTPException(409, detail=str(exc)) from exc
+        request = request.model_copy(update={"source_bundle": source, "purpose": "overleaf_continuation", "lea_status_version": 1})
     if not runtime.accepting_work():
         raise HTTPException(status_code=503, detail={"error": "adapter_draining",
                                                      "message": "Adapter is waiting to restart."},
@@ -279,6 +293,7 @@ def create_run(request: RunRequest) -> dict:
             new_formalization=new_formalization,
             purpose=purpose,
             source_bundle=request.source_bundle,
+            source_context_ref=request.source_context_ref,
             allow_source_pause=request.allow_source_pause,
             client_request_id=request.idempotency_key,
             client_request_hash=request_hash if request.idempotency_key else None,
@@ -350,9 +365,7 @@ def get_run_row(run_id: str) -> dict:
     row = store.get_run_status(run_id)
     if not row:
         raise HTTPException(status_code=404, detail="Run not found")
-    row["available_recovery_action"] = (
-        "resume" if row.get("recovery_state") == "review" and row.get("recoverable") else None
-    )
+    row["available_recovery_action"] = recovery.available_action(row)
     return row
 
 
@@ -413,12 +426,9 @@ def continue_run(run_id: str, request: ContinueRequest) -> dict:
     """Continue a clean Overleaf pause from its pinned execution checkpoint."""
     from .. import lea_status, lea_status_store
     from ..source_context import validate_source
-    if not request.idempotency_key.strip() or request.timeout_seconds < 1 or request.lea_status_version != 1:
+    timeout_seconds = request.timeout_seconds if request.timeout_seconds is not None else int(os.environ.get("LEA_JOB_TIMEOUT_SECONDS", "900"))
+    if not request.idempotency_key.strip() or timeout_seconds < 1 or request.lea_status_version != 1:
         raise HTTPException(status_code=422, detail="A request identity, positive timeout and Lea Status v1 are required.")
-    try:
-        source = validate_source(request.source_bundle)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
     request_hash = hashlib.sha256(json.dumps({"predecessor": run_id, **request.model_dump()}, sort_keys=True).encode()).hexdigest()
     prior = store.get_run_submission(request.idempotency_key)
     if prior:
@@ -432,6 +442,17 @@ def continue_run(run_id: str, request: ContinueRequest) -> dict:
     old = store.get_run(run_id)
     if not old:
         raise HTTPException(status_code=404, detail="Run not found")
+    allow_source_pause = bool(old.get("allow_source_pause")) if request.allow_source_pause is None else request.allow_source_pause
+    try:
+        if request.source_context_ref and request.source_bundle is None:
+            with connect() as conn:
+                source = overleaf_source.resolve(conn, request.source_context_ref, old["focus_formalization_id"])
+        elif request.source_bundle is not None and not request.source_context_ref:
+            source = validate_source(request.source_bundle)
+        else:
+            raise ValueError("Supply current source or one prepared source reference.")
+    except ValueError as exc:
+        raise HTTPException(409 if request.source_context_ref else 422, detail=str(exc)) from exc
     if (old.get("purpose") != "overleaf_solver" or not old.get("recoverable")
             or old["status"] not in {"cancelled", "max_turns"}
             or old.get("stop_reason") == "superseded"
@@ -451,7 +472,7 @@ def continue_run(run_id: str, request: ContinueRequest) -> dict:
         state, _, checkpoint_id = recovery.continuation_checkpoint(run_id)
         if old.get("project_id") and store.project_has_active_import(old["project_id"]):
             raise ValueError("Wait for the active project import before continuing.")
-        bridge.validate_continuation_runtime(old, config, checkpoint_id, source, request.allow_source_pause)
+        bridge.validate_continuation_runtime(old, config, checkpoint_id, source, allow_source_pause)
         saved_turn = int(state.get("turn", 0))
         mathematical_request = json.dumps(source, ensure_ascii=False)
         policy = (
@@ -471,10 +492,11 @@ def continue_run(run_id: str, request: ContinueRequest) -> dict:
             session_origin="overleaf", session_origin_url=None, model=old["model"], provider=old.get("provider"),
             max_turns=saved_turn + config.max_turns if config.max_turns else None,
             autonomous=bool(old.get("autonomous")), focus_formalization_id=old["focus_formalization_id"],
-            purpose="overleaf_solver", source_bundle=source, allow_source_pause=request.allow_source_pause,
+            purpose="overleaf_solver", source_bundle=source, allow_source_pause=allow_source_pause,
+            source_context_ref=request.source_context_ref,
             client_request_id=request.idempotency_key, client_request_hash=request_hash, resumes_run_id=run_id,
             resume_checkpoint_id=checkpoint_id, continuation_best_effort=request.best_effort,
-            deadline_at=(datetime.now(timezone.utc) + timedelta(seconds=request.timeout_seconds)).isoformat())
+            deadline_at=(datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)).isoformat())
     except (ValueError, LookupError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if bundle.get("created", True):

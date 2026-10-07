@@ -722,6 +722,7 @@ def create_run_bundle(
     client_request_id: str | None = None,
     client_request_hash: str | None = None,
     resumes_run_id: str | None = None,
+    source_context_ref: str | None = None,
     resume_checkpoint_id: int | None = None,
     continuation_best_effort: bool = False,
     deadline_at: str | None = None,
@@ -755,6 +756,11 @@ def create_run_bundle(
                                                          (old["session_id"],)).fetchone()),
                         "run": old, "formalization": old_formalization,
                         "message": _message_from_row(old_message), "created": False}
+        if source_context_ref:
+            from .overleaf_source import resolve
+            resolved_source = resolve(conn, source_context_ref, focus_formalization_id)
+            if source_bundle != resolved_source:
+                raise ValueError("Prepared source does not match this run's source bundle.")
         if resume_checkpoint_id is not None:
             predecessor = conn.execute("select * from runs where id = ?", (resumes_run_id,)).fetchone()
             checkpoint = conn.execute("select * from run_checkpoints where id = ? and run_id = ?",
@@ -903,9 +909,9 @@ def create_run_bundle(
             insert into runs (
                 id, session_id, project_id, status, autonomous, model, provider,
                 max_turns, focus_formalization_id, focus_source_hash, purpose, allow_source_pause, usage_status,
-                client_request_id, client_request_hash, resumes_run_id, resume_checkpoint_id, continuation_best_effort, deadline_at,
+                client_request_id, client_request_hash, resumes_run_id, resume_checkpoint_id, continuation_best_effort, deadline_at, source_context_ref,
                 created_at, updated_at
-            ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id, session_id, project_id, 1 if autonomous else 0,
@@ -913,7 +919,7 @@ def create_run_bundle(
                 str(focus_source_hash or "").strip() or None, purpose,
                 1 if allow_source_pause else 0, client_request_id, client_request_hash, resumes_run_id,
                 resume_checkpoint_id, int(continuation_best_effort),
-                deadline_at, now, now,
+                deadline_at, source_context_ref, now, now,
             ),
         )
         if source_bundle is not None:
@@ -1298,6 +1304,8 @@ def delete_project_cascade(project_id: str) -> bool:
         conn.execute("delete from project_files where project_id = ?", (project_id,))
         if formalization_ids:
             form_marks = ",".join("?" for _ in formalization_ids)
+            conn.execute(f"delete from overleaf_source_requests where formalization_id in ({form_marks})", formalization_ids)
+            conn.execute(f"delete from overleaf_bindings where formalization_id in ({form_marks})", formalization_ids)
             conn.execute(
                 f"delete from formalizations where id in ({form_marks})",
                 formalization_ids,
@@ -2767,7 +2775,8 @@ def get_run_status(run_id: str) -> dict | None:
                       recoverable, input_tokens, output_tokens, cost_usd,
                       usage_status, usage_revision, usage_updated_at,
                       attempt_id, recovery_state, recovery_reason, recovery_count,
-                      checkpoint_at, deadline_at, resumes_run_id, resume_checkpoint_id
+                      checkpoint_at, deadline_at, resumes_run_id, resume_checkpoint_id,
+                      session_id, focus_formalization_id, purpose, created_at
                from runs where id = ?""",
             (run_id,),
         ).fetchone()
@@ -3933,7 +3942,8 @@ def session_detail(session_id: str) -> dict | None:
         runs = conn.execute(
             "select id, status, result_kind, result_detail,"
             " input_tokens, output_tokens, cost_usd, focus_formalization_id,"
-            " focus_source_hash, attempt_id, recovery_state, recovery_reason, checkpoint_at, resumes_run_id"
+            " focus_source_hash, attempt_id, recovery_state, recovery_reason, checkpoint_at, resumes_run_id,"
+            " session_id, purpose, recoverable, stop_reason, created_at"
             " from runs where session_id = ? order by created_at asc, id asc",
             (session_id,),
         ).fetchall()
@@ -3943,6 +3953,8 @@ def session_detail(session_id: str) -> dict | None:
                 "select * from projects where id = ?",
                 (session["project_id"],),
             ).fetchone()
+    from .recovery import available_action
+    runs = [{**dict(r), "available_recovery_action": available_action(dict(r))} for r in runs]
     # Split back into the two lists the API exposes. Code rows carry their content
     # already — a read no longer needs a second store to be reachable, so there is
     # no separate hydrate step that can silently come back empty.

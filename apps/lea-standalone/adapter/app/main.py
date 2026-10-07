@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from .db import init_db
-from .routes import (alignment_checks, lea_status, formalize_batch_reports, custom_tools, formalizations, mcp_servers, projects, runs, search,
+from .routes import (alignment_checks, lea_status, overleaf_source, formalize_batch_reports, custom_tools, formalizations, mcp_servers, projects, runs, search,
                      sessions, settings, skills, subagents)
 from . import alignment_store, bridge, formalize_batch_reports as batch_report_service, github_import_service, netguard, store, recovery, runtime
 from .config import load_config
@@ -88,7 +88,7 @@ def startup() -> None:
 @app.get("/api/health")
 def health() -> dict:
     from .lea_status import admission_enabled
-    return {"ok": True, **runtime.snapshot(), "capabilities": {"lea_status": {"version": 1, "admission_enabled": admission_enabled(), "independent_checks": False, "source_pause_policy": 1}}}
+    return {"ok": True, **runtime.snapshot(), "capabilities": {"lea_status": {"version": 1, "admission_enabled": admission_enabled(), "independent_checks": False, "source_pause_policy": 1}, "overleaf_source_refresh": {"version": 1}}}
 
 
 class RestartRequest(BaseModel):
@@ -129,6 +129,7 @@ app.include_router(mcp_servers.router)
 app.include_router(custom_tools.router)
 app.include_router(alignment_checks.router)
 app.include_router(lea_status.router)
+app.include_router(overleaf_source.router)
 app.include_router(formalize_batch_reports.router)
 
 

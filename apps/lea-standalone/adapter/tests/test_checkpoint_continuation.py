@@ -99,6 +99,27 @@ def test_linked_continuation_pins_state_and_grants_another_allowance(paused):
     assert recovery.continuation_checkpoint(old["id"])[0] == original
 
 
+def test_prepared_source_continuation_replays_after_expiry_and_keeps_pause_policy(paused):
+    from app import overleaf_source
+    old, _, _, _ = paused
+    assert recovery.available_action(store.get_run(old["id"])) == "continue"
+    detail = store.session_detail(old["session_id"])
+    assert detail["runs"][0]["available_recovery_action"] == "continue"
+    with db.write() as conn:
+        conn.execute("update runs set allow_source_pause = 1 where id = ?", (old["id"],))
+    ref = overleaf_source.new_request(old["focus_formalization_id"])
+    overleaf_source.respond(ref, source(), document_id="doc")
+    req = runs.ContinueRequest(idempotency_key="ui-continue-once", source_context_ref=ref)
+    result = runs.continue_run(old["id"], req)
+    new = store.get_run(result["run_id"])
+    assert new["allow_source_pause"] and new["resume_checkpoint_id"] and new["autonomous"]
+    assert new["source_context_ref"] == ref
+    with db.write() as conn:
+        conn.execute("update overleaf_source_requests set expires_at = '2000' where id = ?", (ref,))
+    assert runs.continue_run(old["id"], req)["run_id"] == result["run_id"]
+    assert recovery.available_action(store.get_run(old["id"])) is None
+
+
 def test_resume_next_turn_does_not_repeat_the_saved_write_or_prior_usage(paused, monkeypatch):
     old, cfg, repo, _ = paused
     result = runs.continue_run(old["id"], request())

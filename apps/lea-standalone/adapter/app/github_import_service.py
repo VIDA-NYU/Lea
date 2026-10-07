@@ -25,6 +25,7 @@ from .artifacts import (
 )
 from .config import github_token
 from .db import ROOT
+from . import db
 from .github_project_import import (
     ImportPlanningError,
     TaggedTarget,
@@ -198,6 +199,13 @@ def sync_targets(project: dict, targets: list[TaggedTarget], proofs_root: Path) 
         row, conflict = _upsert_target(project["id"], target)
         adoption = None
         if row:
+            if row.get("origin") == "overleaf":
+                from .overleaf_source import bind
+                binding_source = target.source_bundle or {
+                    "targetKey": target.label,
+                    "targetKind": "definition" if target.kind in {"def", "definition"} else "theorem"}
+                with db.write() as conn:
+                    bind(conn, row, binding_source)
             adoption = try_adopt_imported_declaration(project, row, proofs_root)
         results.append(
             {

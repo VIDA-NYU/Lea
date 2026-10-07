@@ -24,6 +24,9 @@ def admit(conn, run_id, formalization_id, session_id, project_id, operation, sou
         raise ValueError("Lea Status requires an Overleaf formalization")
     if form["origin_key"] and not form["origin_key"].endswith(f":{source['targetKind']}:{source['targetKey']}"):
         raise ValueError("Source bundle belongs to a different target")
+    if form["origin_key"]:
+        from .overleaf_source import bind
+        bind(conn, dict(form), source)
     generation = conn.execute("select coalesce(max(run_generation), 0) + 1 from lea_status_run_contexts where formalization_id = ?", (formalization_id,)).fetchone()[0]
     prior = conn.execute("""select u.id from lea_status_updates u join lea_status_run_contexts c on c.run_id = u.run_id
         where u.formalization_id = ? order by c.run_generation desc, u.sequence desc limit 1""", (formalization_id,)).fetchone()

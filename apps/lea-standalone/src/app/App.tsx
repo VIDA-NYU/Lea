@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatThread } from './components/ChatThread';
 import { Canvas, type CheckOutcome } from './components/Canvas';
@@ -16,6 +16,7 @@ import { NewProjectDialog } from './components/NewProjectDialog';
 import { SearchOverlay } from './components/SearchOverlay';
 import { sortCodeSteps } from './lib/timeline.mjs';
 import { inferComposerFormalizationScope } from './lib/formalizations.mjs';
+import { createChatSubmission, createCheckpointSubmission } from './lib/overleafHandoff.mjs';
 import { parseSlashCommand } from './lib/slashCommands.js';
 import { runSlashCommand } from './lib/slashCommandRunner';
 import {
@@ -44,6 +45,8 @@ import {
   listProjectFormalizations,
   interruptRun,
   resumeInterruptedRun,
+  prepareOverleafSource,
+  continueOverleafRun,
   leanCheckSession,
   submitApproval,
   verifySession,
@@ -99,6 +102,12 @@ export default function App() {
   // sets it, ChatThread reads it.
   const setError = useProofSession((s) => s.setError);
   const [draft, setDraft] = useState('');
+  const [submissionBusy, setSubmissionBusy] = useState(false);
+  const [sourceConnection, setSourceConnection] = useState<{ targetId: string; label: string; state: 'preparing' | 'connected' | 'error' } | null>(null);
+  const submitting = useRef(false);
+  const submitChat = useRef(createChatSubmission({ prepare: prepareOverleafSource, create: createRun }));
+  const submitCheckpoint = useRef(createCheckpointSubmission({ prepare: prepareOverleafSource, create: continueOverleafRun }));
+  useEffect(() => { setSourceConnection(null); }, [selectedSessionId]);
   // View/render UI state (page, sidebar/canvas collapse, canvas resize) lives in
   // the useLayout hook now (R5).
   const {
@@ -128,6 +137,11 @@ export default function App() {
   const setFormalizationScope = useProofSession((s) => s.setFormalizationScope);
   const composerScopeOverride = useProofSession((s) => s.composerScopeOverride);
   const setComposerScopeOverride = useProofSession((s) => s.setComposerScopeOverride);
+  useEffect(() => {
+    if (sourceConnection && sourceConnection.targetId !== (composerScopeOverride || formalizationScope)) {
+      setSourceConnection(null);
+    }
+  }, [composerScopeOverride, formalizationScope, sourceConnection]);
   const currentFormalizationSnapshot = useProofSession(
     (s) => s.currentFormalizationSnapshot,
   );
@@ -409,9 +423,9 @@ export default function App() {
     window.localStorage.removeItem(SELECTED_SESSION_KEY);
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (general = false) => {
     const content = draft.trim();
-    if (!content || isRunning) return;
+    if (!content || isRunning || submitting.current) return;
     setError(undefined);
     setEditedPath(undefined);
     setApprovals((prev) => prev.filter((a) => a.decision));
@@ -436,6 +450,9 @@ export default function App() {
       return;
     }
 
+    submitting.current = true;
+    setSubmissionBusy(true);
+    let sourceTarget: { id: string; declaration_name?: string | null; display_title: string } | undefined;
     try {
       let scopeCandidates = formalizations;
       if (!composerScopeOverride && selectedSession?.project_id) {
@@ -459,18 +476,28 @@ export default function App() {
         });
       setFormalizationScope(resolvedScope);
       setCanvasRevisionMode('current');
-      const scope =
-        resolvedScope === 'new'
-          ? { new_formalization: { display_title: content.slice(0, 120) } }
-          : resolvedScope === 'project'
-            ? undefined
-            : { focus_formalization_id: resolvedScope };
-      const run = await createRun(
-        content,
-        selectedSessionId,
-        useModel.getState().model,
-        scope,
-      );
+      const selectedTarget = scopeCandidates.find((item) => item.id === resolvedScope);
+      if (selectedTarget?.origin === 'overleaf' && !general) sourceTarget = selectedTarget;
+      else setSourceConnection(null);
+      const scopeIsCurrent = () => {
+        const state = useProofSession.getState();
+        return useSessions.getState().selectedSessionId === selectedSessionId
+          && state.formalizationScope === resolvedScope && state.composerScopeOverride === composerScopeOverride;
+      };
+      const run = await submitChat.current({
+        message: content, sessionId: selectedSessionId, model: useModel.getState().model,
+        scope: resolvedScope, formalizations: scopeCandidates, general,
+        isCurrent: scopeIsCurrent,
+        onPreparing: (item: { id: string; declaration_name?: string | null; display_title: string }) => setSourceConnection({
+          targetId: item.id, label: item.declaration_name || item.display_title, state: 'preparing'
+        })
+      });
+      // Admission can finish after navigation. Keep the run in its own chat.
+      if (!scopeIsCurrent()) {
+        void refreshSessions().catch(() => {});
+        return;
+      }
+      if (sourceTarget) setSourceConnection({ targetId: sourceTarget.id, label: sourceTarget.declaration_name || sourceTarget.display_title, state: 'connected' });
       setSelectedSessionId(run.session_id);
       setCurrentRunId(run.run_id);
       setRunStatus('running');
@@ -492,14 +519,20 @@ export default function App() {
         setFormalizationScope(run.focus_formalization_id);
       }
       setComposerScopeOverride(null);
-      setDraft('');
+      setDraft((value) => value.trim() === content ? '' : value);
       window.localStorage.setItem(SELECTED_SESSION_KEY, run.session_id);
-      await refreshSessions();
       attachStream(run.run_id, run.session_id);
+      void refreshSessions().catch(() => {});
     } catch (err) {
-      setIsRunning(false);
-      setCurrentRunId(undefined);
-      setError(err instanceof Error ? err.message : 'Unable to start Lea.');
+      if (useSessions.getState().selectedSessionId === selectedSessionId) {
+        setIsRunning(false);
+        setCurrentRunId(undefined);
+        setError(err instanceof Error ? err.message : 'Unable to start Lea.');
+        if (sourceTarget) setSourceConnection({ targetId: sourceTarget.id, label: sourceTarget.declaration_name || sourceTarget.display_title, state: 'error' });
+      }
+    } finally {
+      submitting.current = false;
+      setSubmissionBusy(false);
     }
   };
 
@@ -773,16 +806,43 @@ export default function App() {
             }
             draft={draft}
             onDraftChange={setDraft}
-            onSubmit={handleSubmit}
+            onSubmit={() => handleSubmit()}
+            onSubmitGeneral={() => handleSubmit(true)}
+            submissionBusy={submissionBusy}
+            sourceConnection={sourceConnection}
             onInterrupt={handleInterrupt}
-            onResumeRun={async (runId) => {
-              if (!window.confirm('The interrupted model request may already have incurred cost, or a tool may already have acted. Review the saved progress and current files before continuing. Resume in a new run?')) return;
+            onResumeRun={async (runId, action = 'resume') => {
+              if (submitting.current || isRunning) return;
+              if (action === 'resume' && !window.confirm('The interrupted model request may already have incurred cost, or a tool may already have acted. Review the saved progress and current files before continuing. Resume in a new run?')) return;
+              submitting.current = true;
+              setSubmissionBusy(true);
               try {
-                const result = await resumeInterruptedRun(runId);
+                let result;
+                if (action === 'continue') {
+                  const targetId = useProofSession.getState().runFocusById[runId];
+                  if (!targetId) throw new Error('Select the Overleaf formalization before resuming.');
+                  const target = formalizations.find((item) => item.id === targetId);
+                  const viewedScope = useProofSession.getState().formalizationScope;
+                  const pinnedScope = useProofSession.getState().composerScopeOverride;
+                  setSourceConnection({ targetId, label: target?.declaration_name || target?.display_title || 'Overleaf formalization', state: 'preparing' });
+                  result = await submitCheckpoint.current({ runId, targetId,
+                    isCurrent: () => useSessions.getState().selectedSessionId === selectedSessionId
+                      && useProofSession.getState().formalizationScope === viewedScope
+                      && useProofSession.getState().composerScopeOverride === pinnedScope });
+                  if (useSessions.getState().selectedSessionId !== selectedSessionId) return;
+                  setSourceConnection({ targetId, label: target?.declaration_name || target?.display_title || 'Overleaf formalization', state: 'connected' });
+                } else result = await resumeInterruptedRun(runId);
+                if (useSessions.getState().selectedSessionId !== selectedSessionId) return;
                 await loadSession(result.session_id);
-                await refreshSessions();
+                void refreshSessions().catch(() => {});
               } catch (err) {
-                setError(err instanceof Error ? err.message : String(err));
+                if (useSessions.getState().selectedSessionId === selectedSessionId) {
+                  setError(err instanceof Error ? err.message : String(err));
+                  setSourceConnection((value) => value ? { ...value, state: 'error' } : null);
+                }
+              } finally {
+                submitting.current = false;
+                setSubmissionBusy(false);
               }
             }}
             canvasCollapsed={canvasCollapsed}

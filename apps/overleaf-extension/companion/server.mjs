@@ -66,6 +66,7 @@ import {
   pruneJobs
 } from "./jobStore.mjs";
 import { createEventBus, publishEvent } from "./eventBus.mjs";
+import { registerSourceClient, pollSourceRequests, pendingSourceRequests, respondSourceRequest } from "./sourceRefresh.mjs";
 import {
   exportProjectZipBySlug,
   fetchAdapterModelCatalog,
@@ -205,6 +206,9 @@ export async function createServer({
     if (reconciliationBusy) return;
     reconciliationBusy = true;
     try {
+      // Source refresh is optional on older adapters; a failed transport must
+      // not prevent the existing usage and recovery reconciliation.
+      await pollSourceRequests(state, chatBaseUrls(state).baseUrl).catch(() => {});
       await reconcilePendingJobUsage(state);
       await reconcileRecoveredBatches(state);
     }
@@ -4376,6 +4380,22 @@ async function routeRequest(request, response, state) {
 
   if (request.method === "GET" && url.pathname === "/events") {
     handleEventsStream(request, response, url, state);
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/source-context/pending") {
+    sendJson(response, 200, { requests: await pendingSourceRequests(state, chatBaseUrls(state).baseUrl, url.searchParams.get("projectId")) });
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/source-context/respond") {
+    const payload = await readBodyJson(request);
+    if (payload.sourceContext) {
+      const validation = validateMirroredSource({ state, overleafProjectId: payload.overleafProjectId, sourceContext: payload.sourceContext });
+      if (!validation.ok) payload.error = validation.message;
+      if (!validation.ok) delete payload.sourceContext;
+    }
+    try {
+      sendJson(response, 200, await respondSourceRequest(state, chatBaseUrls(state).baseUrl, payload));
+    } catch (error) { sendJson(response, 409, { message: error.message }); }
     return;
   }
 
@@ -8608,6 +8628,8 @@ const SSE_KEEPALIVE_MS = 15000;
 
 function handleEventsStream(request, response, url, state) {
   const projectFilter = String(url.searchParams.get("projectId") || "");
+  const clientId = String(url.searchParams.get("clientId") || "");
+  const unregisterSource = projectFilter && clientId ? registerSourceClient(state, projectFilter, clientId) : () => {};
   response.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
@@ -8634,6 +8656,7 @@ function handleEventsStream(request, response, url, state) {
   }, SSE_KEEPALIVE_MS);
   if (typeof keepalive.unref === "function") keepalive.unref();
   request.on("close", () => {
+    unregisterSource();
     clearInterval(keepalive);
     unsubscribe();
   });

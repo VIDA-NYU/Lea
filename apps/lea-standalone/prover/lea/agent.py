@@ -836,7 +836,7 @@ def _run_events_inner(
         return
     if resume_state is None:
         save_position("before_intent")
-    if (resume_state is None or resume_state.get("stage") == "before_intent") and config.prompt_variant == "interactive" and any(m.get("role") == "assistant" for m in messages):
+    if (resume_state is None or resume_state.get("stage") == "before_intent") and config.prompt_variant in {"interactive", "interactive_overleaf"} and any(m.get("role") == "assistant" for m in messages):
         decision, intent_usage, intent_cost = _classify_intent(model, messages, config)
         total_usage.input_tokens += intent_usage.input_tokens
         total_usage.output_tokens += intent_usage.output_tokens
@@ -1034,7 +1034,7 @@ def _run_events_inner(
 
         if not tool_calls:
             text = "".join(p["text"] for p in assistant_parts if p["type"] == "text")
-            if assistant_mode or (config.prompt_variant == "overleaf_continuation" and not proof_state.latest_proof_path):
+            if assistant_mode or (config.prompt_variant in {"overleaf_continuation", "interactive_overleaf"} and not proof_state.latest_proof_path):
                 # Chat/assistant turn — not a formalization run, so skip the
                 # final proof gate entirely.
                 yield Finished("assistant", text or "(no response)", turn, session_id, model,

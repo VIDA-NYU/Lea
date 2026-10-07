@@ -219,6 +219,7 @@
   // Push channel (PLAN 3.1): one EventSource on the companion's /events.
   // pushConnected is consulted by every poll scheduler when picking a delay.
   let eventsClient = null;
+  let sourceRefreshHandler = null;
   let pushConnected = false;
 
   window.addEventListener("message", (event) => {
@@ -6748,7 +6749,7 @@
   // actually formalizes — never from merely opening or editing an Overleaf tab. So a
   // `force` sync (the formalize flush) ACTIVATES mirroring for this project; background
   // syncs stay completely inert (no zip fetch, no /mirror-tex, no project) until then.
-  async function syncTexMirrorNow({ force }) {
+  async function syncTexMirrorNow({ force, freshArchive = false }) {
     clearTimeout(texMirrorSyncTimer);
     texMirrorSyncTimer = null;
 
@@ -6776,7 +6777,13 @@
     }
 
     const settings = await loadCompanionSettings();
-    if (settings.leaTexMirrorEnabled === false) return { disabled: true };
+    if (settings.leaTexMirrorEnabled === false) {
+      if (freshArchive) {
+        lastLeanPaneFiles = await collectProjectTexFiles(projectId);
+        lastLeanPaneProjectId = projectId;
+      }
+      return { disabled: true };
+    }
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
 
     texMirrorSyncPromise = (async () => {
@@ -6823,7 +6830,7 @@
       // pre-formalize sync with a healthy cache POSTs the cached set — the
       // adapter is authoritative and no-ops cheaply on identical content, so
       // divergence self-heals without a zip per formalize.
-      const needFetch = !cacheUsable || !activeKnown ||
+      const needFetch = freshArchive || !cacheUsable || !activeKnown ||
         Date.now() - lastTexMirrorFullSyncAt > TEX_MIRROR_FULL_SYNC_INTERVAL_MS;
       const files = needFetch
         ? await collectProjectTexFiles(projectId)
@@ -7938,6 +7945,48 @@
   async function startEventsClient() {
     try {
       const module = await import(chrome.runtime.getURL("eventsClient.mjs"));
+      const sourceModule = await import(chrome.runtime.getURL("sourceRefreshClient.mjs"));
+      const sourceClientId = crypto.randomUUID();
+      const refreshSource = sourceModule.createSourceRefreshResponder({
+        documentId: extractOverleafProjectId,
+        readSource: async (request) => {
+          await ensureLeanPaneView();
+          const buffer = latestActiveTex;
+          const activePath = latestActiveTexPath;
+          const mirror = await syncTexMirrorNow({ force: true, freshArchive: true });
+          const files = mirror?.disabled === true ? lastLeanPaneFiles : lastMirrorFiles;
+          if (!Array.isArray(files) || !files.length) throw new Error("The current Overleaf source archive is unavailable.");
+          lastLeanPaneFiles = files.map((file) => ({ ...file }));
+          lastLeanPaneProjectId = request.overleafProjectId;
+          const baseUrl = await chatCompanionBaseUrl();
+          const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/lean-pane/manifest`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ overleafProjectId: request.overleafProjectId, activePath: latestActiveTexPath, files })
+          }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS });
+          if (!response.ok) throw new Error(payload.message || "The current document could not be parsed.");
+          const item = sourceModule.selectSourceTarget(payload.items, request);
+          const target = { ...item, ...leanPaneView.paneItemToChatTarget(item, request.overleafProjectId),
+            targetText: item.naturalLanguageLatex, targetContext: item.targetContext || "",
+            sourceFile: item.sourceFile, sourceStartLine: item.sourceStartLine,
+            sourceEndLine: item.sourceEndLine, sourceStartOffset: item.sourceStartOffset, sourceEndOffset: item.sourceEndOffset };
+          const context = await buildFormalizationSourceContext(target, {
+            verifyMirror: mirror?.disabled !== true, mirrorSnapshot: mirror
+          });
+          if (latestActiveTex !== buffer || latestActiveTexPath !== activePath || extractOverleafProjectId() !== request.overleafProjectId) {
+            throw new Error("The editor changed during source refresh. Send again to use the latest revision.");
+          }
+          return { ...context, mirroredFiles: mirror?.mirroredFiles || null };
+        },
+        respond: async (payload) => {
+          const baseUrl = await chatCompanionBaseUrl();
+          const response = await fetch(`${baseUrl}/source-context/respond`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...payload, clientId: sourceClientId })
+          });
+          if (!response.ok) throw new Error("Source refresh response was not accepted.");
+        }
+      });
+      sourceRefreshHandler = refreshSource;
       // The companion URL comes from settings (async); cache it for the
       // client's synchronous url() and refresh the cache on every reconnect
       // attempt so a settings change is picked up without a page reload.
@@ -7955,7 +8004,7 @@
           refreshUrlCache();
           const projectId = extractOverleafProjectId();
           const query = projectId && projectId !== "unknown"
-            ? `?projectId=${encodeURIComponent(projectId)}`
+            ? `?projectId=${encodeURIComponent(projectId)}&clientId=${encodeURIComponent(sourceClientId)}`
             : "";
           return `${companionUrlCache}/events${query}`;
         },
@@ -7963,6 +8012,12 @@
         onConnectionChange: (connected) => {
           pushConnected = connected;
           if (connected) {
+            // Reconcile pending refreshes too: the event bus has no replay.
+            chatCompanionBaseUrl().then(async (baseUrl) => {
+              const response = await fetch(`${baseUrl}/source-context/pending?projectId=${encodeURIComponent(extractOverleafProjectId())}`);
+              const payload = await response.json();
+              await Promise.all((payload.requests || []).map(refreshSource));
+            }).catch(() => {});
             // Reconcile once on (re)connect: anything that changed while the
             // stream was down is picked up now instead of on the slow poll.
             scheduleStatusRefresh();
@@ -7985,6 +8040,10 @@
   }
 
   function handlePushEvent(type, data) {
+    if (type === "source-refresh-requested") {
+      sourceRefreshHandler?.(data).catch(() => {});
+      return;
+    }
     if (type === "jobs-changed") {
       scheduleStatusRefresh();
       if (leanPane) scheduleLeanPaneRefresh();
