@@ -4624,10 +4624,10 @@ function jsonResponse(status, body) {
   };
 }
 
-async function waitFor(predicate) {
+async function waitFor(predicate, { timeoutMs = 3000 } = {}) {
   const started = Date.now();
   while (!predicate()) {
-    if (Date.now() - started > 3000) {
+    if (Date.now() - started > timeoutMs) {
       throw new Error("Timed out waiting for condition.");
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -4740,6 +4740,86 @@ async function pausedContinuationFixture(fetchOverride) {
     targetText: "Current theorem.", resume: true, resumeRunId: "saved-run" };
   return { state, calls, payload };
 }
+
+for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates L once, resumes A, and B reuses L`, async () => {
+  const calls = [], segments = [], admissions = [];
+  const completed = new Map();
+  let current = "A:0";
+  const dep = { id: "L", ready: false, state: "pending", path: "Shared/L_123.lean",
+    module_name: "Lea.Project1.Shared.L_123", declaration_name: "Lea.Project1.L_123",
+    specification: { name: "L", kind: "theorem", signature: ": True", sources: [] }, attempts: [] };
+  const fallback = makeAdapterApiFetch(calls);
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: async (url, options = {}) => {
+      const u = String(url), body = options.body ? JSON.parse(options.body) : {};
+      if (u.endsWith("/dependencies/L/run")) {
+        admissions.push("L"); dep.state = "running"; dep.owner_run_id = "L:0";
+        return jsonResponse(200, { run_id: "L:0", session_id: "shared-session" });
+      }
+      if (u.endsWith("/dependencies/L")) return jsonResponse(200, dep);
+      if (u.endsWith("/formalize-batch-reports") && options.method === "POST") {
+        assert.equal(body.items.length, 2);
+        assert.equal(body.dependencies.length, 1);
+        return jsonResponse(200, { batch_id: body.batchId, state: "ready" });
+      }
+      if (u.endsWith("/api/runs") && options.method === "POST") {
+        current = `${body.source_bundle.targetKey}:0`;
+        return jsonResponse(200, { run_id: current, session_id: `session:${body.source_bundle.targetKey}`,
+          project_namespace: "Lea.Project1", project_slug: "project1" });
+      }
+      if (u.endsWith("/A%3A0/continue")) {
+        assert.equal(body.dependency_resume, true);
+        assert.equal(dep.ready, true);
+        current = "A:1";
+        return jsonResponse(200, { run_id: current, session_id: "session:A", saved_turn: 1, max_turns: 5 });
+      }
+      if (u.includes("/api/runs/") && u.endsWith("/events")) {
+        const id = decodeURIComponent(u.split("/runs/")[1].split("/")[0]);
+        segments.push(id);
+        if (["A:1", "B:0"].includes(id)) completed.set(id.split(":")[0], id);
+        if (id === "L:0") { dep.ready = true; dep.state = "ready"; dep.owner_run_id = null; }
+        return adapterSseResponse(id === "A:0" ? [
+          { type: "project_dependency", data: { outcome: "deferred", dependency: dep } },
+          { type: "done", data: { status: "cancelled", stop_reason: "dependency_wait", recoverable: true, waiting_dependencies: ["L"] } }
+        ] : [
+          ...(id === "B:0" ? [{ type: "project_dependency", data: { outcome: "existing", dependency: dep } }] : []),
+          { type: "done", data: { status: "proved" } }
+        ]);
+      }
+      if (/\/api\/runs\/[^/]+$/.test(u)) {
+        const id = decodeURIComponent(u.split("/runs/")[1]);
+        return jsonResponse(200, { id, status: id === "A:0" ? "cancelled" : segments.includes(id) ? "proved" : "running",
+          stop_reason: id === "A:0" ? "dependency_wait" : null, waiting_dependencies_json: '["L"]' });
+      }
+      if (u.includes("/target-status")) {
+        const names = new URL(u).searchParams.get("declarations").split(",");
+        return jsonResponse(200, { targets: names.map((name) => completed.has(name)
+          ? { ...mockCompletedTarget(name), completion_run_id: completed.get(name) } : { declaration_name: name, recorded: false }) });
+      }
+      return fallback(url, options);
+    } });
+  if (mode === "batch") {
+    const result = await handleFormalizeAll({ overleafProjectId: "project-1", items: ["A", "B"].map((label) =>
+      ({ targetKind: "theorem", targetLabel: label, targetText: "True." })) }, state);
+    assert.equal(result.statusCode, 200, result.body.message);
+    await waitFor(() => state.repairBatches[result.body.batchId]?.done, { timeoutMs: 10000 });
+    const batch = state.repairBatches[result.body.batchId];
+    assert.deepEqual(batch.items.map((item) => item.state), ["formalized", "formalized"]);
+    assert.equal(batch.dependencies.length, 1);
+  } else for (const label of ["A", "B"]) {
+    const result = await handleFormalize({ overleafProjectId: "project-1", targetKind: "theorem",
+      targetLabel: label, targetText: "True." }, state);
+    assert.equal(result.statusCode, 200, result.body.message);
+    try { await waitFor(() => state.jobs[result.body.jobId]?.status !== "in_progress", { timeoutMs: 10000 }); }
+    catch { throw new Error(JSON.stringify({ label, segments, admissions, result, jobs: Object.values(state.jobs).map(({ targetLabel, apiRunId, status, resultDetail, error }) => ({ targetLabel, apiRunId, status, resultDetail, error })) })); }
+    assert.equal(state.jobs[result.body.jobId].status, "formalized", state.jobs[result.body.jobId].resultDetail || state.jobs[result.body.jobId].error);
+  }
+  assert.deepEqual(admissions, ["L"]);
+  assert.deepEqual(segments, ["A:0", "L:0", "A:1", "B:0"]);
+  const jobs = Object.values(state.jobs);
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs.find((job) => job.targetLabel === "B").dependencies[0].reused, true);
+});
 
 test("checkpoint Resume reports admission failure and keeps the paused attempt without a restart", async () => {
   const { state, calls, payload } = await pausedContinuationFixture(async (url, options, adapterFetch) => {

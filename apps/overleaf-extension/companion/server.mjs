@@ -1,5 +1,6 @@
 import { runtimeNeedsPolling, runtimeStatusMessage, checkExecutionMessage } from "../../lea-standalone/src/app/lib/leanCheckRuntime.mjs";
 import { acceptStatusEvent } from "./leaStatus.mjs";
+import { resolveSharedDependencies, mergeDependencyProgress } from "./dependencyCoordinator.mjs";
 import { normalizeLeaStatus } from "../shared/leaStatus.mjs";
 import { canonicalSourceTargetKind, sourceHashInputs } from "../extension/sourceIdentityCore.mjs";
 import fs from "node:fs/promises";
@@ -97,6 +98,7 @@ import {
   putAdapterSettings,
   runApiProofJob,
   startApiContinuation,
+  projectDependencyRequest,
   runApiSessionLeanCheck,
   rebuildApiSessionModule,
   setProjectRemoteBySlug,
@@ -633,6 +635,7 @@ async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
     job.continuationRequest = { runId: previousJob.apiRunId, sourceBundle: job.sourceBundle,
       idempotencyKey: `continue:${previousJob.apiRunId}`, timeoutSeconds: job.leaJobTimeoutSeconds,
       bestEffort, allowSourcePause: job.allowSourcePause };
+    if (previousJob.stopReason === "dependency_wait") job.continuationRequest.dependencyResume = true;
     state.jobs[job.jobId] = job;
     await persistJobs(state);
     const admission = await startApiContinuation({ fetchImpl: state.fetchImpl || fetch,
@@ -2079,6 +2082,19 @@ export async function handleChatInterrupt(payload, state) {
   }
   if (!targetRunId) return errorResponse(400, "missing_run", "No active run to interrupt.");
 
+  const waitingJob = Object.values(state.jobs || {}).find((job) => job.apiRunId === targetRunId
+    && job.status === "in_progress" && job.waitingForDependencies?.length);
+  if (waitingJob) {
+    waitingJob.dependencyCancelRequested = true;
+    await persistJobs(state);
+    if (waitingJob.activeDependencyOwned && waitingJob.activeDependencyRunId
+        && !Object.values(state.jobs || {}).some((job) => job !== waitingJob && job.status === "in_progress"
+          && job.dependencies?.some((dep) => dep.owner_run_id === waitingJob.activeDependencyRunId))) {
+      targetRunId = waitingJob.activeDependencyRunId;
+    }
+    state.dependencyObservers?.get(waitingJob.jobId)?.abort();
+  }
+
   const result = await interruptApiRun({
     fetchImpl: state.fetchImpl || fetch,
     baseUrl,
@@ -3118,6 +3134,7 @@ function repairBatchSnapshot(batch) {
     stopping: Boolean(batch.cancelRequested) && !batch.done,
     running: batch.running,
     pausedOn: batch.pausedOn,
+    dependencies: batch.dependencies || [],
     ...(batch.operation === "formalize" ? {
       reportId: batch.report?.batch_id || batch.reportId || null,
       reportState: batch.report?.state || batch.reportState || null,
@@ -3125,7 +3142,8 @@ function repairBatchSnapshot(batch) {
       report: batch.report || null
     } : {}),
     items: batch.items.map(({ targetKind, targetLabel, state: itemState, reason, runJobId }) => ({
-      targetKind, targetLabel, state: itemState, reason: reason || null, runJobId: runJobId || null
+      targetKind, targetLabel, state: itemState === "running" && batch.waitingJobs?.includes(runJobId) ? "waiting" : itemState,
+      reason: reason || null, runJobId: runJobId || null
     }))
   };
 }
@@ -3256,6 +3274,9 @@ async function interruptBatchActiveRun(state, batch) {
   const running = batch.items.find((entry) => entry.state === "running");
   const job = running?.runJobId ? state.jobs?.[running.runJobId] : null;
   if (!job?.apiRunId) return;
+  state.dependencyObservers?.get(job.jobId)?.abort();
+  const childSharedElsewhere = Object.values(state.jobs || {}).some((other) => other !== job
+    && other.status === "in_progress" && other.dependencies?.some((dep) => dep.owner_run_id === job.activeDependencyRunId));
   let baseUrl;
   try {
     baseUrl = chatBaseUrls(state).baseUrl;
@@ -3267,7 +3288,7 @@ async function interruptBatchActiveRun(state, batch) {
       fetchImpl: state.fetchImpl || fetch,
       baseUrl,
       apiKey: state.env?.LEA_API_KEY,
-      runId: job.apiRunId
+      runId: job.activeDependencyOwned && job.activeDependencyRunId && !childSharedElsewhere ? job.activeDependencyRunId : job.apiRunId
     });
   } catch {
     // best-effort
@@ -3305,8 +3326,8 @@ export function orderTargetsByUses(entries) {
     entries.map((entry) => [entry.targetLabel, (entry.payload.targetUses || []).map((u) => String(u || "").trim()).filter(Boolean)])
   );
   const asModules = entries.map((entry) => ({ ...entry, moduleName: entry.targetLabel }));
-  const { ordered } = topologicalRepairOrder(asModules, usesByLabel);
-  return { ordered, usesByLabel };
+  const { ordered, cyclic } = topologicalRepairOrder(asModules, usesByLabel);
+  return { ordered, usesByLabel, cyclic };
 }
 
 async function startTargetBatch(payload, state, operation) {
@@ -3343,7 +3364,8 @@ async function startTargetBatch(payload, state, operation) {
   if (!leaValidation.ok) return errorResponse(400, leaValidation.error, leaValidation.message);
   if (await spendLimitReached(state)) return errorResponse(402, "max_spend_reached", MAX_SPEND_BLOCK_MESSAGE);
 
-  const { ordered, usesByLabel } = orderTargetsByUses(entries);
+  const { ordered, usesByLabel, cyclic } = orderTargetsByUses(entries);
+  if (operation === "formalize" && cyclic) return errorResponse(409, "dependency_cycle", "The lea:uses annotations contain a cycle. Inspect the target annotations before formalizing.");
 
   repairBatchCounter += 1;
   const batch = {
@@ -3402,11 +3424,16 @@ export async function handleFormalizeAll(payload, state) {
 async function awaitJobSettled(state, jobId, { pollMs = 400, maxMs } = {}) {
   const budget = maxMs
     || (((state.settings?.leaJobTimeoutSeconds || DEFAULT_LEA_JOB_TIMEOUT_SECONDS) * 1000) + 60000);
-  const deadline = Date.now() + budget;
+  let deadline = Date.now() + budget;
+  let segment = null;
   for (;;) {
     const job = state.jobs?.[jobId];
     if (!job) return null;
-    if (job.finishedAt) return job;
+    if (job.finishedAt && job.status !== "in_progress") return job;
+    // Each worker has its own adapter limit. Time awaiting shared work is not
+    // execution time for the document target.
+    if (job.waitingForDependencies?.length) deadline = Date.now() + budget;
+    if (segment !== job.apiRunId) { segment = job.apiRunId; deadline = Date.now() + budget; }
     if (Date.now() > deadline) return job;
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
@@ -3467,8 +3494,10 @@ async function runTargetBatch(state, batch) {
   };
   await publishBatch();
   try {
-    for (const entry of batch.items) {
+    for (;;) {
       if (batch.cancelRequested || batch.pausedOn) break;
+      const entry = batch.items.find((item) => item.state === "pending");
+      if (!entry) break;
       if (entry.state !== "pending") continue;
       if (await spendLimitReached(state)) {
         if (batch.operation === "formalize") {
@@ -3567,6 +3596,37 @@ export async function handleLeanPaneRepairStatus(payload, state) {
   return { statusCode: 200, body: repairBatchSnapshot(batch) };
 }
 
+export async function handleDependencyRetry(payload, state) {
+  const overleafProjectId = String(payload?.overleafProjectId || "");
+  const dependencyId = String(payload?.dependencyId || "");
+  if (!overleafProjectId || !dependencyId) return errorResponse(400, "missing_dependency", "Project and dependency are required.");
+  const api = { fetchImpl: state.fetchImpl || fetch,
+    baseUrl: normalizeLeaApiBaseUrl(state.settings?.leaApiBaseUrl || DEFAULT_LEA_API_BASE_URL),
+    apiKey: state.env?.LEA_API_KEY, projectSlug: slugProjectId(overleafProjectId), dependencyId };
+  const resume = payload?.resume === true;
+  const retry = await projectDependencyRequest({ ...api, action: resume ? "resume" : "retry", body: {} });
+  if (!retry.ok) return errorResponse(retry.status || 502, "dependency_retry_failed", retry.error || "Could not retry this dependency.");
+  const job = Object.values(state.jobs || {}).filter((item) => item.overleafProjectId === overleafProjectId
+    && item.dependencies?.some((dep) => dep.id === dependencyId)).sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0];
+  if (job) {
+    job.dependencyCancelRequested = false;
+    const current = resume ? await projectDependencyRequest(api) : retry;
+    await recordSharedDependencyProgress(state, job, current.body.dependency || current.body);
+    // The failed attempt remains inspectable. Retry proves only the shared
+    // result; each waiting theorem retains its original checkpoint for Resume.
+    void coordinateSharedWork(state, job, { projectSlug: api.projectSlug }, [dependencyId], { ignoreBatchCancellation: true }).catch(async (error) => {
+      job.dependencyRetryError = String(error.message || error);
+      await persistJobs(state);
+    });
+  } else {
+    if (resume) return { statusCode: 202, body: retry.body };
+    const admission = await projectDependencyRequest({ ...api, action: "run",
+      body: { model: state.settings?.leaModel, timeout_seconds: state.settings?.leaJobTimeoutSeconds } });
+    if (!admission.ok) return errorResponse(admission.status || 502, "dependency_admission_failed", admission.error);
+  }
+  return { statusCode: 202, body: retry.body };
+}
+
 function reportAdapterTarget(state, overleafProjectId) {
   return {
     fetchImpl: state.fetchImpl || fetch,
@@ -3588,6 +3648,7 @@ async function submitFormalizeBatchReport(state, batch) {
     startedAt: batch.createdAt,
     finishedAt: batch.finishedAt,
     canceled: Boolean(batch.canceled),
+    dependencies: batch.dependencies || [],
     items: batch.items.map((entry) => {
       const job = entry.runJobId ? state.jobs?.[entry.runJobId] : null;
       return {
@@ -4542,6 +4603,11 @@ async function routeRequest(request, response, state) {
 
   if (request.method === "POST" && url.pathname === "/lean-pane/manifest") {
     const result = await handleLeanPaneManifest(await readBodyJson(request), state);
+    sendJson(response, result.statusCode, result.body);
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/lean-pane/dependencies/retry") {
+    const result = await handleDependencyRetry(await readBodyJson(request), state);
     sendJson(response, result.statusCode, result.body);
     return;
   }
@@ -5850,7 +5916,7 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
   await appendLog(job.logPath, job.continuationRequest
     ? `[backend] Continue saved agent state from ${job.resumesRunId}\n`
     : `$ POST ${job.leaApiBaseUrl}/api/runs\n\n${prompt}\n\n`);
-  const exit = await runApiProofJob({
+  const runOptions = {
     fetchImpl: state.fetchImpl || fetch,
     baseUrl: job.leaApiBaseUrl,
     apiKey: state.env?.LEA_API_KEY,
@@ -5914,6 +5980,9 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
       await persistJobs(state);
     },
     onEvent: async (type, data) => {
+      if (type === "project_dependency" && data?.dependency) {
+        await recordSharedDependencyProgress(state, job, data.dependency, { reused: data.outcome === "existing", started_here: ["inline", "published"].includes(data.outcome) });
+      }
       if (type === "lea_status_updated") acceptStatusEvent(state, data, job);
       if (type === "diagnostic" && data?.code?.startsWith("lean.")) {
         if (data.context?.execution) job.lastCheckExecution = data.context.execution;
@@ -5926,7 +5995,46 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
       if (!recordJobTurnProgress(job, progress)) return;
       await persistJobs(state);
     }
-  });
+  };
+  let exit = await runApiProofJob(runOptions);
+  while (exit.stopReason === "dependency_wait" && !dependencyWorkflowCanceled(state, job)) {
+    const row = await fetchApiRunRow({ fetchImpl: state.fetchImpl || fetch, baseUrl: job.leaApiBaseUrl,
+      apiKey: state.env?.LEA_API_KEY, runId: exit.apiRunId || job.apiRunId, sessionId: job.leaSessionId });
+    const ids = exit.waitingDependencies?.length ? exit.waitingDependencies : JSON.parse(row?.waiting_dependencies_json || "[]");
+    if (!ids.length) break;
+    job.waitingForDependencies = ids;
+    for (const batch of Object.values(state.repairBatches || {})) {
+      if (batch.items?.some((entry) => entry.runJobId === job.jobId)) {
+        batch.waitingJobs = [...new Set([...(batch.waitingJobs || []), job.jobId])];
+        await persistRepairBatches(state);
+      }
+    }
+    job.executionSegments = [...(job.executionSegments || []), { runId: job.apiRunId, usage: exit.usage, costUsd: exit.costUsd }];
+    await persistJobs(state);
+    const outcome = await coordinateSharedWork(state, job, target, ids);
+    job.activeDependencyRunId = null;
+    if (!outcome.ok || dependencyWorkflowCanceled(state, job)) {
+      exit = { ...exit, resultDetail: outcome.canceled || dependencyWorkflowCanceled(state, job) ? "Dependency workflow stopped." : `Shared dependency blocked: ${outcome.reason}` };
+      break;
+    }
+    const continuation = await startApiContinuation({ fetchImpl: state.fetchImpl || fetch,
+      baseUrl: job.leaApiBaseUrl, apiKey: state.env?.LEA_API_KEY, runId: job.apiRunId,
+      sourceBundle: job.sourceBundle, idempotencyKey: `dependency-continue:${job.apiRunId}`,
+      timeoutSeconds: job.leaJobTimeoutSeconds, dependencyResume: true, allowSourcePause: job.allowSourcePause });
+    if (!continuation.ok) {
+      exit = { ...exit, resultDetail: continuation.error || "Saved dependency continuation requires review." };
+      break;
+    }
+    job.waitingForDependencies = [];
+    for (const batch of Object.values(state.repairBatches || {})) {
+      batch.waitingJobs = (batch.waitingJobs || []).filter((id) => id !== job.jobId);
+    }
+    job.continuationAdmission = continuation;
+    job.leaMaxTurns = continuation.body.max_turns ?? null;
+    await persistJobs(state);
+    exit = await runApiProofJob({ ...runOptions, existingRunId: null, startResponse: continuation,
+      maxTurns: job.leaMaxTurns, deadlineAt: continuation.body.deadline_at });
+  }
   job.recoveryState = exit.recoveryState || null;
   job.recoveryReason = exit.recoveryReason || null;
   if (exit.recoveryState === "review") job.connectionState = "review";
@@ -5954,6 +6062,75 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
   // is the newest under its key) nor anything the status queries can reach.
   await pruneAndPersistJobs(state);
   return exit;
+}
+
+function dependencyWorkflowCanceled(state, job) {
+  return job.dependencyCancelRequested === true || Object.values(state.repairBatches || {}).some((batch) => batch.cancelRequested
+    && batch.items?.some((entry) => entry.runJobId === job.jobId));
+}
+
+async function recordSharedDependencyProgress(state, job, dep, extra = {}) {
+  const spec = dep.specification || {};
+  const item = { id: dep.id, state: dep.state, ready: dep.ready, generation: dep.generation,
+    path: dep.path, module_name: dep.module_name, declaration_name: dep.declaration_name,
+    formalization_id: dep.formalization_id, owner_run_id: dep.owner_run_id,
+    specification: { name: spec.name, kind: spec.kind, statement: spec.statement, signature: spec.signature,
+      sources: spec.sources, citation: spec.citation }, blocker: dep.blocker,
+    requesting_targets: dep.requesting_targets, attempts: dep.attempts,
+    ...extra };
+  job.dependencies = mergeDependencyProgress(job.dependencies, item);
+  if (dep.active_run_id) {
+    job.activeDependencyRunId = dep.active_run_id;
+    job.activeDependencyOwned = dep.started_here === true;
+  }
+  for (const batch of Object.values(state.repairBatches || {})) {
+    const entry = batch.items?.find((item) => item.runJobId === job.jobId);
+    if (!entry) continue;
+    batch.dependencies = mergeDependencyProgress(batch.dependencies, { ...item,
+      targetLabels: [...new Set([...(batch.dependencies?.find((d) => d.id === item.id)?.targetLabels || []), entry.targetLabel])] });
+    await persistRepairBatches(state);
+    publishEvent(state, "repair-batch-updated", { overleafProjectId: job.overleafProjectId, batchId: batch.batchId });
+  }
+  await persistJobs(state);
+  publishEvent(state, "jobs-changed", { overleafProjectId: job.overleafProjectId });
+}
+
+async function coordinateSharedWork(state, job, target, ids, { ignoreBatchCancellation = false } = {}) {
+  const api = { fetchImpl: state.fetchImpl || fetch, baseUrl: job.leaApiBaseUrl,
+    apiKey: state.env?.LEA_API_KEY, projectSlug: target.projectSlug || job.projectSlug };
+  return resolveSharedDependencies(ids, {
+    isCanceled: () => ignoreBatchCancellation ? job.dependencyCancelRequested === true : dependencyWorkflowCanceled(state, job),
+    getDependency: async (id) => {
+      const result = await projectDependencyRequest({ ...api, dependencyId: id });
+      return result.ok ? result.body : !result.status || result.status >= 500 ? { unavailable: true } : null;
+    },
+    startDependency: async (id) => {
+      const result = await projectDependencyRequest({ ...api, dependencyId: id, action: "run",
+        body: { model: job.leaModel, timeout_seconds: job.leaJobTimeoutSeconds } });
+      return result.ok ? result.body : { error: result.error, status: result.status };
+    },
+    getRun: (runId) => fetchApiRunRow({ ...api, runId }),
+    onUpdate: (dep) => recordSharedDependencyProgress(state, job, dep),
+    continueRun: async (runId) => {
+      const result = await startApiContinuation({ ...api, runId, sourceBundle: null,
+        idempotencyKey: `dependency-continue:${runId}`, timeoutSeconds: job.leaJobTimeoutSeconds,
+        dependencyResume: true });
+      return result.ok ? result.body : { error: result.error };
+    },
+    observeRun: async (runId, admission) => {
+      state.dependencyObservers ||= new Map();
+      const observer = new AbortController();
+      state.dependencyObservers.set(job.jobId, observer);
+      try { return await runApiProofJob({ ...api, message: "", existingRunId: runId,
+      observerSignal: observer.signal,
+      startResponse: admission ? { ok: true, body: admission } : null,
+      maxTurns: admission?.max_turns ?? job.leaMaxTurns, timeoutMs: job.leaJobTimeoutSeconds * 1000,
+      deadlineAt: admission?.deadline_at || null, appendLog, logPath: job.logPath,
+      onEvent: async (type, data) => {
+        if (type === "project_dependency" && data?.dependency) await recordSharedDependencyProgress(state, job, data.dependency);
+      } }); } finally { state.dependencyObservers.delete(job.jobId); }
+    },
+  });
 }
 
 // Single source of truth for turning a finished Lea run into a theorem outcome.
@@ -7184,6 +7361,8 @@ function buildJobResponse({ job, status, target }) {
     adapterOutcomeStatus: job.adapterOutcomeStatus || null,
     outcomeNeedsReview: job.outcomeNeedsReview === true,
     recoverable: job.recoverable === true,
+    dependencies: job.dependencies || [],
+    waitingForDependencies: job.waitingForDependencies || [],
     connectionState: job.connectionState || null,
     recoveryState: job.recoveryState || null,
     recoveryReason: job.recoveryReason || null,
@@ -7697,6 +7876,8 @@ async function enrichLeanPaneItem({
     // Drives the pane's live polling: it keeps refreshing while any item is still
     // being formalized, then stops once everything settles.
     inProgress: inProgress || statusRunActive,
+    dependencies: latestJob?.dependencies || statusInfo?.dependencies || [],
+    waitingForDependencies: latestJob?.waitingForDependencies || [],
     leaStatus,
     leanCheck,
     leaCheck,

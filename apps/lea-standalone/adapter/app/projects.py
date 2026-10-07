@@ -217,7 +217,7 @@ def _lean_inventory(repo: Path, limit: int = 100) -> str:
     files = [
         p.relative_to(repo).as_posix()
         for p in sorted(repo.rglob("*.lean"))
-        if ".git" not in p.parts and ".lake" not in p.parts
+        if not any(part in {".git", ".lake", ".lea", "build", "node_modules", "candidate"} for part in p.parts)
     ]
     if not files:
         return ""
@@ -306,6 +306,7 @@ def compose_context_message(project: dict, repo: Path) -> dict | None:
                 "and say so in your reply."
             )
 
+    from . import project_library
     content = (
         f"{CONTEXT_MARKER}\n"
         f"You are working in project **{project.get('title', namespace)}** "
@@ -342,7 +343,8 @@ def compose_context_message(project: dict, repo: Path) -> dict | None:
         f"```\n"
         f"The `uses` lines are the edges that chain the proof — point them at the keys of "
         f"sibling nodes you build on, and reuse nodes already proved.\n\n"
-        f"## Project files\n{inventory}{overleaf_section}{_lean_inventory(repo)}"
+        f"## Project files\n{inventory}{overleaf_section}"
+        + project_library.context(project, repo)
     )
     return {"role": "user", "content": content}
 

@@ -1,0 +1,277 @@
+"""Canonical reuse without provider calls; real Lean inspection is tested below."""
+from concurrent.futures import ThreadPoolExecutor
+import json
+from pathlib import Path
+import shutil
+
+import pytest
+
+from app import db, store, project_library as library, project_dependencies as deps
+from app.routes import runs
+from app.config import LeaConfig
+from lea.events import CheckResult, VerifyResult
+
+REAL_INSPECT_SPEC = library.inspect_specification
+
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "library.sqlite3")
+    db.init_db()
+    p = store.get_or_create_project("study", "Study")
+    repo = tmp_path / "proofs/Lea/Study"
+    repo.mkdir(parents=True)
+    monkeypatch.setattr(library, "project_repo", lambda _: repo)
+    monkeypatch.setattr(library, "inspect_specification", lambda _, s: {
+        "kind": s.get("kind", "theorem"), "type": s["signature"],
+        "type_expr": s["signature"], "body_expr": s.get("body"), "axioms": []})
+    return p, repo
+
+
+def spec(signature=": True", **changes):
+    return {**dict(name="SharedFact", kind="theorem", statement="A precise shared result",
+                   signature=signature, imports=[], sources=[]), **changes}
+
+
+def target(p, name):
+    return store.create_formalization(project_id=p["id"], loose_session_id=None,
+        display_title=name, declaration_name=name, statement=name)
+
+
+def active_run(p, name="A"):
+    bundle = store.create_run_bundle(message=name, session_id=None, project_id=p["id"],
+        session_origin="overleaf", session_origin_url=None, model="test", provider=None,
+        max_turns=10, autonomous=True, new_formalization={"display_title": name, "declaration_name": name})
+    store.claim_pending_run(bundle["run"]["id"])
+    return store.get_run(bundle["run"]["id"])
+
+
+def install_inspection(monkeypatch, dep, *, wrong=False):
+    expected = dep["specification"]["expected"]
+    declaration = dict(expected, full_name=dep["declaration_name"], user_name=dep["declaration_name"], visibility="public")
+    if wrong:
+        declaration["type_expr"] = ": False"
+    monkeypatch.setattr(library, "inspect_module", lambda *_: [declaration])
+    monkeypatch.setattr(library, "rebuild", lambda *_: CheckResult("module", "ok"))
+    monkeypatch.setattr(library, "verify", lambda *_: VerifyResult("ok"))
+
+
+def test_helpers_private_unicode_and_inventory_over_limit(project):
+    p, repo = project
+    for index in range(110):
+        (repo / f"Module{index:03}.lean").write_text(f"namespace Lea.Study\ntheorem lemma{index} : True := by trivial\nend Lea.Study\n")
+    (repo / "Last.lean").write_text("namespace Lea.Study\nprivate theorem α_helper : True := by trivial\nlemma β : True := by trivial\nend Lea.Study\n")
+    (repo / ".lea/tmp").mkdir(parents=True)
+    (repo / ".lea/tmp/Probe.lean").write_text("theorem probe : False := by sorry")
+    records = library.refresh(p)
+    assert len(records) == 112
+    assert not any(d["path"].startswith(".lea") for d in records)
+    assert next(d for d in records if d["user_name"] == "Lea.Study.α_helper")["visibility"] == "private"
+    assert library.search(p, "lemma109", validate=False)["total"] == 1
+
+
+def test_atomic_reservation_and_two_consumers(project):
+    p, _ = project
+    a, b = target(p, "A"), target(p, "B")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda i: deps.ensure(p, spec(), requester_id=[a,b][i % 2]["id"]), range(16)))
+    assert len({r["dependency_id"] for r in results}) == 1
+    dep = deps.get(results[0]["dependency_id"])
+    assert len(dep["attempts"]) == 1
+    assert set(dep["requesting_targets"]) == {a["id"], b["id"]}
+    assert dep["path"].startswith("Shared/")
+
+
+def test_definitions_with_same_type_different_bodies_remain_distinct(project):
+    p, _ = project
+    one = spec(": Nat"); one.update(kind="definition", body="1")
+    two = {**one, "body": "2"}
+    assert deps.ensure(p, one)["dependency_id"] != deps.ensure(p, two)["dependency_id"]
+
+
+def test_inline_handoff_preserves_draft_notes_and_attempt_identity(project):
+    p, repo = project
+    run = active_run(p)
+    first = deps.ensure(p, spec(notes="A finite-cover route may work."), run_id=run["id"], mode="inline")
+    path = repo / first["path"]
+    path.parent.mkdir(parents=True)
+    path.write_text(first["skeleton"])
+    transferred = deps.ensure(p, spec(notes="The compactness step still needs investigation."), run_id=run["id"], mode="deferred")
+    assert transferred["dependency_id"] == first["dependency_id"]
+    assert transferred["dependency"]["generation"] == 1
+    assert transferred["dependency"]["owner_run_id"] is None
+    assert path.read_text() == first["skeleton"]
+    assert "finite-cover" in transferred["dependency"]["specification"]["notes"]
+    assert "compactness" in transferred["dependency"]["specification"]["notes"]
+
+
+def test_failure_cached_until_retry_or_relevant_source_change(project):
+    p, _ = project
+    first = deps.ensure(p, spec())
+    with db.write() as conn:
+        conn.execute("update project_dependencies set state='failed',blocker_json=? where id=?",
+                     (json.dumps({"detail": "Missing supporting mathematics"}), first["dependency_id"]))
+    again = deps.ensure(p, spec())
+    assert again["outcome"] == "blocked" and again["dependency"]["generation"] == 1
+    retried = deps.retry(first["dependency_id"])
+    assert retried["dependency"]["generation"] == 2
+    with db.write() as conn:
+        conn.execute("update project_dependencies set state='failed' where id=?", (first["dependency_id"],))
+    changed = deps.ensure(p, spec(sources=[{"path": "proof.tex", "content": "new supporting argument"}]))
+    assert changed["dependency"]["generation"] == 3
+
+
+def test_citation_is_metadata_and_missing_statement_is_shared_blocker(project):
+    p, _ = project
+    a = deps.ensure(p, spec(citation={"key": "BPS", "locator": "Theorem 2"}))
+    b = deps.ensure(p, spec(": False", citation={"key": "BPS", "locator": "Theorem 3"}))
+    assert a["dependency_id"] != b["dependency_id"] and a["path"].startswith("External/BPS/")
+    missing = deps.ensure(p, spec(signature=""))
+    assert missing["outcome"] == "blocked" and missing["dependency"]["blocker"]["category"] == "source_gap"
+
+
+def test_dependency_graph_and_import_cycles_rejected(project):
+    p, repo = project
+    a = target(p, "A")
+    first = deps.ensure(p, spec(), requester_id=a["id"])["dependency"]
+    with pytest.raises(ValueError, match="cycle"):
+        deps.ensure(p, spec(), requester_id=first["formalization_id"])
+    (repo / "A.lean").write_text("theorem A : True := by trivial")
+    store.link_formalization_file(a["id"], "A.lean", "primary")
+    with pytest.raises(ValueError, match="unfinished"):
+        deps.ensure(p, spec(imports=["Lea.Study.A"]), requester_id=a["id"])
+
+
+def test_inline_publication_survives_parent_failure_and_b_reuses(project, monkeypatch):
+    p, repo = project
+    run = active_run(p)
+    allocation = deps.ensure(p, spec(), run_id=run["id"], mode="inline")
+    dep = allocation["dependency"]
+    path = repo / dep["path"]
+    path.parent.mkdir(parents=True)
+    path.write_text(allocation["skeleton"].replace("sorry", "trivial"))
+    install_inspection(monkeypatch, dep)
+    assert deps.publish_owned(run["id"], dep["path"])["ready"]
+    store.update_run(run["id"], "failed", result_detail="A failed after L was proved")
+    deps.settle_run(run["id"])
+    b = target(p, "B")
+    reused = deps.ensure(p, spec(), requester_id=b["id"])
+    assert reused["outcome"] == "existing"
+    assert reused["dependency_id"] == dep["id"]
+    assert len(reused["dependency"]["attempts"]) == 1
+    assert len(reused["dependency"]["requesting_targets"]) == 2
+    assert store.list_artifacts_for_scope(p["id"])[0]["path"] == dep["path"]
+    # Editing the file immediately withdraws its cached verification.
+    path.write_text(path.read_text() + "\n-- edited\n")
+    assert not deps.get(dep["id"])["ready"]
+
+
+def test_weakened_statement_and_missing_audit_never_publish(project, monkeypatch):
+    p, repo = project
+    run = active_run(p)
+    allocation = deps.ensure(p, spec(), run_id=run["id"], mode="inline")
+    dep = allocation["dependency"]
+    path = repo / dep["path"]; path.parent.mkdir(parents=True); path.write_text(allocation["skeleton"])
+    install_inspection(monkeypatch, dep, wrong=True)
+    assert deps.publish_owned(run["id"], dep["path"]) is None
+    assert not deps.get(dep["id"])["ready"]
+    path.write_text(path.read_text() + "\n-- new version\n")
+    install_inspection(monkeypatch, dep)
+    monkeypatch.setattr(library, "verify", lambda *_: VerifyResult("unavailable"))
+    assert deps.publish_owned(run["id"], dep["path"]) is None
+
+
+@pytest.mark.skipif(shutil.which("lake") is None, reason="Lean runtime unavailable")
+def test_real_lean_inspection_alpha_binders_and_definition_body(tmp_path):
+    (tmp_path / "lakefile.lean").write_text('import Lake\nopen Lake DSL\npackage inspection\n')
+    toolchain = Path(__file__).resolve().parents[2] / "prover/workspace/lean-toolchain"
+    (tmp_path / "lean-toolchain").write_text(toolchain.read_text())
+    prefix = "import Lean\nnamespace Lea.Test\nvariable {α : Type}\ntheorem πρώτη (x : α) : x = x := rfl\ndef entropy : Nat := 1\nend Lea.Test"
+    one = library.inspect_source(tmp_path, prefix, '#lea_inspect_decl "Lea.Test.πρώτη"')
+    two = library.inspect_source(tmp_path, prefix.replace("(x : α) : x = x", "(y : α) : y = y"), '#lea_inspect_decl "Lea.Test.πρώτη"')
+    assert one["type_expr"] == two["type_expr"]
+    assert "α" in one["type"] and one["kind"] == "theorem"
+    entropy = library.inspect_source(tmp_path, prefix, '#lea_inspect_decl "Lea.Test.entropy"')
+    other = library.inspect_source(tmp_path, prefix.replace(":= 1", ":= 2"), '#lea_inspect_decl "Lea.Test.entropy"')
+    assert entropy["type_expr"] == other["type_expr"] and entropy["body_expr"] != other["body_expr"]
+
+
+@pytest.mark.skipif(shutil.which("lake") is None, reason="Lean runtime unavailable")
+def test_real_module_public_private_types_and_two_consumers(project, monkeypatch):
+    p, repo = project
+    root = repo.parents[2]
+    (root / "lakefile.lean").write_text('import Lake\nopen Lake DSL\npackage librarytest\nlean_lib Lea where\n  srcDir := "proofs"\n')
+    toolchain = Path(__file__).resolve().parents[2] / "prover/workspace/lean-toolchain"
+    (root / "lean-toolchain").write_text(toolchain.read_text())
+    monkeypatch.setattr(library, "inspect_specification", REAL_INSPECT_SPEC)
+    # Real module builds and compiler inspection, deterministic audit boundary.
+    monkeypatch.setattr(library, "verify", lambda *_: VerifyResult("ok"))
+    a, b = active_run(p, "A"), active_run(p, "B")
+    reservation = deps.ensure(p, spec(": True"), run_id=a["id"], mode="inline")
+    dep = reservation["dependency"]
+    path = repo / dep["path"]
+    path.parent.mkdir(parents=True)
+    path.write_text(reservation["skeleton"].replace("by\n  sorry", "by\n  exact True.intro") +
+        f"\nnamespace {p['namespace']}.Nested\nprivate theorem κ {{α : Type}} (x : α) : x = x := rfl\n"
+        "theorem η {α : Type} (x : α) : x = x := rfl\n"
+        "def BPSDegreeReductionClaim : Prop := False\n"
+        "theorem conditional (h : BPSDegreeReductionClaim) : BPSDegreeReductionClaim := h\nend " + p["namespace"] + ".Nested\n")
+    published = deps.publish_owned(a["id"], dep["path"])
+    assert published["ready"]
+    records = library.search(p, "Nested", validate=False)["declarations"]
+    private = next(d for d in records if d["user_name"].endswith(".κ"))
+    assert private["visibility"] == "private" and private["full_name"].startswith("_private.")
+    assert not private["reusable"] and private["outstanding_obligations"]
+    public = next(d for d in records if d["user_name"].endswith(".η"))
+    assert public["reusable"] and "α" in public["type"]
+    conditional = next(d for d in records if d["user_name"].endswith(".conditional"))
+    assert conditional["outstanding_obligations"]
+    obligation = spec(f": {p['namespace']}.Nested.BPSDegreeReductionClaim", imports=[dep["module_name"]])
+    expected = REAL_INSPECT_SPEC(p, obligation)
+    assert library.semantic_key(conditional) != library.semantic_key(expected)
+    claim = next(d for d in records if d["user_name"].endswith(".BPSDegreeReductionClaim"))
+    assert claim["kind"] == "definition" and library.semantic_key(claim) != library.semantic_key(expected)
+    reused = deps.ensure(p, spec(": True"), run_id=b["id"], mode="inline")
+    assert reused["outcome"] == "existing" and reused["dependency_id"] == dep["id"]
+    assert len(reused["dependency"]["attempts"]) == 1
+    assert len(reused["dependency"]["requesting_targets"]) == 2
+    # Current verification is cached; rereading does not invoke another audit.
+    monkeypatch.setattr(library, "verify", lambda *_: pytest.fail("duplicate audit"))
+    library.validate_module(p, dep["path"])
+
+
+def test_dependency_continuation_retains_original_allowances(project, monkeypatch):
+    from app import recovery, bridge
+    p, repo = project
+    run = active_run(p)
+    reservation = deps.ensure(p, spec(), run_id=run["id"], mode="deferred")
+    dependency = reservation["dependency"]
+    cfg = LeaConfig(model="test", max_turns=50, max_cost_usd=20, lea_root=repo, max_spend_usd=None)
+    monkeypatch.setattr(runs, "load_config", lambda: cfg)
+    monkeypatch.setattr(bridge, "enqueue_run", lambda *_: None)
+    monkeypatch.setattr(bridge, "validate_continuation_runtime", lambda *_: None)
+    # This is a worker checkpoint: its source is pinned independently of LaTeX.
+    with db.write() as conn:
+        deps.admit_worker(conn, dependency["id"], p["id"], run["id"])
+        conn.execute("""update runs set purpose='project_dependency',dependency_id=?,waiting_dependencies_json=?,
+            automation_budget_json=? where id=?""", (dependency["id"], '["verified-child"]',
+            json.dumps(dict(max_turns=10, max_cost_usd=5, cost_used=2, remaining_seconds=70)), run["id"]))
+        conn.execute("update project_dependencies set state='waiting' where id=?", (dependency["id"],))
+    store.update_run(run["id"], "cancelled", recoverable=True, stop_reason="dependency_wait")
+    monkeypatch.setattr(recovery, "continuation_checkpoint", lambda *_: ({"turn": 3}, {}, 1))
+    original_get = deps.get
+    monkeypatch.setattr(deps, "get", lambda key, **kw: {"ready": True, "result": {"module": "Lea.Child"}}
+                        if key == "verified-child" else original_get(key, **kw))
+    captured = {}
+    def bundle(**arguments):
+        captured.update(arguments)
+        return {"created": False, "run": {"id": "continuation", "resumes_run_id": run["id"], "resume_checkpoint_id": 1}}
+    monkeypatch.setattr(store, "create_run_bundle", bundle)
+    monkeypatch.setattr(runs, "_continuation_response", lambda value: value)
+    old = store.get_run(run["id"])
+    runs._continue_dependency(old, runs.ContinueRequest(idempotency_key="continuation", dependency_resume=True), "hash")
+    assert captured["max_turns"] == 10
+    assert captured["automation_budget"]["cost_used"] == 2
+    assert captured["automation_budget"]["remaining_seconds"] == 70
+    assert captured["resume_checkpoint_id"] == 1 and captured["source_bundle"] is None
+    assert "Lea.Child" in captured["message"]

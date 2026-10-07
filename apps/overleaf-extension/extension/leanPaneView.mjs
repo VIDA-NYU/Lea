@@ -9,6 +9,78 @@ export { renderLeaStatus, leaStatusLabel } from "./leaStatusView.mjs";
 
 export { renderPaneMath } from "./leanPaneMath.mjs";
 
+const sharedViews = new Map();
+export function renderSharedDependencies(dependencies, { document, key = "shared", retry, open }) {
+  if (!dependencies?.length) return null;
+  const previous = sharedViews.get(key);
+  const expanded = new Set(previous?.ownerDocument === document
+    ? [...previous.querySelectorAll("details[open]")].map((item) => item.dataset.dependencyId) : []);
+  const root = document.createElement("section");
+  root.className = "ol-lean-shared-results";
+  const node = (tag, text, parent = root) => {
+    const value = document.createElement(tag);
+    if (text !== undefined) value.textContent = text;
+    parent.appendChild(value);
+    return value;
+  };
+  node("strong", "Shared mathematics");
+  const ready = dependencies.filter((dep) => dep.ready).length;
+  node("p", `${ready} of ${dependencies.length} shared results available`).className = "ol-lean-live-status-meta";
+  for (const dep of dependencies) {
+    const spec = dep.specification || {};
+    const name = spec.name || dep.declaration_name || dep.id;
+    const detail = node("details");
+    detail.dataset.dependencyId = dep.id;
+    detail.open = expanded.has(dep.id);
+    const status = dep.ready ? dep.reused ? "Reused" : "Verified" : dep.state === "running"
+      ? "Proving" : dep.state === "waiting" ? "Waiting for supporting results" : String(dep.state || "pending").replaceAll("_", " ");
+    node("summary", `${status} · ${name}`, detail);
+    if (dep.targetLabels?.length) node("p", `${dep.ready ? "Used by" : "Waiting targets"}: ${dep.targetLabels.join(", ")}`, detail);
+    if (spec.statement) node("p", spec.statement, detail);
+    node("pre", `import ${dep.module_name}\n${dep.declaration_name} ${spec.signature || ""}`, detail);
+    node("p", dep.path, detail).className = "ol-lean-live-status-meta";
+    if (spec.citation) node("p", `Citation: ${typeof spec.citation === "string" ? spec.citation : JSON.stringify(spec.citation)}`, detail);
+    for (const source of spec.sources || []) node("p", typeof source === "string" ? source : JSON.stringify(source), detail);
+    if (dep.blocker) node("p", `${dep.blocker.category || "Blocker"}: ${dep.blocker.detail || ""}`, detail);
+    for (const attempt of dep.attempts || []) {
+      const row = node("p", `Attempt ${attempt.generation}: ${attempt.state}${attempt.detail ? ` · ${attempt.detail}` : ""}`, detail);
+      if (open && attempt.session_id) {
+        const button = node("button", "Inspect attempt", row);
+        button.type = "button";
+        button.className = "ol-lean-secondary-button";
+        button.addEventListener("click", () => open({ ...dep, session_id: attempt.session_id }));
+      }
+    }
+    if (retry && !dep.ready && ["failed", "blocked", "needs_review", "stale", "interrupted"].includes(dep.state) && spec.signature) {
+      const label = dep.state === "interrupted" ? "Resume shared result" : "Retry shared result";
+      const button = node("button", label, detail);
+      button.type = "button";
+      button.className = "ol-lean-secondary-button";
+      const message = node("span", "", detail);
+      message.setAttribute("role", "status");
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        button.textContent = "Starting retry…";
+        try { await retry(dep, { resume: dep.state === "interrupted" }); button.textContent = "Attempt started"; }
+        catch (error) { message.textContent = error.message; button.disabled = false; button.textContent = label; }
+      });
+      if (dep.state === "interrupted") {
+        const restart = node("button", "Retry shared result", detail);
+        restart.type = "button";
+        restart.className = "ol-lean-secondary-button";
+        restart.addEventListener("click", async () => {
+          restart.disabled = true;
+          button.disabled = true;
+          try { await retry(dep, { resume: false }); restart.textContent = "Retry started"; }
+          catch (error) { message.textContent = error.message; restart.disabled = false; button.disabled = false; }
+        });
+      }
+    }
+  }
+  sharedViews.set(key, root);
+  return root;
+}
+
 const PANE_STATUS_LABELS = {
   "missing-stub": "missing stub",
   "stub-generated": "stub generated",

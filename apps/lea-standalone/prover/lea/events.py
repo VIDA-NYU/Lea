@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 from .providers import Usage
 from .status_reporting import LeaStatusUpdateRequested, LeaStatusUpdateAck
+from .project_library_tools import ProjectLibraryRequested, ProjectLibraryAck
 
 
 @dataclass(frozen=True)
@@ -245,6 +246,7 @@ class Finished:
 AgentEvent = (
     TurnStarted
     | LeaStatusUpdateRequested
+    | ProjectLibraryRequested
     | AssistantTextDelta
     | ToolCalled
     | ToolResulted

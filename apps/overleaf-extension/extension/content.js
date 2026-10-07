@@ -3124,6 +3124,27 @@
     });
   }
 
+  function renderSharedMathematics(dependencies, key) {
+    return leanPaneView.renderSharedDependencies(dependencies, { document, key,
+      retry: async (dep, { resume = false } = {}) => {
+        const baseUrl = await chatCompanionBaseUrl();
+        const response = await fetch(`${baseUrl}/lean-pane/dependencies/retry`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(), dependencyId: dep.id, resume })
+        });
+        const body = await response.json();
+        if (!response.ok) throw companionRequestError(response, body);
+      },
+      open: async (dep) => {
+        const settings = await getSettings();
+        const link = getLeaSessionLink({ leaSessionId: dep.session_id, leaUiBaseUrl: settings.leaUiBaseUrl });
+        const url = new URL(link.url);
+        url.searchParams.set("formalization", dep.formalization_id);
+        await openLeaSession({ ...link, url: url.toString() });
+      }
+    });
+  }
+
   function renderProjectCheckChip(label, status, kind) {
     const chip = document.createElement("span");
     const normalized = String(status || (kind === "lea" ? "N/A" : "unformalized"));
@@ -3286,6 +3307,8 @@
 
     const progress = renderLeanPaneDetailSection("Progress and checks");
     progress.appendChild(renderLeanPaneLiveStatus(item));
+    const shared = renderSharedMathematics(item.dependencies, `target:${item.id}`);
+    if (shared) progress.appendChild(shared);
     const accountingNote = formatLeanPaneAccounting(item);
     if (accountingNote) {
       const note = document.createElement("p");
@@ -3876,7 +3899,7 @@
     const attentionStates = new Set(["failed", "skipped", "canceled", "needs_review", "disproved"]);
     const completedEntries = batch.items.filter((entry) => completedStates.has(entry.state));
     const attentionEntries = batch.items.filter((entry) => attentionStates.has(entry.state));
-    const reportedActiveEntry = batch.items.find((entry) => entry.state === "running") || null;
+    const reportedActiveEntry = batch.items.find((entry) => ["running", "waiting"].includes(entry.state)) || null;
     // The launch response can land after the batch loop is marked running but
     // just before its first entry flips pending → running. Show that first
     // dispatch as current instead of briefly rendering an idle-looking queue.
@@ -3973,6 +3996,8 @@
       progress.appendChild(segment);
     }
     panel.appendChild(progress);
+    const shared = renderSharedMathematics(batch.dependencies, `batch:${batch.batchId}`);
+    if (shared) panel.appendChild(shared);
 
     if (batch.pausedOn) {
       const callout = document.createElement("div");
@@ -4002,7 +4027,7 @@
       const currentRow = renderBatchQueueEntry(activeEntry, activeIndex, {
         marker: "●",
         stateClass: "running",
-        detail: formatBatchQueueActiveDetail(activeEntry, runningVerb)
+        detail: activeEntry.state === "waiting" ? "Waiting for shared mathematics" : formatBatchQueueActiveDetail(activeEntry, runningVerb)
       });
       current.appendChild(currentRow);
       panel.appendChild(current);
@@ -4235,6 +4260,18 @@
     summary.className = "ol-lean-batch-report-facts";
     summary.textContent = facts.summary || "Batch results are available below.";
     section.appendChild(summary);
+    if (facts.dependencyCounts && facts.dependencies?.length) {
+      const sharedSummary = document.createElement("p");
+      const counts = facts.dependencyCounts;
+      sharedSummary.textContent = `Shared mathematics: ${counts.newlyProved || 0} newly proved · ${counts.reused || 0} reused · ${counts.blocked || 0} blocked.`;
+      section.appendChild(sharedSummary);
+      const shared = leanPaneView.renderSharedDependencies(facts.dependencies.map((dep) => ({
+        ...dep, ready: dep.state === "ready", module_name: dep.module, declaration_name: dep.declaration,
+        targetLabels: dep.targets, specification: { name: dep.title, statement: dep.statement,
+          sources: dep.sources, citation: dep.citation }
+      })), { document, key: `report:${report.batch_id}` });
+      if (shared) section.appendChild(shared);
+    }
     if (report.state === "ready" && report.narrative) {
       const narrative = document.createElement("p");
       narrative.className = "ol-lean-batch-report-narrative";

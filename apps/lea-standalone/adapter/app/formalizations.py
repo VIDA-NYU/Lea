@@ -359,6 +359,15 @@ def decorate(rows: list[dict]) -> list[dict]:
             latest_step=step, latest_run=completion_run, steps=current_steps,
         )
         verification = verify_by_id.get(fid)
+        if item.get("origin") == "project_dependency":
+            from . import project_dependencies
+            with connect() as conn:
+                dependency = conn.execute("select id from project_dependencies where formalization_id=?", (fid,)).fetchone()
+            shared = project_dependencies.get(dependency[0]) if dependency else None
+            if shared and shared.get("ready"):
+                validity = "defined" if item.get("kind") == "definition" else "proved"
+                validity_reason = "The pinned shared declaration passed its current module build and kernel audit."
+                check_current = True
         if active and isinstance(active.get("pending_approval"), str):
             try:
                 active["pending_approval"] = json.loads(active["pending_approval"])

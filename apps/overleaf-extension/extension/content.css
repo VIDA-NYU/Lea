@@ -3852,3 +3852,11 @@ body.ol-lean-settings-resizing {
 .ol-lean-lea-check-finding-blocking { border-left: 3px solid #b45309; padding-left: 8px; }
 
 .ol-lean-status-announcement { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.ol-lean-shared-results { padding: 12px; border-top: 1px solid var(--ol-line); }
+.ol-lean-shared-results details { margin-top: 8px; padding: 8px 0; border-top: 1px solid var(--ol-line); }
+.ol-lean-shared-results summary { cursor: pointer; overflow-wrap: anywhere; line-height: 1.5; }
+.ol-lean-shared-results p { margin: 6px 0; overflow-wrap: anywhere; line-height: 1.5; }
+.ol-lean-shared-results pre { background: var(--ol-code-bg); padding: 8px; border-radius: 6px; font: 11px/1.5 var(--ol-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ol-lean-shared-results button { margin: 6px 8px 0 0; }
+.ol-lean-shared-results summary:focus-visible { outline: 2px solid var(--ol-ink-2); outline-offset: 3px; }

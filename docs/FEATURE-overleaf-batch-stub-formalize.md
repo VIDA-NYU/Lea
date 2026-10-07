@@ -2,6 +2,10 @@
 
 ## Summary
 
+Shared supporting mathematics is coordinated alongside the document queue. See
+[Project mathematics and shared dependencies](FEATURE-overleaf-shared-mathematics.md)
+for canonical placement, library tools, saved dependency waits, and reuse semantics.
+
 The Lean pane offers two project-level launchers above the item tree:
 
 - **Stub all (N)** — generate a Lean `sorry`-stub for every un-stubbed theorem

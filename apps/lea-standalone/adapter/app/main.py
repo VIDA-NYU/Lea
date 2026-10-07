@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from .db import init_db
-from .routes import (alignment_checks, lea_status, overleaf_source, formalize_batch_reports, custom_tools, formalizations, mcp_servers, projects, runs, search,
+from .routes import (project_library, alignment_checks, lea_status, overleaf_source, formalize_batch_reports, custom_tools, formalizations, mcp_servers, projects, runs, search,
                      sessions, settings, skills, subagents)
 from . import alignment_store, bridge, formalize_batch_reports as batch_report_service, github_import_service, netguard, store, recovery, runtime
 from .config import load_config
@@ -76,6 +76,11 @@ def startup() -> None:
         alignment_store.recover_interrupted()
         batch_report_service.recover_interrupted()
         bridge.recover_runs_at_startup()
+        from .project_dependencies import recover
+        recover()
+        from . import project_library, store
+        for project in store.list_projects():
+            project_library.refresh(project)
         config = load_config()
         proofs_root = config.lea_root / "workspace" / "proofs" if config.lea_root else None
         github_import_service.recover_github_imports_at_startup(proofs_root)
@@ -88,7 +93,7 @@ def startup() -> None:
 @app.get("/api/health")
 def health() -> dict:
     from .lea_status import admission_enabled
-    return {"ok": True, **runtime.snapshot(), "capabilities": {"lea_status": {"version": 1, "admission_enabled": admission_enabled(), "independent_checks": False, "source_pause_policy": 1}, "overleaf_source_refresh": {"version": 1}}}
+    return {"ok": True, **runtime.snapshot(), "capabilities": {"lea_status": {"version": 1, "admission_enabled": admission_enabled(), "independent_checks": False, "source_pause_policy": 1}, "overleaf_source_refresh": {"version": 1}, "project_library": {"version": 1, "dependency_coordination": True}}}
 
 
 class RestartRequest(BaseModel):
@@ -121,6 +126,7 @@ app.include_router(sessions.router)
 app.include_router(runs.router)
 app.include_router(settings.router)
 app.include_router(projects.router)
+app.include_router(project_library.router)
 app.include_router(formalizations.router)
 app.include_router(search.router)
 app.include_router(skills.router)

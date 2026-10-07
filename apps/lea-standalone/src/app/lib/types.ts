@@ -51,6 +51,9 @@ export interface RunSummary {
   recovery_reason?: string | null;
   checkpoint_at?: string | null;
   available_recovery_action?: 'resume' | 'continue' | null;
+  dependency_id?: string | null;
+  waiting_dependencies_json?: string | null;
+  automation_budget_json?: string | null;
 }
 // ── Per-tool approval gate (D19) ──────────────────────────────────────────────
 export type GatedTool = 'bash' | 'write_file' | 'edit_file';

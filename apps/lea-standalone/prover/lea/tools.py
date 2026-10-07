@@ -298,6 +298,11 @@ def _sandboxed_write_path(path: str) -> Path:
             f"path {path!r} resolves outside this run's workspace ({root}). "
             "Write only within your session's proofs directory."
         )
+    config = current_config()
+    relative = target.relative_to(root).as_posix()
+    if (config and config.project_library and relative.split("/", 1)[0] in {"Shared", "External"}
+            and relative not in config.project_context.get("reserved_paths", [])):
+        raise _SandboxViolation("Reserve this shared module with request_project_dependency before writing it; another attempt may own it.")
     return target
 
 

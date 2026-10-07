@@ -57,9 +57,9 @@ _DECLARATION_RE = re.compile(
     r"(?:private\s+|protected\s+|noncomputable\s+|unsafe\s+|partial\s+|"
     r"scoped\s+|local\s+)*"
     r"(theorem|lemma|def|abbrev|structure|class|inductive|coinductive|instance|opaque)\s+"
-    r"([A-Za-z_][A-Za-z0-9_'.]*)"
+    r"((?:[^\W\d]|_)[\w'.]*|«[^»]+»)"
 )
-_NAMESPACE_RE = re.compile(r"^\s*namespace\s+([A-Za-z_][A-Za-z0-9_'.]*)")
+_NAMESPACE_RE = re.compile(r"^\s*namespace\s+((?:[^\W\d]|_)[\w'.]*)")
 _SECTION_RE = re.compile(r"^\s*section(?:\s+([A-Za-z_][A-Za-z0-9_'.]*))?\s*$")
 _MUTUAL_RE = re.compile(r"^\s*mutual\s*$")
 _END_RE = re.compile(r"^\s*end\b\s*([A-Za-z_][A-Za-z0-9_'.]*)?")

@@ -56,6 +56,8 @@ from lea.interface import (
     SubagentStarted,
     LeaStatusUpdateRequested,
     LeaStatusUpdateAck,
+    ProjectLibraryRequested,
+    ProjectLibraryAck,
     ToolApprovalRequested,
     ToolCalled,
     ToolResulted,
@@ -594,6 +596,7 @@ _FINISH_STATUS = {
     "interrupted": "cancelled",
     "source_obstruction": "cancelled",
     "status_reporting_failed": "cancelled",
+    "dependency_wait": "cancelled",
 }
 
 _COMPLETED_RESULTS = {"proved", "disproved", "needs_review"}
@@ -1579,8 +1582,20 @@ def _skill_resolution_task(run: dict | None, fallback: str) -> str:
     return (_resolve_task(run) if run else None) or fallback
 
 
+def _project_library_config(cfg, project, run):
+    if not project:
+        return cfg
+    from .db import connect
+    with connect() as conn:
+        paths = [row[0] for row in conn.execute("select path from project_dependencies where owner_run_id=?", (run["id"],))]
+    names = ["search_project_library", "request_project_dependency"]
+    return replace(cfg, project_library=True, project_context={"reserved_paths": paths},
+                   extra_tools=list(dict.fromkeys([*cfg.extra_tools, *names])),
+                   tools=list(dict.fromkeys([*cfg.tools, *names])) if cfg.tools is not None else None)
+
+
 def validate_continuation_runtime(old: dict, config: LeaConfig, checkpoint_id: int,
-                                  source: dict, allow_source_pause: bool) -> None:
+                                  source: dict | None, allow_source_pause: bool) -> None:
     """Check the same executable inputs as the driver before admitting a run.
 
     No model or external tool is invoked. The driver checks again at dispatch,
@@ -1601,6 +1616,9 @@ def validate_continuation_runtime(old: dict, config: LeaConfig, checkpoint_id: i
                       allow_source_pause=allow_source_pause,
                       extra_tools=list(dict.fromkeys([*config.extra_tools, "update_lea_status"])),
                       tools=(list(dict.fromkeys([*config.tools, "update_lea_status"])) if config.tools is not None else None))
+        if old.get("purpose") == "project_dependency":
+            cfg = replace(config, model=old["model"], prompt_variant="default")
+        cfg = _project_library_config(cfg, project, old)
         if paths:
             cfg = replace(cfg, skills=paths, skills_root=tempdir)
         specs = store.mcp_server_specs(project["id"] if project else None, old["session_id"])
@@ -1615,8 +1633,8 @@ def validate_continuation_runtime(old: dict, config: LeaConfig, checkpoint_id: i
         if roles_tempdir:
             cfg = replace(cfg, agent_dirs=[roles_tempdir])
         candidate = {**old, "resumes_run_id": old["id"], "resume_checkpoint_id": checkpoint_id,
-                     "focus_source_hash": source["sourceIdentityHash"]}
-        recovery.prepare_continuation(candidate, cfg, repo, {"source_bundle": source}, "Continue")
+                     "focus_source_hash": source["sourceIdentityHash"] if source else old.get("focus_source_hash")}
+        recovery.prepare_continuation(candidate, cfg, repo, {"source_bundle": source} if source else {}, "Continue")
     except (LeaError, OSError) as exc:
         raise ValueError("Saved agent configuration could not be loaded. Restore its tools and skills or use Re-formalize.") from exc
     finally:
@@ -1658,6 +1676,7 @@ def run_lea(context: RunnerContext) -> None:
         cfg, subagent_override_error = _with_subagents(cfg)
     session_id = context.session_id
     run_id = context.run_id
+    execution_started = time.monotonic()
 
     # Admission (which run may start, and whether there's room) already happened in
     # the dispatcher before this thread was spawned. run_lea no longer acquires a
@@ -1970,6 +1989,10 @@ def run_lea(context: RunnerContext) -> None:
                               else "overleaf_continuation" if context.purpose == "overleaf_continuation" else "overleaf_faithful"),
                           extra_tools=list(dict.fromkeys([*cfg.extra_tools, "update_lea_status"])),
                           tools=(list(dict.fromkeys([*cfg.tools, "update_lea_status"])) if cfg.tools is not None else None))
+        cfg = _project_library_config(cfg, project, run_row)
+        budget = json.loads(run_row.get("automation_budget_json") or "{}")
+        if budget.get("max_cost_usd") is not None:
+            cfg = replace(cfg, max_cost_usd=max(0, budget["max_cost_usd"] - budget.get("cost_used", 0)))
         current_run = store.get_run(run_id)
         manifest_provider = lambda: recovery.manifest(run=current_run, config=cfg, repo=repo)
         resume_state = None
@@ -2050,6 +2073,16 @@ def run_lea(context: RunnerContext) -> None:
             if not isinstance(ev, AssistantTextDelta):
                 deltas.flush()
 
+            if isinstance(ev, ProjectLibraryRequested):
+                from .project_dependencies import tool_request
+                try:
+                    result = tool_request(run_id, ev.invocation_key, ev.tool, ev.arguments)
+                    to_send = ProjectLibraryAck(result=result)
+                    if result.get("dependency"):
+                        emit(events, "project_dependency", result)
+                except (ValueError, OSError, TypeError, KeyError) as exc:
+                    to_send = ProjectLibraryAck(error=str(exc))
+                continue
             if isinstance(ev, LeaStatusUpdateRequested):
                 from lea.status_reporting import attention
                 try:
@@ -2224,6 +2257,11 @@ def run_lea(context: RunnerContext) -> None:
                     "turn": current_turn, "check_status": ev.status, "check_detail": ev.detail,
                     "execution": ev.execution,
                 })
+                if project and ev.status == "ok":
+                    from .project_dependencies import publish_owned
+                    published = publish_owned(run_id, rel)
+                    if published:
+                        emit(events, "project_dependency", {"outcome": "published", "dependency": published})
 
             elif isinstance(ev, UsageUpdated):
                 usage.add(current_turn, ev.input_tokens, ev.output_tokens, ev.cost)
@@ -2514,6 +2552,12 @@ def run_lea(context: RunnerContext) -> None:
                     else:
                         final_status = "proved"
                         final_result_kind = "defined" if focused_formalization.get("kind") == "definition" else "proved"
+                if context.purpose == "project_dependency" and ev.reason == "completed":
+                    from . import project_dependencies
+                    dependency = project_dependencies.get((store.get_run(run_id) or {}).get("dependency_id"))
+                    if not dependency or not dependency.get("ready"):
+                        final_status = final_result_kind = "needs_review"
+                        final_result_detail = "The canonical dependency has not passed its pinned statement and verification checks."
                 if spend_capped and ev.reason != "completed":
                     # Our own cap-triggered stop, not a user cancel: label it. A
                     # run that completed anyway (finished the proof in the same
@@ -2531,7 +2575,7 @@ def run_lea(context: RunnerContext) -> None:
                 elif ev.reason == "max_turns":
                     stop_reason = "turn_cap"
                     recoverable = True
-                elif ev.reason in {"source_obstruction", "status_reporting_failed"}:
+                elif ev.reason in {"source_obstruction", "status_reporting_failed", "dependency_wait"}:
                     stop_reason = ev.reason
                     recoverable = True
                 elif ev.reason == "interrupted":
@@ -2691,7 +2735,24 @@ def run_lea(context: RunnerContext) -> None:
         # so a run that reaches here unadmitted — e.g. a direct unit-test call to
         # run_lea, which never goes through the endpoint — is a harmless no-op.
         runregistry.registry.release(run_id)
+        try:
+            from .project_dependencies import settle_run
+            settle_run(run_id)
+            from .db import write
+            settled_run = store.get_run(run_id) or {}
+            budget = json.loads(settled_run.get("automation_budget_json") or "{}")
+            if budget:
+                budget["cost_used"] = budget.get("cost_used", 0) + float(settled_run.get("cost_usd") or 0)
+                budget["remaining_seconds"] = max(0, budget.get("remaining_seconds", 900) - (time.monotonic() - execution_started))
+                budget["settled_run_id"] = run_id
+                with write() as conn:
+                    conn.execute("update runs set automation_budget_json=? where id=?", (json.dumps(budget), run_id))
+        except Exception:
+            logger.exception("Could not reconcile shared dependencies for %s", run_id)
         done_payload = {"status": final_status}
+        settled_run = store.get_run(run_id) or {}
+        done_payload["waiting_dependencies"] = json.loads(settled_run.get("waiting_dependencies_json") or "[]")
+        done_payload["dependency_id"] = settled_run.get("dependency_id")
         if final_result_kind:
             done_payload["result_kind"] = final_result_kind
         if final_result_detail:

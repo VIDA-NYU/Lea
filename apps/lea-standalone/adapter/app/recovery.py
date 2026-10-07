@@ -88,6 +88,7 @@ def manifest(*, run: dict, config, repo: Path) -> dict:
     skill_paths = settings.pop("skills", [])
     role_roots = settings.pop("agent_dirs", [])
     settings.pop("status_context", None)  # the saved execution position owns this mutable context
+    settings.pop("project_context", None)  # fresh reservations belong to the current execution segment
     settings.pop("skills_root", None)
     settings["lea_root"] = str(settings.get("lea_root") or "")
     files: dict[str, str | None] = {}
@@ -104,9 +105,9 @@ def manifest(*, run: dict, config, repo: Path) -> dict:
         if root_path.exists():
             role_contents.extend(_file_fingerprint(p) for p in sorted(root_path.rglob("*.yaml")))
             role_contents.extend(_file_fingerprint(p) for p in sorted(root_path.rglob("*.md")))
-    from lea import agent, mcp, registry, tools
+    from lea import agent, mcp, registry, tools, project_library_tools
     tool_code = [_file_fingerprint(Path(module.__file__))
-                 for module in (agent, tools, registry, mcp)]
+                 for module in (agent, tools, registry, mcp, project_library_tools)]
     tool_modules = {}
     for name in config.tool_modules:
         try:
@@ -223,6 +224,14 @@ def prepare_continuation(run: dict, config, repo: Path, status_context: dict, ta
     if changed and state.get("proof_state"):
         state["proof_state"].update(unchecked_write=True, latest_check_passed=None)
     state["messages"] = [m for m in state["messages"] if not m.get("lea_status_context")]
+    if run.get("project_id"):
+        from . import projects
+        project = store.get_project(run["project_id"])
+        if project:
+            fresh = projects.compose_context_message(project, repo)
+            state["messages"] = [m for m in state["messages"] if not projects.is_context_message(m)]
+            if fresh:
+                state["messages"].insert(0, fresh)
     state["messages"].append({"role": "user", "lea_continuation_context": True,
         "mathematical_request": status_context.get("source_bundle"),
         "content": task + "\n\nSource revision changed: " + str(source_changed)

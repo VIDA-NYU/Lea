@@ -472,13 +472,21 @@ export function resolveApiApproval({ fetchImpl, baseUrl, apiKey, runId, approval
 }
 
 export function startApiContinuation({ fetchImpl, baseUrl, apiKey, runId, sourceBundle,
-  idempotencyKey, timeoutSeconds, bestEffort = false, allowSourcePause = false }) {
+  idempotencyKey, timeoutSeconds, bestEffort = false, allowSourcePause = false, dependencyResume = false }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/runs/${encodeURIComponent(runId)}/continue`, {
     method: "POST",
     headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
     body: JSON.stringify({ idempotency_key: idempotencyKey, source_bundle: sourceBundle,
       lea_status_version: 1, timeout_seconds: Math.ceil(timeoutSeconds),
-      best_effort: bestEffort === true, allow_source_pause: allowSourcePause === true }),
+      best_effort: bestEffort === true, allow_source_pause: allowSourcePause === true,
+      dependency_resume: dependencyResume === true }),
+  });
+}
+
+export function projectDependencyRequest({ fetchImpl, baseUrl, apiKey, projectSlug, dependencyId, action = null, body = {} }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(projectSlug)}/dependencies/${encodeURIComponent(dependencyId)}${action ? `/${action}` : ""}`, {
+    method: action ? "POST" : "GET", headers: buildHeaders(apiKey, action ? { "Content-Type": "application/json" } : {}),
+    ...(action ? { body: JSON.stringify(body) } : {}),
   });
 }
 
@@ -635,6 +643,7 @@ export async function streamApiRun({
   let runError = null;
   let recoveryState = null;
   let recoveryReason = null;
+  let waitingDependencies = [];
   let buffer = "";
 
   const handleFrame = async (frame) => {
@@ -657,6 +666,7 @@ export async function streamApiRun({
       recoverable = data?.recoverable === true;
       recoveryState = data?.recovery_state || null;
       recoveryReason = data?.recovery_reason || null;
+      waitingDependencies = data?.waiting_dependencies || [];
     }
   };
 
@@ -686,6 +696,7 @@ export async function streamApiRun({
     recoverable,
     recoveryState,
     recoveryReason,
+    waitingDependencies,
     error: ok ? null : (runError || (doneStatus ? `Lea run ended with status: ${doneStatus}` : "Lea run ended without a terminal status.")),
   };
 }
@@ -783,6 +794,7 @@ export async function runApiProofJob({
   onEvent = null,
   onRunStarted = null,
   onProgressUpdated = null,
+  observerSignal = null,
 }) {
   const log = async (line) => {
     if (appendLog && logPath) await appendLog(logPath, line);
@@ -818,6 +830,9 @@ export async function runApiProofJob({
   if (onRunStarted && !existingRunId) await onRunStarted(runId, newSessionId, start.body || {});
 
   const abort = new AbortController();
+  const detach = () => abort.abort();
+  observerSignal?.addEventListener("abort", detach, { once: true });
+  if (observerSignal?.aborted) detach();
   let timedOut = false;
   let interruptPromise = null;
   const adapterDeadline = start.body?.deadline_at || deadlineAt;
@@ -879,6 +894,7 @@ export async function runApiProofJob({
           recoverable: row.recoverable === true || row.recoverable === 1,
           recoveryState: row.recovery_state || null,
           recoveryReason: row.recovery_reason || null,
+          waitingDependencies: JSON.parse(row.waiting_dependencies_json || "[]"),
           error: ok ? null : `Lea run ended with status: ${rowStatus}`,
         };
         break;
@@ -894,6 +910,7 @@ export async function runApiProofJob({
     }
   } finally {
     clearTimeout(timer);
+    observerSignal?.removeEventListener("abort", detach);
   }
 
   let settledRow = null;
@@ -947,6 +964,7 @@ export async function runApiProofJob({
     recoverable: outcome.recoverable === true,
     recoveryState: outcome.recoveryState || null,
     recoveryReason: outcome.recoveryReason || null,
+    waitingDependencies: outcome.waitingDependencies || [],
     formalizationId: start.body?.focus_formalization_id || start.body?.formalization?.id || null,
     error: outcome.ok ? undefined : outcome.error,
     ...usage,

@@ -726,6 +726,8 @@ def create_run_bundle(
     resume_checkpoint_id: int | None = None,
     continuation_best_effort: bool = False,
     deadline_at: str | None = None,
+    dependency_id: str | None = None,
+    automation_budget: dict | None = None,
 ) -> dict:
     """Atomically create/resolve the conversation scope, run, and user message."""
     if focus_formalization_id and new_formalization:
@@ -904,6 +906,12 @@ def create_run_bundle(
                 formalization["source_hash"] = source_hash
 
         run_id = str(uuid4())
+        if dependency_id:
+            from .project_dependencies import admit_worker
+            admit_worker(conn, dependency_id, project_id, run_id, resumes_run_id)
+        if resumes_run_id:
+            conn.execute("""update project_dependencies set owner_run_id=?,state='inline',updated_at=?
+                where owner_run_id=? and state='waiting'""", (run_id, now, resumes_run_id))
         conn.execute(
             """
             insert into runs (
@@ -925,6 +933,8 @@ def create_run_bundle(
         if source_bundle is not None:
             from .lea_status_store import admit
             admit(conn, run_id, focus_formalization_id, session_id, project_id, purpose, source_bundle)
+        conn.execute("update runs set dependency_id=?,automation_budget_json=? where id=?",
+                     (dependency_id, json.dumps(automation_budget) if automation_budget else None, run_id))
         message_cursor = conn.execute(
             """
             insert into timeline (
@@ -1203,6 +1213,10 @@ def delete_project_cascade(project_id: str) -> bool:
     with connect() as conn:
         if not conn.execute("select 1 from projects where id = ?", (project_id,)).fetchone():
             return False
+        conn.execute("delete from project_library_invocations where run_id in (select id from runs where project_id=?)", (project_id,))
+        conn.execute("delete from project_dependency_attempts where dependency_id in (select id from project_dependencies where project_id=?)", (project_id,))
+        for table in ("project_dependency_edges", "project_dependencies", "project_library_modules"):
+            conn.execute(f"delete from {table} where project_id=?", (project_id,))
         conn.execute("delete from formalize_batch_reports where project_id = ?", (project_id,))
         import_ids = [
             row["id"] for row in conn.execute(
@@ -2776,7 +2790,8 @@ def get_run_status(run_id: str) -> dict | None:
                       usage_status, usage_revision, usage_updated_at,
                       attempt_id, recovery_state, recovery_reason, recovery_count,
                       checkpoint_at, deadline_at, resumes_run_id, resume_checkpoint_id,
-                      session_id, focus_formalization_id, purpose, created_at
+                      session_id, focus_formalization_id, purpose, created_at,
+                      dependency_id, waiting_dependencies_json, automation_budget_json, project_id
                from runs where id = ?""",
             (run_id,),
         ).fetchone()

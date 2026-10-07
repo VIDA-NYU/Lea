@@ -119,8 +119,9 @@ def test_compose_context_message(tmp_path, monkeypatch):
     assert "Likely root document(s)" in msg["content"]
     assert "includes `sections/results`" in msg["content"]
     assert "read every mirrored LaTeX source before planning" in msg["content"]
-    assert "## Project Lean modules" in msg["content"]
-    assert "`existing.lean`" in msg["content"]
+    assert "## Project mathematics library" in msg["content"]
+    assert "1 declarations indexed" in msg["content"]
+    assert "search_project_library" in msg["content"]
     # D26: the agent is told, concretely, to keep memory.md current with edit_file.
     assert ".lea/memory.md" in msg["content"]
     assert "edit_file" in msg["content"]

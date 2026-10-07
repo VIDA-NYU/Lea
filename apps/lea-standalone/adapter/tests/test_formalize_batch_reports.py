@@ -104,6 +104,23 @@ def test_review_is_terminal_but_not_verified_in_historical_report(tmp_path, monk
     assert report["facts"]["counts"]["dependencySkipped"] == 1
 
 
+def test_shared_results_do_not_inflate_document_totals_or_reprove_old_results(tmp_path, monkeypatch):
+    from app import project_dependencies
+    seed(tmp_path, monkeypatch)
+    data = payload()
+    data["dependencies"] = [{"id": "old", "started_here": False}, {"id": "new", "started_here": True}]
+    monkeypatch.setattr(project_dependencies, "get", lambda key: dict(id=key, project_id="p-one", ready=True,
+        state="ready", source_hash="source", path=f"Shared/{key}.lean", module_name=f"Lea.one.Shared.{key}",
+        declaration_name=f"Lea.one.{key}", blocker=None, requesting_targets=["f-one"],
+        attempts=[{"run_id": "r-one"}], specification={"name": key, "statement": "True", "sources": []}))
+    report, _ = reports.create("project-one", data)
+    assert report["facts"]["total"] == 7
+    assert report["facts"]["counts"]["verifiedProofs"] == 1
+    assert report["facts"]["dependencyCounts"] == {"newlyProved": 1, "reused": 1, "blocked": 0}
+    assert report["facts"]["dependencies"][0]["newlyProved"] is False
+    assert report["facts"]["dependencies"][0]["targets"] == ["target"]
+
+
 def test_history_cursor_handles_same_completion_time(tmp_path, monkeypatch):
     seed(tmp_path, monkeypatch)
     first = payload()

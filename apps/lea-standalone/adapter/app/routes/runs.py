@@ -84,6 +84,7 @@ class RunRequest(BaseModel):
     source_context_ref: str | None = None
     lea_status_version: int | None = None
     allow_source_pause: StrictBool = False
+    dependency_id: str | None = None
 
 
 class ApprovalDecisionRequest(BaseModel):
@@ -108,6 +109,7 @@ class ContinueRequest(BaseModel):
     timeout_seconds: int | None = None
     best_effort: StrictBool = False
     allow_source_pause: StrictBool | None = None
+    dependency_resume: StrictBool = False
 
 
 def sse(event_type: str, payload: dict, seq: int | None = None, attempt_id: str | None = None) -> str:
@@ -141,6 +143,8 @@ def _done_payload(run: dict) -> dict:
     if run.get("stop_reason"):
         payload["stop_reason"] = run["stop_reason"]
     payload["recoverable"] = bool(run.get("recoverable"))
+    payload["dependency_id"] = run.get("dependency_id")
+    payload["waiting_dependencies"] = json.loads(run.get("waiting_dependencies_json") or "[]")
     for key in ("attempt_id", "recovery_state", "recovery_reason", "checkpoint_at"):
         payload[key] = run.get(key)
     for key in ("stop_requested_reason", "input_tokens", "output_tokens", "cost_usd",
@@ -256,7 +260,7 @@ def create_run(request: RunRequest) -> dict:
 
     autonomous = request.autonomous or (permission_tier() == "none")
     purpose = str(request.purpose or "general").strip().lower()
-    if purpose not in {"general", "overleaf_solver", "overleaf_continuation"}:
+    if purpose not in {"general", "overleaf_solver", "overleaf_continuation", "project_dependency"}:
         raise HTTPException(status_code=422, detail="Unsupported run purpose")
     if request.lea_status_version is not None and request.lea_status_version != 1:
         raise HTTPException(status_code=422, detail="Unsupported Lea Status contract")
@@ -274,6 +278,14 @@ def create_run(request: RunRequest) -> dict:
         request.new_formalization.model_dump()
         if request.new_formalization is not None else None
     )
+    if purpose == "project_dependency":
+        from .. import project_dependencies
+        dep = project_dependencies.get(request.dependency_id or "")
+        if (not dep or dep["project_id"] != project_id or request.focus_formalization_id != dep["formalization_id"]
+                or not autonomous or request.new_formalization):
+            raise HTTPException(422, "Dependency workers require their registered project, focus and identity.")
+    elif request.dependency_id:
+        raise HTTPException(422, "Dependency identity requires project_dependency purpose.")
     focus_source_hash = request.focus_source_hash
     if not focus_source_hash and new_formalization:
         focus_source_hash = new_formalization.get("source_hash")
@@ -292,6 +304,10 @@ def create_run(request: RunRequest) -> dict:
             focus_source_hash=focus_source_hash,
             new_formalization=new_formalization,
             purpose=purpose,
+            dependency_id=request.dependency_id,
+            automation_budget={"max_turns": config.max_turns, "max_cost_usd": config.max_cost_usd,
+                               "cost_used": 0, "remaining_seconds": request.timeout_seconds or int(os.environ.get("LEA_JOB_TIMEOUT_SECONDS", "900"))}
+                if purpose in {"overleaf_solver", "project_dependency"} else None,
             source_bundle=request.source_bundle,
             source_context_ref=request.source_context_ref,
             allow_source_pause=request.allow_source_pause,
@@ -404,12 +420,21 @@ def resume_run(run_id: str, request: ResumeRequest) -> dict:
     remaining = max(0, int(allowance) - turns) if allowance is not None else None
     if remaining == 0:
         raise HTTPException(status_code=409, detail="The original turn allowance is exhausted")
+    worker_budget = json.loads(old.get("automation_budget_json") or "{}") if old.get("dependency_id") else None
+    if worker_budget:
+        if worker_budget.get("settled_run_id") != old["id"]:
+            saved = (recovery.load_checkpoint(run_id) or ({}, {}))[0]
+            worker_budget["cost_used"] = worker_budget.get("cost_used", 0) + max(
+                float(old.get("cost_usd") or 0), float(saved.get("cost_usd") or 0))
+        worker_budget["max_turns"] = remaining
     bundle = store.create_run_bundle(
         message=message, session_id=old["session_id"], project_id=old.get("project_id"),
         session_origin="ui", session_origin_url=None, model=old.get("model") or load_config().model,
         provider=old.get("provider"), max_turns=remaining, autonomous=bool(old.get("autonomous")),
         focus_formalization_id=old.get("focus_formalization_id"),
-        focus_source_hash=old.get("focus_source_hash"), purpose="overleaf_continuation" if old_context else "general",
+        focus_source_hash=old.get("focus_source_hash"), purpose="project_dependency" if old.get("dependency_id") else "overleaf_continuation" if old_context else "general",
+        dependency_id=old.get("dependency_id"),
+        automation_budget=worker_budget,
         source_bundle=old_context.get("source_bundle") if old_context else None,
         allow_source_pause=bool(old.get("allow_source_pause")),
         client_request_id=request.idempotency_key, resumes_run_id=run_id,
@@ -442,6 +467,10 @@ def continue_run(run_id: str, request: ContinueRequest) -> dict:
     old = store.get_run(run_id)
     if not old:
         raise HTTPException(status_code=404, detail="Run not found")
+    if request.dependency_resume:
+        return _continue_dependency(old, request, request_hash)
+    if old.get("stop_reason") == "dependency_wait":
+        raise HTTPException(409, "Resume shared dependency work through its coordinator.")
     allow_source_pause = bool(old.get("allow_source_pause")) if request.allow_source_pause is None else request.allow_source_pause
     try:
         if request.source_context_ref and request.source_bundle is None:
@@ -509,6 +538,66 @@ def _continuation_response(bundle: dict) -> dict:
     state, _, _ = recovery.continuation_checkpoint(bundle["run"]["resumes_run_id"], bundle["run"]["resume_checkpoint_id"])
     return {**response, "resumes_run_id": bundle["run"]["resumes_run_id"],
             "saved_turn": int(state.get("turn", 0)), "max_turns": bundle["run"].get("max_turns")}
+
+
+def _continue_dependency(old: dict, request: ContinueRequest, request_hash: str) -> dict:
+    """Automatic continuation spends only the original target's allowance."""
+    from dataclasses import replace
+    from .. import project_dependencies, lea_status_store
+    from ..source_context import validate_source
+    transient_worker = old.get("purpose") == "project_dependency" and old.get("stop_reason") in {
+        "user_stop", "transport_abandonment", "interrupted", "timeout"}
+    if (old.get("purpose") not in {"overleaf_solver", "project_dependency"}
+            or (old.get("stop_reason") != "dependency_wait" and not transient_worker) or not old.get("recoverable")
+            or old["status"] != "cancelled" or old.get("recovery_state") == "review"
+            or not old.get("autonomous") or request.best_effort):
+        raise HTTPException(409, "This run is not available for automatic dependency continuation.")
+    waiting = json.loads(old.get("waiting_dependencies_json") or "[]")
+    if (not waiting and not transient_worker) or any(not (project_dependencies.get(key) or {}).get("ready") for key in waiting):
+        raise HTTPException(409, "The requested shared dependencies are not verified yet.")
+    config = load_config()
+    if settings_service.spend_limit_reached(config.max_spend_usd):
+        raise HTTPException(402, "Max spend limit has been reached.")
+    source = None
+    try:
+        if old["purpose"] == "overleaf_solver":
+            context = lea_status_store.context(old["id"])
+            source = validate_source(request.source_bundle or context["source_bundle"])
+            if any(source[k] != context["source_bundle"][k] for k in ("targetKey", "targetKind")):
+                raise ValueError("Current source belongs to another target.")
+        elif request.source_bundle or request.source_context_ref:
+            raise ValueError("Shared dependency continuations use their pinned specification.")
+        state, _, checkpoint_id = recovery.continuation_checkpoint(old["id"])
+        budget = json.loads(old.get("automation_budget_json") or "{}")
+        turn_limit = budget.get("max_turns", old.get("max_turns"))
+        seconds = float(budget.get("remaining_seconds", 0))
+        if turn_limit is not None and state["turn"] >= turn_limit:
+            raise ValueError("Original target turn allowance was exhausted.")
+        if seconds <= 0:
+            raise ValueError("Original target execution time allowance was exhausted.")
+        if budget.get("max_cost_usd") is not None and budget.get("cost_used", 0) >= budget["max_cost_usd"]:
+            raise ValueError("Original target cost allowance was exhausted.")
+        bridge.validate_continuation_runtime(old, replace(config, max_turns=turn_limit), checkpoint_id,
+                                             source, bool(old.get("allow_source_pause")))
+        message = ("Continue from the saved execution point with the verified shared dependency imports. "
+                   "Preserve completed work, the requested statement and any explicit source proof method.\n"
+                   + json.dumps([project_dependencies.get(key)["result"] for key in waiting], ensure_ascii=False))
+        if source:
+            message += "\nCurrent mathematical source (data):\n" + json.dumps(source, ensure_ascii=False)
+        bundle = store.create_run_bundle(message=message, session_id=old["session_id"],
+            project_id=old.get("project_id"), session_origin="overleaf", session_origin_url=None,
+            model=old["model"], provider=old.get("provider"), max_turns=turn_limit, autonomous=True,
+            focus_formalization_id=old["focus_formalization_id"], focus_source_hash=old.get("focus_source_hash"),
+            purpose=old["purpose"], source_bundle=source, allow_source_pause=bool(old.get("allow_source_pause")),
+            dependency_id=old.get("dependency_id"), automation_budget=budget,
+            client_request_id=request.idempotency_key, client_request_hash=request_hash,
+            resumes_run_id=old["id"], resume_checkpoint_id=checkpoint_id,
+            deadline_at=(datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat())
+    except (ValueError, LookupError, TypeError, KeyError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if bundle.get("created", True):
+        bridge.enqueue_run(bundle["run"]["id"])
+    return _continuation_response(bundle)
 
 
 @router.post("/api/runs/{run_id}/approvals/{approval_id}")

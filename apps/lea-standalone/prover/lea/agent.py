@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .status_reporting import TOOL_NAME, validate_payload, LeaStatusUpdateRequested, LeaStatusUpdateAck
+from .project_library_tools import TOOL_NAMES as LIBRARY_TOOLS, ProjectLibraryRequested, ProjectLibraryAck
 from .config import LeaConfig
 from . import condenser
 from . import diagnostics
@@ -1312,12 +1313,27 @@ def _run_events_inner(
                     refused_idx.add(idx)
                     results_by_idx[idx] = "Error: tool deferred because the preceding material Lea Status update was rejected. Publish the finding successfully before continuing."
                     continue
-                if config.status_reporting and (reporting_stop or (should_stop and should_stop())):
+                if (config.status_reporting or config.project_library) and (reporting_stop or (should_stop and should_stop())):
                     reporting_stop = reporting_stop or "interrupted"
                     refused_idx.add(idx)
                     results_by_idx[idx] = "Error: tool canceled because the run was paused."
                     continue
-                if tc["name"] == TOOL_NAME and config.status_reporting:
+                if tc["name"] in LIBRARY_TOOLS and config.project_library:
+                    invocation_id = uuid.uuid4().hex
+                    _record("invocation_start", {"id": invocation_id, "kind": "tool", "name": tc["name"],
+                        "turn": turn, "call_index": idx, "input": tc["args"]})
+                    try:
+                        ack = yield ProjectLibraryRequested(tc["name"], tc["args"], f"{turn}:{idx}:{tc.get('id') or ''}")
+                        if not isinstance(ack, ProjectLibraryAck) or ack.error:
+                            raise ValueError(ack.error if isinstance(ack, ProjectLibraryAck) else "Project host did not acknowledge the tool.")
+                        result = json.dumps(ack.result, ensure_ascii=False)
+                        reporting_stop = ack.result.get("stop_reason")
+                        if ack.result.get("outcome") == "inline":
+                            config.project_context.setdefault("reserved_paths", []).append(ack.result["path"])
+                    except (ValueError, TypeError) as exc:
+                        result = f"Error: {exc}"
+                    _record("invocation_result", {"id": invocation_id, "result": result})
+                elif tc["name"] == TOOL_NAME and config.status_reporting:
                     status_invocation_id = uuid.uuid4().hex
                     _record("invocation_start", {"id": status_invocation_id,
                                                  "kind": "tool", "name": TOOL_NAME,
@@ -1439,6 +1455,6 @@ def _run_events_inner(
         save_position("turn_boundary")
         saved_material_rejection = False
         if reporting_stop:
-            yield Finished(reporting_stop, "Formalization paused; inspect the latest Lea Status for details.",
+            yield Finished(reporting_stop, "Formalization waiting for a canonical project dependency." if reporting_stop == "dependency_wait" else "Formalization paused; inspect the latest Lea Status for details.",
                            turn, session_id, model, total_usage, total_cost, transcript(turn))
             return
