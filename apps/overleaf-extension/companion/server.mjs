@@ -1,7 +1,9 @@
+import { mergeUsageDetails } from "../shared/usageDetails.mjs";
 import { runtimeNeedsPolling, runtimeStatusMessage, checkExecutionMessage } from "../../lea-standalone/src/app/lib/leanCheckRuntime.mjs";
 import { acceptStatusEvent } from "./leaStatus.mjs";
 import { resolveSharedDependencies, mergeDependencyProgress } from "./dependencyCoordinator.mjs";
 import { normalizeLeaStatus } from "../shared/leaStatus.mjs";
+import { dependencyWait } from "../extension/dependencyWaitCore.mjs";
 import { buildRetryContext, appendRetryInstructions } from "./retryContext.mjs";
 import { canonicalSourceTargetKind, sourceHashInputs } from "../extension/sourceIdentityCore.mjs";
 import fs from "node:fs/promises";
@@ -105,6 +107,7 @@ import {
   rebuildApiSessionModule,
   setProjectRemoteBySlug,
   fetchCurrentLeaStatus,
+  prepareOverleafSource,
   fetchLeaStatusHistory,
   createFormalizeBatchReport,
   listFormalizeBatchReports,
@@ -216,6 +219,7 @@ export async function createServer({
       // not prevent the existing usage and recovery reconciliation.
       await pollSourceRequests(state, chatBaseUrls(state).baseUrl).catch(() => {});
       await reconcilePendingJobUsage(state);
+      await reconcileDependencyWaits(state);
       await reconcileRecoveredBatches(state);
     }
     catch (error) { console.warn("[companion] Usage reconciliation failed:", error); }
@@ -271,9 +275,25 @@ async function persistRepairBatches(state) {
 }
 
 
-async function reconcileRecoveredBatches(state) {
+export async function reconcileRecoveredBatches(state) {
   for (const batch of Object.values(state.repairBatches || {})) {
     if (!batch || batch.done || batch.running) continue;
+    // Restart recovery may continue independent queued work, but resuming a
+    // saved paused run requires a new user action.
+    if (batch.operation === "formalize") {
+      for (const entry of batch.items || []) {
+        if (entry.state !== "pending") continue;
+        const job = findLatestFinishedJob(state.jobs || {}, `${batch.overleafProjectId}:${entry.targetKind}:${entry.targetLabel}`);
+        if (job?.status !== "paused") continue;
+        Object.assign(entry, classifyFormalizeJob(job), { runJobId: job.jobId });
+        for (const other of batch.items) {
+          if (other.state === "pending" && importsReach(other.targetLabel, entry.targetLabel, batch.usesByLabel)) {
+            other.state = "skipped";
+            other.reason = `${dependencySkipReason(entry.state)}:${entry.targetLabel}`;
+          }
+        }
+      }
+    }
     const active = batch.items?.find((item) => item.state === "running");
     if (active) {
       const job = active.runJobId ? state.jobs?.[active.runJobId] : null;
@@ -282,20 +302,22 @@ async function reconcileRecoveredBatches(state) {
         await persistRepairBatches(state);
         continue;
       }
-      const outcome = job.status === "formalized" ? "formalized"
+      const settled = classifyFormalizeJob(job);
+      const outcome = batch.operation === "formalize" ? settled.state : job.status === "formalized" ? "formalized"
         : job.status === "sorry_stub" ? "stubbed"
           : job.status === "disproved" ? "disproved"
             : job.status === "repaired" ? "repaired"
               : job.status === "needs_review" ? "needs_review" : "failed";
       active.state = outcome;
-      active.reason = outcome === "failed" || outcome === "needs_review"
+      active.reason = batch.operation === "formalize" ? settled.reason : outcome === "failed" || outcome === "needs_review"
         ? (job.resultDetail || job.error || outcome) : null;
-      if (outcome === "failed" || outcome === "needs_review") {
+      if (batch.operation === "formalize") Object.assign(active, { detail: settled.detail, recoverable: settled.recoverable });
+      if (["failed", "needs_review", "incomplete"].includes(outcome)) {
         if (batch.operation === "formalize") {
           for (const other of batch.items) {
             if (other.state === "pending" && importsReach(other.targetLabel, active.targetLabel, batch.usesByLabel)) {
               other.state = "skipped";
-              other.reason = `${outcome === "needs_review" ? "depends_on_review" : "depends_on_failed"}:${active.targetLabel}`;
+              other.reason = `${dependencySkipReason(outcome)}:${active.targetLabel}`;
             }
           }
           batch.pausedOn = null;
@@ -310,6 +332,10 @@ async function reconcileRecoveredBatches(state) {
     }
     if (!batch.pausedOn && !batch.cancelRequested && batch.items?.some((item) => item.state === "pending")) {
       void resumeBatch(state, batch);
+    } else if (!batch.pausedOn && batch.items?.every((item) => !["pending", "running"].includes(item.state))) {
+      batch.done = true;
+      await persistRepairBatches(state);
+      if (batch.operation === "formalize") void submitFormalizeBatchReport(state, batch);
     }
   }
 }
@@ -600,7 +626,7 @@ async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
     }
     return {
       statusCode: 200,
-      body: buildJobResponse({ job: activeJob, status: "in_progress", target })
+      body: buildJobResponse({ state, job: activeJob, status: "in_progress", target })
     };
   }
   const previousJob = findLatestFinishedJob(state.jobs || {}, target.jobKey);
@@ -723,7 +749,7 @@ async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
       job.finishedAt = new Date().toISOString();
       await persistJobs(state);
     });
-    return { statusCode: 200, body: buildJobResponse({ job, status: "in_progress", target }) };
+    return { statusCode: 200, body: buildJobResponse({ state, job, status: "in_progress", target }) };
   }
 
   // Retry from the current working file. Its previous versions already live in
@@ -854,7 +880,7 @@ async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
 
   return {
     statusCode: 200,
-    body: buildJobResponse({ job, status: "in_progress", target })
+    body: buildJobResponse({ state, job, status: "in_progress", target })
   };
 }
 
@@ -913,7 +939,7 @@ export async function handleStub(payload, state) {
   if (activeJob) {
     return {
       statusCode: 200,
-      body: buildJobResponse({ job: activeJob, status: "in_progress", target })
+      body: buildJobResponse({ state, job: activeJob, status: "in_progress", target })
     };
   }
 
@@ -967,7 +993,7 @@ export async function handleStub(payload, state) {
 
   return {
     statusCode: job.status === "sorry_stub" ? 200 : 500,
-    body: buildJobResponse({ job, status: job.status, target })
+    body: buildJobResponse({ state, job, status: job.status, target })
   };
 }
 
@@ -1601,6 +1627,7 @@ async function leanPaneManifestSnapshot(payload, state, identity) {
   const manifest = buildLeanPaneManifest({
     overleafProjectId,
     files: Array.isArray(payload.files) ? payload.files : [],
+    mirror: sourceMirrorForInventory(payload, state),
     activePath: payload.activePath || "",
     resolveGeneratedItems(items) {
       const result = reconcileGeneratedItems(items, state.generatedTargets, overleafProjectId, { reservedLabels });
@@ -1665,6 +1692,17 @@ async function leanPaneManifestSnapshot(payload, state, identity) {
     projectNamespace: identity.namespace
   });
   const jobsBeforeEnrichment = new Set(Object.keys(state.jobs || {}));
+  let currentDependencies = null;
+  try {
+    const result = await projectDependencyRequest({
+      fetchImpl: state.fetchImpl || fetch,
+      baseUrl: normalizeLeaApiBaseUrl(state.settings?.leaApiBaseUrl || DEFAULT_LEA_API_BASE_URL),
+      apiKey: state.env?.LEA_API_KEY, projectSlug: slugProjectId(overleafProjectId)
+    });
+    if (result.ok && Array.isArray(result.body?.dependencies)) {
+      currentDependencies = new Map(result.body.dependencies.map((dep) => [dep.id, dep]));
+    }
+  } catch { /* Keep cached evidence visibly identified when the registry is unavailable. */ }
   const items = await mapWithConcurrency(
     manifest.items,
     LEAN_PANE_ENRICH_CONCURRENCY,
@@ -1674,7 +1712,9 @@ async function leanPaneManifestSnapshot(payload, state, identity) {
       overleafProjectId,
       projectName: identity.projectName,
       projectNamespace: identity.namespace,
-      approvalContext
+      approvalContext,
+      currentDependencies,
+      sourceCoverage: payload.sourceCoverage === "complete" ? "complete" : "partial"
     })
   );
   const hydratedLedgerJob = Object.entries(state.jobs || {}).some(
@@ -1709,6 +1749,15 @@ async function leanPaneManifestSnapshot(payload, state, identity) {
       items
     }
   };
+}
+
+function sourceMirrorForInventory(payload, state) {
+  if (payload.sourceCoverage !== "complete" || state.settings.leaTexMirrorEnabled === false) return null;
+  const entries = new Map((payload.files || []).map(file => [normalizeProjectSourcePath(file.path), hashExactText(String(file.content ?? ""))])
+    .filter(([name]) => /\.(tex|sty|cls)$/i.test(name)));
+  const revision = hashExactText([...entries].sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, hash]) => `${name}\0${hash}`).join("\0"));
+  return { revision, mirroredFileCount: entries.size, verified: false };
 }
 
 async function persistGeneratedTargets(state) {
@@ -3220,7 +3269,7 @@ export async function handleLeanPaneRepairStart(payload, state) {
   }
   return {
     statusCode: 200,
-    body: buildJobResponse({ job: started.job, status: "in_progress", target: started.target })
+    body: buildJobResponse({ state, job: started.job, status: "in_progress", target: started.target })
   };
 }
 
@@ -3268,9 +3317,9 @@ function repairBatchSnapshot(batch) {
       reportError: batch.reportError || null,
       report: batch.report || null
     } : {}),
-    items: batch.items.map(({ targetKind, targetLabel, state: itemState, reason, runJobId }) => ({
+    items: batch.items.map(({ targetKind, targetLabel, state: itemState, reason, detail, recoverable, runJobId }) => ({
       targetKind, targetLabel, state: itemState === "running" && batch.waitingJobs?.includes(runJobId) ? "waiting" : itemState,
-      reason: reason || null, runJobId: runJobId || null
+      reason: reason || null, detail: detail || null, recoverable, runJobId: runJobId || null
     }))
   };
 }
@@ -3401,6 +3450,8 @@ async function interruptBatchActiveRun(state, batch) {
   const running = batch.items.find((entry) => entry.state === "running");
   const job = running?.runJobId ? state.jobs?.[running.runJobId] : null;
   if (!job?.apiRunId) return;
+  job.dependencyCancelRequested = true;
+  await persistJobs(state);
   state.dependencyObservers?.get(job.jobId)?.abort();
   const childSharedElsewhere = Object.values(state.jobs || {}).some((other) => other !== job
     && other.status === "in_progress" && other.dependencies?.some((dep) => dep.owner_run_id === job.activeDependencyRunId));
@@ -3576,6 +3627,23 @@ async function runStubBatchItem(state, entry) {
   return { ok: false, reason: body.error || body.message || "stub_failed", jobId: body.jobId || null };
 }
 
+export function classifyFormalizeJob(job) {
+  const status = String(job?.status || "").toLowerCase();
+  const detail = job?.resultDetail || job?.error || null;
+  if (status === "formalized" || job?.finalStatus === "formalized") return { ok: true, state: "formalized", reason: null };
+  if (status === "disproved") return { ok: true, state: "disproved", reason: null };
+  if (status === "paused" && job?.recoverable === true) return {
+    ok: false, state: "incomplete", reason: job.stopReason || "paused", detail, recoverable: true
+  };
+  return { ok: false, state: status === "needs_review" ? "needs_review" : "failed",
+    reason: job?.stopReason || detail || (status === "needs_review" ? "target_needs_review" : "formalize_failed"),
+    detail, recoverable: job?.recoverable === true };
+}
+
+function dependencySkipReason(state) {
+  return state === "incomplete" ? "depends_on_incomplete" : state === "needs_review" ? "depends_on_review" : "depends_on_failed";
+}
+
 async function runFormalizeBatchItem(state, entry, batch) {
   let result;
   try {
@@ -3601,13 +3669,7 @@ async function runFormalizeBatchItem(state, entry, batch) {
   // the active adapter run can be identified.
   if (batch.cancelRequested) await interruptBatchActiveRun(state, batch);
   const finalJob = await awaitJobSettled(state, body.jobId);
-  const status = String(finalJob?.status || "").toLowerCase();
-  if (status === "formalized" || finalJob?.finalStatus === "formalized") {
-    return { ok: true, state: "formalized", jobId: body.jobId };
-  }
-  if (status === "disproved") return { ok: true, state: "disproved", jobId: body.jobId };
-  if (status === "needs_review") return { ok: false, state: "needs_review", reason: finalJob?.resultDetail || "target_needs_review", jobId: body.jobId };
-  return { ok: false, reason: finalJob?.stopReason || finalJob?.error || finalJob?.resultDetail || "formalize_failed", jobId: body.jobId };
+  return { ...classifyFormalizeJob(finalJob), jobId: body.jobId };
 }
 
 async function runTargetBatch(state, batch) {
@@ -3680,8 +3742,10 @@ async function runTargetBatch(state, batch) {
         continue;
       }
 
-      entry.state = outcome.state === "needs_review" ? "needs_review" : "failed";
+      entry.state = ["needs_review", "incomplete"].includes(outcome.state) ? outcome.state : "failed";
       entry.reason = outcome.reason || "run_failed";
+      entry.detail = outcome.detail || null;
+      entry.recoverable = outcome.recoverable === true;
       entry.runJobId = outcome.jobId || null;
 
       // Formalization carries dependency semantics: items that (transitively)
@@ -3693,7 +3757,7 @@ async function runTargetBatch(state, batch) {
           if (other.state !== "pending") continue;
           if (importsReach(other.targetLabel, entry.targetLabel, batch.usesByLabel)) {
             other.state = "skipped";
-            other.reason = `${entry.state === "needs_review" ? "depends_on_review" : "depends_on_failed"}:${entry.targetLabel}`;
+            other.reason = `${dependencySkipReason(entry.state)}:${entry.targetLabel}`;
           }
         }
         await publishBatch();
@@ -3736,12 +3800,11 @@ export async function handleDependencyRetry(payload, state) {
   const job = Object.values(state.jobs || {}).filter((item) => item.overleafProjectId === overleafProjectId
     && item.dependencies?.some((dep) => dep.id === dependencyId)).sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0];
   if (job) {
-    job.dependencyCancelRequested = false;
     const current = resume ? await projectDependencyRequest(api) : retry;
     await recordSharedDependencyProgress(state, job, current.body.dependency || current.body);
-    // The failed attempt remains inspectable. Retry proves only the shared
-    // result; each waiting theorem retains its original checkpoint for Resume.
-    void coordinateSharedWork(state, job, { projectSlug: api.projectSlug }, [dependencyId], { ignoreBatchCancellation: true }).catch(async (error) => {
+    // Retrying a shared result does not re-arm explicitly stopped consumers.
+    void coordinateSharedWork(state, job, { projectSlug: api.projectSlug }, [dependencyId], { ignoreBatchCancellation: true, retrySharedResult: true })
+      .then(() => reconcileDependencyWaits(state)).catch(async (error) => {
       job.dependencyRetryError = String(error.message || error);
       await persistJobs(state);
     });
@@ -3752,6 +3815,148 @@ export async function handleDependencyRetry(payload, state) {
     if (!admission.ok) return errorResponse(admission.status || 502, "dependency_admission_failed", admission.error);
   }
   return { statusCode: 202, body: retry.body };
+}
+
+export async function handleDependencyWaitControl(payload, state) {
+  const job = Object.values(state.jobs || {}).find(item => item.apiRunId === payload.runId
+    && item.overleafProjectId === payload.overleafProjectId);
+  if (!job || (job.stopReason !== "dependency_wait" && !job.waitingForDependencies?.length)) {
+    return errorResponse(409, "stale_dependency_wait", "The waiting formalization changed. Refresh status before continuing.");
+  }
+  if (!['stop', 'continue', 'refresh'].includes(payload.action)) return errorResponse(400, "invalid_wait_action", "Choose a waiting action.");
+  if (payload.action === "stop") {
+    job.dependencyCancelRequested = true;
+    job.dependencyAutoResumeRequested = false;
+    await persistJobs(state);
+    state.dependencyObservers?.get(job.jobId)?.abort();
+    await stopAdmittedDependencyContinuation(state, job);
+  } else {
+    if (payload.action === "continue") {
+      job.dependencyCancelRequested = false;
+      job.dependencyAutoResumeRequested = true;
+    }
+    job.dependencyContinuationBlocker = null;
+    await persistJobs(state);
+    void reconcileDependencyWaits(state);
+  }
+  publishEvent(state, "jobs-changed", { overleafProjectId: job.overleafProjectId });
+  return { statusCode: 200, body: { ok: true } };
+}
+
+async function stopAdmittedDependencyContinuation(state, job) {
+  const request = job.dependencyContinuationRequest;
+  if (!request || job.stoppedDependencyContinuationRunId) return;
+  const api = { fetchImpl: state.fetchImpl || fetch, baseUrl: job.leaApiBaseUrl,
+    apiKey: state.env?.LEA_API_KEY };
+  let childId = job.dependencyContinuationAdmission?.body?.run_id;
+  if (!childId && job.leaSessionId) {
+    // A lost admission response may hide an executing child. Read its durable
+    // identity; never submit another continuation merely to stop the workflow.
+    const detail = await fetchApiSessionDetail({ ...api, sessionId: job.leaSessionId });
+    childId = detail.ok && detail.body.runs?.find(row => row.client_request_id === request.idempotencyKey)?.id;
+  }
+  if (!childId) return;
+  const stopped = await interruptApiRun({ ...api, runId: childId, source: "companion" });
+  if (stopped.ok) {
+    job.stoppedDependencyContinuationRunId = childId;
+    await persistJobs(state);
+  }
+}
+
+// Admission is durable before observation so an unknown transport outcome uses
+// precisely the same source reference and request identity after a restart.
+export async function admitDependencyContinuation(state, job) {
+  const api = { fetchImpl: state.fetchImpl || fetch, baseUrl: job.leaApiBaseUrl,
+    apiKey: state.env?.LEA_API_KEY };
+  const blocked = async (error, status = 409) => {
+    const message = dependencyContinuationIssue(error);
+    job.dependencyContinuationBlocker = message;
+    await persistJobs(state);
+    return { ok: false, status, error: message };
+  };
+  if (dependencyWorkflowCanceled(state, job)) return { ok: false, error: "Automatic continuation was stopped." };
+  if (job.dependencyContinuationRequest?.runId !== job.apiRunId) {
+    if (!job.formalizationId) return blocked("The source binding is unavailable. Open this formalization in Overleaf to review it.");
+    const source = await prepareOverleafSource({ ...api, formalizationId: job.formalizationId });
+    if (!source.ok || !source.body?.source_context_ref) return blocked(source.error || "Current source could not be checked. Open this document in Overleaf, then refresh status.", source.status || 409);
+    if (dependencyWorkflowCanceled(state, job)) return { ok: false, error: "Automatic continuation was stopped." };
+    job.dependencyContinuationRequest = { runId: job.apiRunId, sourceContextRef: source.body.source_context_ref,
+      idempotencyKey: `dependency-continue:${job.apiRunId}`, timeoutSeconds: job.leaJobTimeoutSeconds,
+      dependencyResume: true, allowSourcePause: job.allowSourcePause };
+    job.dependencyContinuationAdmission = null;
+    await persistJobs(state);
+  }
+  const result = job.dependencyContinuationAdmission || await startApiContinuation({ ...api, ...job.dependencyContinuationRequest });
+  if (result.ok) job.dependencyContinuationAdmission = result;
+  else if (result.status != null && result.status < 500) {
+    result.error = dependencyContinuationIssue(result.error || "Saved progress could not be continued. Inspect this formalization before trying again.");
+    job.dependencyContinuationBlocker = result.error;
+    job.dependencyContinuationRequest = null;
+  }
+  await persistJobs(state);
+  if (dependencyWorkflowCanceled(state, job)) await stopAdmittedDependencyContinuation(state, job);
+  // A proxy/server failure can also hide an admission. Keep the exact request
+  // for reconciliation, rather than replacing its prepared source reference.
+  return !result.ok && result.status >= 500 ? { ...result, status: undefined } : result;
+}
+
+function dependencyContinuationIssue(error) {
+  let message = String(error).replace(/^HTTP \d+:\s*/, "");
+  if (message.includes("allowance was exhausted")) message += " Open in LeaChat to review saved progress, or choose Re-formalize for a new attempt.";
+  if (message.includes("Max spend limit")) message += " Update maximum spend in settings, then refresh status.";
+  return message;
+}
+
+export async function reconcileDependencyWaits(state) {
+  if (state.dependencyWaitReconciliation) return state.dependencyWaitReconciliation;
+  state.dependencyWaitReconciliation = reconcileDependencyWaitsOnce(state);
+  try {
+    return await state.dependencyWaitReconciliation;
+  } finally {
+    state.dependencyWaitReconciliation = null;
+  }
+}
+
+async function reconcileDependencyWaitsOnce(state) {
+  const latest = new Map();
+  for (const job of Object.values(state.jobs || {}).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)))) latest.set(job.jobKey, job);
+  for (const job of latest.values()) {
+    if (dependencyWorkflowCanceled(state, job)) await stopAdmittedDependencyContinuation(state, job);
+  }
+  let resumed = 0;
+  for (const job of [...latest.values()].filter(job => job.status === "paused" && job.stopReason === "dependency_wait"
+    && job.apiRunId && !job.dependencyContinuationBlocker && !dependencyWorkflowCanceled(state, job))) {
+    if (resumed >= 4) break;
+    if (state.recoveryObservers?.has(job.jobId)) continue;
+    const api = { fetchImpl: state.fetchImpl || fetch, baseUrl: job.leaApiBaseUrl || state.settings.leaApiBaseUrl,
+      apiKey: state.env?.LEA_API_KEY, projectSlug: job.projectSlug || slugProjectId(job.overleafProjectId) };
+    const row = await fetchApiRunRow({ ...api, runId: job.apiRunId, sessionId: job.leaSessionId });
+    if (!row || row.stop_reason !== "dependency_wait" || row.recovery_state === "review" || row.recoverable === false) continue;
+    const ids = row.waiting_dependencies || JSON.parse(row.waiting_dependencies_json || "[]");
+    if (!ids.length) continue;
+    job.waitingForDependencies = ids;
+    const deps = await Promise.all(ids.map(id => projectDependencyRequest({ ...api, dependencyId: id })));
+    if (deps.some(result => !result.ok)) {
+      for (let i = 0; i < ids.length; i++) {
+        if (!deps[i].ok) job.dependencies = mergeDependencyProgress(job.dependencies, { id: ids[i], current: false });
+      }
+      await persistJobs(state);
+      continue;
+    }
+    for (const result of deps) job.dependencies = mergeDependencyProgress(job.dependencies, { ...result.body, current: true });
+    await persistJobs(state);
+    if (deps.some(result => !result.body.ready && ["failed", "blocked", "stale", "needs_review", "interrupted"].includes(result.body.state))) continue;
+    // A stop or a newer attempt can arrive while the adapter reads are pending.
+    if (dependencyWorkflowCanceled(state, job) || job.status !== "paused"
+        || Object.values(state.jobs || {}).some(other => other !== job && other.jobKey === job.jobKey
+          && String(other.startedAt) >= String(job.startedAt))) continue;
+    job.status = "in_progress";
+    job.finishedAt = null;
+    await persistJobs(state);
+    void resumePersistedJob(state, job);
+    resumed += 1;
+    publishEvent(state, "jobs-changed", { overleafProjectId: job.overleafProjectId });
+  }
 }
 
 function reportAdapterTarget(state, overleafProjectId) {
@@ -3781,6 +3986,7 @@ async function submitFormalizeBatchReport(state, batch) {
       return {
         targetKind: entry.targetKind, targetLabel: entry.targetLabel,
         state: entry.state, reason: entry.reason || null, jobId: entry.runJobId || null,
+        detail: entry.detail || null, recoverable: entry.recoverable,
         runId: job?.apiRunId && job?.formalizationId ? job.apiRunId : null,
         formalizationId: job?.apiRunId && job?.formalizationId ? job.formalizationId : null
       };
@@ -4469,6 +4675,11 @@ async function fetchAdapterUsageForPopover(state, overleafProjectId) {
     project.costUsd += toNonNegativeNumber(reportUsage.cost_usd);
     project.runCount += toNonNegativeNumber(reportUsage.run_count);
   }
+  const projectSessions = sessions.filter((s) => s?.project_slug === projectSlug);
+  if (projectSessions.some((s) => s.usage_details) || reportUsage?.usage_details) {
+    project.usageDetails = [...projectSessions, ...(reportUsage ? [reportUsage] : [])].reduce((d, s) =>
+      mergeUsageDetails(d, s.usage_details || { cost_basis: "legacy_estimate" }), null);
+  }
   project.costUsd = Number(project.costUsd.toFixed(6));
   project.accountingUnavailable = sessions.some((session) =>
     session?.project_slug === projectSlug && !Object.hasOwn(session, "incomplete_usage_runs"));
@@ -4481,6 +4692,7 @@ async function fetchAdapterUsageForPopover(state, overleafProjectId) {
     outputTokens: allOutput,
     totalTokens: toNonNegativeNumber(global.total_tokens) || allInput + allOutput,
     costUsd: Number(toNonNegativeNumber(global.cost_usd).toFixed(6)),
+    ...(global.usage_details ? { usageDetails: global.usage_details } : {}),
     incompleteUsageRuns: toNonNegativeNumber(global.incomplete_usage_runs),
     unconfirmedUsageRuns: toNonNegativeNumber(global.unconfirmed_usage_runs),
     accountingUnavailable: !Object.hasOwn(global, "incomplete_usage_runs"),
@@ -4739,6 +4951,11 @@ async function routeRequest(request, response, state) {
   }
   if (request.method === "POST" && url.pathname === "/lean-pane/dependencies/retry") {
     const result = await handleDependencyRetry(await readBodyJson(request), state);
+    sendJson(response, result.statusCode, result.body);
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/lean-pane/dependencies/wait") {
+    const result = await handleDependencyWaitControl(await readBodyJson(request), state);
     sendJson(response, result.statusCode, result.body);
     return;
   }
@@ -6083,6 +6300,16 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
     appendLog,
     logPath: job.logPath,
     onRunStarted: async (apiRunId, sessionId, startBody = {}) => {
+      const continuedDependency = job.apiRunId && job.apiRunId !== apiRunId
+        && job.dependencyContinuationAdmission?.body?.run_id === apiRunId;
+      if (job.apiRunId && job.apiRunId !== apiRunId) {
+        job.stopReason = null;
+        job.waitingForDependencies = [];
+        job.dependencyContinuationBlocker = null;
+        job.dependencyContinuationRequest = null;
+        job.dependencyContinuationAdmission = null;
+        job.stoppedDependencyContinuationRunId = null;
+      }
       job.apiRunId = apiRunId;
       job.deadlineAt = startBody.deadline_at || job.deadlineAt || null;
       job.usageRunId = apiRunId;
@@ -6111,6 +6338,10 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
       if (startBody.project_namespace) target.projectNamespace = startBody.project_namespace;
       if (startBody.project_slug) target.projectSlug = startBody.project_slug;
       await persistJobs(state);
+      if (continuedDependency && dependencyWorkflowCanceled(state, job)) {
+        await interruptApiRun({ fetchImpl: state.fetchImpl || fetch, baseUrl: job.leaApiBaseUrl,
+          apiKey: state.env?.LEA_API_KEY, runId: apiRunId, source: "companion" });
+      }
     },
     onEvent: async (type, data) => {
       if (type === "project_dependency" && data?.dependency) {
@@ -6136,13 +6367,16 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
     const ids = exit.waitingDependencies?.length ? exit.waitingDependencies : JSON.parse(row?.waiting_dependencies_json || "[]");
     if (!ids.length) break;
     job.waitingForDependencies = ids;
+    job.stopReason = "dependency_wait";
     for (const batch of Object.values(state.repairBatches || {})) {
       if (batch.items?.some((entry) => entry.runJobId === job.jobId)) {
         batch.waitingJobs = [...new Set([...(batch.waitingJobs || []), job.jobId])];
         await persistRepairBatches(state);
       }
     }
-    job.executionSegments = [...(job.executionSegments || []), { runId: job.apiRunId, usage: exit.usage, costUsd: exit.costUsd }];
+    if (!(job.executionSegments || []).some(segment => segment.runId === job.apiRunId)) {
+      job.executionSegments = [...(job.executionSegments || []), { runId: job.apiRunId, usage: exit.usage, costUsd: exit.costUsd }];
+    }
     await persistJobs(state);
     const outcome = await coordinateSharedWork(state, job, target, ids);
     job.activeDependencyRunId = null;
@@ -6150,11 +6384,9 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
       exit = { ...exit, resultDetail: outcome.canceled || dependencyWorkflowCanceled(state, job) ? "Dependency workflow stopped." : `Shared dependency blocked: ${outcome.reason}` };
       break;
     }
-    const continuation = await startApiContinuation({ fetchImpl: state.fetchImpl || fetch,
-      baseUrl: job.leaApiBaseUrl, apiKey: state.env?.LEA_API_KEY, runId: job.apiRunId,
-      sourceBundle: job.sourceBundle, idempotencyKey: `dependency-continue:${job.apiRunId}`,
-      timeoutSeconds: job.leaJobTimeoutSeconds, dependencyResume: true, allowSourcePause: job.allowSourcePause });
+    const continuation = await admitDependencyContinuation(state, job);
     if (!continuation.ok) {
+      if (continuation.status != null) job.dependencyContinuationBlocker = continuation.error;
       exit = { ...exit, resultDetail: continuation.error || "Saved dependency continuation requires review." };
       break;
     }
@@ -6198,8 +6430,8 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
 }
 
 function dependencyWorkflowCanceled(state, job) {
-  return job.dependencyCancelRequested === true || Object.values(state.repairBatches || {}).some((batch) => batch.cancelRequested
-    && batch.items?.some((entry) => entry.runJobId === job.jobId));
+  return job.dependencyCancelRequested === true || (!job.dependencyAutoResumeRequested && Object.values(state.repairBatches || {}).some((batch) => batch.cancelRequested
+    && batch.items?.some((entry) => entry.runJobId === job.jobId)));
 }
 
 async function recordSharedDependencyProgress(state, job, dep, extra = {}) {
@@ -6210,6 +6442,8 @@ async function recordSharedDependencyProgress(state, job, dep, extra = {}) {
     specification: { name: spec.name, kind: spec.kind, statement: spec.statement, signature: spec.signature,
       sources: spec.sources, citation: spec.citation }, blocker: dep.blocker,
     requesting_targets: dep.requesting_targets, attempts: dep.attempts,
+    ...(Object.hasOwn(dep, "started_here") ? { started_here: dep.started_here } : {}),
+    ...(Object.hasOwn(dep, "reused") ? { reused: dep.reused } : {}),
     ...extra };
   job.dependencies = mergeDependencyProgress(job.dependencies, item);
   if (dep.active_run_id) {
@@ -6228,18 +6462,19 @@ async function recordSharedDependencyProgress(state, job, dep, extra = {}) {
   publishEvent(state, "jobs-changed", { overleafProjectId: job.overleafProjectId });
 }
 
-async function coordinateSharedWork(state, job, target, ids, { ignoreBatchCancellation = false } = {}) {
+async function coordinateSharedWork(state, job, target, ids, { ignoreBatchCancellation = false, retrySharedResult = false } = {}) {
   const api = { fetchImpl: state.fetchImpl || fetch, baseUrl: job.leaApiBaseUrl,
     apiKey: state.env?.LEA_API_KEY, projectSlug: target.projectSlug || job.projectSlug };
   return resolveSharedDependencies(ids, {
-    isCanceled: () => ignoreBatchCancellation ? job.dependencyCancelRequested === true : dependencyWorkflowCanceled(state, job),
+    isCanceled: () => retrySharedResult ? false : ignoreBatchCancellation ? job.dependencyCancelRequested === true : dependencyWorkflowCanceled(state, job),
     getDependency: async (id) => {
       const result = await projectDependencyRequest({ ...api, dependencyId: id });
       return result.ok ? result.body : !result.status || result.status >= 500 ? { unavailable: true } : null;
     },
-    startDependency: async (id) => {
+    startDependency: async (id, initiatingRunId) => {
       const result = await projectDependencyRequest({ ...api, dependencyId: id, action: "run",
-        body: { model: job.leaModel, timeout_seconds: job.leaJobTimeoutSeconds } });
+        body: { model: job.leaModel, timeout_seconds: job.leaJobTimeoutSeconds,
+          initiating_run_id: initiatingRunId || job.apiRunId } });
       return result.ok ? result.body : { error: result.error, status: result.status };
     },
     getRun: (runId) => fetchApiRunRow({ ...api, runId }),
@@ -7079,6 +7314,7 @@ The final file must compile with zero errors, but it must intentionally keep the
 
 function recordJobUsage(job, exit) {
   if (!exit) return;
+  job.usageDetails = exit.usageDetails || job.usageDetails;
   job.usageStatus = exit.usageStatus || "unknown";
   job.usageRevision = Number(exit.usageRevision || 0);
   job.usageRunId = exit.apiRunId || job.apiRunId || null;
@@ -7120,7 +7356,8 @@ export async function reconcilePendingJobUsage(state, limit = 4) {
     const newer = snapshot.usage && (!previous || Number(snapshot.usageRevision) > Number(previous.revision || 0)
       || (snapshot.usageStatus === "final" && previous.status !== "final"));
     if (newer) {
-      job.reconciledUsage = { runId, ...snapshot.usage, costUsd: snapshot.costUsd,
+      job.usageDetails = snapshot.usageDetails || job.usageDetails;
+      job.reconciledUsage = { runId, ...snapshot.usage, usageDetails: job.usageDetails, costUsd: snapshot.costUsd,
                               status: snapshot.usageStatus, revision: snapshot.usageRevision,
                               updatedAt: snapshot.usageUpdatedAt };
       changed++;
@@ -7441,12 +7678,16 @@ async function readLogTail(logPath, maxChars = 4000) {
   }
 }
 
-function buildJobResponse({ job, status, target }) {
+function buildJobResponse({ state = {}, job, status, target }) {
   const declarationName = job.declarationName || target.declarationName || target.targetLabel;
   const leaSessionId = job.leaSessionId || job.recorderSessionId || null;
   const pausedMessage = status === "paused"
     ? job.settling === true
       ? "Time limit reached — the adapter is stopping this run. Recorded usage may still change."
+      : job.stopReason === "stalled"
+      ? "Formalization paused after three unchanged verification failures. Partial work is retained. Resolve the blocker, then Resume for another bounded attempt."
+      : job.stopReason === "dependency_wait"
+      ? "Formalization is waiting for a canonical dependency. Resolve its attempt before resuming."
       : job.stopReason === "timeout"
       ? "Formalization paused after reaching its time limit. Resume to continue from the current artifact."
       : job.stopReason === "turn_cap"
@@ -7458,6 +7699,7 @@ function buildJobResponse({ job, status, target }) {
   const response = {
     status,
     jobId: job.jobId,
+    apiRunId: job.apiRunId || null,
     targetKind: target.targetKind,
     targetLabel: target.targetLabel,
     targetKey: targetKey(target),
@@ -7487,7 +7729,7 @@ function buildJobResponse({ job, status, target }) {
     formalizationId: job.formalizationId || null,
     stopReason: job.reconciledStopReason || job.stopReason || null,
     accounting: job.reconciledUsage || (job.usage ? {
-      ...job.usage, costUsd: job.costUsd, status: job.usageStatus || "unknown",
+      ...job.usage, usageDetails: job.usageDetails, costUsd: job.costUsd, status: job.usageStatus || "unknown",
       revision: job.usageRevision || 0
     } : { status: job.usageStatus || "unknown" }),
     settling: job.settling === true,
@@ -7496,6 +7738,8 @@ function buildJobResponse({ job, status, target }) {
     recoverable: job.recoverable === true,
     dependencies: job.dependencies || [],
     waitingForDependencies: job.waitingForDependencies || [],
+    autoResumeEnabled: !dependencyWorkflowCanceled(state, job),
+    dependencyContinuationBlocker: job.dependencyContinuationBlocker || null,
     connectionState: job.connectionState || null,
     recoveryState: job.recoveryState || null,
     recoveryReason: job.recoveryReason || null,
@@ -7507,6 +7751,8 @@ function buildJobResponse({ job, status, target }) {
     finishedAt: job.finishedAt
   };
   addStubbedTheoremUses(response, job.stubbedTheoremUses);
+  response.dependencyWait = dependencyWait(response);
+  if (response.dependencyWait) response.message = response.dependencyWait.message;
   const turnProgress = buildTurnProgress(job, status);
   if (turnProgress) {
     response.turnProgress = turnProgress;
@@ -7843,13 +8089,46 @@ function ensureLedgerLinkedJob({ state, item, target, statusInfo }) {
   return job;
 }
 
+function paneDependencies(item, cached, current, formalizationId) {
+  const known = new Map(cached.map((dep) => [dep.id, dep]));
+  if (current) {
+    for (const dep of current.values()) {
+      if (dep.requesting_targets?.includes(formalizationId)) known.set(dep.id, known.get(dep.id) || dep);
+    }
+  }
+  return [...known.values()].map((dep) => ({ ...dep,
+    ...(current ? current.get(dep.id) || { ready: false, state: "unavailable" } : {}),
+    current: Boolean(current), targetLabels: dep.targetLabels || [item.label || item.leanDeclarationName]
+  }));
+}
+
+function currentBatchOutcome(state, projectId, kind, label, statusInfo, latestJob) {
+  let outcome = statusInfo?.lastBatchOutcome || null;
+  for (const batch of Object.values(state.repairBatches || {})) {
+    if (batch.overleafProjectId !== projectId || batch.operation !== "formalize") continue;
+    if (batch.reportId && statusInfo?.lastBatchOutcomeKnown) continue;
+    const entry = batch.items?.find((item) => item.targetKind === kind && item.targetLabel === label);
+    if (!entry || ["pending", "running"].includes(entry.state)) continue;
+    const timestamp = batch.finishedAt || batch.createdAt;
+    if (!outcome || timestamp >= outcome.finished_at) outcome = {
+      batch_id: batch.batchId, started_at: batch.createdAt, finished_at: timestamp, state: entry.state, reason: entry.reason,
+      detail: entry.detail, recoverable: entry.recoverable, runId: state.jobs?.[entry.runJobId]?.apiRunId
+    };
+  }
+  if (!outcome || !["skipped", "incomplete"].includes(outcome.state)) return undefined;
+  if (statusInfo?.status === "in_progress" || (!latestJob?.ledgerHydrated && latestJob?.startedAt > (outcome.started_at || outcome.finished_at) && latestJob.apiRunId !== outcome.runId)) return undefined;
+  return outcome;
+}
+
 async function enrichLeanPaneItem({
   item,
   state,
   overleafProjectId,
   projectName = "",
   projectNamespace = "",
-  approvalContext
+  approvalContext,
+  currentDependencies = null,
+  sourceCoverage = "partial"
 }) {
   const targetKind = item.leanKind === "def" ? "definition" : "theorem";
   const targetLabel = String(item.leanDeclarationName || "").trim();
@@ -7987,7 +8266,8 @@ async function enrichLeanPaneItem({
       const live = await fetchCurrentLeaStatus({ fetchImpl: state.fetchImpl || fetch, baseUrl,
         apiKey: state.env?.LEA_API_KEY, formalizationId,
         sourceIdentityHash: item.sourceBundle?.sourceIdentityHash || currentInputHash,
-        sourceBundleHash: item.sourceBundle?.bundleHash });
+        sourceBundleHash: item.sourceBundle?.bundleHash,
+        sourceBundle: item.sourceBundle, coverage: sourceCoverage });
       if (live.ok) leaStatus = normalizeLeaStatus(live.body?.lea_status);
       else leaStatus = { ...leaStatus, freshness: "unknown", deliveryError: live.error || "Lea Status unavailable" };
       const result = await fetchCurrentAlignmentCheck({
@@ -8003,6 +8283,9 @@ async function enrichLeanPaneItem({
   }
   const leanCheck = projectLeanCheck({ paneStatus: stale ? "stale" : paneStatus, statusInfo });
   const statusRunActive = ["pending", "running"].includes(leaStatus.activity?.status);
+  const wait = dependencyWait({ ...latestJob, stopReason: latestJob?.stopReason || statusInfo?.stopReason,
+    leaStatus, dependencies: paneDependencies(item, latestJob?.dependencies || statusInfo?.dependencies || [], currentDependencies, formalizationId),
+    autoResumeEnabled: latestJob ? !dependencyWorkflowCanceled(state, latestJob) : false });
 
   return {
     ...item,
@@ -8010,8 +8293,11 @@ async function enrichLeanPaneItem({
     // Drives the pane's live polling: it keeps refreshing while any item is still
     // being formalized, then stops once everything settles.
     inProgress: inProgress || statusRunActive,
-    dependencies: latestJob?.dependencies || statusInfo?.dependencies || [],
+    dependencies: paneDependencies(item, latestJob?.dependencies || statusInfo?.dependencies || [], currentDependencies, formalizationId),
+    lastBatchOutcome: currentBatchOutcome(state, overleafProjectId, targetKind, item.label || targetLabel, statusInfo, latestJob),
     waitingForDependencies: latestJob?.waitingForDependencies || [],
+    dependencyWait: wait,
+    apiRunId: latestJob?.apiRunId || statusInfo?.apiRunId || null,
     leaStatus,
     leanCheck,
     leaCheck,
@@ -8020,6 +8306,7 @@ async function enrichLeanPaneItem({
     accounting: !latestJob ? undefined : latestJob.reconciledUsage || (latestJob.usage ? {
       ...latestJob.usage,
       costUsd: latestJob.costUsd,
+      usageDetails: latestJob.usageDetails,
       status: latestJob.usageStatus || "unknown"
     } : { status: latestJob.usageStatus || "unknown" }),
     settling: latestJob?.settling === true,
@@ -8029,6 +8316,7 @@ async function enrichLeanPaneItem({
     // in a different project file and therefore has no in-document badge.
     turnProgress: inProgress && !stale ? statusInfo?.turnProgress : undefined,
     finalStatus: statusInfo?.finalStatus || undefined,
+    resultKind: statusInfo?.resultKind || undefined,
     failureCode: maxSpendFailure ? "max_spend_reached" : undefined,
     failureMessage: maxSpendFailure
       ? maxSpendFailure.error || maxSpendFailure.message || MAX_SPEND_MESSAGE
@@ -8292,7 +8580,7 @@ async function getTheoremStatus({
   const withLeaSession = (status) => addLeaSessionLink(status, linkedJob);
   const activeJob = findActiveJob(jobs, target.jobKey);
   if (activeJob) {
-    return buildJobResponse({ job: activeJob, status: "in_progress", target });
+    return buildJobResponse({ state, job: activeJob, status: "in_progress", target });
   }
 
   const candidates = [...new Set([
@@ -8304,10 +8592,12 @@ async function getTheoremStatus({
     formalizationIds: linkedJob?.formalizationId ? [linkedJob.formalizationId] : [] });
   const evidence = (linkedJob?.formalizationId
     ? Object.values(ledger || {}).find((entry) => entry?.formalization_id === linkedJob.formalizationId)
-    : null) || candidates.map((name) => ledger?.[name]).find((entry) => entry?.formalization_id) || null;
+    : null) || candidates.map((name) => ledger?.[name]).find((entry) => entry?.formalization_id || entry?.last_batch_outcome) || null;
   if (evidence?.project_namespace) target.projectNamespace = evidence.project_namespace;
   const artifactEvidence = evidence
     ? {
+        lastBatchOutcome: evidence.last_batch_outcome,
+        lastBatchOutcomeKnown: Object.hasOwn(evidence, "last_batch_outcome"),
         artifactRecorded: true,
         artifactExists: Boolean(evidence.exists),
         artifactContent: typeof evidence.content === "string" ? evidence.content : undefined
@@ -8318,14 +8608,14 @@ async function getTheoremStatus({
   // A later successful target run can supersede a paused job. A manual check
   // alone cannot do so, even when it happened after the pause.
   const checkedAfterPause = newestFinishedJob?.status === "paused"
-    && evidence?.exists && evidence.declaration_present
+    && evidence?.exists && (evidence.declaration_present || evidence.validity_status === "disproved")
     && evidence.check_current === true
-    && ["proved", "defined"].includes(evidence.validity_status)
+    && ["proved", "defined", "disproved"].includes(evidence.validity_status)
     && Boolean(evidence.completion_run_id)
     && evidence.completion_run_id !== newestFinishedJob.apiRunId;
   if (newestFinishedJob?.status === "paused" && !checkedAfterPause
       && evidence?.validity_status !== "needs_review" && !unresolvedReviewJob) {
-    const paused = buildJobResponse({ job: newestFinishedJob, status: "paused", target });
+    const paused = buildJobResponse({ state, job: newestFinishedJob, status: "paused", target });
     if (evidence?.exists) {
       const entry = {
         name: evidence.declaration_name,
@@ -8397,6 +8687,11 @@ async function getTheoremStatus({
         message: evidence.check_detail || "This item no longer compiles."
       };
     }
+    if (evidence.validity_status === "disproved" && evidence.completion_run_id && evidence.check_current === true) {
+      return withLeaSession({ status: "disproved", ...base, ...artifactEvidence,
+        resultKind: "disproved", leanCheckPassed: true, leanStatement,
+        message: "Checked counterexample—original claim disproved." });
+    }
     if (evidence.has_sorry) {
       return withLeaSession({ status: "sorry_stub", ...base, ...artifactEvidence, leanStatement });
     }
@@ -8433,7 +8728,7 @@ async function getTheoremStatus({
     { job: unresolvedReviewJob ? null : findLatestJob(jobs, target.jobKey, "formalized"), status: "unavailable" },
     { job: unresolvedReviewJob ? null : findLatestJob(jobs, target.jobKey, "repaired"), status: "unavailable" },
     { job: findLatestJob(jobs, target.jobKey, "needs_review"), status: "needs_review" },
-    { job: findLatestJob(jobs, target.jobKey, "disproved"), status: "disproved" },
+    { job: findLatestJob(jobs, target.jobKey, "disproved"), status: "unavailable" },
     { job: findLatestJob(jobs, target.jobKey, "sorry_stub"), status: "sorry_stub" },
     { job: unresolvedReviewJob ? null : findLatestJob(jobs, target.jobKey, "paused"), status: "paused" },
     { job: findLatestJob(jobs, target.jobKey, "failed"), status: "failed" }
@@ -8459,7 +8754,7 @@ async function getTheoremStatus({
   }
   if (newest) {
     return withLeaSession({
-      ...buildJobResponse({ job: newest.job, status: newest.status, target }),
+      ...buildJobResponse({ state, job: newest.job, status: newest.status, target }),
       ...artifactEvidence
     });
   }

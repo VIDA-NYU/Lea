@@ -131,6 +131,67 @@ def test_definition_needs_a_definition_and_successful_target_run(tmp_path, monke
     assert formalizations.get(target["id"])["validity_status"] == "defined"
 
 
+def test_batch_explanation_is_informational_and_hidden_after_newer_work(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    monkeypatch.setattr("app.routes.projects._proofs_root", lambda: tmp_path / "proofs")
+    project = store.get_or_create_project("study", "Study")
+    target = store.create_formalization(project_id=project["id"], loose_session_id=None,
+        display_title="target", declaration_name="target", kind="theorem", origin="overleaf", origin_key="study:theorem:target")
+    with db.connect() as conn:
+        conn.execute("""insert into formalize_batch_reports(batch_id,project_id,request_hash,started_at,finished_at,canceled,state,facts_json,created_at,updated_at)
+            values ('formalize-batch-old',?,'hash','2026-01-01','2026-01-02',0,'ready',?,'t','t')""",
+            (project["id"], json.dumps({"items": [{"targetKind": "theorem", "targetLabel": "target", "state": "skipped", "reason": "depends_on_incomplete:base"}]})))
+    def status():
+        return project_target_status_by_slug(project["slug"], declarations="target")["targets"][0]
+    before = status()
+    assert before["last_batch_outcome"]["reason"] == "depends_on_incomplete:base"
+    assert before["check_current"] is False
+    session = store.create_session("Retry", project_id=project["id"])
+    run = store.create_run(session["id"], "test", None, 3, project_id=project["id"], focus_formalization_id=target["id"])
+    store.update_run(run["id"], "proved", result_kind="proved")
+    assert status()["last_batch_outcome"] is None
+    # New work can supersede a skipped item before independent batch work
+    # finishes and the saved report is written.
+    with db.write() as conn:
+        conn.execute("update runs set created_at='2026-01-01T12:00:00+00:00' where id=?", (run["id"],))
+    assert status()["last_batch_outcome"] is None
+
+
+def test_disproof_evidence_does_not_require_original_declaration(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    proof_root = tmp_path / "proofs"
+    monkeypatch.setattr("app.routes.projects._proofs_root", lambda: proof_root)
+    project = store.get_or_create_project("study", "Study")
+    session = store.create_session("Disprove target", project_id=project["id"])
+    target = store.create_formalization(project_id=project["id"], loose_session_id=None,
+        display_title="target", declaration_name="target", kind="theorem")
+    run = store.create_run(session["id"], "test", None, 3, project_id=project["id"], focus_formalization_id=target["id"])
+    store.link_session_formalization(session["id"], target["id"])
+    store.link_formalization_file(target["id"], "Counterexample.lean", "primary")
+    code = "theorem not_target : ¬ (False) := by simp\n"
+    repo = projects.project_repo_dir(project, proof_root)
+    repo.mkdir(parents=True)
+    path = repo / "Counterexample.lean"
+    path.write_text(code)
+    store.add_code_step(session["id"], run["id"], path.name, content=code, check_status="ok",
+        artifact_kind="proof", formalization_id=target["id"])
+    store.update_run(run["id"], "disproved", result_kind="disproved")
+    def status():
+        return project_target_status_by_slug(project["slug"], declarations="target")["targets"][0]
+    checked = status()
+    assert checked["validity_status"] == "disproved"
+    assert checked["declaration_present"] is False
+    assert checked["check_current"] is True
+    path.write_text(code + "-- changed\n")
+    assert status()["check_current"] is False
+    path.unlink()
+    assert status()["check_current"] is False
+    assert status()["exists"] is False
+
+
 def test_historical_compile_promoted_definition_is_now_reviewed_without_rewriting_history(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
     db.init_db()

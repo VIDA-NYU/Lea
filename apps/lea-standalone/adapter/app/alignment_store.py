@@ -6,12 +6,13 @@ import json
 from uuid import uuid4
 
 from .db import connect, row_to_dict, utc_now, write
+from . import usage_details as usage_metadata
 
 
 def _decode(row: dict | None) -> dict | None:
     if row is None:
         return None
-    item = dict(row)
+    item = usage_metadata.decode(dict(row))
     for key in ("source_bundle_json", "artifact_snapshot_json", "report_json"):
         raw = item.pop(key, None)
         public_key = key.removesuffix("_json")
@@ -106,20 +107,20 @@ def mark_running(check_id: str) -> None:
         )
 
 
-def complete(check_id: str, *, report: dict, input_tokens: int, output_tokens: int, cost_usd: float) -> None:
+def complete(check_id: str, *, report: dict, input_tokens: int, output_tokens: int, cost_usd: float, usage_details: dict | None = None) -> None:
     now = utc_now()
     with connect() as conn:
         conn.execute(
             """
             update alignment_checks
             set status = 'completed', verdict = ?, report_json = ?,
-                input_tokens = ?, output_tokens = ?, cost_usd = ?,
+                input_tokens = ?, output_tokens = ?, cost_usd = ?, usage_details_json = ?,
                 completed_at = ?, updated_at = ?, error = null, stop_reason = null
             where id = ?
             """,
             (
                 report.get("verdict"), json.dumps(report, ensure_ascii=False),
-                input_tokens, output_tokens, cost_usd, now, now, check_id,
+                input_tokens, output_tokens, cost_usd, usage_metadata.encode(usage_details), now, now, check_id,
             ),
         )
 
@@ -132,6 +133,7 @@ def fail(
     input_tokens: int = 0,
     output_tokens: int = 0,
     cost_usd: float = 0.0,
+    usage_details: dict | None = None,
 ) -> None:
     now = utc_now()
     with connect() as conn:
@@ -139,12 +141,12 @@ def fail(
             """
             update alignment_checks
             set status = 'failed', verdict = 'error', report_json = ?, error = ?,
-                input_tokens = ?, output_tokens = ?, cost_usd = ?,
+                input_tokens = ?, output_tokens = ?, cost_usd = ?, usage_details_json = ?,
                 completed_at = ?, updated_at = ? where id = ?
             """,
             (
                 json.dumps(report, ensure_ascii=False) if report else None,
-                message, input_tokens, output_tokens, cost_usd, now, now, check_id,
+                message, input_tokens, output_tokens, cost_usd, usage_metadata.encode(usage_details), now, now, check_id,
             ),
         )
 

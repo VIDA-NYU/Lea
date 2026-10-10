@@ -16,6 +16,7 @@ import type {
 import { MarkdownMessage } from './MarkdownMessage';
 import { LeanCheckRuntimeStatus } from './LeanCheckRuntimeStatus';
 import { checkExecutionMessage } from '../lib/leanCheckRuntime.mjs';
+import { usageCostText, usageDetailText } from '../lib/usageDetails.mjs';
 import { ModelPicker } from './ModelPicker';
 import { OriginBadge } from './OriginBadge';
 import { buildTimeline } from '../lib/timeline.mjs';
@@ -1443,7 +1444,7 @@ function DefinedCard({ steps, session }: { steps: number; session?: SessionSumma
         <div className="meta">
           <span>{steps} steps</span>
           {session.total_tokens ? <span>{formatTokens(session.total_tokens)} tokens</span> : null}
-          {session.cost_usd ? <span>${session.cost_usd.toFixed(3)}</span> : null}
+          {session.cost_usd || session.usage_details?.unpriced_calls ? <span title={usageDetailText(session.usage_details)}>{usageCostText(session.cost_usd, session.usage_details, 3)}</span> : null}
           {session.duration_seconds ? <span>{session.duration_seconds}s</span> : null}
         </div>
       )}
@@ -1459,7 +1460,7 @@ function DisprovedCard({ steps, session }: { steps: number; session?: SessionSum
         <div className="meta">
           <span>{steps} steps</span>
           {session.total_tokens ? <span>{formatTokens(session.total_tokens)} tokens</span> : null}
-          {session.cost_usd ? <span>${session.cost_usd.toFixed(3)}</span> : null}
+          {session.cost_usd || session.usage_details?.unpriced_calls ? <span title={usageDetailText(session.usage_details)}>{usageCostText(session.cost_usd, session.usage_details, 3)}</span> : null}
           {session.duration_seconds ? <span>{session.duration_seconds}s</span> : null}
         </div>
       )}
@@ -1483,7 +1484,7 @@ function StubCard({ steps, session }: { steps: number; session?: SessionSummary 
         <div className="meta">
           <span>{steps} steps</span>
           {session.total_tokens ? <span>{formatTokens(session.total_tokens)} tokens</span> : null}
-          {session.cost_usd ? <span>${session.cost_usd.toFixed(3)}</span> : null}
+          {session.cost_usd || session.usage_details?.unpriced_calls ? <span title={usageDetailText(session.usage_details)}>{usageCostText(session.cost_usd, session.usage_details, 3)}</span> : null}
           {session.duration_seconds ? <span>{session.duration_seconds}s</span> : null}
         </div>
       )}

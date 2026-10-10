@@ -1,3 +1,16 @@
+export interface UsageDetails {
+  version?: number;
+  cached_input_tokens?: number | null;
+  cache_write_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  cost_basis?: 'provider_reported' | 'cache_aware_estimate' | 'legacy_estimate' | 'unavailable' | 'mixed';
+  basis_counts?: Record<string, number>;
+  unpriced_calls?: number;
+  details_missing_calls?: number;
+  response_model?: string;
+  service_tier?: string | null;
+}
+
 // LeaUI v2 frontend API client.
 //
 // One source of truth for the HTTP + SSE contract the v2 adapter exposes under
@@ -45,6 +58,7 @@ export interface RunSummary {
   stop_requested_reason?: string | null;
   usage_status?: 'pending' | 'partial' | 'final' | 'unknown' | null;
   usage_revision?: number;
+  usage_details?: UsageDetails | null;
   cost_usd?: number;
   attempt_id?: string | null;
   recovery_state?: 'recovering' | 'review' | null;
@@ -76,6 +90,7 @@ export interface SessionSummary {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  usage_details?: UsageDetails | null;
   cost_usd: number;
   incomplete_usage_runs?: number;
   unconfirmed_usage_runs?: number;
@@ -642,6 +657,7 @@ export interface UsageBreakdownRow {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  usage_details?: UsageDetails | null;
   cost_usd: number;
   event_count: number;
   created_at?: string;
@@ -778,6 +794,7 @@ export interface DoneEvent {
   result_detail?: string | null;
   stop_reason?: string | null;
   usage_status?: string | null;
+  usage_details?: UsageDetails | null;
   cost_usd?: number | null;
 }
 

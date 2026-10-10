@@ -80,6 +80,97 @@ def test_source_only_publication_is_durable_and_idempotent(fresh):
     assert lea_status_store.get(first["id"]) == first
 
 
+def rehash_source(value):
+    value["bundleHash"] = source_hash(value)
+    value["sourceIdentityHash"] = source_hash(value, identity=True)
+    return value
+
+
+def test_content_comparison_ignores_capture_metadata_and_preserves_frozen_source(fresh):
+    import copy
+    source = bundle()
+    source["relevantSource"] = [dict(kind="surrounding-context", path="main.tex", content="Context.", startLine=1, endLine=5)]
+    source["mirror"] = dict(revision="a" * 64, mirroredFileCount=1, verified=True)
+    admitted = admit(rehash_source(source))
+    run, form, _ = ids(admitted)
+    frozen = lea_status_store.context(run)["source_bundle"]
+    current = copy.deepcopy(source)
+    current["relevantSource"][0].update(startLine=3, endLine=7)
+    current["statementLocation"]["sourceStartLine"] = 3
+    current["mirror"].update(verified=False, mirroredFileCount=2)
+    projection = lea_status.current(form, source_bundle=rehash_source(current), coverage="complete")
+    assert projection["freshness"] == "current"
+    assert "freshness_detail" not in projection
+    assert projection["assessment"] is None
+    assert lea_status_store.context(run)["source_bundle"] == frozen
+
+
+def test_partial_or_differently_scoped_source_cannot_claim_an_edit(fresh):
+    run, form, _ = ids(fresh)
+    changed = bundle("Proof absent from the partial inventory")
+    projection = lea_status.current(form, source_bundle=changed, coverage="partial")
+    assert projection["freshness"] == "unknown"
+    assert "could not be checked" in projection["freshness_detail"]
+    changed = bundle()
+    changed["relevantSource"] = [dict(kind="surrounding-context", path="main.tex", content="More available evidence")]
+    projection = lea_status.current(form, source_bundle=rehash_source(changed), coverage="complete")
+    assert projection["freshness"] == "unknown"
+    legacy = lea_status.current(form, changed["sourceIdentityHash"], changed["bundleHash"])
+    assert "changed" not in legacy["freshness_detail"].lower()
+
+
+def test_legacy_excerpt_truncation_marker_is_not_a_source_edit(fresh):
+    import copy
+    previous = bundle()
+    previous["relevantSource"] = [dict(kind="surrounding-context", path="main.tex", content="x" * 12000 + "\n[excerpt truncated]")]
+    admitted = admit(rehash_source(previous))
+    _, form, _ = ids(admitted)
+    frozen = lea_status_store.context(admitted["run"]["id"])["source_bundle"]
+    current = copy.deepcopy(previous)
+    current["relevantSource"][0].update(content="x" * 12000, truncated=True)
+    assert lea_status.current(form, source_bundle=rehash_source(current), coverage="complete")["freshness"] == "current"
+    assert lea_status_store.context(admitted["run"]["id"])["source_bundle"] == frozen
+    assert frozen["bundleHash"] == previous["bundleHash"]
+
+
+def test_comparison_distinguishes_actual_source_edits_from_surrounding_changes(fresh):
+    import copy
+    source = bundle()
+    source["relevantSource"] = [dict(kind="surrounding-context", path="main.tex", content="Original context")]
+    source["mirror"] = dict(revision="a" * 64, verified=True)
+    admitted = admit(rehash_source(source))
+    _, form, _ = ids(admitted)
+    changed = copy.deepcopy(source)
+    changed["relevantSource"][0]["content"] = "Revised context"
+    assert lea_status.current(form, source_bundle=rehash_source(changed), coverage="complete")["freshness"] == "evidence_changed"
+    changed = copy.deepcopy(source)
+    changed["mirror"]["revision"] = "b" * 64
+    assert lea_status.current(form, source_bundle=rehash_source(changed), coverage="complete")["freshness"] == "evidence_changed"
+    changed = copy.deepcopy(source)
+    changed["proof"] = "A revised proof"
+    assert lea_status.current(form, source_bundle=rehash_source(changed), coverage="complete")["freshness"] == "source_changed"
+    changed = copy.deepcopy(source)
+    changed["mirror"] = None
+    assert lea_status.current(form, source_bundle=rehash_source(changed), coverage="complete")["freshness"] == "unknown"
+
+
+def test_source_comparison_route_validates_hashes_and_target_binding(fresh):
+    from fastapi import HTTPException
+    from app.routes.lea_status import compare, SourceComparison
+    _, form, _ = ids(fresh)
+    assert compare(form, SourceComparison(source_bundle=bundle(), coverage="complete"))["lea_status"]["freshness"] == "current"
+    invalid = bundle()
+    invalid["statement"] = "Changed without recomputing the hash"
+    with pytest.raises(HTTPException) as error:
+        compare(form, SourceComparison(source_bundle=invalid))
+    assert error.value.status_code == 422
+    invalid = bundle()
+    invalid["targetKey"] = "another_target"
+    with pytest.raises(HTTPException) as error:
+        compare(form, SourceComparison(source_bundle=rehash_source(invalid)))
+    assert error.value.status_code == 422
+
+
 def test_invalid_payload_consumes_no_sequence(fresh):
     run, _, _ = ids(fresh)
     for changes in (dict(run_id="spoof"), dict(summary="x" * 501), dict(confidence="approved"), dict(kind="final")):

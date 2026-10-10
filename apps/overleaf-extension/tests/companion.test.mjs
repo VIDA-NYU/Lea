@@ -16,6 +16,11 @@ import {
   handleChatSession,
   handleFormalize,
   handleFormalizeAll,
+  handleDependencyRetry,
+  handleDependencyWaitControl,
+  admitDependencyContinuation,
+  reconcileDependencyWaits,
+  classifyFormalizeJob,
   handleGetModelCatalog,
   handleGetModelRequirements,
   handleGetStatuses,
@@ -663,6 +668,38 @@ test("lean pane refresh syncs the source identity and preserves a stale artifact
   assert.equal(result.body.items[0].leaSessionId, "saved-session");
 });
 
+test("lean pane compares complete canonical evidence and marks fallback inventories partial", async () => {
+  const comparisons = [];
+  const files = [{ path: "main.tex", content: String.raw`\begin{theorem}
+% lea: formalize label=target
+True.
+\end{theorem}
+\begin{proof}
+By triviality.
+\end{proof}` }];
+  const fallback = makeAdapterApiFetch([], { targetStatus: { target: ledgerEntry("target") } });
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+    if (String(url).endsWith("/lea-status/compare")) {
+      const body = JSON.parse(options.body);
+      comparisons.push(body);
+      assert.equal(options.method, "POST");
+      return jsonResponse(200, { lea_status: { freshness: body.coverage === "complete" ? "current" : "unknown" } });
+    }
+    return fallback(url, options);
+  } });
+  const complete = await handleLeanPaneManifest({ overleafProjectId: "project-1", files, sourceCoverage: "complete" }, state);
+  assert.equal(comparisons.length, 1);
+  assert.equal(comparisons[0].source_bundle.relevantSource[0].content, files[0].content);
+  assert.equal(comparisons[0].source_bundle.mirror.mirroredFileCount, 1);
+  assert.equal(comparisons[0].source_bundle.mirror.verified, false);
+  assert.deepEqual(comparisons[0].source_bundle, complete.body.items[0].sourceBundle);
+  assert.equal(complete.body.items[0].leaStatus.freshness, "current");
+  const partial = await handleLeanPaneManifest({ overleafProjectId: "project-1", files }, state);
+  assert.equal(comparisons[1].coverage, "partial");
+  assert.equal(comparisons[1].source_bundle.mirror, null);
+  assert.equal(partial.body.items[0].leaStatus.freshness, "unknown");
+});
+
 test("lean pane manifest preserves a terminal max-spend failure for item-level feedback", async () => {
   const leaRepo = await makeLeaRepo();
   const state = await makeState({ leaRepoPath: leaRepo });
@@ -767,7 +804,16 @@ test("lean pane manifest surfaces sorry stubs and valid artifacts", async () => 
 
 test("lean pane manifest surfaces a disproof as a counterexample, not a failure", async () => {
   const leaRepo = await makeLeaRepo();
-  const state = await makeState({ leaRepoPath: leaRepo });
+  const evidence = { declaration_name: "false_claim", path: "false_claim.lean", exists: true,
+    formalization_id: "false-form", validity_status: "disproved", completion_run_id: "disproof-run",
+    declaration_present: false, check_current: true, check_status: "ok",
+    content: "theorem false_claim_counterexample : True := by trivial" };
+  const calls = [];
+  const fallback = makeAdapterApiFetch(calls);
+  const state = await makeState({ leaRepoPath: leaRepo, fetchImpl: async (url, options) => {
+    if (String(url).includes("/target-status")) return jsonResponse(200, { targets: [evidence] });
+    return fallback(url, options);
+  } });
   const proofPath = path.join("workspace", "proofs", "false_claim.lean");
   await writeLeaProjectProof(leaRepo, proofPath, [
     "import Mathlib",
@@ -812,6 +858,93 @@ test("lean pane manifest surfaces a disproof as a counterexample, not a failure"
 
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.items[0].status, "disproved");
+  assert.equal(res.body.items[0].leanCheck.status, "checked");
+  assert.equal(res.body.items[0].message, "Checked counterexample—original claim disproved.");
+  const manifestPayload = { overleafProjectId: "project-1", files: [{ path: "main.tex", content:
+    "\\begin{theorem}\n% lea: formalize label=false_claim\nEvery group is abelian.\n\\end{theorem}" }] };
+  for (const changed of [{ check_current: false }, { exists: false }, { check_status: "error", check_current: false }]) {
+    const before = { ...evidence };
+    Object.assign(evidence, changed);
+    const current = await handleLeanPaneManifest(manifestPayload, state);
+    assert.notEqual(current.body.items[0].status, "disproved");
+    assert.notEqual(current.body.items[0].leanCheck.status, "checked");
+    Object.assign(evidence, before);
+  }
+  state.jobs.disproved.targetTextHash = res.body.items[0].sourceHash;
+  manifestPayload.files[0].content = manifestPayload.files[0].content.replace("Every group is abelian.", "Every finite group is abelian.");
+  const staleSource = await handleLeanPaneManifest(manifestPayload, state);
+  assert.equal(staleSource.body.items[0].sourceFreshness, "stale");
+  assert.equal(staleSource.body.items[0].leanCheck.status, "checked");
+  assert.equal(staleSource.body.items[0].resultKind, "disproved");
+});
+
+test("manifest reads dependencies once and marks cached evidence when unavailable", async () => {
+  let reads = 0, offline = false;
+  const fallback = makeAdapterApiFetch([]);
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+    if (String(url).endsWith("/dependencies")) {
+      reads++;
+      return offline ? jsonResponse(503, {}) : jsonResponse(200, { dependencies: [{ id: "shared", state: "ready", ready: true, attempts: [{ generation: 1, state: "ready" }] }] });
+    }
+    return fallback(url, options);
+  } });
+  for (const label of ["a", "b"]) state.jobs[label] = { jobId: label, jobKey: `project-1:theorem:${label}`,
+    targetLabel: label, targetKind: "theorem", status: "paused", recoverable: true,
+    startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:01:00Z",
+    dependencies: [{ id: "shared", state: "running", ready: false, started_here: label === "a" }] };
+  const payload = { overleafProjectId: "project-1", files: [{ path: "main.tex", content: ["a", "b"].map(label =>
+    `\\begin{theorem}\n% lea: formalize label=${label}\nTrue.\n\\end{theorem}`).join("\n") }] };
+  const first = await handleLeanPaneManifest(payload, state);
+  assert.equal(reads, 1);
+  assert.ok(first.body.items.every(item => item.dependencies[0].ready && item.dependencies[0].current));
+  offline = true;
+  const second = await handleLeanPaneManifest(payload, state);
+  assert.equal(reads, 2);
+  assert.ok(second.body.items.every(item => item.dependencies[0].current === false));
+});
+
+test("manifest preserves batch explanations and honors newer authoritative completion", async () => {
+  const outcome = { batch_id: "saved-batch", finished_at: "2026-01-02T00:00:00Z",
+    state: "skipped", reason: "depends_on_incomplete:base" };
+  let evidence = { declaration_name: "child", exists: false, last_batch_outcome: outcome };
+  const fallback = makeAdapterApiFetch([]);
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+    if (String(url).includes("/target-status")) return jsonResponse(200, { targets: [evidence] });
+    return fallback(url, options);
+  } });
+  const batch = { batchId: "saved-batch", operation: "formalize", overleafProjectId: "project-1",
+    done: true, reportId: "saved-batch", createdAt: "2026-01-01T00:00:00Z", finishedAt: outcome.finished_at,
+    items: [{ targetKind: "theorem", targetLabel: "child", state: outcome.state, reason: outcome.reason }] };
+  state.repairBatches = { [batch.batchId]: batch };
+  const payload = { overleafProjectId: "project-1", files: [{ path: "main.tex", content:
+    "\\begin{theorem}\n% lea: formalize label=child\nTrue.\n\\end{theorem}" }] };
+  const skipped = (await handleLeanPaneManifest(payload, state)).body.items[0];
+  assert.equal(skipped.lastBatchOutcome.reason, outcome.reason);
+  assert.notEqual(skipped.leanCheck.status, "checked");
+
+  // The saved companion batch must not restore an obsolete explanation after
+  // the adapter has explicitly superseded it, even with a hydrated job.
+  evidence = ledgerEntry("child", { last_batch_outcome: null });
+  const completed = (await handleLeanPaneManifest(payload, state)).body.items[0];
+  assert.equal(completed.leanCheck.status, "checked");
+  assert.equal(completed.lastBatchOutcome, undefined);
+
+  // Pending report facts can still explain incomplete work without changing
+  // the validity of a previously checked artifact.
+  batch.reportId = null;
+  Object.assign(batch.items[0], { state: "incomplete", reason: "dependency_wait",
+    detail: "Shared work paused.", recoverable: true });
+  const pending = (await handleLeanPaneManifest(payload, state)).body.items[0];
+  assert.equal(pending.leanCheck.status, "checked");
+  assert.equal(pending.lastBatchOutcome.state, "incomplete");
+  assert.equal(pending.lastBatchOutcome.detail, "Shared work paused.");
+  assert.equal(pending.lastBatchOutcome.recoverable, true);
+  state.jobs = { later: { jobId: "later", jobKey: "project-1:theorem:child", apiRunId: "later-run",
+    formalizationId: "fixture-child", targetKind: "theorem", targetLabel: "child", status: "formalized",
+    startedAt: "2026-01-01T12:00:00Z", finishedAt: "2026-01-01T13:00:00Z" } };
+  const newerWork = (await handleLeanPaneManifest(payload, state)).body.items[0];
+  assert.equal(newerWork.leanCheck.status, "checked");
+  assert.equal(newerWork.lastBatchOutcome, undefined);
 });
 
 test("lean pane manifest surfaces needs_review as a visible review state", async () => {
@@ -4753,7 +4886,9 @@ for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates 
   const state = await makeState({ leaRepoPath: await makeLeaRepo(), env: { OPENAI_API_KEY: "test-key" },
     fetchImpl: async (url, options = {}) => {
       const u = String(url), body = options.body ? JSON.parse(options.body) : {};
+      if (u.endsWith("/overleaf-source/prepare")) return jsonResponse(200, { source_context_ref: "current-source" });
       if (u.endsWith("/dependencies/L/run")) {
+        assert.equal(body.initiating_run_id, "A:0");
         admissions.push("L"); dep.state = "running"; dep.owner_run_id = "L:0";
         return jsonResponse(200, { run_id: "L:0", session_id: "shared-session" });
       }
@@ -4765,11 +4900,13 @@ for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates 
       }
       if (u.endsWith("/api/runs") && options.method === "POST") {
         current = `${body.source_bundle.targetKey}:0`;
-        return jsonResponse(200, { run_id: current, session_id: `session:${body.source_bundle.targetKey}`,
+        return jsonResponse(200, { run_id: current, focus_formalization_id: `form:${body.source_bundle.targetKey}`, session_id: `session:${body.source_bundle.targetKey}`,
           project_namespace: "Lea.Project1", project_slug: "project1" });
       }
       if (u.endsWith("/A%3A0/continue")) {
         assert.equal(body.dependency_resume, true);
+        assert.equal(body.source_context_ref, "current-source");
+        assert.equal(body.source_bundle, undefined);
         assert.equal(dep.ready, true);
         current = "A:1";
         return jsonResponse(200, { run_id: current, session_id: "session:A", saved_turn: 1, max_turns: 5 });
@@ -4807,6 +4944,8 @@ for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates 
     const batch = state.repairBatches[result.body.batchId];
     assert.deepEqual(batch.items.map((item) => item.state), ["formalized", "formalized"]);
     assert.equal(batch.dependencies.length, 1);
+    assert.equal(batch.dependencies[0].started_here, true);
+    assert.equal(batch.dependencies[0].reused, false);
   } else for (const label of ["A", "B"]) {
     const result = await handleFormalize({ overleafProjectId: "project-1", targetKind: "theorem",
       targetLabel: label, targetText: "True." }, state);
@@ -4819,7 +4958,185 @@ for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates 
   assert.deepEqual(segments, ["A:0", "L:0", "A:1", "B:0"]);
   const jobs = Object.values(state.jobs);
   assert.equal(jobs.length, 2);
+  assert.equal(jobs.find((job) => job.targetLabel === "A").dependencies[0].started_here, true);
   assert.equal(jobs.find((job) => job.targetLabel === "B").dependencies[0].reused, true);
+});
+
+async function dependencyRecoveryFixture() {
+  const calls = [], resumed = [], observed = [], interrupted = [];
+  const dependencies = new Map([["L", { id: "L", state: "ready", ready: true, specification: { name: "L" } }]]);
+  const fallback = makeAdapterApiFetch([]);
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), env: {}, fetchImpl: async (url, options = {}) => {
+    const u = String(url), body = options.body ? JSON.parse(options.body) : {};
+    calls.push({ url: u, body, options });
+    if (u.endsWith("/overleaf-source/prepare")) return jsonResponse(200, { source_context_ref: "fresh-source" });
+    const dependency = /\/dependencies\/([^/]+)(?:\/(retry|run))?$/.exec(u);
+    if (dependency) {
+      const dep = dependencies.get(dependency[1]);
+      if (dependency[2] === "retry") { dep.ready = true; dep.state = "ready"; }
+      if (dependency[2] === "run") throw new Error("A verified dependency must not run again.");
+      return dep ? jsonResponse(200, dep) : jsonResponse(503, { detail: "Registry unavailable" });
+    }
+    if (u.endsWith("/continue")) {
+      const id = decodeURIComponent(u.split("/runs/")[1].split("/")[0]);
+      resumed.push(id);
+      return jsonResponse(200, { run_id: `${id}:next`, session_id: `session:${id}`, max_turns: 10, saved_turn: 2 });
+    }
+    if (u.endsWith("/interrupt")) {
+      interrupted.push(decodeURIComponent(u.split("/runs/")[1].split("/")[0]));
+      return jsonResponse(200, { status: "cancelled" });
+    }
+    if (u.includes("/api/runs/") && u.endsWith("/events")) {
+      const id = decodeURIComponent(u.split("/runs/")[1].split("/")[0]);
+      observed.push(id);
+      return adapterSseResponse([{ type: "done", data: id.endsWith(":next") ? { status: "proved" }
+        : { status: "cancelled", stop_reason: "dependency_wait", recoverable: true, waiting_dependencies: ["L"] } }]);
+    }
+    if (/\/api\/runs\/[^/]+$/.test(u)) {
+      const id = decodeURIComponent(u.split("/runs/")[1]);
+      const job = Object.values(state.jobs).find(item => item.apiRunId === id);
+      return jsonResponse(200, { id, status: id.endsWith(":next") ? "proved" : "cancelled",
+        recoverable: true, stop_reason: id.endsWith(":next") ? null : "dependency_wait",
+        waiting_dependencies_json: JSON.stringify(job?.waitingForDependencies || ["L"]),
+        usage_status: "final", input_tokens: 2, output_tokens: 1, cost_usd: 0 });
+    }
+    if (u.includes("/target-status")) {
+      const names = new URL(u).searchParams.get("declarations").split(",");
+      return jsonResponse(200, { targets: names.map(name => ({ ...mockCompletedTarget(name), completion_run_id: `${name}:next` })) });
+    }
+    return fallback(url, options);
+  } });
+  function add(label, changes = {}) {
+    const job = { jobId: label, jobKey: `project-1:theorem:${label}`, targetKind: "theorem", targetLabel: label,
+      overleafProjectId: "project-1", mode: "formalize", projectSlug: "project1", projectNamespace: "Lea.Project1",
+      leaRepoPath: state.settings.leaRepoPath, leaApiBaseUrl: state.settings.leaApiBaseUrl, leaModel: "saved-model",
+      leaMaxTurns: 10, leaJobTimeoutSeconds: 60, formalizationId: `form:${label}`, apiRunId: label,
+      leaSessionId: `session:${label}`, logPath: path.join(path.dirname(state.jobsPath), `${label}.log`),
+      startedAt: "2026-01-01T00:00:00Z", status: "paused", stopReason: "dependency_wait", recoverable: true,
+      waitingForDependencies: ["L"], dependencies: [{ id: "L", ready: false, state: "failed" }],
+      executionSegments: [{ runId: label, costUsd: 0, usage: {} }], ...changes };
+    state.jobs[label] = job;
+    return job;
+  }
+  return { state, add, calls, resumed, observed, interrupted, dependencies };
+}
+
+test("verified dependency retry resumes all current consumers after restart, once each", async () => {
+  const { state, add, dependencies, resumed, observed } = await dependencyRecoveryFixture();
+  const old = add("old", { jobKey: "project-1:theorem:A" });
+  add("A", { startedAt: "2026-01-02T00:00:00Z" });
+  add("B");
+  const stopped = add("stopped", { dependencyCancelRequested: true });
+  const review = add("review", { dependencyContinuationBlocker: "Source must be reviewed." });
+  dependencies.get("L").ready = false;
+  dependencies.get("L").state = "failed";
+  await reconcileDependencyWaits(state);
+  assert.deepEqual(resumed, []);
+  assert.equal((await handleDependencyRetry({ overleafProjectId: "project-1", dependencyId: "L" }, state)).statusCode, 202);
+  await Promise.all([reconcileDependencyWaits(state), reconcileDependencyWaits(state)]);
+  await waitFor(() => state.jobs.A.status === "formalized" && state.jobs.B.status === "formalized");
+  assert.deepEqual(resumed.sort(), ["A", "B"]);
+  assert.equal(observed.filter(id => id === "A").length, 1);
+  assert.equal(old.status, "paused");
+  assert.equal(stopped.dependencyCancelRequested, true);
+  assert.equal(stopped.status, "paused");
+  assert.equal(review.status, "paused");
+  assert.equal(state.jobs.A.executionSegments.length, 1);
+});
+
+test("blocked waits do not starve later verified consumers", async () => {
+  const { state, add, dependencies, resumed } = await dependencyRecoveryFixture();
+  dependencies.set("failed", { id: "failed", ready: false, state: "failed" });
+  for (let i = 0; i < 5; i++) add(`blocked${i}`, { waitingForDependencies: ["failed"] });
+  add("A");
+  await reconcileDependencyWaits(state);
+  await waitFor(() => state.jobs.A.status === "formalized");
+  assert.deepEqual(resumed, ["A"]);
+});
+
+test("stopping during readiness checks prevents observation and explicit Continue re-arms a canceled batch target", async () => {
+  const { state, add, resumed, observed } = await dependencyRecoveryFixture();
+  const job = add("A");
+  const fetchBefore = state.fetchImpl;
+  let release;
+  state.fetchImpl = async (url, options) => {
+    if (String(url).endsWith("/dependencies/L")) await new Promise(resolve => { release = resolve; });
+    return fetchBefore(url, options);
+  };
+  const reconciliation = reconcileDependencyWaits(state);
+  await waitFor(() => release);
+  await handleDependencyWaitControl({ overleafProjectId: "project-1", runId: "A", action: "stop" }, state);
+  release();
+  await reconciliation;
+  assert.deepEqual(observed, []);
+  assert.deepEqual(resumed, []);
+  state.fetchImpl = fetchBefore;
+  state.repairBatches = { historical: { cancelRequested: true, done: true, items: [{ runJobId: "A", state: "canceled" }] } };
+  await handleDependencyWaitControl({ overleafProjectId: "project-1", runId: "A", action: "continue" }, state);
+  await waitFor(() => job.status === "formalized");
+  assert.equal(state.repairBatches.historical.items[0].state, "canceled");
+});
+
+test("lost admission response reuses the exact saved source request after restart", async () => {
+  const { state, add, calls } = await dependencyRecoveryFixture();
+  const job = add("A");
+  const fetchBefore = state.fetchImpl;
+  let lose = true;
+  state.fetchImpl = async (url, options) => {
+    const result = await fetchBefore(url, options);
+    if (lose && String(url).endsWith("/continue")) { lose = false; throw new Error("Response lost"); }
+    return result;
+  };
+  assert.equal((await admitDependencyContinuation(state, job)).ok, false);
+  const restarted = JSON.parse(await fs.readFile(state.jobsPath, "utf8")).A;
+  assert.ok(restarted.dependencyContinuationRequest.sourceContextRef);
+  assert.equal((await admitDependencyContinuation(state, restarted)).ok, true);
+  const requests = calls.filter(call => call.url.endsWith("/continue"));
+  assert.deepEqual(requests[0].body, requests[1].body);
+  assert.equal(calls.filter(call => call.url.endsWith("/overleaf-source/prepare")).length, 1);
+  assert.equal(requests[1].body.dependency_resume, true);
+  assert.equal(requests[1].body.source_bundle, undefined);
+});
+
+test("transient continuation server failures retain the request and real blockers give a recovery step", async () => {
+  const { state, add } = await dependencyRecoveryFixture();
+  const job = add("A");
+  const fetchBefore = state.fetchImpl;
+  let responseCode = 502;
+  state.fetchImpl = async (url, options) => String(url).endsWith("/continue")
+    ? jsonResponse(responseCode, { detail: responseCode === 502 ? "Response unavailable" : "Original target turn allowance was exhausted." })
+    : fetchBefore(url, options);
+  const uncertain = await admitDependencyContinuation(state, job);
+  assert.equal(uncertain.status, undefined);
+  assert.ok(job.dependencyContinuationRequest);
+  assert.equal(job.dependencyContinuationBlocker, undefined);
+  responseCode = 409;
+  const blocked = await admitDependencyContinuation(state, job);
+  assert.equal(blocked.status, 409);
+  assert.equal(job.dependencyContinuationRequest, null);
+  assert.match(job.dependencyContinuationBlocker, /turn allowance was exhausted.*Open in LeaChat.*Re-formalize/);
+  assert.doesNotMatch(job.dependencyContinuationBlocker, /HTTP/);
+});
+
+test("stop during admission interrupts the admitted child and a lost response is reconciled by read-only identity lookup", async () => {
+  for (const lost of [false, true]) {
+    const { state, add, interrupted, calls } = await dependencyRecoveryFixture();
+    const job = add("A");
+    const fetchBefore = state.fetchImpl;
+    state.fetchImpl = async (url, options) => {
+      if (String(url).endsWith("/api/sessions/session%3AA")) return jsonResponse(200, { runs: [{ id: "A:next", client_request_id: "dependency-continue:A" }] });
+      const result = await fetchBefore(url, options);
+      if (String(url).endsWith("/continue")) {
+        job.dependencyCancelRequested = true;
+        if (lost) throw new Error("Response lost");
+      }
+      return result;
+    };
+    await admitDependencyContinuation(state, job);
+    await reconcileDependencyWaits(state);
+    assert.deepEqual(interrupted, ["A:next"]);
+    assert.equal(calls.filter(call => call.url.endsWith("/continue")).length, 1);
+  }
 });
 
 test("checkpoint Resume reports admission failure and keeps the paused attempt without a restart", async () => {
@@ -5025,6 +5342,56 @@ test("formalize all keeps review terminal and skips only dependent targets", asy
     review_base: "needs_review", review_dependent: "skipped", independent: "needs_review"
   });
   assert.equal(batch.items[1].reason, "depends_on_review:review_base");
+});
+
+test("formalize all settles resumable pauses as incomplete and continues independent work", async () => {
+  const calls = [];
+  const fallback = makeAdapterApiFetch(calls, { doneStatus: "cancelled", eventFrames: [{ type: "done",
+    status: "cancelled", stop_reason: "turn_cap", result_detail: "Additional turns required.", recoverable: true }] });
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), env: { OPENAI_API_KEY: "test-key" }, fetchImpl: async (url, options) => {
+    if (String(url).endsWith("/api/runs/api-run-1")) return jsonResponse(200, { id: "api-run-1", status: "cancelled",
+      result_kind: "cancelled", stop_reason: "turn_cap", result_detail: "Additional turns required.", recoverable: true,
+      usage_status: "final", cost_usd: 0, input_tokens: 0, output_tokens: 0 });
+    return fallback(url, options);
+  } });
+  const item = (targetLabel, uses = []) => ({ targetKind: "theorem", targetLabel, targetText: "True.", targetUses: uses });
+  const result = await handleFormalizeAll({ overleafProjectId: "project-1", items: [
+    item("base"), item("dependent", ["base"]), item("transitive", ["dependent"]), item("independent")
+  ] }, state);
+  const batch = state.repairBatches[result.body.batchId];
+  await waitFor(() => batch.done);
+  assert.deepEqual(batch.items.map((entry) => entry.state), ["incomplete", "skipped", "skipped", "incomplete"]);
+  assert.equal(batch.items[0].reason, "turn_cap");
+  assert.equal(batch.items[0].detail, "Additional turns required.");
+  assert.equal(batch.items[0].recoverable, true);
+  assert.equal(batch.items[1].reason, "depends_on_incomplete:base");
+  assert.equal(batch.items[2].reason, "depends_on_incomplete:base");
+  assert.equal(calls.filter((call) => String(call.url).endsWith("/api/runs") && call.options?.method === "POST").length, 2);
+});
+
+test("stalled Formalize all targets stay incomplete, skip dependents, and continue independent work", async () => {
+  const calls = [];
+  const fallback = makeAdapterApiFetch(calls, { doneStatus: "cancelled", eventFrames: [{ type: "done",
+    status: "cancelled", stop_reason: "stalled", result_detail: "Repeated unchanged verification failures.", recoverable: true }] });
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), env: { OPENAI_API_KEY: "test-key" }, fetchImpl: async (url, options) => {
+    if (String(url).endsWith("/api/runs/api-run-1")) return jsonResponse(200, { id: "api-run-1", status: "cancelled",
+      result_kind: "cancelled", stop_reason: "stalled", result_detail: "Repeated unchanged verification failures.", recoverable: true,
+      usage_status: "final", cost_usd: 0, input_tokens: 0, output_tokens: 0 });
+    return fallback(url, options);
+  } });
+  const item = (targetLabel, uses = []) => ({ targetKind: "theorem", targetLabel, targetText: "True.", targetUses: uses });
+  const result = await handleFormalizeAll({ overleafProjectId: "project-1", items: [
+    item("base"), item("dependent", ["base"]), item("transitive", ["dependent"]), item("independent")
+  ] }, state);
+  const batch = state.repairBatches[result.body.batchId];
+  await waitFor(() => batch.done);
+  assert.deepEqual(batch.items.map((entry) => entry.state), ["incomplete", "skipped", "skipped", "incomplete"]);
+  assert.equal(batch.items[0].reason, "stalled");
+  assert.equal(batch.items[0].detail, "Repeated unchanged verification failures.");
+  assert.equal(batch.items[0].recoverable, true);
+  assert.equal(batch.items[1].reason, "depends_on_incomplete:base");
+  assert.equal(batch.items[2].reason, "depends_on_incomplete:base");
+  assert.equal(calls.filter((call) => String(call.url).endsWith("/api/runs") && call.options?.method === "POST").length, 2);
 });
 
 test("best-effort continuation is scoped to a proofless source-obstruction pause and changes the resumed prompt", async () => {

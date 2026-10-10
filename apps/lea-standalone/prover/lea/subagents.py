@@ -319,7 +319,18 @@ def _run_child(child_config, child_messages, *, working_dir: str, run_key: str,
     them in the model's `messages` — only the distilled result becomes the tool_result."""
     # Lazy import breaks the tools -> subagents -> agent import cycle: agent.py imports
     # tools (which imports this module), so this module cannot import agent at load.
-    from .agent import run_events
+    from .agent import run_events, _checkpoint_hook
+
+    parent_journal = _checkpoint_hook.get()
+
+    def journal_child(kind, payload):
+        # Keep raw paid-call usage in the existing journal, but never replace
+        # the coordinator's checkpoint with a child's isolated transcript.
+        if kind != "checkpoint":
+            payload = dict(payload)
+            if kind == "invocation_start":
+                payload["name"] = f"subagent:{run_key}:{payload['name']}"
+            parent_journal(kind, payload)
 
     last_check: CheckResult | None = None
     finished: Finished | None = None
@@ -331,6 +342,7 @@ def _run_child(child_config, child_messages, *, working_dir: str, run_key: str,
         depth=depth,
         should_stop=should_stop,
         gate=None,            # a child never pauses for human approval
+        **({"checkpoint_callback": journal_child} if parent_journal else {}),
     ):
         if isinstance(ev, CheckResult):
             last_check = ev

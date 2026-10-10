@@ -161,9 +161,17 @@ def test_inline_publication_survives_parent_failure_and_b_reuses(project, monkey
     assert len(reused["dependency"]["attempts"]) == 1
     assert len(reused["dependency"]["requesting_targets"]) == 2
     assert store.list_artifacts_for_scope(p["id"])[0]["path"] == dep["path"]
-    # Editing the file immediately withdraws its cached verification.
+    # Changed published bytes are certified again without another proof attempt.
     path.write_text(path.read_text() + "\n-- edited\n")
+    assert deps.get(dep["id"])["ready"]
+    assert len(deps.get(dep["id"])["attempts"]) == 1
+    install_inspection(monkeypatch, dep, wrong=True)
+    path.write_text(path.read_text() + "\n-- invalid revision\n")
     assert not deps.get(dep["id"])["ready"]
+    assert deps.ensure(p, spec(), requester_id=b["id"])["outcome"] == "blocked"
+    assert len(deps.get(dep["id"])["attempts"]) == 1
+    path.unlink()
+    assert deps.get(dep["id"])["state"] == "stale"
 
 
 def test_weakened_statement_and_missing_audit_never_publish(project, monkeypatch):
@@ -179,6 +187,86 @@ def test_weakened_statement_and_missing_audit_never_publish(project, monkeypatch
     install_inspection(monkeypatch, dep)
     monkeypatch.setattr(library, "verify", lambda *_: VerifyResult("unavailable"))
     assert deps.publish_owned(run["id"], dep["path"]) is None
+
+
+@pytest.mark.parametrize("final_reason,invalid", [("completed", None), ("completed", "signature"),
+    ("completed", "audit"), ("completed", "axioms"), ("completed", "contents"), ("interrupted", None)])
+def test_deferred_worker_certifies_final_segment_before_done(project, monkeypatch, tmp_path, final_reason, invalid):
+    from app import bridge, projects
+    from lea.interface import FileChanged, Finished, TurnStarted
+    from lea.providers import Usage
+    from queue import Queue
+    p, repo = project
+    parent = active_run(p)
+    allocation = deps.ensure(p, spec(), run_id=parent["id"])
+    dep = allocation["dependency"]
+    bundle = store.create_run_bundle(message="Prove shared fact", session_id=None, project_id=p["id"],
+        session_origin="overleaf", session_origin_url=None, model="test", provider=None,
+        max_turns=10, autonomous=True, focus_formalization_id=dep["formalization_id"],
+        purpose="project_dependency", dependency_id=dep["id"], initiating_run_id=parent["id"])
+    worker = bundle["run"]
+    install_inspection(monkeypatch, dep)
+    monkeypatch.setattr(projects, "project_repo_dir", lambda *_: repo)
+    queue = Queue()
+    context = bridge.RunnerContext(session_id=worker["session_id"], run_id=worker["id"],
+        task="Prove shared fact", config=LeaConfig(model="test", max_turns=10, lea_root=tmp_path),
+        events=queue, autonomous=True, purpose="project_dependency")
+    def provider(*args, **kwargs):
+        path = repo / dep["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(allocation["skeleton"].replace("sorry", "trivial"))
+        yield TurnStarted(1)
+        yield FileChanged(str(path))
+        yield CheckResult(str(path), "ok")
+        # Even a consumer's library search cannot publish intermediate work.
+        assert not deps.get(dep["id"])["ready"]
+        assert not any(d["reusable"] for d in library.search(p)["declarations"])
+        assert deps.get(dep["id"])["owner_run_id"] == worker["id"]
+        path.write_text(path.read_text() + "\n-- import cleanup\n")
+        yield FileChanged(str(path))
+        yield CheckResult(str(path), "ok")
+        assert not deps.get(dep["id"])["ready"]
+        if invalid == "signature":
+            install_inspection(monkeypatch, dep, wrong=True)
+        if invalid == "audit":
+            monkeypatch.setattr(library, "verify", lambda *_: VerifyResult("unavailable"))
+        if invalid == "axioms":
+            expected = dict(dep["specification"]["expected"], full_name=dep["declaration_name"],
+                user_name=dep["declaration_name"], visibility="public", axioms=["badAxiom"])
+            monkeypatch.setattr(library, "inspect_module", lambda *_: [expected])
+        if invalid == "contents":
+            path.write_text(path.read_text() + "\n-- unchecked change\n")
+        yield Finished(final_reason, "Shared work settled.", 1, worker["session_id"], "test", Usage(), 0, {}, result_kind="proved")
+    monkeypatch.setattr(bridge, "run_events", provider)
+    bridge.run_lea(context)
+    events = list(queue.queue)
+    publication = [i for i, e in enumerate(events) if e["type"] == "project_dependency" and e["payload"].get("outcome") == "published"]
+    ready = final_reason == "completed" and invalid is None
+    assert deps.get(dep["id"])["ready"] is ready
+    assert len(publication) == int(ready)
+    assert events[-1]["type"] == "done"
+    if ready:
+        assert publication[0] < len(events) - 1
+        assert deps.ensure(p, spec(), requester_id=target(p, "B")["id"])["outcome"] == "existing"
+    assert len(deps.get(dep["id"])["attempts"]) == 1
+    assert deps.get(dep["id"])["attempts"][0]["initiating_run_id"] == parent["id"]
+
+
+def test_admission_preserves_initiator_across_worker_continuation(project):
+    p, _ = project
+    parent = active_run(p)
+    dep = deps.ensure(p, spec(), run_id=parent["id"])["dependency"]
+    with db.write() as conn:
+        with pytest.raises(ValueError, match="initiating run"):
+            deps.admit_worker(conn, dep["id"], p["id"], "worker", initiating_run_id="missing")
+        deps.admit_worker(conn, dep["id"], p["id"], "worker", initiating_run_id=parent["id"])
+        conn.execute("update project_dependencies set state='waiting' where id=?", (dep["id"],))
+        deps.admit_worker(conn, dep["id"], p["id"], "continued", "worker")
+        with pytest.raises(ValueError, match="already owned"):
+            deps.admit_worker(conn, dep["id"], p["id"], "competing", initiating_run_id=parent["id"])
+    attempt = deps.get(dep["id"])["attempts"][0]
+    assert attempt["run_id"] == "continued"
+    assert attempt["initiating_run_id"] == parent["id"]
 
 
 @pytest.mark.skipif(shutil.which("lake") is None, reason="Lean runtime unavailable")
@@ -275,3 +363,43 @@ def test_dependency_continuation_retains_original_allowances(project, monkeypatc
     assert captured["automation_budget"]["remaining_seconds"] == 70
     assert captured["resume_checkpoint_id"] == 1 and captured["source_bundle"] is None
     assert "Lea.Child" in captured["message"]
+
+
+def test_readiness_uses_actual_canonical_imports_and_explicit_waits(project, monkeypatch):
+    p, repo = project
+    run = active_run(p)
+    imported = deps.ensure(p, spec(name="Imported"), requester_id=run["focus_formalization_id"])
+    unrelated = deps.ensure(p, spec(name="Unrelated", signature=": False"), requester_id=run["focus_formalization_id"])
+    # Registry relationships alone do not force a wait on an unused obligation.
+    path = repo / "Target.lean"
+    path.write_text(f"-- import {unrelated['module']}\nimport {imported['module']}\ntheorem target : True := by sorry\n")
+    real_get = deps.get
+    prior_attempts = real_get(imported["dependency_id"], reconcile=False)["attempts"]
+    monkeypatch.setattr(deps, "get", lambda id, **kw: {**real_get(id, reconcile=False), "ready": False})
+    result = deps.readiness(run["id"], str(path))
+    assert result["dependency_ids"] == [imported["dependency_id"]]
+    assert deps.get(imported["dependency_id"], reconcile=False)["attempts"] == prior_attempts
+    with db.connect() as conn:
+        assert json.loads(conn.execute("select waiting_dependencies_json from runs where id=?", (run["id"],)).fetchone()[0]) == result["dependency_ids"]
+    path.write_text("theorem target : True := by sorry\n")
+    assert deps.readiness(run["id"], str(path))["dependency_ids"] == result["dependency_ids"]  # explicit durable wait
+    monkeypatch.setattr(deps, "get", lambda id, **kw: {**real_get(id, reconcile=False), "ready": True})
+    assert deps.readiness(run["id"], str(path))["dependency_ids"] == []
+
+
+def test_readiness_never_retries_failed_dependency(project, monkeypatch):
+    p, repo = project
+    run = active_run(p)
+    registered = deps.ensure(p, spec(), requester_id=run["focus_formalization_id"])
+    dep_id = registered["dependency_id"]
+    with db.write() as conn:
+        conn.execute("update project_dependencies set state='failed' where id=?", (dep_id,))
+    path = repo / "Target.lean"
+    path.write_text(f"import {registered['module']}\ntheorem target : True := by sorry\n")
+    monkeypatch.setattr(library, "refresh", lambda _: [])
+    prior_attempts = deps.get(dep_id, reconcile=False)["attempts"]
+    first = deps.readiness(run["id"], str(path))
+    assert first["dependency_ids"] == [dep_id]
+    assert deps.readiness(run["id"], str(path)) == first
+    assert deps.get(dep_id, reconcile=False)["state"] == "failed"
+    assert deps.get(dep_id, reconcile=False)["attempts"] == prior_attempts

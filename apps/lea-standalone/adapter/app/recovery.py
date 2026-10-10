@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from copy import deepcopy
 from dataclasses import asdict
@@ -39,6 +40,21 @@ def _json(value) -> str:
 
 def _digest(value) -> str:
     return hashlib.sha256(_json(value).encode()).hexdigest()
+
+
+def _valid_usage_details(details) -> bool:
+    if details is None:
+        return True  # supported checkpoints predate additive usage metadata
+    if not isinstance(details, dict):
+        return False
+    for key in ("cached_input_tokens", "cache_write_tokens", "reasoning_tokens",
+                "unpriced_calls", "details_missing_calls"):
+        value = details.get(key)
+        if value is not None and (type(value) is not int or value < 0):
+            return False
+    counts = details.get("basis_counts", {})
+    return (isinstance(counts, dict) and all(isinstance(key, str) and
+            type(value) is int and value >= 0 for key, value in counts.items()))
 
 
 def _file_fingerprint(path: Path) -> str | None:
@@ -105,9 +121,10 @@ def manifest(*, run: dict, config, repo: Path) -> dict:
         if root_path.exists():
             role_contents.extend(_file_fingerprint(p) for p in sorted(root_path.rglob("*.yaml")))
             role_contents.extend(_file_fingerprint(p) for p in sorted(root_path.rglob("*.md")))
-    from lea import agent, mcp, registry, tools, project_library_tools
+    from lea import agent, mcp, registry, tools, project_library_tools, providers, condenser, events, stall, usage, subagents
     tool_code = [_file_fingerprint(Path(module.__file__))
-                 for module in (agent, tools, registry, mcp, project_library_tools)]
+                 for module in (agent, tools, registry, mcp, project_library_tools,
+                                providers, condenser, events, stall, usage, subagents)]
     tool_modules = {}
     for name in config.tool_modules:
         try:
@@ -169,23 +186,65 @@ def continuation_checkpoint(run_id: str, checkpoint_id: int | None = None) -> tu
                 or not isinstance(state.get("status_context", {}), dict)
                 or not isinstance(state.get("proof_state", {}), dict)):
             raise ValueError("Saved checkpoint format is incompatible. Use Re-formalize to start a new attempt.")
+        detector = state.get("stall_detector", {})
+        if (not isinstance(detector, dict)
+                or type(detector.get("failures", 0)) is not int or detector.get("failures", 0) < 0
+                or type(detector.get("evidence_revision", 0)) is not int or detector.get("evidence_revision", 0) < 0
+                or detector.get("fingerprint") is not None and
+                   (not isinstance(detector["fingerprint"], str) or len(detector["fingerprint"]) != 64)
+                or not isinstance(detector.get("seen_evidence", []), list)
+                or any(not isinstance(x, str) or len(x) != 64 for x in detector.get("seen_evidence", []))
+                or not _valid_usage_details(state.get("usage_details"))
+                or not isinstance(state.get("dependency_evidence", {}), dict)
+                or any(type(state.get(k, 0)) is not int or state.get(k, 0) < 0 for k in ("input_tokens", "output_tokens"))
+                or type(state.get("cost_usd", 0)) not in (int, float)
+                or not math.isfinite(state.get("cost_usd", 0)) or state.get("cost_usd", 0) < 0):
+            raise ValueError("Saved checkpoint accounting or stall state is corrupt. Review interrupted work before continuing.")
         if (state.get("stage") != "turn_boundary" or not isinstance(state.get("messages"), list)
                 or type(state.get("turn")) is not int or state["turn"] < 0
                 or any(not isinstance(m, dict) for m in state["messages"])):
             raise ValueError("The saved execution point is not a complete turn. Review interrupted work before continuing.")
         uncertain = conn.execute("""select id from run_invocations where run_id = ?
-            and (completed_at is null or completed_at > ?) limit 1""", (run_id, row["created_at"])).fetchone()
+            and (completed_at is null or (completed_at > ? and not
+                 (kind='model_auxiliary' and name='manual_compaction'))) limit 1""", (run_id, row["created_at"])).fetchone()
         if uncertain:
             raise ValueError("An action may have completed outside the saved state. Review interrupted work before continuing.")
     return state, saved_manifest, row["id"]
+
+
+def compatible_runtime(old: dict, current: dict, state: dict) -> bool:
+    """Allow only pinned predecessor/destination pairs at a settled boundary.
+
+    Tool/model/skill/config checks remain independent. The allowlist names the
+    destination too, so a later arbitrary runtime cannot inherit this exception.
+    """
+    if old.get("tool_code_digests") == current.get("tool_code_digests"):
+        return True
+    if (state.get("stage") != "turn_boundary" or not state.get("tool_schema_digest")
+            or not old.get("execution_digest") or not old.get("prompt_digest")):
+        return False
+    try:
+        releases = json.loads(Path(__file__).with_name("checkpoint_compatibility.json").read_text())
+    except (OSError, ValueError):
+        return False
+    return any(old.get("tool_code_digests") == release["predecessor"]
+               and current.get("tool_code_digests") == release["destination"] for release in releases)
+
+
+def compatible_crash_manifest(old: dict, current: dict, state: dict) -> bool:
+    # Crash recovery does not rebase source/dependencies/files or reset progress.
+    return (compatible_runtime(old, current, state)
+            and {k: v for k, v in old.items() if k != "tool_code_digests"}
+            == {k: v for k, v in current.items() if k != "tool_code_digests"})
 
 
 def prepare_continuation(run: dict, config, repo: Path, status_context: dict, task: str) -> tuple[dict, bool]:
     """Rebase a pinned execution snapshot into a new accounting segment."""
     saved, old_manifest, _ = continuation_checkpoint(run["resumes_run_id"], run["resume_checkpoint_id"])
     current = manifest(run=run, config=config, repo=repo)
-    keys = ("schema", "session_id", "target_id", "model", "skill_digests", "role_digests", "tool_code_digests")
-    compatible = all(old_manifest.get(k) == current.get(k) for k in keys)
+    keys = ("schema", "session_id", "target_id", "model", "skill_digests", "role_digests")
+    compatible = (compatible_runtime(old_manifest, current, saved)
+                  and all(old_manifest.get(k) == current.get(k) for k in keys))
     if "execution_digest" in old_manifest:
         compatible = compatible and all(old_manifest.get(k) == current.get(k) for k in ("execution_digest", "prompt_digest"))
         compatible = compatible and old_manifest.get("skill_resource_digests", {}) == current["skill_resource_digests"]
@@ -211,7 +270,8 @@ def prepare_continuation(run: dict, config, repo: Path, status_context: dict, ta
                       if previous_source.get(k) != new_source.get(k)}
     dependencies_changed = old_manifest.get("dependencies", {}) != current["dependencies"]
     changed = source_changed or bool(changed_files) or bool(source_changes) or dependencies_changed
-    state.update(input_tokens=0, output_tokens=0, cost_usd=0.0, reporting_stop=None,
+    state.update(input_tokens=0, output_tokens=0, cost_usd=0.0, usage_details=None,
+                 stall_detector={}, reporting_stop=None,
                  max_turns=config.max_turns, max_cost_usd=config.max_cost_usd,
                  status_context=deepcopy(status_context))
     state["status_context"]["instruction"] = status_context.get("instruction", "") + (

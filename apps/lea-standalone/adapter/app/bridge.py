@@ -49,6 +49,8 @@ from lea.interface import (
     CheckResult,
     Compacted,
     Diagnostic,
+    DependencyReadinessRequested,
+    DependencyReadinessAck,
     Error,
     FileChanged,
     Finished,
@@ -77,6 +79,7 @@ from .diagnostics import analyze_exception, resolve as resolve_diagnostic
 from .gitstore import GitStore, GitStoreError
 from . import collation, formalizations as formalization_service, projects, roles_catalog, runbroker, runregistry, skills_catalog, store, subagent_overrides, uploads, recovery, runtime
 from .public_errors import redact
+from lea.usage import merge_details, legacy_details
 from . import project_coordination
 
 logger = logging.getLogger("lea-interface.bridge")
@@ -350,7 +353,7 @@ def publish_terminal_from_row(run_id: str) -> None:
         payload["result_detail"] = run["result_detail"]
     for key in ("stop_reason", "stop_requested_reason", "recoverable", "attempt_id",
                 "recovery_state", "recovery_reason", "checkpoint_at", "input_tokens",
-                "output_tokens", "cost_usd", "usage_status", "usage_revision", "usage_updated_at"):
+                "output_tokens", "cost_usd", "usage_details", "usage_status", "usage_revision", "usage_updated_at"):
         payload[key] = run.get(key)
     broker.put({"type": "done", "payload": payload})
 
@@ -605,6 +608,7 @@ _FINISH_STATUS = {
     "source_obstruction": "cancelled",
     "status_reporting_failed": "cancelled",
     "dependency_wait": "cancelled",
+    "stalled": "cancelled",
 }
 
 _COMPLETED_RESULTS = {"proved", "disproved", "needs_review"}
@@ -998,8 +1002,8 @@ class _UsageByTurn:
     def __init__(self) -> None:
         self._rows: dict[int, dict[str, Any]] = {}
 
-    def add(self, turn: int, input_tokens: int, output_tokens: int, cost: float) -> None:
-        if not (input_tokens or output_tokens or cost):
+    def add(self, turn: int, input_tokens: int, output_tokens: int, cost: float, usage_details=None) -> None:
+        if not (input_tokens or output_tokens or cost or usage_details):
             return
         row = self._rows.get(turn)
         if row is None:
@@ -1016,6 +1020,7 @@ class _UsageByTurn:
         row["input_tokens"] += input_tokens or 0
         row["output_tokens"] += output_tokens or 0
         row["cost_usd"] += cost or 0.0
+        row["usage_details"] = merge_details(row.get("usage_details"), usage_details or legacy_details())
         row["event_count"] += 1
 
     def rows(self) -> list[dict[str, Any]]:
@@ -1728,6 +1733,7 @@ def _run_lea(context: RunnerContext) -> None:
     last_write_path: str | None = None
     checked_artifact_kind = "unknown"
     usage = _UsageByTurn()
+    observed_details = None
     observed_input = observed_output = 0
     observed_cost = 0.0
     usage_revision = 0
@@ -1937,6 +1943,7 @@ def _run_lea(context: RunnerContext) -> None:
             diagnose(events, session_id, run_id, "step_error", "overleaf.source_changed", final_result_detail)
             return
         if run_row and run_row.get("recovery_count"):
+            observed_details = run_row.get("usage_details")
             observed_input = int(run_row.get("input_tokens") or 0)
             observed_output = int(run_row.get("output_tokens") or 0)
             observed_cost = float(run_row.get("cost_usd") or 0)
@@ -2014,7 +2021,7 @@ def _run_lea(context: RunnerContext) -> None:
         resume_state = None
         if run_row and run_row.get("recovery_state") == "recovering":
             saved = recovery.load_checkpoint(run_id)
-            if not saved or saved[1] != manifest_provider():
+            if not saved or not recovery.compatible_crash_manifest(saved[1], manifest_provider(), saved[0]):
                 reason = "Saved source, files, dependencies, or tool configuration changed before recovery."
                 recovery.pause_for_mismatch(run_id, reason)
                 final_status = "cancelled"
@@ -2090,6 +2097,12 @@ def _run_lea(context: RunnerContext) -> None:
             # rule then cannot be forgotten when a new event type is added.
             if not isinstance(ev, AssistantTextDelta):
                 deltas.flush()
+
+            if isinstance(ev, DependencyReadinessRequested):
+                from .project_dependencies import readiness
+                result = readiness(run_id, ev.path)
+                to_send = DependencyReadinessAck(**result)
+                continue
 
             if isinstance(ev, ProjectLibraryRequested):
                 from .project_dependencies import tool_request
@@ -2282,13 +2295,14 @@ def _run_lea(context: RunnerContext) -> None:
                         emit(events, "project_dependency", {"outcome": "published", "dependency": published})
 
             elif isinstance(ev, UsageUpdated):
-                usage.add(current_turn, ev.input_tokens, ev.output_tokens, ev.cost)
+                usage.add(current_turn, ev.input_tokens, ev.output_tokens, ev.cost, ev.usage_details)
                 observed_input += ev.input_tokens or 0
                 observed_output += ev.output_tokens or 0
                 observed_cost += float(ev.cost or 0.0)
+                observed_details = merge_details(observed_details, ev.usage_details or legacy_details())
                 usage_revision += 1
                 if store.checkpoint_run_usage(run_id, observed_input, observed_output,
-                                              observed_cost, usage_revision):
+                                              observed_cost, usage_revision, observed_details):
                     _advance_spend_cache(float(ev.cost or 0.0))
                 check_spend_cap()
 
@@ -2423,6 +2437,21 @@ def _run_lea(context: RunnerContext) -> None:
                         if child_broker is not None:
                             emit(child_broker, "diagnostic", _row)
                         continue
+                    if isinstance(ev.event, TurnStarted):
+                        started["usage_turn"] = ev.event.turn
+                    if isinstance(ev.event, UsageUpdated):
+                        inner = ev.event
+                        child_usage = started.setdefault("usage", _UsageByTurn())
+                        child_usage.add(started.get("usage_turn", 0), inner.input_tokens, inner.output_tokens, inner.cost, inner.usage_details)
+                        started["input_tokens"] = started.get("input_tokens", 0) + inner.input_tokens
+                        started["output_tokens"] = started.get("output_tokens", 0) + inner.output_tokens
+                        started["cost_usd"] = started.get("cost_usd", 0) + inner.cost
+                        started["usage_details"] = merge_details(started.get("usage_details"), inner.usage_details or legacy_details())
+                        started["usage_revision"] = started.get("usage_revision", 0) + 1
+                        if store.checkpoint_run_usage(started["run_id"], started["input_tokens"], started["output_tokens"],
+                                started["cost_usd"], started["usage_revision"], started["usage_details"]):
+                            _advance_spend_cache(inner.cost)
+                        check_spend_cap()
                     # (a) the coordinator's spawn box (a compact live line per child)
                     payload = _subagent_progress_payload(started["child_id"], ev.result_id, ev.event)
                     if payload:
@@ -2445,6 +2474,9 @@ def _run_lea(context: RunnerContext) -> None:
                 started = subagent_children.pop(ev.result_id, None)
                 if started:
                     _child_session_to_result.pop(started["child_id"], None)  # D2: child done
+                    if started.get("usage"):
+                        store.replace_run_usage_breakdown(started["run_id"], started["usage"].rows())
+                        store.update_run(started["run_id"], "running", usage_status="final")
                     _finalize_started_subagent(
                         started["child_id"], started["run_id"], ev,
                         turn=current_turn, repo=repo,
@@ -2572,7 +2604,13 @@ def _run_lea(context: RunnerContext) -> None:
                         final_result_kind = "defined" if focused_formalization.get("kind") == "definition" else "proved"
                 if context.purpose == "project_dependency" and ev.reason == "completed":
                     from . import project_dependencies
-                    dependency = project_dependencies.get((store.get_run(run_id) or {}).get("dependency_id"))
+                    dependency_id = (store.get_run(run_id) or {}).get("dependency_id")
+                    dependency = project_dependencies.get(dependency_id, reconcile=False)
+                    if dependency and final_result_kind in {"proved", "defined"}:
+                        published = project_dependencies.publish_owned(run_id, dependency["path"], final=True)
+                        if published:
+                            emit(events, "project_dependency", {"outcome": "published", "dependency": published})
+                            dependency = published
                     if not dependency or not dependency.get("ready"):
                         final_status = final_result_kind = "needs_review"
                         final_result_detail = "The canonical dependency has not passed its pinned statement and verification checks."
@@ -2593,7 +2631,7 @@ def _run_lea(context: RunnerContext) -> None:
                 elif ev.reason == "max_turns":
                     stop_reason = "turn_cap"
                     recoverable = True
-                elif ev.reason in {"source_obstruction", "status_reporting_failed", "dependency_wait"}:
+                elif ev.reason in {"source_obstruction", "status_reporting_failed", "dependency_wait", "stalled"}:
                     stop_reason = ev.reason
                     recoverable = True
                 elif ev.reason == "interrupted":
@@ -2601,6 +2639,8 @@ def _run_lea(context: RunnerContext) -> None:
                     recoverable = True
                     if stop_reason == "timeout":
                         final_result_detail = "Time limit reached; the run stopped at a turn boundary."
+                if ev.reason in {"stalled", "dependency_wait"}:
+                    final_result_detail = ev.text
                 final_stop_reason = stop_reason
                 final_recoverable = recoverable
                 if final_result_detail:
@@ -2609,7 +2649,7 @@ def _run_lea(context: RunnerContext) -> None:
                     run_id, final_status, final_text=final_text,
                     input_tokens=ev.usage.input_tokens, output_tokens=ev.usage.output_tokens,
                     cost_usd=ev.cost,
-                    usage_status="final",
+                    usage_status="final", usage_details=ev.usage.usage_details,
                     result_kind=final_result_kind, result_detail=final_result_detail,
                     stop_reason=stop_reason, recoverable=recoverable,
                 )

@@ -29,6 +29,7 @@ class EnsureRequest(BaseModel):
 
 
 class WorkerRequest(BaseModel):
+    initiating_run_id: str | None = None
     model: str | None = None
     timeout_seconds: int | None = Field(default=None, ge=1)
 
@@ -89,6 +90,7 @@ def start_worker(slug: str, dependency_id: str, request: WorkerRequest):
         project_slug=slug, project_title=p["title"], project_namespace=p["namespace"],
         model=request.model, autonomous=True, origin="overleaf", purpose="project_dependency",
         focus_formalization_id=value["formalization_id"], dependency_id=dependency_id,
+        initiating_run_id=request.initiating_run_id,
         timeout_seconds=request.timeout_seconds,
         idempotency_key=f"project-dependency:{dependency_id}:{value['generation']}"))
 

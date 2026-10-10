@@ -1,4 +1,5 @@
 import { normalizeLeaStatus, leaStatusLabel } from "./leaStatusCore.mjs";
+import { dependencyWait } from "./dependencyWaitCore.mjs";
 export { leaStatusLabel };
 
 // Reuse nodes across pane refreshes so open history, selection, and focus survive.
@@ -42,12 +43,12 @@ export function renderLeaStatus(item, { document, loadHistory, pause }) {
     const currentView = view;
     pauseButton.addEventListener("click", async () => {
       pauseButton.disabled = true;
-      pauseButton.textContent = "Pausing…";
+      pauseButton.textContent = dependencyWait(currentView.item) ? "Stopping wait…" : "Pausing…";
       try { await pause(currentView.item); }
       catch (failure) {
         error.textContent = failure.message;
         pauseButton.disabled = false;
-        pauseButton.textContent = "Pause";
+        pauseButton.textContent = dependencyWait(currentView.item) ? "Stop waiting" : "Pause";
       }
     });
     more.addEventListener("click", async () => {
@@ -84,22 +85,23 @@ export function renderLeaStatus(item, { document, loadHistory, pause }) {
   view.sequence = item.leaStatus?.sequence || 0;
   view.history.hidden = !item.formalizationId;
   const status = normalizeLeaStatus(item.leaStatus);
+  const wait = dependencyWait(item);
   const active = ["running", "pending"].includes(status.activity.status);
   if (status.attention !== view.attention && status.attention !== "none") {
     view.announcement.textContent = `${leaStatusLabel(status)}. ${status.assessment?.summary || ""}`;
   }
   view.attention = status.attention;
-  view.summary.textContent = status.assessment?.summary || (active
+  view.summary.textContent = wait ? `${wait.message}${!status.assessment ? " Assessment pending while supporting results are resolved." : ""}` : status.assessment?.summary || (active
     ? "Starting formalization; waiting for Lea's first assessment."
     : "No assessment published. Start or resume formalization to receive Lea Status updates.");
   const stamp = status.latest_update?.created_at;
   const age = stamp ? Math.max(0, Math.floor((Date.now() - new Date(stamp).getTime()) / 1000)) : null;
   view.meta.textContent = [leaStatusLabel(status), age !== null ? `Updated ${age < 60 ? `${age} seconds` : `${Math.floor(age / 60)} minutes`} ago` : "",
     status.assessment ? `Scope: ${friendly(status.assessment.scope)}` : "",
-    friendly(status.activity.stop_reason), status.freshness_detail, status.deliveryError,
-    status.reporting_incomplete ? "Run ended without a final assessment; last published update retained." : ""].filter(Boolean).join(" · ");
-  view.pauseButton.hidden = !active || !status.run_id;
-  if (!active) { view.pauseButton.disabled = false; view.pauseButton.textContent = "Pause"; }
+    wait ? "" : friendly(status.activity.stop_reason), status.freshness_detail, status.deliveryError].filter(Boolean).join(" · ");
+  view.pauseButton.hidden = (!active && !wait?.autoResume) || !status.run_id;
+  view.pauseButton.textContent = wait ? "Stop waiting" : "Pause";
+  if (!active) { view.pauseButton.disabled = false; view.pauseButton.textContent = wait ? "Stop waiting" : "Pause"; }
   const version = status.latest_update?.id || "empty";
   const selection = document.getSelection?.();
   if (view.version !== version && !(selection?.anchorNode && view.body.contains(selection.anchorNode) && !selection.isCollapsed)) {
@@ -107,6 +109,13 @@ export function renderLeaStatus(item, { document, loadHistory, pause }) {
     renderAssessment(node, view.body, status.assessment, { source_identity_hash: status.source_identity_hash, source_bundle_hash: status.source_bundle_hash, ...status.latest_update?.artifact_snapshot });
     view.version = version;
   }
+  // Lifecycle diagnostics do not imply a model assessment exists, and stay out
+  // of the primary operational explanation while a dependency is being resolved.
+  if (!view.reporting) view.reporting = node("p", "", view.details);
+  view.reporting.textContent = status.reporting_incomplete
+    ? status.assessment ? "This execution segment ended without a final assessment; its last published update is retained."
+      : "No assessment was published for this execution segment." : "";
+  view.reporting.hidden = !status.reporting_incomplete;
   return view.root;
 }
 

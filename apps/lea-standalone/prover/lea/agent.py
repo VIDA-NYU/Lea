@@ -19,6 +19,7 @@ from .status_reporting import TOOL_NAME, validate_payload, LeaStatusUpdateReques
 from .project_library_tools import TOOL_NAMES as LIBRARY_TOOLS, ProjectLibraryRequested, ProjectLibraryAck
 from .config import LeaConfig
 from . import condenser
+from .stall import StallDetector
 from . import diagnostics
 from .runctx import run_context
 from .prompt import compose_role_prompt, domain_cascade_hint, load_system_prompt
@@ -32,6 +33,8 @@ from .tools import (
 )
 from .registry import build_toolset, import_tool_modules, pop_scope, push_scope
 from .events import (
+    DependencyReadinessRequested,
+    DependencyReadinessAck,
     TurnStarted,
     AssistantTextDelta,
     ToolCalled,
@@ -74,7 +77,9 @@ def stream(*args, **kwargs):
     completed = False
     for item in _provider_stream(*args, **kwargs):
         if isinstance(item, Done):
-            _record("invocation_result", {"id": invocation_id, "result": {"completed": True}})
+            _record("invocation_result", {"id": invocation_id, "result": {"completed": True,
+                "input_tokens": item.usage.input_tokens, "output_tokens": item.usage.output_tokens,
+                "cost_usd": item.cost, "usage_details": item.usage_details, "raw_usage": item.raw_usage}})
             completed = True
         yield item
     if not completed:
@@ -215,8 +220,7 @@ def _summarize_on_max_turns(model: str, system: str, messages: list, config: Lea
         if isinstance(event, TextDelta):
             text += event.text
         elif isinstance(event, Done):
-            usage.input_tokens += event.usage.input_tokens
-            usage.output_tokens += event.usage.output_tokens
+            usage.add(event.usage)
             cost += event.cost
     return text.strip(), usage, cost
 
@@ -242,8 +246,7 @@ def _classify_intent(model: str, messages: list, config: LeaConfig) -> tuple[str
         if isinstance(event, TextDelta):
             text += event.text
         elif isinstance(event, Done):
-            usage.input_tokens += event.usage.input_tokens
-            usage.output_tokens += event.usage.output_tokens
+            usage.add(event.usage)
             cost += event.cost
     decision = "ASSISTANT" if "ASSISTANT" in text.strip().upper() else "FORMALIZE"
     return decision, usage, cost
@@ -341,8 +344,7 @@ def _classify_final_result(
             if isinstance(event, TextDelta):
                 text += event.text
             elif isinstance(event, Done):
-                usage.input_tokens += event.usage.input_tokens
-                usage.output_tokens += event.usage.output_tokens
+                usage.add(event.usage)
                 cost += event.cost
     except Exception as exc:
         return "needs_review", f"Result classification failed ({type(exc).__name__}). Review the result or retry.", usage, cost
@@ -464,8 +466,8 @@ class ProofVerificationState:
 
 
 _FINAL_GATE_FAILURE_MESSAGE = (
-    "Error: final verification gate failed. Lea claimed the proof was complete, "
-    "but the latest proof file did not pass lean_check."
+    "Error: the final verification requirement is unmet. "
+    "The latest proof file has not passed lean_check without errors or sorry."
 )
 
 _NO_PROOF_ARTIFACT_MESSAGE = (
@@ -525,8 +527,7 @@ def _forced_tool_narration(
                 text += event.text
                 yield event
             elif isinstance(event, Done):
-                usage.input_tokens += event.usage.input_tokens
-                usage.output_tokens += event.usage.output_tokens
+                usage.add(event.usage)
                 cost += event.cost
     except Exception:
         fallback = _fallback_tool_narration(tool_name, tool_args)
@@ -764,10 +765,13 @@ def _run_events_inner(
     if resume_state:
         total_usage.input_tokens = int(resume_state.get("input_tokens", 0))
         total_usage.output_tokens = int(resume_state.get("output_tokens", 0))
+        total_usage.usage_details = resume_state.get("usage_details")
     total_cost = float(resume_state.get("cost_usd", 0.0)) if resume_state else 0.0
     proof_state = ProofVerificationState()
     if resume_state:
         proof_state.__dict__.update(resume_state.get("proof_state", {}))
+    stall = StallDetector(resume_state.get("stall_detector") if resume_state else None)
+    dependency_evidence = resume_state.get("dependency_evidence", {}) if resume_state else {}
     resuming_model = bool(resume_state and resume_state.get("stage") == "model_complete")
     saved_material_rejection = bool(resume_state.get("material_publication_rejected")) if resume_state else False
     turn = (int(resume_state.get("turn", 0)) - (1 if resuming_model else 0)) if resume_state else 0
@@ -784,6 +788,8 @@ def _run_events_inner(
             "output_tokens": total_usage.output_tokens, "cost_usd": total_cost,
             "max_turns": config.max_turns, "max_cost_usd": config.max_cost_usd,
             "proof_state": vars(proof_state).copy(),
+            "stall_detector": stall.state(), "dependency_evidence": dependency_evidence,
+            "usage_details": total_usage.usage_details,
             "status_context": status_context.copy(),
             "last_input_tokens": last_input_tokens,
             "surfaced_domains": sorted(surfaced_domains),
@@ -818,9 +824,40 @@ def _run_events_inner(
             "session_id": session_id,
             "model": model,
             "turns": turns,
-            "usage": {"input_tokens": total_usage.input_tokens, "output_tokens": total_usage.output_tokens},
+            "usage": {"input_tokens": total_usage.input_tokens, "output_tokens": total_usage.output_tokens, "usage_details": total_usage.usage_details},
             "messages": clean,
         }
+
+    def dependency_gate():
+        nonlocal dependency_evidence, reporting_stop
+        if not config.project_library:
+            return False
+        ack = yield DependencyReadinessRequested(proof_state.latest_proof_path)
+        if not isinstance(ack, DependencyReadinessAck):
+            raise ValueError("Canonical dependency readiness was not acknowledged by the host.")
+        if dependency_evidence != ack.evidence and proof_state.latest_proof_path:
+            proof_state.unchecked_write = True
+        dependency_evidence = ack.evidence
+        if ack.dependency_ids:
+            reporting_stop = "dependency_wait"
+            save_position("turn_boundary")
+            yield Finished("dependency_wait", "Waiting for canonical dependencies: " + ", ".join(ack.dependency_ids)
+                           + ". Resolve the dependency attempt before resuming this target.",
+                           turn, session_id, model, total_usage, total_cost, transcript(turn))
+            return True
+        return False
+
+    def failed_gate():
+        nonlocal reporting_stop
+        if (yield from dependency_gate()):
+            return True
+        if stall.failure(proof_state, status_context.get("source_bundle"), dependency_evidence, working_dir):
+            reporting_stop = "stalled"
+            save_position("turn_boundary")
+            yield Finished("stalled", stall.explanation(proof_state), turn, session_id, model,
+                           total_usage, total_cost, transcript(turn))
+            return True
+        return False
 
     # Interactive chat: classify whether this turn is a new formalization or an
     # assistant/QA request (explain, look up a lemma, etc.), and route. Only fires
@@ -835,15 +872,20 @@ def _run_events_inner(
                        total_usage, total_cost, transcript(turn),
                        result_kind=final["kind"], result_detail=final["detail"])
         return
+    if resume_state and reporting_stop == "stalled":
+        yield Finished("stalled", stall.explanation(proof_state), turn, session_id, model,
+                       total_usage, total_cost, transcript(turn))
+        return
+    if resume_state and not resuming_model and (yield from dependency_gate()):
+        return
     if resume_state is None:
         save_position("before_intent")
     if (resume_state is None or resume_state.get("stage") == "before_intent") and config.prompt_variant in {"interactive", "interactive_overleaf"} and any(m.get("role") == "assistant" for m in messages):
         decision, intent_usage, intent_cost = _classify_intent(model, messages, config)
-        total_usage.input_tokens += intent_usage.input_tokens
-        total_usage.output_tokens += intent_usage.output_tokens
+        total_usage.add(intent_usage)
         total_cost += intent_cost
-        if intent_usage.input_tokens or intent_usage.output_tokens or intent_cost:
-            yield UsageUpdated(intent_usage.input_tokens, intent_usage.output_tokens, intent_cost)
+        if intent_usage.input_tokens or intent_usage.output_tokens or intent_cost or intent_usage.usage_details:
+            yield UsageUpdated(intent_usage.input_tokens, intent_usage.output_tokens, intent_cost, intent_usage.usage_details)
         assistant_mode = decision == "ASSISTANT"
 
     # Domains whose tactic cascade has already been surfaced this activation (item 26),
@@ -884,15 +926,14 @@ def _run_events_inner(
             result = condenser.condense(messages, config, model=model,
                                         last_input_tokens=last_input_tokens)
             _record("invocation_result", {"id": compaction_id,
-                                           "result": {"changed": result.changed}})
+                "result": {"changed": result.changed, "raw_usage": result.usage.raw_usages,
+                           "usage_details": result.usage.usage_details, "cost_usd": result.cost}})
+            total_usage.add(result.usage)
+            total_cost += result.cost
+            if result.usage.input_tokens or result.usage.output_tokens or result.cost or result.usage.usage_details:
+                yield UsageUpdated(result.usage.input_tokens, result.usage.output_tokens, result.cost, result.usage.usage_details)
             if result.changed:
                 messages = result.messages
-                total_usage.input_tokens += result.usage.input_tokens
-                total_usage.output_tokens += result.usage.output_tokens
-                total_cost += result.cost
-                if result.usage.input_tokens or result.usage.output_tokens or result.cost:
-                    yield UsageUpdated(result.usage.input_tokens, result.usage.output_tokens,
-                                       result.cost)
                 yield Compacted(result.before_tokens, result.after_tokens,
                                 result.pruned, result.summarized)
                 # Reflect the condensed size so we don't immediately re-trigger next turn on
@@ -931,11 +972,10 @@ def _run_events_inner(
                 summary, s_usage, s_cost = _summarize_on_max_turns(model, system, messages, config)
             except Exception:  # noqa: BLE001 — a terminal-path best effort, never fatal
                 summary, s_usage, s_cost = "", Usage(), 0.0
-            total_usage.input_tokens += s_usage.input_tokens
-            total_usage.output_tokens += s_usage.output_tokens
+            total_usage.add(s_usage)
             total_cost += s_cost
-            if s_usage.input_tokens or s_usage.output_tokens or s_cost:
-                yield UsageUpdated(s_usage.input_tokens, s_usage.output_tokens, s_cost)
+            if s_usage.input_tokens or s_usage.output_tokens or s_cost or s_usage.usage_details:
+                yield UsageUpdated(s_usage.input_tokens, s_usage.output_tokens, s_cost, s_usage.usage_details)
             if summary:
                 # Surface it live + fold it into the transcript, so both the UI and the
                 # materialized sub-agent view carry the findings as the final message.
@@ -989,14 +1029,14 @@ def _run_events_inner(
                                 yield AssistantTextDelta(narration_event.text)
                         except StopIteration as result:
                             _, narration_usage, narration_cost = result.value
-                            total_usage.input_tokens += narration_usage.input_tokens
-                            total_usage.output_tokens += narration_usage.output_tokens
+                            total_usage.add(narration_usage)
                             total_cost += narration_cost
-                            if narration_usage.input_tokens or narration_usage.output_tokens or narration_cost:
+                            if narration_usage.input_tokens or narration_usage.output_tokens or narration_cost or narration_usage.usage_details:
                                 yield UsageUpdated(
                                     narration_usage.input_tokens,
                                     narration_usage.output_tokens,
                                     narration_cost,
+                                    narration_usage.usage_details,
                                 )
                         forced_narration_emitted = True
                     if current_text:
@@ -1009,12 +1049,11 @@ def _run_events_inner(
                         tool_calls[-1]["id"] = event.tool_use_id
                 elif isinstance(event, Done):
                     reasoning_items = event.reasoning_items
-                    total_usage.input_tokens += event.usage.input_tokens
-                    total_usage.output_tokens += event.usage.output_tokens
+                    total_usage.add(event.usage)
                     total_cost += event.cost
                     # The real context size of this turn — the G1 compaction trigger for next turn.
                     last_input_tokens = event.usage.input_tokens
-                    yield UsageUpdated(event.usage.input_tokens, event.usage.output_tokens, event.cost)
+                    yield UsageUpdated(event.usage.input_tokens, event.usage.output_tokens, event.cost, event.usage.usage_details)
 
             if current_text:
                 assistant_parts.append({"type": "text", "text": current_text})
@@ -1051,6 +1090,8 @@ def _run_events_inner(
                 if config.prompt_variant == "interactive":
                     yield Finished("assistant", text or "(no response)", turn, session_id,
                                    model, total_usage, total_cost, transcript(turn))
+                    return
+                if (yield from failed_gate()):
                     return
                 messages.append({"role": "user", "content": _NO_PROOF_ARTIFACT_MESSAGE})
                 save_position("turn_boundary")
@@ -1124,6 +1165,8 @@ def _run_events_inner(
                     yield Finished("assistant", text or "(no response)", turn, session_id,
                                    model, total_usage, total_cost, transcript(turn))
                     return
+                if (yield from failed_gate()):
+                    return
                 diagnostic = proof_state.latest_check_output or "No successful lean_check was observed."
                 messages.append({"role": "user", "content": f"{_FINAL_GATE_FAILURE_MESSAGE}\n\n{diagnostic}"})
                 save_position("turn_boundary")
@@ -1137,11 +1180,10 @@ def _run_events_inner(
                 theorem_signature=_theorem_signature(proof_state.latest_proof_path),
                 config=config,
             )
-            total_usage.input_tokens += result_usage.input_tokens
-            total_usage.output_tokens += result_usage.output_tokens
+            total_usage.add(result_usage)
             total_cost += result_cost
-            if result_usage.input_tokens or result_usage.output_tokens or result_cost:
-                yield UsageUpdated(result_usage.input_tokens, result_usage.output_tokens, result_cost)
+            if result_usage.input_tokens or result_usage.output_tokens or result_cost or result_usage.usage_details:
+                yield UsageUpdated(result_usage.input_tokens, result_usage.output_tokens, result_cost, result_usage.usage_details)
             save_position("final_result", final_result={
                 "text": final_text, "kind": result_kind, "detail": result_detail,
             })
@@ -1432,6 +1474,7 @@ def _run_events_inner(
                 for ev in _meaning_events(tc["name"], tc["args"], result):
                     yield ev
                 proof_state.note_tool_result(tc["name"], tc["args"], result)
+            stall.note_tool(tc["name"], tc["args"], result, successful=idx not in refused_idx)
             tool_result = {"type": "tool_result", "tool_name": tc["name"], "content": result}
             if tc["id"]:
                 tool_result["tool_use_id"] = tc["id"]

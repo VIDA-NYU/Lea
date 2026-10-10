@@ -11,9 +11,17 @@ const response = body => ({ ok: true, status: 200, text: async () => JSON.string
 
 test('confidence, source attention, compiler verdict and freshness are independent', () => {
   const status = normalizeLeaStatus(event({ freshness: 'current', leanCheck: 'failed' }));
-  assert.equal(leaStatusLabel(status), 'High confidence · Source issue');
+  assert.equal(leaStatusLabel(status), 'High confidence · Partial artifact · Source issue');
   assert.equal(normalizeLeaStatus({ assessment: { confidence: 'approved' } }).confidence, 'unassessed');
   assert.match(leaStatusLabel({ ...status, freshness: 'source_changed' }), /Last assessed version/);
+});
+
+test('confidence includes assessment scope without changing compiler status', () => {
+  for (const [scope, label] of [['source_only', 'Source assessment'], ['partial_artifact', 'Partial artifact'], ['statement_and_proof', 'Statement and proof']]) {
+    const status = { assessment: { confidence: 'high', scope }, freshness: 'current', leanCheck: 'unformalized' };
+    assert.equal(leaStatusLabel(status), `High confidence · ${label}`);
+    assert.equal(normalizeLeaStatus(status).leanCheck, 'unformalized');
+  }
 });
 
 test('late, repeated, malformed and cross-target events cannot overwrite current status', () => {

@@ -57,6 +57,11 @@ test("a shared failure is cached across batches while C remains independent", as
 test("nested dependencies execute first and continue the same saved parent", async () => {
   const h = harness({ L: { state: "waiting", owner_run_id: "L:1" }, K: { state: "pending" } });
   h.rows.set("L:1", { status: "cancelled", stop_reason: "dependency_wait", waiting_dependencies: ["K"] });
+  const admission = h.callbacks.startDependency;
+  h.callbacks.startDependency = async (id, initiator) => {
+    assert.equal(initiator, "L:1");
+    return admission(id);
+  };
   h.callbacks.continueRun = async (id) => {
     assert.equal(id, "L:1");
     assert.equal(h.deps.get("K").ready, true);

@@ -48,7 +48,10 @@ def event_payload(ctx, update):
             "source_identity_hash": ctx["source_identity_hash"], "source_bundle_hash": ctx["source_bundle_hash"]}
 
 
-def current(formalization_id, source_identity_hash=None, source_bundle_hash=None):
+def current(formalization_id, source_identity_hash=None, source_bundle_hash=None, *, source_bundle=None, coverage="partial"):
+    if source_bundle is not None:
+        from .source_context import compare_source, validate_source
+        source_bundle = validate_source(source_bundle)
     if store.get_formalization(formalization_id) is None:
         raise LookupError("Formalization not found")
     ctx = storage.selected_context(formalization_id)
@@ -64,13 +67,19 @@ def current(formalization_id, source_identity_hash=None, source_bundle_hash=None
     }
     result["activity"] = {"status": run.get("status", "unknown"), "stop_reason": run.get("stop_reason"),
                           "recoverable": bool(run.get("recoverable"))}
+    result["waiting_dependencies"] = json.loads(run.get("waiting_dependencies_json") or "[]")
     result["freshness"] = "current" if source_identity_hash and source_bundle_hash else "unknown"
     if source_identity_hash and ctx["source_identity_hash"] != source_identity_hash:
         result["freshness"] = "source_changed"
     elif source_bundle_hash and ctx["source_bundle_hash"] != source_bundle_hash:
         result["freshness"] = "unknown"
-        result["freshness_detail"] = "Source evidence changed; the last assessment used an earlier evidence bundle."
-    elif update:
+        result["freshness_detail"] = "The evidence snapshots could not be compared; source freshness is unavailable."
+    if source_bundle is not None:
+        result["freshness"], detail = compare_source(ctx["source_bundle"], source_bundle, coverage)
+        result.pop("freshness_detail", None)
+        if detail:
+            result["freshness_detail"] = detail
+    if update and result["freshness"] not in {"source_changed", "evidence_changed"}:
         captured = _snapshot(formalization_id)
         snapshot = captured[0] if captured else {"revision_token": None, "files": []}
         if snapshot["revision_token"] != update["artifact_snapshot"].get("revision_token"):

@@ -41,6 +41,10 @@ for arg in "$@"; do
   esac
 done
 
+# Check before --fresh as well as before spawning services. A duplicate launch
+# must not clear the data of a stack that is still running.
+node scripts/dev-stack-preflight.mjs stack
+
 LOCAL_CONFIG="apps/lea-standalone/config/lea.local.toml"
 LOCAL_CONFIG_EXAMPLE="apps/lea-standalone/config/lea.local.example.toml"
 

@@ -54,8 +54,8 @@ def fake_completion(**kwargs):
     ]
 
 
-def fake_cost_per_token(model, prompt_tokens, completion_tokens):
-    return (0.001, 0.002)
+def fake_completion_cost(**kwargs):
+    return 0.003
 
 
 def fake_completion_blocking(**kwargs):
@@ -102,7 +102,7 @@ MESSAGES = [{"role": "user", "content": "prove it"}]
 
 def test_blocking_mode():
     providers.litellm.completion = fake_completion_blocking
-    providers.litellm.cost_per_token = fake_cost_per_token
+    providers.litellm.completion_cost = fake_completion_cost
     events = list(providers.stream("gemini/test-model", "SYS", MESSAGES, TOOLS, {"max_tokens": 100}, streaming=False))
     check("blocking: TextDelta whole content", events[0] == TextDelta("Hello world"))
     check("blocking: ToolCall assembled", events[1] == ToolCall("lean_check", {"path": "/x.lean"}))
@@ -113,7 +113,7 @@ def test_blocking_mode():
 
 def test_gpt_5_6_responses_compatibility():
     providers.litellm.completion = fake_gpt_5_6_completion
-    providers.litellm.cost_per_token = fake_cost_per_token
+    providers.litellm.completion_cost = fake_completion_cost
     caller_kwargs = {"max_tokens": 100, "include": []}
     events = list(providers.stream(
         "gpt-5.6-sol",
@@ -167,7 +167,7 @@ def test_gpt_5_6_responses_compatibility():
 def main():
     print("providers (LiteLLM stream) tests:")
     providers.litellm.completion = fake_completion
-    providers.litellm.cost_per_token = fake_cost_per_token
+    providers.litellm.completion_cost = fake_completion_cost
 
     tools = TOOLS
     messages = MESSAGES

@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRootEnv } from "./env.mjs";
+import { assertServicesAvailable } from "./dev-stack-preflight.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv();
@@ -18,6 +19,15 @@ const adapterDir = path.join(root, "apps/lea-standalone/adapter");
 const python = path.join(adapterDir, ".venv/bin/python");
 if (!existsSync(python)) {
   console.error("Adapter virtualenv is missing. Run npm run setup.");
+  process.exit(1);
+}
+
+// Reject duplicate launches before spawning children or installing shutdown
+// handlers that could drain an adapter owned by a different supervisor.
+try {
+  await assertServicesAvailable(mode);
+} catch (error) {
+  console.error(`[supervisor] ${error.message}`);
   process.exit(1);
 }
 

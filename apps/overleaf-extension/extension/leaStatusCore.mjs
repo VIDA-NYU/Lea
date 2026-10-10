@@ -15,8 +15,17 @@ export function leaStatusLabel(value) {
     : `${status.confidence[0].toUpperCase()}${status.confidence.slice(1)} confidence`;
   const attention = status.attention === "needs_author_input" ? " · Needs author input"
     : status.attention === "source_issue" ? " · Source issue" : "";
-  const freshness = status.assessment && status.freshness !== "current" ? " · Last assessed version" : "";
-  return label + attention + freshness;
+  const reason = { source_changed: "Source changed", evidence_changed: "Surrounding source context changed",
+    newer_artifact: "Updated work not yet assessed", dependency_changed: "Supporting results changed" }[status.freshness];
+  const freshness = reason ? ` · ${reason}${status.assessment ? " · Last assessed version" : ""}`
+    : status.assessment && status.freshness === "unknown" ? " · Freshness unavailable" : "";
+  return label + assessmentScopeLabel(status.assessment?.scope) + attention + freshness;
+}
+
+export function assessmentScopeLabel(scope) {
+  const label = { source_only: "Source assessment", partial_artifact: "Partial artifact",
+    statement_and_proof: "Statement and proof" }[scope];
+  return label ? ` · ${label}` : "";
 }
 
 export function applyLeaStatusEvent(previous, event) {

@@ -839,6 +839,9 @@ def project_target_status_by_slug(slug: str, declarations: str = "", formalizati
 
     project = _require_project_by_slug(slug)
     _ensure_artifacts_backfilled(project)
+    from ..formalize_batch_reports import latest_target_outcomes
+    from ..db import connect
+    batch_outcomes = latest_target_outcomes(project["id"])
     names = [name for name in (part.strip() for part in declarations.split(",")) if name]
     requested_ids = [fid for fid in (part.strip() for part in formalization_ids.split(",")) if fid]
     repo = project_service.project_repo_dir(project, _proofs_root())
@@ -854,6 +857,7 @@ def project_target_status_by_slug(slug: str, declarations: str = "", formalizati
 
     targets = []
     for name in names:
+        last_batch_outcome = batch_outcomes.get(("theorem", name)) or batch_outcomes.get(("definition", name))
         row = rows.get(name)
         formalization = formalizations_by_name.get(name)
         if not formalization and row and row.get("formalization_id"):
@@ -868,7 +872,8 @@ def project_target_status_by_slug(slug: str, declarations: str = "", formalizati
         if not row and not formalization:
             targets.append({"declaration_name": name, "recorded": False,
                             "validity_status": "unavailable", "validity_reason": "No formalization identity is available.",
-                            "completion_run_id": None, "declaration_kind": None, "check_current": False})
+                            "completion_run_id": None, "declaration_kind": None, "check_current": False,
+                            "last_batch_outcome": last_batch_outcome})
             continue
         steps = store.current_code_steps_for_formalization(formalization["id"]) if formalization else []
         proof_path = row["path"] if row else ((formalization or {}).get("primary_path") or (steps[0]["path"] if steps else None))
@@ -908,6 +913,20 @@ def project_target_status_by_slug(slug: str, declarations: str = "", formalizati
                 else (associated_sessions[0] if associated_sessions else None)
             )
         current_source_hash = (formalization or {}).get("source_hash")
+        if formalization:
+            origin_label = (formalization.get("origin_key") or "").rsplit(":", 1)[-1]
+            last_batch_outcome = batch_outcomes.get((formalization["kind"], origin_label)) or last_batch_outcome
+            if last_batch_outcome:
+                with connect() as conn:
+                    outcome_run = conn.execute("select created_at from runs where id=?",
+                        (last_batch_outcome.get("runId"),)).fetchone()
+                    # A retry may finish while independent batch items are
+                    # still running, before this report's final timestamp.
+                    since = outcome_run["created_at"] if outcome_run else last_batch_outcome["started_at"]
+                    newer = conn.execute("select id from runs where focus_formalization_id=? and created_at>? and id!=? limit 1",
+                        (formalization["id"], since, last_batch_outcome.get("runId") or "")).fetchone()
+                if newer:
+                    last_batch_outcome = None
         artifact_source_hash = (row or {}).get("source_hash")
         checked_sha = (check or {}).get("checked_sha256")
         content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest() if exists else None
@@ -940,6 +959,7 @@ def project_target_status_by_slug(slug: str, declarations: str = "", formalizati
             "completion_run_id": (formalization or {}).get("completion_run_id"),
             "declaration_kind": declared.kind if declared else (formalization or {}).get("declaration_kind"),
             "check_current": check_current,
+            "last_batch_outcome": last_batch_outcome,
             # The session that wrote the current artifact revision is the
             # durable editing context. Companion jobs are only a projection
             # and may not exist for GitHub-imported formalizations.

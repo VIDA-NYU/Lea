@@ -1,4 +1,6 @@
 export { renderLeaStatus, leaStatusLabel } from "./leaStatusView.mjs";
+import { dependencyWait, dependencyWaitAction } from "./dependencyWaitCore.mjs";
+export { dependencyWait, dependencyWaitAction };
 // Pure, DOM-free helpers for the Overleaf Lean project pane.
 //
 // These live in their own module so they can be unit-tested directly: the content
@@ -34,7 +36,7 @@ export function renderSharedDependencies(dependencies, { document, key = "shared
     detail.open = expanded.has(dep.id);
     const status = dep.ready ? dep.reused ? "Reused" : "Verified" : dep.state === "running"
       ? "Proving" : dep.state === "waiting" ? "Waiting for supporting results" : String(dep.state || "pending").replaceAll("_", " ");
-    node("summary", `${status} · ${name}`, detail);
+    node("summary", `${status} · ${name}${dep.current === false ? " · Last known state" : ""}`, detail);
     if (dep.targetLabels?.length) node("p", `${dep.ready ? "Used by" : "Waiting targets"}: ${dep.targetLabels.join(", ")}`, detail);
     if (spec.statement) node("p", spec.statement, detail);
     node("pre", `import ${dep.module_name}\n${dep.declaration_name} ${spec.signature || ""}`, detail);
@@ -165,12 +167,13 @@ const PANE_TEXT_ESCAPES = new Map([
 ]);
 
 const SUCCESS_PANE_STATUSES = new Set(["valid", "defined", "disproved"]);
-const PROGRESS_SUCCESS_STATUSES = new Set(["valid", "formalized", "defined", "disproved"]);
+const PROGRESS_SUCCESS_STATUSES = new Set(["valid", "formalized", "defined"]);
 const PROGRESS_STUB_STATUSES = new Set(["stub-generated", "sorry_stub"]);
 const PROGRESS_FAILED_STATUSES = new Set(["failed", "invalid", "error"]);
 const PROGRESS_IN_PROGRESS_STATUSES = new Set(["in-progress", "in_progress"]);
 const PROGRESS_SEGMENT_DEFS = [
-  { id: "success", label: "Successful", countKey: "success" },
+  { id: "success", label: "Verified", countKey: "success" },
+  { id: "disproved", label: "Disproved", countKey: "disproved" },
   { id: "sorry-stubbed", label: "Sorry-stubbed", countKey: "sorryStubbed" },
   { id: "failed", label: "Failed", countKey: "failed" },
   { id: "out-of-date", label: "Out of date", countKey: "outOfDate" },
@@ -420,6 +423,7 @@ export function aggregatePaneStatus(items) {
 export function paneProgressBucketForItem(item) {
   const status = String(item?.status || item?.effectiveStatus || "unknown").toLowerCase();
   if (PROGRESS_SUCCESS_STATUSES.has(status)) return "success";
+  if (status === "disproved") return "disproved";
   if (PROGRESS_STUB_STATUSES.has(status)) return "sorryStubbed";
   if (PROGRESS_FAILED_STATUSES.has(status)) return "failed";
   if (status === "stale") return "outOfDate";
@@ -430,6 +434,7 @@ export function summarizePaneProgress(items) {
   const summary = {
     total: 0,
     success: 0,
+    disproved: 0,
     sorryStubbed: 0,
     failed: 0,
     outOfDate: 0,
@@ -469,7 +474,8 @@ export function formatPaneProgressLabel(path, summary) {
   const parts = [
     `${file}: ${total} Lea item${total === 1 ? "" : "s"}`
   ];
-  appendProgressLabelPart(parts, summary?.success, "successful");
+  appendProgressLabelPart(parts, summary?.success, "verified");
+  appendProgressLabelPart(parts, summary?.disproved, "disproved");
   appendProgressLabelPart(parts, summary?.sorryStubbed, "sorry-stubbed");
   appendProgressLabelPart(parts, summary?.failed, "failed");
   appendProgressLabelPart(parts, summary?.outOfDate, "out of date");
@@ -756,6 +762,8 @@ export function canEditPaneItem(item) {
 //               capability is lost when Repair takes the primary slot.
 // Copy actions are absent by design: they belong on the code blocks they copy.
 export function paneItemFormalizeAction(item) {
+  const wait = dependencyWait(item);
+  if (wait) return dependencyWaitAction(wait);
   const paused = item?.status === "paused" || item?.leanCheck?.status === "paused";
   return {
     id: "formalize",
@@ -765,13 +773,16 @@ export function paneItemFormalizeAction(item) {
 }
 
 export function paneItemActions(item, { editing = false } = {}) {
+  const wait = dependencyWait(item);
   const canFormalize = canFormalizePaneItem(item);
   const canBestEffort = canContinueBestEffort(item);
   const formalizeAction = paneItemFormalizeAction(item);
   const bestEffortAction = { id: "best-effort", label: "Continue best effort" };
 
   let primary = null;
-  if (!editing && canRepairPaneItem(item)) {
+  if (!editing && wait) {
+    primary = dependencyWaitAction(wait);
+  } else if (!editing && canRepairPaneItem(item)) {
     primary = { id: "repair", label: "Repair with Lea" };
   } else if (!editing && canBestEffort) {
     primary = bestEffortAction;
@@ -784,6 +795,11 @@ export function paneItemActions(item, { editing = false } = {}) {
   if (canViewPaneItemInLeaUi(item)) rail.push({ id: "view-in-lea", label: "Open in LeaChat" });
 
   const overflow = [];
+  if (wait && !editing) {
+    if (primary?.id !== "dependency-view") overflow.push({ id: "dependency-view", label: "View supporting result" });
+    if (primary?.id !== "dependency-refresh") overflow.push({ id: "dependency-refresh", label: "Refresh status" });
+    if (wait.autoResume) overflow.push({ id: "dependency-stop", label: "Stop waiting" });
+  }
   if (primary?.id === "repair" && canBestEffort) overflow.push(bestEffortAction);
   if (["repair", "best-effort"].includes(primary?.id) && canFormalize) overflow.push(formalizeAction);
   if ((item?.status === "paused" || item?.leanCheck?.status === "paused") && canFormalize) overflow.push({ id: "reformalize", label: "Re-formalize" });
@@ -993,6 +1009,9 @@ export function formatRepairOutcome(entry, operation = "repair") {
     case "stubbed": return `${label}: stub created.`;
     case "formalized": return `${label}: formalized and verified.`;
     case "disproved": return `${label}: counterexample found.`;
+    case "incomplete": return entry.reason === "dependency_wait"
+      ? `${label}: waiting for a supporting result.${entry.detail ? ` ${entry.detail}` : ""} Inspect Shared mathematics for the result and its next action.`
+      : `${label}: incomplete${entry.reason ? ` — ${String(entry.reason).replaceAll("_", " ")}` : "."}${entry.detail ? ` · ${entry.detail}` : ""}${entry.recoverable ? " · Resume available." : ""}`;
     case "needs_review": return operation === "formalize"
       ? `${label}: Needs review${entry.reason ? ` — ${entry.reason}` : "."}`
       : `${label}: repaired, but the statement changed -- review required.`;
@@ -1002,6 +1021,9 @@ export function formatRepairOutcome(entry, operation = "repair") {
       return `${label}: ${verb}${entry.reason ? ` -- ${entry.reason}` : "."}`;
     }
     case "skipped":
+      if (String(entry.reason || "").startsWith("depends_on_incomplete:")) {
+        return `${label}: skipped — dependency ${String(entry.reason).slice("depends_on_incomplete:".length)} is incomplete.`;
+      }
       if (String(entry.reason || "").startsWith("depends_on_failed:")) {
         return `${label}: skipped -- depends on failed ${operation === "formalize" ? "formalization" : "repair"} of ${String(entry.reason).slice("depends_on_failed:".length)}.`;
       }

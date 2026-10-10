@@ -216,8 +216,10 @@ def compact_session(session_id: str) -> dict:
     messages = latest["messages"]
     model = latest.get("model") or config.model
     before = condenser.estimate_tokens(messages)
+    action = store.begin_auxiliary_invocation(latest["run_id"], "manual_compaction", model)
     result = condenser.condense(messages, config, model=model,
                                 last_input_tokens=before, force=True)
+    store.finish_auxiliary_invocation(action, result.usage, result.cost)
     payload = {
         "manual": True,
         "changed": result.changed,

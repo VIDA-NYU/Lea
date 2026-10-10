@@ -29,6 +29,8 @@ import {
   getUsageStats,
 } from '../lib/api';
 import { OriginBadge } from './OriginBadge';
+import { usageCostText, usageBasis, usageDetailText } from '../lib/usageDetails.mjs';
+import type { UsageDetails } from '../lib/types';
 
 // Monochrome-first Lea palette; extra hues are reserved for chart series where
 // color distinguishes data rather than decorating product chrome.
@@ -52,13 +54,14 @@ function fmtCost(value: number, digits = 4) {
   return `$${value.toFixed(digits)}`;
 }
 
-function fmtRecordedCost(value: number, incomplete?: number, unconfirmed?: number) {
+function fmtRecordedCost(value: number, incomplete?: number, unconfirmed?: number, details?: UsageDetails | null) {
+  if (details?.unpriced_calls || details?.cost_basis === 'unavailable') return usageCostText(value, details);
   if (incomplete == null && unconfirmed == null) {
-    return value > 0 ? `${fmtCost(value)} recorded · unconfirmed` : 'Usage unavailable';
+    return value > 0 ? fmtCost(value) : 'Usage unavailable';
   }
   if (incomplete) return value > 0 ? `${fmtCost(value)} recorded so far` : 'Awaiting usage';
-  if (unconfirmed) return value > 0 ? `${fmtCost(value)} recorded · unconfirmed` : 'Usage unavailable';
-  return fmtCost(value);
+  if (unconfirmed) return value > 0 ? fmtCost(value) : 'Usage unavailable';
+  return usageCostText(value, details);
 }
 
 function fmtDate(iso: string | null | undefined) {
@@ -225,7 +228,7 @@ function SessionListPane({
                         {modelLabel(session.primary_model)}
                       </span>
                       <span className="shrink-0 text-muted-foreground">
-                        {fmtRecordedCost(session.cost_usd, session.incomplete_usage_runs, session.unconfirmed_usage_runs)}
+                        {fmtRecordedCost(session.cost_usd, session.incomplete_usage_runs, session.unconfirmed_usage_runs, session.usage_details)}
                       </span>
                     </span>
                   </button>
@@ -258,7 +261,6 @@ function SessionDetailPane({ session }: { session?: StatsSessionDetail }) {
   const tokensPerMessage = session.message_count ? Math.round(totalTokens / session.message_count) : 0;
   const tokensPerMinute =
     session.duration_seconds > 0 ? Math.round(totalTokens / (session.duration_seconds / 60)) : 0;
-  const costPerThousand = totalTokens ? session.cost_usd / (totalTokens / 1000) : 0;
   const color = modelColor(session.primary_model);
 
   return (
@@ -292,8 +294,8 @@ function SessionDetailPane({ session }: { session?: StatsSessionDetail }) {
             <StatCard
               icon={DollarSign}
               label="Session cost"
-              value={fmtRecordedCost(session.cost_usd, session.incomplete_usage_runs, session.unconfirmed_usage_runs)}
-              sub={totalTokens ? `${fmtCost(costPerThousand)} / 1K tokens` : 'No token usage recorded'}
+              value={fmtRecordedCost(session.cost_usd, session.incomplete_usage_runs, session.unconfirmed_usage_runs, session.usage_details)}
+              sub={usageBasis(session.usage_details)}
               accent={MONEY_COLOR}
             />
             <StatCard
@@ -323,8 +325,10 @@ function SessionDetailPane({ session }: { session?: StatsSessionDetail }) {
             <Row label="Input tokens" value={`${fmtNumber(session.input_tokens)} tok`} />
             <Row label="Output tokens" value={`${fmtNumber(session.output_tokens)} tok`} />
             <Row label="Model runs" value={fmtNumber(session.run_count)} />
+            <p className="text-xs leading-relaxed text-muted-foreground">{usageDetailText(session.usage_details)}</p>
+            <p className="text-xs text-muted-foreground">Cache counts are included in input tokens; reasoning is included in output tokens. Historical dollar totals are unchanged.</p>
             <div className="border-t border-border pt-2">
-              <Row label="Recorded total" value={fmtRecordedCost(session.cost_usd, session.incomplete_usage_runs, session.unconfirmed_usage_runs)} accent={MONEY_COLOR} />
+              <Row label="Recorded total" value={fmtRecordedCost(session.cost_usd, session.incomplete_usage_runs, session.unconfirmed_usage_runs, session.usage_details)} accent={MONEY_COLOR} />
             </div>
           </div>
 
@@ -380,7 +384,7 @@ function TurnCostBreakdown({
                       Run {runNumber}
                     </span>
                     <span className="shrink-0 font-mono text-[0.65rem] text-muted-foreground">
-                      {fmtNumber(runInputTokens + runOutputTokens)} tok - {fmtCost(runCost)}
+                      {fmtNumber(runInputTokens + runOutputTokens)} tok - {usageCostText(runCost, { unpriced_calls: runRows.reduce((n, r) => n + (r.usage_details?.unpriced_calls || 0), 0) })}
                     </span>
                   </div>
                 )}
@@ -401,6 +405,10 @@ function TurnCostBreakdown({
                         <div className="font-mono text-[0.65rem] text-muted-foreground">
                           {fmtNumber(row.total_tokens)} tok
                         </div>
+                        <details className="mt-1 text-xs text-muted-foreground">
+                          <summary className="cursor-pointer rounded focus-visible:outline focus-visible:outline-2">{usageBasis(row.usage_details)}</summary>
+                          <p className="mt-1 leading-relaxed">{usageDetailText(row.usage_details)}</p>
+                        </details>
                       </div>
                       <span className="self-center text-right font-mono text-xs text-muted-foreground">
                         {fmtNumber(row.input_tokens)}
@@ -409,7 +417,7 @@ function TurnCostBreakdown({
                         {fmtNumber(row.output_tokens)}
                       </span>
                       <span className="self-center text-right font-mono text-xs" style={{ color: MONEY_COLOR }}>
-                        {fmtCost(row.cost_usd)}
+                        {usageCostText(row.cost_usd, row.usage_details)}
                       </span>
                     </div>
                   ))}
@@ -458,7 +466,8 @@ function GlobalStatsPane({ stats }: { stats?: UsageStats }) {
             <StatCard
               icon={DollarSign}
               label="Total spent"
-              value={fmtRecordedCost(global.cost_usd, global.incomplete_usage_runs, global.unconfirmed_usage_runs)}
+              value={fmtRecordedCost(global.cost_usd, global.incomplete_usage_runs, global.unconfirmed_usage_runs, global.usage_details)}
+              sub={usageDetailText(global.usage_details)}
               accent={MONEY_COLOR}
             />
             <StatCard icon={Zap} label="Total tokens" value={fmtNumber(global.total_tokens)} />
@@ -495,7 +504,7 @@ function GlobalStatsPane({ stats }: { stats?: UsageStats }) {
               <BarChart data={dailyData} margin={{ top: 4, right: 0, bottom: 0, left: -28 }}>
                 <XAxis dataKey="label" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-                <Tooltip formatter={(value: number) => [fmtCost(value, 2), 'cost']} />
+                <Tooltip formatter={(value: number, _name, entry) => [usageCostText(value, entry.payload?.usage_details, 2), 'Recorded cost']} />
                 <Bar dataKey="cost_usd" fill={MONEY_COLOR} radius={[2, 2, 0, 0]} maxBarSize={18} />
               </BarChart>
             </ResponsiveContainer>
@@ -524,7 +533,7 @@ function GlobalStatsPane({ stats }: { stats?: UsageStats }) {
                         {modelLabel(row.model)}
                       </span>
                       <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                        {row.session_count} sess - {fmtNumber(row.total_tokens)} tok - {fmtCost(row.cost_usd, 2)}
+                        {row.session_count} sess - {fmtNumber(row.total_tokens)} tok - {usageCostText(row.cost_usd, row.usage_details, 2)}
                       </span>
                     </div>
                     <div className="h-1 rounded-full bg-muted">
@@ -562,7 +571,7 @@ function GlobalStatsPane({ stats }: { stats?: UsageStats }) {
                         {originLabel(row.origin)}
                       </span>
                       <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                        {row.session_count} sess - {fmtNumber(row.total_tokens)} tok - {fmtCost(row.cost_usd, 2)}
+                        {row.session_count} sess - {fmtNumber(row.total_tokens)} tok - {usageCostText(row.cost_usd, row.usage_details, 2)}
                       </span>
                     </div>
                     <div className="h-1 rounded-full bg-muted">
@@ -582,7 +591,7 @@ function GlobalStatsPane({ stats }: { stats?: UsageStats }) {
               Averages per session
             </span>
             <Row label="Tokens" value={fmtNumber(global.average_tokens_per_session)} />
-            <Row label="Cost" value={fmtCost(global.average_cost_per_session)} />
+            <Row label="Recorded cost" value={usageCostText(global.average_cost_per_session, global.usage_details)} />
             <Row label="Messages" value={fmtNumber(global.average_messages_per_session)} />
           </div>
         </div>
@@ -799,7 +808,7 @@ export function StatsPage({ onBack }: { onBack: () => void }) {
           )}
           <span className="truncate font-mono text-[0.7rem] text-muted-foreground">
             {stats
-              ? `${stats.global.session_count} sessions - ${fmtRecordedCost(stats.global.cost_usd, stats.global.incomplete_usage_runs, stats.global.unconfirmed_usage_runs)}${
+              ? `${stats.global.session_count} sessions - ${fmtRecordedCost(stats.global.cost_usd, stats.global.incomplete_usage_runs, stats.global.unconfirmed_usage_runs, stats.global.usage_details)}${
                   hasRunningSession ? ' - live' : ''
                 }`
               : 'Statistics'}

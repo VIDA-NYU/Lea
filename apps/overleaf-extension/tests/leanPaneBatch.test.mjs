@@ -13,10 +13,34 @@ import {
   handleLeanPaneRepairStatus,
   handleFormalizeBatchReports,
   orderTargetsByUses,
-  settleCanceledBatchEntry
+  settleCanceledBatchEntry,
+  classifyFormalizeJob,
+  reconcileRecoveredBatches
 } from "../companion/server.mjs";
 
 const PROJECT = "project-1";
+
+test("recovery uses the live incomplete classification without resuming saved pauses", async () => {
+  const paused = { jobId: "paused", jobKey: `${PROJECT}:theorem:a`, status: "paused", recoverable: true,
+    stopReason: "dependency_wait", resultDetail: "Shared worker still needs certification." };
+  const batch = { batchId: "formalize-batch-recovery", operation: "formalize", overleafProjectId: PROJECT,
+    createdAt: "2026-01-01T00:00:00Z", reportId: "saved", running: false, done: false,
+    items: [{ targetKind: "theorem", targetLabel: "a", state: "running", runJobId: "paused" },
+      { targetKind: "theorem", targetLabel: "b", state: "pending" }], usesByLabel: new Map([["b", ["a"]]]) };
+  const state = { jobs: { paused }, repairBatches: { [batch.batchId]: batch } };
+  await reconcileRecoveredBatches(state);
+  assert.equal(batch.done, true);
+  assert.equal(batch.items[0].state, classifyFormalizeJob(paused).state);
+  assert.equal(batch.items[0].detail, paused.resultDetail);
+  assert.equal(batch.items[0].recoverable, true);
+  assert.equal(batch.items[1].reason, "depends_on_incomplete:a");
+  batch.done = false;
+  batch.items[0].state = "pending";
+  batch.items[1].state = "pending";
+  await reconcileRecoveredBatches(state);
+  assert.equal(batch.items[0].state, "incomplete");
+  assert.equal(batch.done, true);
+});
 
 function theoremItem(label, extra = {}) {
   return {

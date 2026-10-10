@@ -15,7 +15,87 @@ from . import project_library as library, store
 from .db import connect, write, utc_now
 
 FAILURES = {"failed", "needs_review", "blocked"}
-TRANSIENT_STOPS = {"user_stop", "transport_abandonment", "interrupted", "timeout"}
+TRANSIENT_STOPS = {"user_stop", "transport_abandonment", "interrupted", "timeout", "stalled"}
+
+
+def readiness(run_id: str, path: str | None = None) -> dict:
+    """Resolve canonical dependencies from actual imports and durable waits only.
+
+    This does not retry a dependency or dispatch a model. The existing companion
+    coordinator observes the wait and owns dependency scheduling.
+    """
+    from hashlib import sha256
+    run = store.get_run(run_id)
+    session = store.get_session(run["session_id"]) if run else None
+    project = store.get_project(session["project_id"]) if session and session.get("project_id") else None
+    if not project:
+        return {"dependency_ids": [], "evidence": {}}
+    repo = library.project_repo(project).resolve()
+    root = (library.lake_root(repo) or repo).resolve()
+    with connect() as conn:
+        registered = [dict(r) for r in conn.execute(
+            "select id,module_name,path,formalization_id from project_dependencies where project_id=?", (project["id"],))]
+    own = run.get("focus_formalization_id")
+    by_module = {r["module_name"]: r for r in registered if r["formalization_id"] != own}
+    awaited = run.get("waiting_dependencies")
+    if awaited is None:
+        awaited = json.loads(run.get("waiting_dependencies_json") or "[]")
+    required = set(awaited)
+    pending = [Path(path).resolve()] if path else [
+        (repo / f["path"]).resolve() for f in store.list_formalization_files(own)] if own else []
+    seen, imports = set(), {}
+    while pending:
+        file = pending.pop()
+        if file in seen or not file.is_relative_to(root):
+            continue
+        seen.add(file)
+        try:
+            code = file.read_text()
+        except OSError:
+            continue
+        for module in direct_imports(code):
+            if module in by_module:
+                imported = repo / by_module[module]["path"]
+            elif root == repo and module.startswith(project["namespace"] + "."):
+                imported = repo.joinpath(*module[len(project["namespace"]) + 1:].split(".")).with_suffix(".lean")
+            else:
+                imported = root.joinpath(*module.split(".")).with_suffix(".lean")
+            try:
+                imports[module] = sha256(imported.read_bytes()).hexdigest()
+            except OSError:
+                imports[module] = None
+            if module in by_module:
+                required.add(by_module[module]["id"])
+            if imported.is_file():
+                pending.append(imported)
+    valid = {r["id"] for r in registered if r["formalization_id"] != own}
+    required &= valid
+    evidence, unavailable = {}, []
+    for dep_id in sorted(required):
+        dep = get(dep_id)
+        evidence[dep_id] = {"ready": bool(dep.get("ready")), "state": dep["state"],
+                            "source_hash": dep["source_hash"], "verification": {
+                                k: (dep.get("result") or {}).get(k) for k in
+                                ("content_hash", "check_status", "verification_status", "reusable")}}
+        if not dep.get("ready"):
+            unavailable.append(dep_id)
+    with write() as conn:
+        for dep_id in required:
+            if own:
+                row = next(r for r in registered if r["id"] == dep_id)
+                if _cycle(conn, own, row["formalization_id"]):
+                    raise ValueError("Canonical dependency import cycle requires review")
+                conn.execute("insert or ignore into project_dependency_edges values (?,?,?,?)",
+                             (project["id"], own, dep_id, utc_now()))
+        conn.execute("update runs set waiting_dependencies_json=? where id=?",
+                     (library.dumps(unavailable), run_id))
+    environment = {}
+    for name in ("lakefile.lean", "lakefile.toml", "lake-manifest.json", "lean-toolchain"):
+        try:
+            environment[name] = sha256((root / name).read_bytes()).hexdigest()
+        except OSError:
+            environment[name] = None
+    return {"dependency_ids": unavailable, "evidence": {"dependencies": evidence, "imports": imports, "environment": environment}}
 
 
 def _decode(row):
@@ -41,6 +121,15 @@ def get(dependency_id: str, *, reconcile: bool = True) -> dict | None:
         project = store.get_project(result["project_id"])
         if project:
             records = library.refresh(project)
+            if result["state"] == "ready" and not result["owner_run_id"]:
+                # Recheck changed bytes/environment, using the module cache.
+                # This refreshes evidence without creating another attempt.
+                try:
+                    library.validate_module(project, result["path"])
+                except (ValueError, OSError):
+                    # Missing/removed modules have no current certification.
+                    pass
+                records = library.entries(project)
             match = next((d for d in records if d["path"] == result["path"]
                           and d["user_name"] == result["declaration_name"]
                           and d.get("semantic_key") == result["semantic_key"] and d["reusable"]), None)
@@ -198,7 +287,7 @@ def ensure(project: dict, specification: dict, *, run_id: str | None = None,
             current = conn.execute("select * from project_dependencies where id=?", (dep_id,)).fetchone()
             if mode == "inline" and current["state"] == "pending" and not current["owner_run_id"]:
                 conn.execute("update project_dependencies set state='inline',owner_run_id=?,updated_at=? where id=?", (run_id, now, dep_id))
-                conn.execute("update project_dependency_attempts set state='inline',run_id=?,updated_at=? where dependency_id=? and generation=?", (run_id, now, dep_id, current["generation"]))
+                conn.execute("update project_dependency_attempts set state='inline',run_id=?,initiating_run_id=coalesce(initiating_run_id,?),updated_at=? where dependency_id=? and generation=?", (run_id, run_id, now, dep_id, current["generation"]))
             # An inline attempt can hand its drafts to a deferred worker.
             if mode == "deferred" and old["owner_run_id"] == run_id and old["state"] == "inline":
                 previous = json.loads(old["specification_json"])
@@ -232,8 +321,8 @@ def ensure(project: dict, specification: dict, *, run_id: str | None = None,
                  run_id if state == "inline" else None, library.dumps(blocker) if blocker else None,
                  library.dumps(existing) if existing else None, now, now))
             conn.execute("""insert into project_dependency_attempts
-                (dependency_id,generation,run_id,state,created_at,updated_at) values (?,1,?,?,?,?)""",
-                (dep_id, run_id if state == "inline" else None, state, now, now))
+                (dependency_id,generation,run_id,initiating_run_id,state,created_at,updated_at) values (?,1,?,?,?,?,?)""",
+                (dep_id, run_id if state == "inline" else None, run_id if state == "inline" else None, state, now, now))
             conn.execute("""insert or ignore into formalization_files(formalization_id,path,role,created_at,updated_at)
                             values (?,?,'primary',?,?)""", (fid, relative, now, now))
         if requester_id:
@@ -295,24 +384,37 @@ def retry(dependency_id: str) -> dict:
     return response(get(dependency_id))
 
 
-def admit_worker(conn, dependency_id: str, project_id: str, run_id: str, resumes_run_id: str | None = None):
+def admit_worker(conn, dependency_id: str, project_id: str, run_id: str, resumes_run_id: str | None = None,
+                 initiating_run_id: str | None = None):
+    if initiating_run_id:
+        initiator = conn.execute("select project_id from runs where id=?", (initiating_run_id,)).fetchone()
+        if not initiator or initiator[0] != project_id:
+            raise ValueError("The initiating run must belong to this project.")
     dep = conn.execute("select * from project_dependencies where id=? and project_id=?", (dependency_id, project_id)).fetchone()
     continuation = bool(dep and resumes_run_id and dep["state"] == "waiting" and dep["owner_run_id"] == resumes_run_id)
     if not dep or (not continuation and (dep["state"] not in {"pending", "interrupted"} or dep["owner_run_id"])):
         raise ValueError("Dependency is absent, blocked, ready, or already owned by another attempt.")
     conn.execute("update project_dependencies set state='running',owner_run_id=?,updated_at=? where id=?", (run_id, utc_now(), dependency_id))
-    conn.execute("update project_dependency_attempts set state='running',run_id=?,updated_at=? where dependency_id=? and generation=?", (run_id, utc_now(), dependency_id, dep["generation"]))
+    conn.execute("update project_dependency_attempts set state='running',run_id=?,initiating_run_id=coalesce(initiating_run_id,?),updated_at=? where dependency_id=? and generation=?", (run_id, initiating_run_id, utc_now(), dependency_id, dep["generation"]))
 
 
-def publish_owned(run_id: str, relative: str) -> dict | None:
+def publish_owned(run_id: str, relative: str, *, final: bool = False) -> dict | None:
     with connect() as conn:
         row = conn.execute("select id from project_dependencies where owner_run_id=? and path=?", (run_id, relative)).fetchone()
     if not row:
         return None
     dep = get(row[0], reconcile=False)
+    run = store.get_run(run_id)
+    if run.get("dependency_id") == dep["id"] and not final:
+        return None
+    if final and run["status"] != "running":
+        return None
     project = store.get_project(dep["project_id"])
-    records = library.validate_module(project, relative)
-    match = next((d for d in records if d["user_name"] == dep["declaration_name"] and d["reusable"]), None)
+    try:
+        records = library.validate_module(project, relative)
+    except (ValueError, OSError):
+        return None
+    match = next((d for d in records if d["user_name"] == dep["declaration_name"] and d["certified"]), None)
     if not match or match.get("semantic_key") != dep["semantic_key"]:
         return None
     with write() as conn:
@@ -322,7 +424,6 @@ def publish_owned(run_id: str, relative: str) -> dict | None:
         if not changed:
             return None
         conn.execute("update project_dependency_attempts set state='ready',updated_at=? where dependency_id=? and generation=?", (utc_now(), dep["id"], dep["generation"]))
-    run = store.get_run(run_id)
     store.upsert_artifact(project_id=dep["project_id"], session_id=run["session_id"], run_id=run_id,
         declaration_name=dep["declaration_name"], kind=dep["specification"]["kind"], path=relative,
         module_name=dep["module_name"], formalization_id=dep["formalization_id"], source_hash=dep["source_hash"])

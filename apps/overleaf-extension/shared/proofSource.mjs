@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { findEnvironments, parseTargets } from "../extension/targetParserCore.mjs";
-import { canonicalSourceTargetKind, sourceHashInputs } from "../extension/sourceIdentityCore.mjs";
+import { buildSourceBundleCore, sourceHashInputs } from "../extension/sourceIdentityCore.mjs";
 
 const PROOF_ENVIRONMENTS = new Set(["proof", "proof*"]);
 const EXPLICIT_ASSOCIATION = /^[ \t]*%\s*lea:\s*proof-for\s*=\s*(?:\{([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))[ \t]*(?:\r?\n|$)/im;
@@ -175,38 +175,13 @@ export function associateProofSources({ targets = [], files = [] } = {}) {
 export function buildFormalizationSourceBundle(target, {
   targetContext = "",
   targetUses = [],
-  relevantSource = [],
+  relevantSource,
+  files = [],
   mirror = null
 } = {}) {
   const identity = targetIdentity(target);
-  const association = target?.proofAssociation || { status: "missing", method: "none" };
-  const bundle = {
-    version: 2,
-    targetKey: identity.label,
-    targetKind: canonicalSourceTargetKind(target?.targetKind || target?.leanKind || target?.kind),
-    statement: normalizeNewlines(target?.targetText || target?.naturalLanguageLatex || ""),
-    proof: normalizeNewlines(target?.sourceProof || ""),
-    proofAssociation: {
-      status: String(association.status || "missing"),
-      method: String(association.method || "none"),
-      sourceFile: normalizePath(association.sourceFile || ""),
-      sourceStartLine: Number(association.sourceStartLine || 0),
-      sourceEndLine: Number(association.sourceEndLine || 0),
-      proofHash: String(association.proofHash || "")
-    },
-    statementLocation: {
-      sourceFile: identity.sourceFile,
-      sourceStartLine: Number(target?.sourceStartLine || 0),
-      sourceEndLine: Number(target?.sourceEndLine || 0)
-    },
-    uses: (Array.isArray(targetUses) ? targetUses : []).map(String),
-    context: normalizeNewlines(targetContext),
-    relevantSource: (Array.isArray(relevantSource) ? relevantSource : []).map((fragment) => ({
-      ...fragment,
-      content: normalizeNewlines(fragment?.content || "")
-    })),
-    mirror: mirror ? { ...mirror } : null
-  };
+  const bundle = buildSourceBundleCore({ ...target, targetLabel: identity.label, sourceFile: identity.sourceFile },
+    { targetContext, targetUses, relevantSource, files, mirror });
   // Locations are report-navigation metadata, not mathematical identity. A
   // heading inserted above the theorem must not invalidate an unchanged proof.
   const { evidence, identity: hashIdentity } = sourceHashInputs(bundle);

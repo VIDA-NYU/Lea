@@ -104,6 +104,7 @@ class RunRequest(BaseModel):
     lea_status_version: int | None = None
     allow_source_pause: StrictBool = False
     dependency_id: str | None = None
+    initiating_run_id: str | None = None
 
 
 class ApprovalDecisionRequest(BaseModel):
@@ -166,7 +167,7 @@ def _done_payload(run: dict) -> dict:
     payload["waiting_dependencies"] = json.loads(run.get("waiting_dependencies_json") or "[]")
     for key in ("attempt_id", "recovery_state", "recovery_reason", "checkpoint_at"):
         payload[key] = run.get(key)
-    for key in ("stop_requested_reason", "input_tokens", "output_tokens", "cost_usd",
+    for key in ("stop_requested_reason", "input_tokens", "output_tokens", "cost_usd", "usage_details",
                 "usage_status", "usage_revision", "usage_updated_at"):
         payload[key] = run.get(key)
     return payload
@@ -304,7 +305,7 @@ def create_run(request: RunRequest) -> dict:
         if (not dep or dep["project_id"] != project_id or request.focus_formalization_id != dep["formalization_id"]
                 or not autonomous or request.new_formalization):
             raise HTTPException(422, "Dependency workers require their registered project, focus and identity.")
-    elif request.dependency_id:
+    elif request.dependency_id or request.initiating_run_id:
         raise HTTPException(422, "Dependency identity requires project_dependency purpose.")
     focus_source_hash = request.focus_source_hash
     if not focus_source_hash and new_formalization:
@@ -325,6 +326,7 @@ def create_run(request: RunRequest) -> dict:
             new_formalization=new_formalization,
             purpose=purpose,
             dependency_id=request.dependency_id,
+            initiating_run_id=request.initiating_run_id,
             automation_budget={"max_turns": config.max_turns, "max_cost_usd": config.max_cost_usd,
                                "cost_used": 0, "remaining_seconds": request.timeout_seconds or int(os.environ.get("LEA_JOB_TIMEOUT_SECONDS", "900"))}
                 if purpose in {"overleaf_solver", "project_dependency"} else None,
@@ -584,9 +586,22 @@ def _continue_dependency(old: dict, request: ContinueRequest, request_hash: str)
     try:
         if old["purpose"] == "overleaf_solver":
             context = lea_status_store.context(old["id"])
-            source = validate_source(request.source_bundle or context["source_bundle"])
+            selected = lea_status_store.selected_context(old["focus_formalization_id"])
+            if not selected or selected["run_id"] != old["id"]:
+                raise ValueError("A newer formalization attempt exists. Refresh status before continuing.")
+            if request.source_context_ref:
+                if request.source_bundle:
+                    raise ValueError("Supply current source or one prepared source reference.")
+                with connect() as conn:
+                    source = overleaf_source.resolve(conn, request.source_context_ref, old["focus_formalization_id"])
+            else:
+                source = validate_source(request.source_bundle or context["source_bundle"])
             if any(source[k] != context["source_bundle"][k] for k in ("targetKey", "targetKind")):
                 raise ValueError("Current source belongs to another target.")
+            from ..source_context import compare_source
+            freshness, detail = compare_source(context["source_bundle"], source)
+            if freshness != "current":
+                raise ValueError((detail or "Source freshness is unavailable.") + " Review the source before continuing.")
         elif request.source_bundle or request.source_context_ref:
             raise ValueError("Shared dependency continuations use their pinned specification.")
         state, _, checkpoint_id = recovery.continuation_checkpoint(old["id"])
@@ -611,6 +626,7 @@ def _continue_dependency(old: dict, request: ContinueRequest, request_hash: str)
             model=old["model"], provider=old.get("provider"), max_turns=turn_limit, autonomous=True,
             focus_formalization_id=old["focus_formalization_id"], focus_source_hash=old.get("focus_source_hash"),
             purpose=old["purpose"], source_bundle=source, allow_source_pause=bool(old.get("allow_source_pause")),
+            source_context_ref=request.source_context_ref,
             dependency_id=old.get("dependency_id"), automation_budget=budget,
             client_request_id=request.idempotency_key, client_request_hash=request_hash,
             resumes_run_id=old["id"], resume_checkpoint_id=checkpoint_id,

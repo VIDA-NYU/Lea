@@ -471,12 +471,12 @@ export function resolveApiApproval({ fetchImpl, baseUrl, apiKey, runId, approval
   });
 }
 
-export function startApiContinuation({ fetchImpl, baseUrl, apiKey, runId, sourceBundle,
+export function startApiContinuation({ fetchImpl, baseUrl, apiKey, runId, sourceBundle, sourceContextRef,
   idempotencyKey, timeoutSeconds, bestEffort = false, allowSourcePause = false, dependencyResume = false }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/runs/${encodeURIComponent(runId)}/continue`, {
     method: "POST",
     headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
-    body: JSON.stringify({ idempotency_key: idempotencyKey, source_bundle: sourceBundle,
+    body: JSON.stringify({ idempotency_key: idempotencyKey, source_bundle: sourceBundle, source_context_ref: sourceContextRef,
       lea_status_version: 1, timeout_seconds: Math.ceil(timeoutSeconds),
       best_effort: bestEffort === true, allow_source_pause: allowSourcePause === true,
       dependency_resume: dependencyResume === true }),
@@ -484,7 +484,7 @@ export function startApiContinuation({ fetchImpl, baseUrl, apiKey, runId, source
 }
 
 export function projectDependencyRequest({ fetchImpl, baseUrl, apiKey, projectSlug, dependencyId, action = null, body = {} }) {
-  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(projectSlug)}/dependencies/${encodeURIComponent(dependencyId)}${action ? `/${action}` : ""}`, {
+  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(projectSlug)}/dependencies${dependencyId ? `/${encodeURIComponent(dependencyId)}` : ""}${action ? `/${action}` : ""}`, {
     method: action ? "POST" : "GET", headers: buildHeaders(apiKey, action ? { "Content-Type": "application/json" } : {}),
     ...(action ? { body: JSON.stringify(body) } : {}),
   });
@@ -517,6 +517,7 @@ export async function fetchApiRunUsage({ fetchImpl, baseUrl, apiKey, sessionId, 
   return {
     usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
     costUsd,
+    usageDetails: run.usage_details || { cost_basis: "legacy_estimate" },
     usageStatus: run.usage_status || "unknown",
     usageRevision: Number(run.usage_revision || 0),
     usageUpdatedAt: run.usage_updated_at || null,
@@ -971,12 +972,21 @@ export async function runApiProofJob({
   };
 }
 
-export function fetchCurrentLeaStatus({ fetchImpl, baseUrl, apiKey, formalizationId, sourceIdentityHash, sourceBundleHash }) {
+export function fetchCurrentLeaStatus({ fetchImpl, baseUrl, apiKey, formalizationId, sourceIdentityHash, sourceBundleHash, sourceBundle, coverage = "partial" }) {
+  if (sourceBundle) return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/lea-status/compare`, {
+    method: "POST", headers: buildHeaders(apiKey, { "Content-Type": "application/json" }), body: JSON.stringify({ source_bundle: sourceBundle, coverage })
+  });
   const query = new URLSearchParams();
   if (sourceIdentityHash) query.set("source_identity_hash", sourceIdentityHash);
   if (sourceBundleHash) query.set("source_bundle_hash", sourceBundleHash);
   return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/lea-status?${query}`, {
     method: "GET", headers: buildHeaders(apiKey)
+  });
+}
+
+export function prepareOverleafSource({ fetchImpl, baseUrl, apiKey, formalizationId }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/overleaf-source/prepare`, {
+    method: "POST", headers: buildHeaders(apiKey), signal: AbortSignal.timeout(50000)
   });
 }
 export function fetchLeaStatusHistory({ fetchImpl, baseUrl, apiKey, formalizationId, after }) {

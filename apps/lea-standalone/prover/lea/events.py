@@ -143,6 +143,19 @@ class UsageUpdated:
     input_tokens: int
     output_tokens: int
     cost: float
+    usage_details: dict | None = None
+
+
+@dataclass(frozen=True)
+class DependencyReadinessRequested:
+    """Internal host gate; canonical identity comes from the registry, never prose."""
+    path: str | None
+
+
+@dataclass(frozen=True)
+class DependencyReadinessAck:
+    dependency_ids: list[str] = field(default_factory=list)
+    evidence: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -258,6 +271,8 @@ AgentEvent = (
     | Diagnostic
     | UsageUpdated
     | Compacted
+    | DependencyReadinessRequested
+    | DependencyReadinessAck
     | SubagentStarted
     | SubagentProgress
     | SubagentFinished

@@ -54,6 +54,18 @@ The UI action regression checks live confidence, stale-source labeling, retained
 
 ## Activation and rollout
 
+### 2026-10-10 dependency waits and source freshness
+
+Dependency waits identify their supporting results and actual blockers in the collapsed formalization card, expanded status, and editor popup. **View supporting result** opens the shared mathematics details with the existing Inspect/Retry/Resume controls. **Stop waiting** persists a target-specific stop; **Continue when ready** explicitly re-arms it. An unavailable dependency registry or a blocked continuation offers **Refresh status**. Ordinary checkpoint pauses retain their Resume action. Incomplete reporting is a separate detail; a segment with no assessment does not claim that a published assessment was retained.
+
+The companion reconciles current waiting targets after a verified shared-result retry and after restart. It restores the saved execution point only for the latest eligible attempt, acquires current source through the existing Overleaf handoff, and retains the model and original remaining turn/time/cost allowances. Failed supporting results require an explicit retry. Stopped targets and canceled batches stay stopped unless the author explicitly re-arms the target. Overlapping reconciliation and uncertain admission responses use the durable continuation identity; a stop arriving during admission also stops an already admitted child. Historical batch reports remain snapshots of their original execution.
+
+Browser admission and project inventory now share the version-2 source-bundle builder, including the same surrounding excerpt. `POST /api/formalizations/{id}/lea-status/compare` is a read-only comparison of validated current source against the frozen run bundle, with explicit complete/partial inventory coverage. It ignores capture locations and mirror verification/count metadata, distinguishes target content changes from surrounding project changes, and reports unavailable comparison when evidence scopes differ or inventory is partial. Older frozen bundle/hash values are preserved, including the legacy excerpt truncation marker. A differing evidence hash alone no longer claims that the author edited the source.
+
+Validation passed: all 651 Overleaf tests and 148 adapter regressions covering status, continuation, the dependency library, sessions, and source handoff. Isolated Chrome renders at desktop and narrow pane widths showed no horizontal overflow or browser errors. Proof runs and provider outcomes were mocked; no live proof run was started.
+
+These changes require restarting the adapter and companion and reloading the extension together. This change adds no migration. Keep the relevant Overleaf document open to supply fresh source for an automatic continuation; otherwise the target remains paused with an explanation.
+
 ### 2026-10-07 LeaChat source handoff
 
 A LeaChat turn focused on a specific Overleaf formalization now requests current source before admission. The shared adapter records a short-lived request; the companion relays it over the document's existing SSE stream. Reconnecting extensions pull outstanding requests because the event bus has no replay. The extension downloads a fresh project archive, overlays the active editor buffer, reparses the target and proof association, synchronizes the mirror when enabled, and replies through the companion. Explicit document/target bindings come from validated run origins or tagged-target synchronization; existing runs backfill bindings without guessing from chat text.

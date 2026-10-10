@@ -472,9 +472,10 @@ test("aggregatePaneStatus applies file status precedence", () => {
 });
 
 test("paneProgressBucketForItem maps pane and companion statuses to progress buckets", () => {
-  for (const status of ["valid", "formalized", "defined", "disproved"]) {
+  for (const status of ["valid", "formalized", "defined"]) {
     assert.equal(paneProgressBucketForItem({ status }), "success");
   }
+  assert.equal(paneProgressBucketForItem({ status: "disproved" }), "disproved");
   for (const status of ["stub-generated", "sorry_stub"]) {
     assert.equal(paneProgressBucketForItem({ status }), "sorryStubbed");
   }
@@ -500,6 +501,7 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
   ]), {
     total: 8,
     success: 3,
+    disproved: 0,
     sorryStubbed: 0,
     failed: 1,
     outOfDate: 0,
@@ -518,7 +520,8 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
     { status: "missing-stub" }
   ]), {
     total: 8,
-    success: 6,
+    success: 5,
+    disproved: 1,
     sorryStubbed: 1,
     failed: 0,
     outOfDate: 0,
@@ -533,6 +536,7 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
   ]), {
     total: 3,
     success: 0,
+    disproved: 0,
     sorryStubbed: 2,
     failed: 0,
     outOfDate: 0,
@@ -550,7 +554,7 @@ test("paneProgressSegments returns ordered nonzero segments with percentages", (
     unformalized: 1,
     inProgress: 0
   }).map((segment) => [segment.id, segment.count, segment.percent, segment.title]), [
-    ["success", 6, 75, "Successful: 6 of 8, 75%"],
+    ["success", 6, 75, "Verified: 6 of 8, 75%"],
     ["sorry-stubbed", 1, 12.5, "Sorry-stubbed: 1 of 8, 12.5%"],
     ["unformalized", 1, 12.5, "Unformalized: 1 of 8, 12.5%"]
   ]);
@@ -568,6 +572,21 @@ test("paneProgressSegments returns ordered nonzero segments with percentages", (
   ]);
 });
 
+test("verified proofs and definitions are separate from checked disproofs", () => {
+  const summary = summarizePaneProgress([
+    { status: "defined" },
+    { status: "valid" },
+    { status: "valid" },
+    { status: "disproved" },
+    { status: "valid" }
+  ]);
+  assert.deepEqual(
+    paneProgressSegments(summary).map((segment) => [segment.id, segment.count, segment.percent]),
+    [["success", 4, 80], ["disproved", 1, 20]]
+  );
+  assert.equal(formatPaneProgressLabel("main.tex", summary), "main.tex: 5 Lea items, 4 verified, 1 disproved.");
+});
+
 test("pane progress gives stale items their own out-of-date segment", () => {
   const summary = summarizePaneProgress([
     { status: "valid" },
@@ -582,7 +601,7 @@ test("pane progress gives stale items their own out-of-date segment", () => {
   );
   assert.equal(
     formatPaneProgressLabel("main.tex", summary),
-    "main.tex: 3 Lea items, 1 successful, 1 out of date, 1 unformalized."
+    "main.tex: 3 Lea items, 1 verified, 1 out of date, 1 unformalized."
   );
 });
 
@@ -594,7 +613,7 @@ test("formatPaneProgressLabel omits zero-count buckets and includes running coun
     failed: 1,
     unformalized: 1,
     inProgress: 0
-  }), "main.tex: 8 Lea items, 6 successful, 1 failed, 1 unformalized.");
+  }), "main.tex: 8 Lea items, 6 verified, 1 failed, 1 unformalized.");
 
   assert.equal(formatPaneProgressLabel("analysis.tex", {
     total: 6,
@@ -603,7 +622,7 @@ test("formatPaneProgressLabel omits zero-count buckets and includes running coun
     failed: 0,
     unformalized: 0,
     inProgress: 1
-  }), "analysis.tex: 6 Lea items, 2 successful, 4 sorry-stubbed, 1 in progress.");
+  }), "analysis.tex: 6 Lea items, 2 verified, 4 sorry-stubbed, 1 in progress.");
 });
 
 test("treeAncestorIdsForFile returns expandable folder and file ids", () => {

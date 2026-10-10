@@ -305,7 +305,7 @@ def entries(project: dict, *, repo: Path | None = None, path: str | None = None)
                 import_statement="import " + module_name(project, row["path"]),
                 source_hash=row["source_hash"], environment_hash=row["environment_hash"],
                 build_status=row["build_status"], verify_status=row["verify_status"],
-                verification_detail=row["detail"], reusable=reusable,
+                verification_detail=row["detail"], certified=reusable, reusable=reusable,
                 dependency_id=owner["id"] if owner else None,
                 formalization_id=owner["formalization_id"] if owner else prior["id"] if prior else None,
                 source=json.loads(owner["specification_json"]).get("sources", []) if owner else
@@ -318,8 +318,12 @@ def entries(project: dict, *, repo: Path | None = None, path: str | None = None)
             if owner:
                 spec = json.loads(owner["specification_json"])
                 decl["citation"] = spec.get("citation")
+                # Certification is internal evidence. An owned module remains
+                # unavailable to consumers until its writer publishes it.
+                decl["reusable"] = reusable and owner["state"] == "ready" and not owner["owner_run_id"]
                 if decl["user_name"] == owner["declaration_name"]:
-                    decl["reusable"] = reusable and decl.get("semantic_key") == owner["semantic_key"]
+                    decl["certified"] = reusable and decl.get("semantic_key") == owner["semantic_key"]
+                    decl["reusable"] = decl["reusable"] and decl["certified"]
             result.append(decl)
     return result
 

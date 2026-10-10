@@ -16,7 +16,8 @@
     "site:dev": "node public/serve.mjs --watch",
     "site:build": "node public/build.mjs",
     "site:test": "node --test \"public/tests/*.test.mjs\"",
-    "test": "npm test -w apps/overleaf-extension && npm run test:frontend -w apps/lea-standalone",
+    "test:scripts": "node --test scripts/*.test.mjs",
+    "test": "npm run test:scripts && npm test -w apps/overleaf-extension && npm run test:frontend -w apps/lea-standalone",
     "test:integration": "node --test tests/integration/*.test.mjs"
   }
 }

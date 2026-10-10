@@ -1324,11 +1324,11 @@ test("Lean pane file rows render proportional progress segments", async () => {
         items: [
           { id: "t1", kind: "theorem", label: "t1", status: "valid", sourceFile: "main.tex", documentOrder: 0, naturalLanguageLatex: "A.", leanKind: "theorem" },
           { id: "t2", kind: "theorem", label: "t2", status: "defined", sourceFile: "main.tex", documentOrder: 1, naturalLanguageLatex: "B.", leanKind: "def" },
-          { id: "t3", kind: "theorem", label: "t3", status: "disproved", sourceFile: "main.tex", documentOrder: 2, naturalLanguageLatex: "C.", leanKind: "theorem" },
+          { id: "t3", kind: "theorem", label: "t3", status: "disproved", leanCheck: { status: "checked" }, sourceFile: "main.tex", documentOrder: 2, naturalLanguageLatex: "C.", leanKind: "theorem" },
           { id: "t4", kind: "theorem", label: "t4", status: "stub-generated", sourceFile: "main.tex", documentOrder: 3, naturalLanguageLatex: "D.", leanKind: "theorem" },
           { id: "t5", kind: "theorem", label: "t5", status: "invalid", sourceFile: "main.tex", documentOrder: 4, naturalLanguageLatex: "E.", leanKind: "theorem" },
           { id: "t6", kind: "theorem", label: "t6", status: "missing-stub", sourceFile: "main.tex", documentOrder: 5, naturalLanguageLatex: "F.", leanKind: "theorem", inProgress: true },
-          { id: "t7", kind: "theorem", label: "t7", status: "stale", sourceFile: "main.tex", documentOrder: 6, naturalLanguageLatex: "G.", leanKind: "theorem" },
+          { id: "t7", kind: "theorem", label: "t7", status: "stale", resultKind: "disproved", leanCheck: { status: "checked" }, sourceFile: "main.tex", documentOrder: 6, naturalLanguageLatex: "G.", leanKind: "theorem" },
           { id: "t8", kind: "theorem", label: "t8", status: "unknown", sourceFile: "main.tex", documentOrder: 7, naturalLanguageLatex: "H.", leanKind: "theorem" }
         ],
         diagnostics: []
@@ -1341,10 +1341,11 @@ test("Lean pane file rows render proportional progress segments", async () => {
 
   const [progress] = harness.paneProgresses();
   assert.equal(progress.role, "img");
-  assert.equal(progress.label, "main.tex: 8 Lea items, 3 successful, 1 sorry-stubbed, 1 failed, 1 out of date, 2 unformalized, 1 in progress.");
+  assert.equal(progress.label, "main.tex: 8 Lea items, 2 verified, 1 disproved, 1 sorry-stubbed, 1 failed, 1 out of date, 2 unformalized, 1 in progress.");
   assert.equal(progress.inProgress, true);
   assert.deepEqual(progress.segments.map((segment) => [segment.bucket, segment.count, segment.width]), [
-    ["success", "3", "37.5%"],
+    ["success", "2", "25%"],
+    ["disproved", "1", "12.5%"],
     ["sorry-stubbed", "1", "12.5%"],
     ["failed", "1", "12.5%"],
     ["out-of-date", "1", "12.5%"],
@@ -1352,6 +1353,10 @@ test("Lean pane file rows render proportional progress segments", async () => {
   ]);
 
   harness.clickPaneTreeRowText("main.tex");
+  assert.match(harness.bodyText(), /2 verified · 1 disproved/);
+  assert.match(harness.bodyText(), /Counterexample verified · Claim disproved/);
+  assert.equal(harness.countSelector(".ol-lean-project-check-chip-disproved"), 1);
+  assert.equal(harness.countSelector(".ol-lean-project-item.is-expanded"), 0);
   harness.clickPaneItemHeaderText("t7");
   assert.match(harness.bodyText(), /Out of date.*LaTeX changed after this Lean artifact was generated/i);
 });
@@ -2387,7 +2392,7 @@ test("Formalize all renders an accessible, collapsible queue with active turn pr
   assert.ok(queue, "expected a batch queue card");
   assert.deepEqual(queue.progress, {
     role: "progressbar",
-    label: "Formalize all: 3 of 8 completed.",
+    label: "Formalize all: 3 of 8 processed. 3 verified · 0 disproved · 0 incomplete · 0 failed · 0 skipped",
     min: "0",
     max: "8",
     now: "3"
@@ -2652,13 +2657,13 @@ test("stopping a batch preserves a completed race winner and reports stopped ite
   await flushPromises();
 
   let queue = harness.batchQueue();
-  assert.match(queue.text, /Formalize allStopped1 complete · 3 stopped/);
+  assert.match(queue.text, /Formalize allStopped1 verified · 0 disproved · 0 incomplete · 0 failed · 0 skipped · 3 stopped/);
   assert.deepEqual(queue.progress, {
     role: "progressbar",
-    label: "Formalize all: 1 of 4 completed, 3 stopped.",
+    label: "Formalize all: 4 of 4 processed. 1 verified · 0 disproved · 0 incomplete · 0 failed · 0 skipped · 3 stopped",
     min: "0",
     max: "4",
-    now: "1"
+    now: "4"
   });
   assert.deepEqual(queue.progressSegments, ["success", "canceled", "canceled", "canceled"]);
   assert.match(queue.text, /stop_t2stopped\./);
@@ -4348,6 +4353,52 @@ test("round 2: a dependent skipped as busy during the save joins 'Repair all' on
 });
 
 
+test("dependency wait explains the named blocker before expansion and exposes working recovery controls", async () => {
+  const item = { id: "waiting-target", formalizationId: "waiting-form", kind: "theorem", label: "target", title: "Target theorem",
+    status: "paused", sourceFile: "main.tex", sourceStartLine: 1, sourceEndLine: 3, naturalLanguageLatex: "True.",
+    leanKind: "theorem", apiRunId: "waiting-run", stopReason: "dependency_wait", waitingForDependencies: ["L"],
+    dependencies: [{ id: "L", ready: false, state: "failed", specification: { name: "Separation lemma", signature: ": True" },
+      blocker: { detail: "An assumption is missing." } }],
+    leaStatus: { assessment: null, freshness: "unknown", reporting_incomplete: true,
+      activity: { status: "cancelled", stop_reason: "dependency_wait" }, run_id: "waiting-run" } };
+  const harness = createContentHarness({ status: "paused", ...item }, {}, {
+    manifest: { ok: true, rootFile: "main.tex", items: [item], diagnostics: [] }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickPaneTreeRowText("main.tex");
+  assert.match(harness.bodyText(), /Separation lemma needs attention.*An assumption is missing/);
+  assert.equal(harness.hasButtonText("Resume"), false);
+  harness.clickButtonText("View supporting result");
+  await flushPromises();
+  assert.equal(harness.countSelector(".ol-lean-live-status"), 1);
+  assert.equal(harness.hasButtonText("Retry shared result"), true);
+  assert.match(harness.bodyText(), /Assessment pending while supporting results are resolved/);
+  assert.doesNotMatch(harness.bodyText(), /last published update.*retained|Source evidence changed|dependency wait/);
+  harness.clickButtonText("Stop waiting");
+  await flushPromises();
+  const request = harness.fetchCalls.find(call => call.url.endsWith("/lean-pane/dependencies/wait"));
+  assert.deepEqual(JSON.parse(request.options.body), { overleafProjectId: "project-1", runId: "waiting-run", action: "stop" });
+});
+
+test("a stopped dependency wait offers Continue when ready in the pane and editor popup", async () => {
+  const status = { status: "paused", apiRunId: "waiting-run", stopReason: "dependency_wait",
+    waitingForDependencies: ["L"], autoResumeEnabled: false,
+    dependencyWait: { state: "stopped", autoResume: false, message: "Automatic continuation is stopped." } };
+  const harness = createContentHarness(status, {}, { manifest: { ok: true, rootFile: "main.tex", diagnostics: [], items: [{
+    ...status, id: "waiting-target", kind: "theorem", label: "target", sourceFile: "main.tex", naturalLanguageLatex: "True." }] } });
+  await harness.loadStatusForVisibleTheorem();
+  harness.openTargetPopover();
+  await flushPromises();
+  assert.equal(harness.hasButtonText("Continue when ready"), true);
+  assert.equal(harness.hasButtonText("Resume"), false);
+  harness.clickButtonText("Continue when ready");
+  await flushPromises();
+  const request = harness.fetchCalls.find(call => call.url.endsWith("/lean-pane/dependencies/wait"));
+  assert.equal(JSON.parse(request.options.body).action, "continue");
+});
+
 test("live Lea Status renders ongoing findings, history and Pause even for stale source", async () => {
   const assessment = { confidence: "high", scope: "partial_artifact", summary: "Main step checked; boundary case remains.",
     confidence_reason: "The approach is preserved.", findings: [{ key: "boundary", severity: "warning", title: "Omitted boundary case",
@@ -4366,7 +4417,7 @@ test("live Lea Status renders ongoing findings, history and Pause even for stale
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
-  assert.match(harness.bodyText(), /High confidence · Source issue · Last assessed version/);
+  assert.match(harness.bodyText(), /High confidence · Partial artifact · Source issue · Source changed · Last assessed version/);
   harness.clickFirstPaneItem();
   assert.match(harness.bodyText(), /Main step checked; boundary case remains/);
   assert.match(harness.bodyText(), /Source issue: open/);

@@ -1085,6 +1085,7 @@ interface UsageGlobals {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  usage_details?: import("./types").UsageDetails | null;
   cost_usd: number;
   incomplete_usage_runs?: number;
   unconfirmed_usage_runs?: number;
@@ -1099,6 +1100,7 @@ interface UsageDay {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  usage_details?: import("./types").UsageDetails | null;
   cost_usd: number;
   run_count: number;
   session_count: number;
@@ -1110,6 +1112,7 @@ interface UsageModelRow {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  usage_details?: import("./types").UsageDetails | null;
   cost_usd: number;
   run_count: number;
   session_count: number;
@@ -1123,6 +1126,7 @@ interface UsageOriginRow {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  usage_details?: import("./types").UsageDetails | null;
   cost_usd: number;
 }
 

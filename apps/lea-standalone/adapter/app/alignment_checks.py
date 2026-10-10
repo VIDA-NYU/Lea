@@ -71,6 +71,7 @@ def public(check: dict | None, *, current: bool) -> dict:
                 "input_tokens": check.get("input_tokens", 0),
                 "output_tokens": check.get("output_tokens", 0),
                 "cost_usd": check.get("cost_usd", 0.0),
+                "usage_details": check.get("usage_details"),
             },
             "created_at": check.get("created_at"),
             "completed_at": check.get("completed_at"),

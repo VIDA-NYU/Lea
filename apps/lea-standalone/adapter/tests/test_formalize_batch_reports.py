@@ -63,7 +63,7 @@ def test_captures_settled_facts_and_exact_run_status(tmp_path, monkeypatch):
     assert created
     assert report["facts"]["counts"] == {
         "verified": 1, "verifiedProofs": 1, "verifiedDefinitions": 0,
-        "disproved": 1, "needsReview": 0, "failed": 1, "alreadyVerified": 1,
+        "disproved": 1, "incomplete": 0, "needsReview": 0, "failed": 1, "alreadyVerified": 1,
         "dependencySkipped": 1, "spendCapSkipped": 1, "otherSkipped": 0, "stopped": 1,
     }
     first = report["facts"]["items"][0]
@@ -109,14 +109,16 @@ def test_shared_results_do_not_inflate_document_totals_or_reprove_old_results(tm
     seed(tmp_path, monkeypatch)
     data = payload()
     data["dependencies"] = [{"id": "old", "started_here": False}, {"id": "new", "started_here": True}]
+    with db.connect() as conn:
+        conn.execute("insert into runs(id,session_id,project_id,status,model,created_at,updated_at) values ('r-old','s-one','p-one','completed','test','t','t')")
     monkeypatch.setattr(project_dependencies, "get", lambda key: dict(id=key, project_id="p-one", ready=True,
         state="ready", source_hash="source", path=f"Shared/{key}.lean", module_name=f"Lea.one.Shared.{key}",
         declaration_name=f"Lea.one.{key}", blocker=None, requesting_targets=["f-one"],
-        attempts=[{"run_id": "r-one"}], specification={"name": key, "statement": "True", "sources": []}))
+        attempts=[{"run_id": "worker", "state": "ready", "initiating_run_id": "r-one" if key == "new" else "r-old"}], specification={"name": key, "statement": "True", "sources": []}))
     report, _ = reports.create("project-one", data)
     assert report["facts"]["total"] == 7
     assert report["facts"]["counts"]["verifiedProofs"] == 1
-    assert report["facts"]["dependencyCounts"] == {"newlyProved": 1, "reused": 1, "blocked": 0}
+    assert report["facts"]["dependencyCounts"] == {"newlyProved": 1, "reused": 1, "blocked": 0, "unknownOrigin": 0}
     assert report["facts"]["dependencies"][0]["newlyProved"] is False
     assert report["facts"]["dependencies"][0]["targets"] == ["target"]
 
@@ -134,6 +136,49 @@ def test_history_cursor_handles_same_completion_time(tmp_path, monkeypatch):
     older = reports.list_reports("project-one", limit=1, before=page["nextCursor"])
     assert older["reports"][0]["batch_id"] == "formalize-batch-1"
     assert older["nextCursor"] is None
+
+
+def test_incomplete_diagnostics_and_latest_outcomes_preserve_saved_facts(tmp_path, monkeypatch):
+    seed(tmp_path, monkeypatch)
+    data = payload()
+    data["items"][0].update(state="incomplete", reason="dependency_wait", detail="Awaiting final shared certification.", recoverable=True)
+    data["items"][1]["reason"] = "depends_on_incomplete:target"
+    first, _ = reports.create("project-one", data)
+    assert first["facts"]["counts"]["incomplete"] == 1
+    assert first["facts"]["counts"]["dependencySkipped"] == 1
+    outcome = reports.latest_target_outcomes("p-one")[("theorem", "target")]
+    assert outcome["detail"] == "Awaiting final shared certification."
+    assert outcome["recoverable"] is True
+    newer = payload()
+    newer.update(batchId="formalize-batch-2", finishedAt="2026-01-02T00:01:00Z")
+    reports.create("project-one", newer)
+    assert reports.latest_target_outcomes("p-one")[("theorem", "target")]["state"] == "formalized"
+    assert reports.get("project-one", data["batchId"])["facts"] == first["facts"]
+
+
+def test_nested_and_continuation_provenance_and_unknown_legacy_origin(tmp_path, monkeypatch):
+    from app import project_dependencies
+    seed(tmp_path, monkeypatch)
+    with db.connect() as conn:
+        for run_id, parent, dependency in (("worker-one", None, "shared"), ("worker-two", "worker-one", "shared"),
+                ("nested", None, "nested-shared"), ("document-continuation", "r-one", None), ("outside", None, None)):
+            conn.execute("insert into runs(id,session_id,project_id,status,model,resumes_run_id,dependency_id,created_at,updated_at) values (?,'s-one','p-one','proved','test',?,?, 't','t')", (run_id, parent, dependency))
+        for dependency, run_id, initiator in (("shared", "worker-two", "r-one"), ("nested-shared", "nested", "worker-one")):
+            conn.execute("insert into project_dependency_attempts(dependency_id,generation,run_id,initiating_run_id,state,created_at,updated_at) values (?,1,?,?,'ready','t','t')", (dependency, run_id, initiator))
+    assert reports._document_origin("document-continuation") == "r-one"
+    assert reports._document_origin("nested") == "r-one"
+    data = payload()
+    # Transient flags deliberately disagree with the durable attempt records.
+    data["dependencies"] = [{"id": "new", "started_here": False}, {"id": "external", "started_here": True}, {"id": "legacy", "started_here": True}]
+    monkeypatch.setattr(project_dependencies, "get", lambda key: dict(id=key, project_id="p-one", ready=True,
+        state="ready", source_hash="source", path=f"Shared/{key}.lean", module_name=f"Lea.one.Shared.{key}",
+        declaration_name=f"Lea.one.{key}", blocker=None, requesting_targets=["f-one"],
+        attempts=[{"state": "ready", "initiating_run_id": {"new": "nested", "external": "outside"}.get(key)}],
+        specification={"name": key, "statement": "True", "sources": []}))
+    report, _ = reports.create("project-one", data)
+    assert report["facts"]["dependencyCounts"] == dict(newlyProved=1, reused=1, unknownOrigin=1, blocked=0)
+    assert report["facts"]["dependencies"][2]["origin"] == "unknown"
+    assert report["facts"]["dependencies"][2]["reused"] is False
 
 
 def test_verified_proofs_and_definitions_are_separate():

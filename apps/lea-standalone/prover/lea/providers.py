@@ -8,6 +8,7 @@ from there to whatever provider the model name selects (`gemini/…`,
 """
 
 import json
+import math
 import os
 import sys
 from dataclasses import dataclass, field
@@ -15,11 +16,24 @@ from typing import Any
 
 import litellm
 
+from .usage import merge_details, legacy_details
+
 
 @dataclass
 class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
+    usage_details: dict | None = field(default=None, compare=False)
+    raw_usages: list[dict] = field(default_factory=list, compare=False, repr=False)
+
+    def add(self, other: "Usage") -> None:
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens
+        details = other.usage_details
+        if details is None and (other.input_tokens or other.output_tokens):
+            details = legacy_details()
+        self.usage_details = merge_details(self.usage_details, details)
+        self.raw_usages.extend(other.raw_usages)
 
 
 @dataclass
@@ -48,6 +62,16 @@ class Done:
     # the next turn.  They stay internal to Lea's transcript and are never exposed
     # as assistant text.
     reasoning_items: list[dict[str, Any]] = field(default_factory=list)
+    usage_details: dict | None = None
+    raw_usage: dict | None = None
+
+    def __post_init__(self):
+        if self.raw_usage is not None:
+            self.usage.raw_usages.append(self.raw_usage)
+        if self.usage_details is not None:
+            self.usage.usage_details = self.usage_details
+        else:
+            self.usage_details = self.usage.usage_details
 
 
 _WARNED_MODELS: set[str] = set()
@@ -199,20 +223,112 @@ def _merge_reasoning_items(target: dict[str, dict[str, Any]], items: Any) -> Non
             target[normalized["id"]] = normalized
 
 
-def _compute_cost(model: str, usage: Usage) -> float:
-    """Cost via LiteLLM; falls back to 0.0 (with a one-time warning) for unmapped models."""
+def _plain(value):
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if hasattr(value, "model_dump"):
+        return value.model_dump(exclude_none=True)
+    if hasattr(value, "__dict__"):
+        return {k: _plain(v) for k, v in vars(value).items() if not k.startswith("_")}
+    return value
+
+
+def _normalized_usage(raw: dict) -> Usage:
+    # LiteLLM prompt_tokens is already inclusive (including Anthropic cache
+    # reads/writes). Native Anthropic input_tokens excludes those cache tokens.
+    prompt = raw.get("prompt_tokens_details") or raw.get("input_tokens_details") or {}
+    output = raw.get("completion_tokens_details") or raw.get("output_tokens_details") or {}
+    cached = prompt.get("cached_tokens", raw.get("cache_read_input_tokens"))
+    written = prompt.get("cache_creation_tokens", prompt.get("cache_write_tokens",
+                         raw.get("cache_creation_input_tokens")))
+    creation = prompt.get("cache_creation_token_details") or raw.get("cache_creation")
+    if written is None and creation:
+        written = sum(v or 0 for v in creation.values())
+    input_tokens = raw.get("prompt_tokens")
+    if input_tokens is None:
+        input_tokens = raw.get("input_tokens", 0) or 0
+        if any(key in raw for key in ("cache_read_input_tokens", "cache_creation_input_tokens", "cache_creation")):
+            input_tokens += (cached or 0) + (written or 0)
+    output_tokens = raw.get("completion_tokens", raw.get("output_tokens", 0)) or 0
+    reasoning = output.get("reasoning_tokens", raw.get("reasoning_tokens"))
+    details = {"version": 1, "cached_input_tokens": cached,
+               "cache_write_tokens": written, "reasoning_tokens": reasoning,
+               "details_missing_calls": int(not prompt and cached is None and written is None)}
+    return Usage(int(input_tokens or 0), int(output_tokens), details)
+
+
+def _terminal_done(model: str, response: dict, reasoning_items: list) -> Done:
+    raw = response.get("usage") or {}
+    usage = _normalized_usage(raw)
+    details = usage.usage_details
+    response_model = response.get("model") or _litellm_model(model)
+    details.update(response_model=response_model, service_tier=response.get("service_tier"))
+    cost = None
+    # A provider/proxy's explicit charge takes precedence over estimated pricing.
+    hidden = response.get("_hidden_params") or {}
+    headers = hidden.get("additional_headers") or {}
+    reported = headers.get("llm_provider-x-litellm-response-cost")
+    if reported is None:
+        reported = raw.get("cost", response.get("usage_cost"))
     try:
-        prompt_cost, completion_cost = litellm.cost_per_token(
-            model=model,
-            prompt_tokens=usage.input_tokens,
-            completion_tokens=usage.output_tokens,
-        )
-        return (prompt_cost or 0.0) + (completion_cost or 0.0)
+        if reported is not None:
+            cost = float(reported)
+            if not math.isfinite(cost) or cost < 0:
+                raise ValueError("negative reported cost")
+            basis = "provider_reported"
+        elif raw:
+            # Keep the full response: cache TTLs, response model, regional and
+            # service-tier metadata all affect provider-specific calculations.
+            normalized = dict(raw, prompt_tokens=usage.input_tokens, completion_tokens=usage.output_tokens)
+            # Remove native aliases after normalization; otherwise LiteLLM
+            # identifies this as Responses usage and normalizes it a second time.
+            normalized.pop("input_tokens", None)
+            normalized.pop("output_tokens", None)
+            normalized.pop("input_tokens_details", None)
+            normalized.pop("output_tokens_details", None)
+            prompt_details = dict(raw.get("prompt_tokens_details") or raw.get("input_tokens_details") or {})
+            if raw.get("cache_creation") and not prompt_details.get("cache_creation_token_details"):
+                prompt_details["cache_creation_token_details"] = raw["cache_creation"]
+            if details["cached_input_tokens"] is not None:
+                prompt_details["cached_tokens"] = details["cached_input_tokens"]
+            if details["cache_write_tokens"] is not None:
+                prompt_details["cache_creation_tokens"] = details["cache_write_tokens"]
+            if prompt_details:
+                normalized["prompt_tokens_details"] = prompt_details
+            output_details = raw.get("completion_tokens_details") or raw.get("output_tokens_details")
+            if output_details:
+                normalized["completion_tokens_details"] = output_details
+            cost_response = dict(response, model=response_model, usage=normalized)
+            full_response = litellm.ModelResponse(**cost_response)
+            full_response._hidden_params.update(hidden)
+            cost = litellm.completion_cost(completion_response=full_response,
+                                          model=_litellm_model(model))
+            if cost is None or not math.isfinite(cost) or cost < 0:
+                raise ValueError("no valid pricing returned")
+            basis = "cache_aware_estimate"
+        else:
+            basis = "unavailable"
     except Exception as e:
+        basis = "unavailable"
+        cost = None
         if model not in _WARNED_MODELS:
             _WARNED_MODELS.add(model)
-            print(f"[lea] cost unavailable for model '{model}' ({e}); reporting $0.00", file=sys.stderr)
-        return 0.0
+            print(f"[lea] pricing unavailable for '{model}': {e}", file=sys.stderr)
+    details.update(cost_basis=basis, basis_counts={basis: 1},
+                   unpriced_calls=int(basis == "unavailable"))
+    # Float totals retain their historical contract. Metadata explicitly marks
+    # unavailable charges; consumers must not present this placeholder as free.
+    return Done(usage, float(cost or 0), reasoning_items, details, raw)
+
+
+def _response_metadata(response) -> dict:
+    raw = _plain(response) or {}
+    hidden = getattr(response, "_hidden_params", None)
+    if hidden:
+        raw["_hidden_params"] = _plain(hidden)
+    return raw
 
 
 def _api_key_kwargs(model: str) -> dict:
@@ -252,7 +368,7 @@ def stream(model: str, system: str, messages: list, tools: list,
 
 def _stream_streaming(model: str, call: dict):
     """Streaming path: parse chunk deltas into events as they arrive."""
-    usage = Usage()
+    terminal = {}
     tool_calls_acc: dict[int, dict] = {}  # index -> {id, name, args_json}
     reasoning_items: dict[str, dict[str, Any]] = {}
 
@@ -266,9 +382,12 @@ def _stream_streaming(model: str, call: dict):
 
     response = litellm.completion(stream=True, stream_options={"include_usage": True}, **call)
     for chunk in response:
+        metadata = _response_metadata(chunk)
+        for key in ("model", "service_tier", "_hidden_params", "usage_cost"):
+            if metadata.get(key) is not None:
+                terminal[key] = metadata[key]
         if getattr(chunk, "usage", None):
-            usage.input_tokens = chunk.usage.prompt_tokens or 0
-            usage.output_tokens = chunk.usage.completion_tokens or 0
+            terminal["usage"] = metadata["usage"]
 
         if not chunk.choices:
             continue
@@ -296,7 +415,7 @@ def _stream_streaming(model: str, call: dict):
 
     # Flush any tool calls a provider left without a "tool_calls" finish_reason.
     yield from flush_tool_calls()
-    yield Done(usage, _compute_cost(model, usage), list(reasoning_items.values()))
+    yield _terminal_done(model, terminal, list(reasoning_items.values()))
 
 
 def _stream_blocking(model: str, call: dict):
@@ -314,6 +433,4 @@ def _stream_blocking(model: str, call: dict):
         yield ToolCall(tc.function.name, args)
         yield _ToolMeta(tc.id)
 
-    u = getattr(response, "usage", None)
-    usage = Usage(getattr(u, "prompt_tokens", 0) or 0, getattr(u, "completion_tokens", 0) or 0) if u else Usage()
-    yield Done(usage, _compute_cost(model, usage), list(reasoning_items.values()))
+    yield _terminal_done(model, _response_metadata(response), list(reasoning_items.values()))

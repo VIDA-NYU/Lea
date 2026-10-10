@@ -32,6 +32,7 @@ export const hashLeanPaneSource = hashTargetText;
 export function buildLeanPaneManifest({
   overleafProjectId = "unknown",
   files = [],
+  mirror = null,
   resolveGeneratedItems = null
 } = {}) {
   const normalizedFiles = normalizeFiles(files);
@@ -98,7 +99,9 @@ export function buildLeanPaneManifest({
     items: proofSources.targets.map((item) => {
       const sourceBundle = buildFormalizationSourceBundle(item, {
         targetContext: item.targetContext,
-        targetUses: item.targetUses
+        targetUses: item.targetUses,
+        files: normalizedFiles,
+        mirror
       });
       return {
         ...item,

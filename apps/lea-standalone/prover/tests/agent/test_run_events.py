@@ -421,7 +421,7 @@ def test_final_gate_failed_check_resumes_loop():
     check("failed gate resumed the model loop", calls["n"] == 4)
     saw_failure_prompt = any(
         isinstance(message.get("content"), str)
-        and "final verification gate failed" in message["content"]
+        and "final verification requirement is unmet" in message["content"]
         and "No goals to be solved" in message["content"]
         for message in calls["messages"][2]
     )

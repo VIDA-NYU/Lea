@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from . import usage_details as usage_metadata
+
 import hashlib
 import json
 import re
@@ -339,6 +341,16 @@ def _list_sessions(
         )
         data["active_run_count"] = active_run_count
         sessions.append(_normalize_usage_session(data))
+    if sessions:
+        ids = [item["id"] for item in sessions]
+        with connect() as conn:
+            marks = ",".join("?" for _ in ids)
+            detail_rows = conn.execute(f"select session_id,input_tokens,output_tokens,cost_usd,usage_details_json from runs where session_id in ({marks}) union all select session_id,input_tokens,output_tokens,cost_usd,usage_details_json from alignment_checks where session_id in ({marks})", (*ids, *ids)).fetchall()
+        grouped = {}
+        for r in detail_rows:
+            grouped.setdefault(r["session_id"], []).append(r)
+        for item in sessions:
+            item["usage_details"] = usage_metadata.aggregate(grouped.get(item["id"], []))
     target_ids = list({fid for fid in status_targets if fid})
     if target_ids:
         from . import formalizations as formalization_service
@@ -729,6 +741,7 @@ def create_run_bundle(
     continuation_best_effort: bool = False,
     deadline_at: str | None = None,
     dependency_id: str | None = None,
+    initiating_run_id: str | None = None,
     automation_budget: dict | None = None,
 ) -> dict:
     """Atomically create/resolve the conversation scope, run, and user message."""
@@ -910,7 +923,7 @@ def create_run_bundle(
         run_id = str(uuid4())
         if dependency_id:
             from .project_dependencies import admit_worker
-            admit_worker(conn, dependency_id, project_id, run_id, resumes_run_id)
+            admit_worker(conn, dependency_id, project_id, run_id, resumes_run_id, initiating_run_id)
         if resumes_run_id:
             conn.execute("""update project_dependencies set owner_run_id=?,state='inline',updated_at=?
                 where owner_run_id=? and state='waiting'""", (run_id, now, resumes_run_id))
@@ -2352,6 +2365,7 @@ def update_run(
     stop_reason: str | None = None,
     recoverable: bool | None = None,
     usage_status: str | None = None,
+    usage_details: dict | None = None,
 ) -> None:
     now = utc_now()
     if result_detail:
@@ -2370,6 +2384,7 @@ def update_run(
                 output_tokens = coalesce(?, output_tokens),
                 cost_usd = coalesce(?, cost_usd),
                 usage_status = coalesce(?, usage_status),
+                usage_details_json = coalesce(?, usage_details_json),
                 usage_updated_at = case when ? is not null then ? else usage_updated_at end,
                 updated_at = ?
             where id = ?
@@ -2377,7 +2392,7 @@ def update_run(
             (
                 status, final_text, result_kind, result_detail, stop_reason,
                 None if recoverable is None else (1 if recoverable else 0),
-                input_tokens, output_tokens, cost_usd, usage_status,
+                input_tokens, output_tokens, cost_usd, usage_status, usage_metadata.encode(usage_details),
                 usage_status, now, now, run_id,
             ),
         )
@@ -2400,15 +2415,15 @@ def record_stop_request(run_id: str, reason: str, source: str) -> dict | None:
 
 
 def checkpoint_run_usage(run_id: str, input_tokens: int, output_tokens: int,
-                         cost_usd: float, revision: int) -> bool:
+                         cost_usd: float, revision: int, usage_details: dict | None = None) -> bool:
     """Replace one run's cumulative observation; stale checkpoints cannot regress it."""
     now = utc_now()
     with connect() as conn:
         cursor = conn.execute("""update runs set input_tokens = ?, output_tokens = ?,
-                    cost_usd = ?, usage_status = 'partial', usage_revision = ?,
+                    cost_usd = ?, usage_status = 'partial', usage_revision = ?, usage_details_json = ?,
                     usage_updated_at = ?, updated_at = ?
                     where id = ? and status = 'running' and usage_revision < ?""",
-                    (input_tokens, output_tokens, cost_usd, revision, now, now, run_id, revision))
+                    (input_tokens, output_tokens, cost_usd, revision, usage_metadata.encode(usage_details), now, now, run_id, revision))
     if cursor.rowcount:
         _bump_sessions_changed()
     return cursor.rowcount > 0
@@ -2420,6 +2435,48 @@ def mark_run_usage_unknown(run_id: str) -> None:
         conn.execute("""update runs set usage_status = case
                     when usage_revision > 0 then 'partial' else 'unknown' end
                     where id = ? and usage_status != 'final'""", (run_id,))
+
+
+def begin_auxiliary_invocation(run_id: str, name: str, model: str) -> str:
+    """Journal a tool-free auxiliary call against its existing run."""
+    action, attempt, now = str(uuid4()), str(uuid4()), utc_now()
+    with write() as conn:
+        conn.execute("insert into run_attempts(id,run_id,runtime_id,started_at,outcome) values (?,?,?,?,?)",
+                     (attempt, run_id, "auxiliary", now, name))
+        conn.execute("""insert into run_invocations(id,run_id,attempt_id,kind,name,turn,input_json,started_at)
+                        values (?,?,?,'model_auxiliary',?,0,?,?)""",
+                     (action, run_id, attempt, name, json.dumps({"model": model}), now))
+    return action
+
+
+def finish_auxiliary_invocation(action: str, usage, cost: float) -> None:
+    """Atomically retain raw usage and add this charge exactly once."""
+    now = utc_now()
+    with write() as conn:
+        invocation = conn.execute("select * from run_invocations where id=?", (action,)).fetchone()
+        if not invocation or invocation["completed_at"]:
+            return
+        run = conn.execute("select * from runs where id=?", (invocation["run_id"],)).fetchone()
+        details = usage_metadata.aggregate([run])
+        details = usage_metadata.merge_details(details, usage.usage_details)
+        result = {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
+                  "cost_usd": cost, "usage_details": usage.usage_details, "raw_usage": usage.raw_usages}
+        conn.execute("update run_invocations set result_json=?,completed_at=? where id=?",
+                     (json.dumps(result), now, action))
+        conn.execute("update run_attempts set ended_at=? where id=?", (now, invocation["attempt_id"]))
+        conn.execute("""update runs set input_tokens=input_tokens+?,output_tokens=output_tokens+?,
+                      cost_usd=cost_usd+?,usage_details_json=?,usage_revision=usage_revision+1,
+                      usage_updated_at=? where id=?""",
+                     (usage.input_tokens, usage.output_tokens, cost, usage_metadata.encode(details), now, run["id"]))
+        if usage.input_tokens or usage.output_tokens or cost or usage.usage_details:
+            ordinal = conn.execute("select coalesce(max(ordinal),0)+1 from run_usage_breakdown where run_id=?", (run["id"],)).fetchone()[0]
+            number = conn.execute("select count(*) from runs where session_id=? and created_at<=?", (run["session_id"], run["created_at"])).fetchone()[0]
+            conn.execute("""insert into run_usage_breakdown(id,session_id,run_id,run_number,ordinal,phase,label,
+                         input_tokens,output_tokens,cost_usd,event_count,created_at,usage_details_json)
+                         values (?,?,?,?,?,'compaction','Manual compaction',?,?,?,1,?,?)""",
+                         (str(uuid4()), run["session_id"], run["id"], number, ordinal, usage.input_tokens,
+                          usage.output_tokens, cost, now, usage_metadata.encode(usage.usage_details)))
+    _bump_sessions_changed()
 
 
 def fail_pending_run(run_id: str, detail: str) -> bool:
@@ -2862,7 +2919,7 @@ def get_run_status(run_id: str) -> dict | None:
         row = conn.execute(
             """select id, status, result_kind, result_detail, stop_reason,
                       stop_requested_reason, stop_requested_at, stop_requested_by,
-                      recoverable, input_tokens, output_tokens, cost_usd,
+                      recoverable, input_tokens, output_tokens, cost_usd, usage_details_json,
                       usage_status, usage_revision, usage_updated_at,
                       attempt_id, recovery_state, recovery_reason, recovery_count,
                       checkpoint_at, deadline_at, resumes_run_id, resume_checkpoint_id,
@@ -2871,7 +2928,7 @@ def get_run_status(run_id: str) -> dict | None:
                from runs where id = ?""",
             (run_id,),
         ).fetchone()
-    return run_detail(row_to_dict(row)) if row else None
+    return usage_metadata.decode(run_detail(row_to_dict(row))) if row else None
 
 
 def list_runs_by_status(status: str) -> list[dict]:
@@ -3933,9 +3990,9 @@ def replace_run_usage_breakdown(run_id: str, rows: list[dict[str, Any]]) -> None
                 """
                 insert into run_usage_breakdown (
                     id, session_id, run_id, run_number, ordinal, phase, label, turn, candidate,
-                    input_tokens, output_tokens, cost_usd, event_count, created_at
+                    input_tokens, output_tokens, cost_usd, event_count, created_at, usage_details_json
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(row.get("id") or uuid4()),
@@ -3952,6 +4009,7 @@ def replace_run_usage_breakdown(run_id: str, rows: list[dict[str, Any]]) -> None
                     float(row.get("cost_usd") or 0),
                     int(row.get("event_count") or 0),
                     str(row.get("created_at") or now),
+                    usage_metadata.encode(row.get("usage_details")),
                 ),
             )
 
@@ -4037,9 +4095,9 @@ def session_detail(session_id: str) -> dict | None:
         # by the Phase 1 integration harness, PLAN-system-hardening).
         runs = conn.execute(
             "select id, status, result_kind, result_detail,"
-            " input_tokens, output_tokens, cost_usd, focus_formalization_id,"
+            " input_tokens, output_tokens, cost_usd, usage_details_json, focus_formalization_id,"
             " focus_source_hash, attempt_id, recovery_state, recovery_reason, checkpoint_at, resumes_run_id,"
-            " session_id, purpose, recoverable, stop_reason, created_at"
+            " session_id, purpose, recoverable, stop_reason, created_at, client_request_id"
             " from runs where session_id = ? order by created_at asc, id asc",
             (session_id,),
         ).fetchall()
@@ -4050,7 +4108,7 @@ def session_detail(session_id: str) -> dict | None:
                 (session["project_id"],),
             ).fetchone()
     from .recovery import available_action
-    runs = [{**run_detail(dict(r)), "available_recovery_action": available_action(dict(r))} for r in runs]
+    runs = [{**usage_metadata.decode(run_detail(dict(r))), "available_recovery_action": available_action(dict(r))} for r in runs]
     # Split back into the two lists the API exposes. Code rows carry their content
     # already — a read no longer needs a second store to be reachable, so there is
     # no separate hydrate step that can silently come back empty.
@@ -4069,6 +4127,9 @@ def session_detail(session_id: str) -> dict | None:
             "duration_seconds": _duration_seconds(session["created_at"], session["updated_at"]),
         }
     )
+    with connect() as conn:
+        detail_rows = conn.execute("select input_tokens,output_tokens,cost_usd,usage_details_json from runs where session_id=? union all select input_tokens,output_tokens,cost_usd,usage_details_json from alignment_checks where session_id=?", (session_id, session_id)).fetchall()
+    usage["usage_details"] = usage_metadata.aggregate(detail_rows)
     # working-copy verdict, derived from the latest *real* code_step (asc by seq).
     # Scratch/probe files (exact?/apply? scratchpads) are excluded so a session is
     # only 'ok' when an actual proof compiles, not when a throwaway probe does (M14).
@@ -4230,6 +4291,7 @@ def global_usage() -> dict:
                 (select count(*) from runs where usage_status is null or usage_status = 'unknown') as unconfirmed_usage_runs
             """
         ).fetchone()
+        details = usage_metadata.aggregate(conn.execute("select input_tokens,output_tokens,cost_usd,usage_details_json from runs union all select input_tokens,output_tokens,cost_usd,usage_details_json from alignment_checks union all select input_tokens,output_tokens,cost_usd,usage_details_json from formalize_batch_reports").fetchall())
     data = row_to_dict(row)
     session_count = int(data["session_count"] or 0)
     message_count = int(data["message_count"] or 0)
@@ -4244,6 +4306,7 @@ def global_usage() -> dict:
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
         "cost_usd": cost_usd,
+        "usage_details": details,
         "incomplete_usage_runs": int(data["incomplete_usage_runs"] or 0),
         "unconfirmed_usage_runs": int(data["unconfirmed_usage_runs"] or 0),
         "average_tokens_per_session": round(total_tokens / session_count) if session_count else 0,
@@ -4305,6 +4368,18 @@ def usage_stats() -> dict:
             """
         ).fetchall()
 
+        detail_rows = conn.execute("select model,updated_at,input_tokens,output_tokens,cost_usd,usage_details_json from runs union all select model,updated_at,input_tokens,output_tokens,cost_usd,usage_details_json from alignment_checks union all select model,updated_at,input_tokens,output_tokens,cost_usd,usage_details_json from formalize_batch_reports where attempts>0").fetchall()
+    by_model, by_day = {}, {}
+    for r in detail_rows:
+        by_model.setdefault(r["model"], []).append(r)
+        by_day.setdefault(str(r["updated_at"])[:10], []).append(r)
+    daily = [_normalize_usage_day(row_to_dict(row)) for row in daily_rows]
+    models = [_normalize_usage_model(row_to_dict(row)) for row in model_rows]
+    for row in daily:
+        row["usage_details"] = usage_metadata.aggregate(by_day.get(row["day"], []))
+    for row in models:
+        row["usage_details"] = usage_metadata.aggregate(by_model.get(row["model"], []))
+
     return {
         "sessions": sessions,
         "origins": _origin_rollup(),
@@ -4312,8 +4387,8 @@ def usage_stats() -> dict:
         "alignment": alignment_usage(),
         "formalize_batch_reports": formalize_batch_report_usage(),
         "project_report_usage": project_report_usage(),
-        "daily": [_normalize_usage_day(row_to_dict(row)) for row in daily_rows],
-        "models": [_normalize_usage_model(row_to_dict(row)) for row in model_rows],
+        "daily": daily,
+        "models": models,
     }
 
 
@@ -4361,7 +4436,11 @@ def project_report_usage() -> list[dict]:
             coalesce(sum(r.attempts), 0) as run_count
             from formalize_batch_reports r join projects p on p.id = r.project_id
             group by p.slug""").fetchall()
-    return [row_to_dict(row) for row in rows]
+        metadata = conn.execute("select p.slug as project_slug,r.input_tokens,r.output_tokens,r.cost_usd,r.usage_details_json from formalize_batch_reports r join projects p on p.id=r.project_id").fetchall()
+    results = [row_to_dict(row) for row in rows]
+    for row in results:
+        row["usage_details"] = usage_metadata.aggregate([r for r in metadata if r["project_slug"] == row["project_slug"]])
+    return results
 
 
 def _empty_origin_bucket(origin: str) -> dict:
@@ -4421,6 +4500,11 @@ def _origin_rollup() -> list[dict]:
         bucket["output_tokens"] += int(data["output_tokens"] or 0)
         bucket["total_tokens"] += int(data["input_tokens"] or 0) + int(data["output_tokens"] or 0)
         bucket["cost_usd"] += float(data["cost_usd"] or 0)
+    with connect() as conn:
+        metadata_rows = conn.execute("select coalesce(nullif(trim(s.origin),''),'ui') as origin,r.input_tokens,r.output_tokens,r.cost_usd,r.usage_details_json from runs r join sessions s on s.id=r.session_id union all select coalesce(nullif(trim(s.origin),''),'ui'),a.input_tokens,a.output_tokens,a.cost_usd,a.usage_details_json from alignment_checks a left join runs sr on sr.id=a.solver_run_id left join formalizations f on f.id=a.formalization_id left join sessions s on s.id=coalesce(a.session_id,sr.session_id,f.loose_session_id)").fetchall()
+        report_metadata = conn.execute("select input_tokens,output_tokens,cost_usd,usage_details_json from formalize_batch_reports").fetchall()
+    for origin, bucket in buckets.items():
+        bucket["usage_details"] = usage_metadata.aggregate([r for r in metadata_rows if r["origin"] == origin] + (report_metadata if origin == "overleaf" else []))
     report_usage = formalize_batch_report_usage()
     buckets["overleaf"]["input_tokens"] += report_usage["input_tokens"]
     buckets["overleaf"]["output_tokens"] += report_usage["output_tokens"]
@@ -4472,6 +4556,7 @@ def _normalize_usage_model(row: dict) -> dict:
 
 
 def _normalize_usage_breakdown_row(row: dict) -> dict:
+    row = usage_metadata.decode(row)
     for key in ("run_number", "ordinal", "input_tokens", "output_tokens", "event_count"):
         row[key] = int(row.get(key) or 0)
     row["turn"] = _optional_int(row.get("turn"))
@@ -4482,7 +4567,7 @@ def _normalize_usage_breakdown_row(row: dict) -> dict:
 
 
 def _normalize_run(row: dict) -> dict:
-    row = run_detail(row)
+    row = usage_metadata.decode(run_detail(row))
     raw_pending = row.get("pending_approval")
     if isinstance(raw_pending, str) and raw_pending:
         try:

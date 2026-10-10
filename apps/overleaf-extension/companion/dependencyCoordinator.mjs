@@ -5,7 +5,7 @@ export async function resolveSharedDependencies(ids, {
   isCanceled = () => false, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
   const resolved = new Map();
-  async function resolve(id, ancestors = []) {
+  async function resolve(id, ancestors = [], initiatingRunId = null) {
     if (resolved.has(id)) return resolved.get(id);
     if (ancestors.includes(id)) return { ok: false, dependencyId: id, reason: "dependency_cycle" };
     if (isCanceled()) return { ok: false, canceled: true, dependencyId: id };
@@ -28,7 +28,7 @@ export async function resolveSharedDependencies(ids, {
       let runId = dep.owner_run_id;
       let start;
       if (dep.state === "pending" && !runId) {
-        start = await startDependency(id);
+        start = await startDependency(id, initiatingRunId);
         if (start?.ready) continue;
         if (!start?.run_id) {
           // Another coordinator can win admission; an unknown transport outcome
@@ -58,7 +58,7 @@ export async function resolveSharedDependencies(ids, {
         const children = row.waiting_dependencies || JSON.parse(row.waiting_dependencies_json || "[]");
         if (!children.length) return { ok: false, dependencyId: id, reason: "missing_dependency_checkpoint" };
         for (const child of children) {
-          const outcome = await resolve(child, stack);
+          const outcome = await resolve(child, stack, runId);
           if (!outcome.ok) return outcome;
         }
         if (isCanceled()) return { ok: false, canceled: true, dependencyId: id };

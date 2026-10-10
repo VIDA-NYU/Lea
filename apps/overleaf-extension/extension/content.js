@@ -11,8 +11,6 @@
   const LEA_UI_VIEW_STATUSES = new Set(["formalized", "defined", "disproved", "in_progress", "paused", "sorry_stub", "stale"]);
   const TEX_MIRROR_SYNC_DELAY_MS = 1500;
   const TEX_MIRROR_FULL_SYNC_INTERVAL_MS = 10 * 60 * 1000;
-  const TARGET_CONTEXT_RADIUS_LINES = 24;
-  const TARGET_CONTEXT_MAX_CHARS = 12000;
   const MAX_SPEND_ERROR_CODE = "max_spend_reached";
   const MAX_SPEND_PANE_MESSAGE = "Lea could not complete this formalization because the configured maximum spend has been reached. Increase or clear the cap in Lea settings, then try again.";
   const LEAN_PANE_REFRESH_DELAY_MS = 1500;
@@ -250,6 +248,7 @@
   let lastLeanPaneFiles = null;
   let lastLeanPaneProjectId = "";
   let leanPaneInventoryWarning = "";
+  let leanPaneSourceCoverage = "partial";
   let leanPaneArchiveLoad = null;
   // Share panel (D34): remote + push against the adapter's project repo, via the
   // companion's /share/github passthroughs. One panel, toggled from the header.
@@ -2189,6 +2188,7 @@
       body: JSON.stringify({
         overleafProjectId: projectId,
         activePath: latestActiveTexPath || "",
+        sourceCoverage: leanPaneSourceCoverage,
         files
       })
     }, {
@@ -2272,7 +2272,9 @@
   }
 
   async function getLeanPaneProjectFiles({ projectId, forceFetch, deferArchiveFetch = false }) {
+    if (lastLeanPaneProjectId !== projectId) leanPaneSourceCoverage = "partial";
     if (!projectId || projectId === "unknown") {
+      leanPaneSourceCoverage = "partial";
       leanPaneInventoryWarning = "";
       return latestActiveTexPath && typeof latestActiveTex === "string"
         ? [{ path: latestActiveTexPath, content: latestActiveTex }]
@@ -2286,14 +2288,17 @@
     });
     let files;
     if (needFetch && deferArchiveFetch) {
+      leanPaneSourceCoverage = "partial";
       files = fallbackLeanPaneProjectFiles(projectId);
       leanPaneInventoryWarning = "Loading the full Overleaf project inventory in the background.";
       queueLeanPaneArchiveRefresh(projectId);
     } else if (needFetch) {
       try {
         files = await loadLeanPaneArchive(projectId);
+        leanPaneSourceCoverage = "complete";
         leanPaneInventoryWarning = "";
       } catch {
+        leanPaneSourceCoverage = "partial";
         files = fallbackLeanPaneProjectFiles(projectId);
         leanPaneInventoryWarning = leanPaneArchiveUnavailableMessage(files);
       }
@@ -2331,6 +2336,7 @@
         if (extractOverleafProjectId() !== projectId) return;
         lastLeanPaneFiles = files.map((file) => ({ ...file }));
         lastLeanPaneProjectId = projectId;
+        leanPaneSourceCoverage = "complete";
         leanPaneInventoryWarning = "";
         if (leanPane && leanPaneMainView === "items") {
           refreshLeanPaneNow({ background: true }).catch(renderLeanPaneError);
@@ -3136,6 +3142,20 @@
 
     if (node.type === "file") {
       row.appendChild(renderLeanPaneFileProgress(node));
+      const progress = node.progress || leanPaneView.summarizePaneProgress(node.items || []);
+      if (progress.disproved > 0) {
+        const outcomes = document.createElement("span");
+        outcomes.className = "ol-lean-project-progress-outcomes";
+        const verified = document.createElement("span");
+        verified.className = "ol-lean-project-progress-outcome-verified";
+        verified.textContent = `${progress.success} verified`;
+        verified.title = "Verified proofs and definitions";
+        const disproved = document.createElement("span");
+        disproved.className = "ol-lean-project-progress-outcome-disproved";
+        disproved.textContent = `${progress.disproved} disproved`;
+        outcomes.append(verified, " · ", disproved);
+        row.appendChild(outcomes);
+      }
     } else {
       const chip = document.createElement("span");
       chip.className = `ol-lean-project-status ol-lean-project-tree-status ol-lean-project-status-${node.status || "unknown"}`;
@@ -3237,6 +3257,14 @@
 
     const checks = document.createElement("span");
     checks.className = "ol-lean-project-checks";
+    if (item.status === "disproved") {
+      const outcome = document.createElement("span");
+      outcome.className = "ol-lean-project-check-chip ol-lean-project-check-chip-disproved";
+      outcome.textContent = item.leanCheck?.status === "checked"
+        ? "Counterexample verified · Claim disproved"
+        : "Counterexample found · Claim disproved";
+      checks.appendChild(outcome);
+    }
     checks.appendChild(renderProjectCheckChip("Lean Check", item.leanCheck?.status || "unformalized", "lean"));
     checks.appendChild(renderProjectCheckChip("Lea Status", leanPaneView.leaStatusLabel(item.leaStatus), "lea"));
     summary.appendChild(checks);
@@ -3244,11 +3272,12 @@
     const summaryActions = document.createElement("div");
     summaryActions.className = "ol-lean-project-summary-actions";
     const formalizeAction = leanPaneView.paneItemFormalizeAction(item);
-    const formalizeButton = renderFormalizeButton(item, formalizeAction);
+    const formalizeButton = renderPaneItemPrimaryAction(item, formalizeAction);
     formalizeButton.className += " ol-lean-project-summary-formalize";
     const editing = leanPaneEditingItemId === item.id;
-    formalizeButton.disabled = editing || !leanPaneView.canFormalizePaneItem(item);
-    if (item.inProgress || item.status === "in-progress") {
+    const waiting = leanPaneView.dependencyWait(item);
+    formalizeButton.disabled = editing || (!waiting && !leanPaneView.canFormalizePaneItem(item));
+    if (!waiting && (item.inProgress || item.status === "in-progress")) {
       formalizeButton.textContent = "Formalizing…";
       formalizeButton.title = "Formalization is already running";
     } else if (editing) {
@@ -3260,6 +3289,12 @@
     summaryActions.appendChild(renderPaneItemIconAction(item, { id: "go-to-source", label: "Go to source" }));
     summary.appendChild(summaryActions);
     card.appendChild(summary);
+    if (waiting && !expanded) {
+      const explanation = document.createElement("p");
+      explanation.className = "ol-lean-project-wait-message";
+      explanation.textContent = waiting.message;
+      card.appendChild(explanation);
+    }
 
     const detailRegion = document.createElement("div");
     detailRegion.id = detailId;
@@ -3281,6 +3316,10 @@
         return payload;
       },
       pause: async (target) => {
+        if (leanPaneView.dependencyWait(target)) {
+          await runDependencyAction(target, { id: "dependency-stop" });
+          return;
+        }
         const baseUrl = await chatCompanionBaseUrl();
         const response = await fetch(`${baseUrl}/lean-pane/chat/interrupt`, {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -3423,7 +3462,9 @@
     else if (item.stopReason === "global_spend_cap") parts.push("Stopped at the spend cap");
     const accounting = item.accounting;
     const cost = accounting?.costUsd == null ? null : Number(accounting.costUsd);
-    if (accounting?.status === "final" && cost != null && Number.isFinite(cost)) {
+    if (accounting?.usageDetails?.unpriced_calls || accounting?.usageDetails?.cost_basis === "unavailable") {
+      parts.push(cost > 0 ? `${formatCost(cost)} recorded; pricing incomplete` : "Pricing unavailable");
+    } else if (accounting?.status === "final" && cost != null && Number.isFinite(cost)) {
       parts.push(`${formatCost(accounting.costUsd)} recorded`);
     } else if (cost != null && Number.isFinite(cost) && cost > 0) {
       parts.push(`${formatCost(accounting.costUsd)} recorded so far`);
@@ -3432,6 +3473,14 @@
     } else if (accounting && (item.stopReason || item.settling
         || (accounting.status === "unknown" && !item.inProgress))) {
       parts.push("usage unavailable");
+    }
+    const details = accounting?.usageDetails;
+    if (details) {
+      parts.push(({ cache_aware_estimate: "Cache-aware estimate", legacy_estimate: "Legacy estimate",
+        provider_reported: "Provider reported", mixed: "Mixed calculation bases" })[details.cost_basis] || "Pricing unavailable");
+      for (const [key, label] of [["cached_input_tokens", "Cached input"], ["cache_write_tokens", "Cache writes"], ["reasoning_tokens", "Reasoning output"]]) {
+        if (details[key] != null) parts.push(`${label}: ${formatTokens(details[key])}`);
+      }
     }
     return parts.join(" · ");
   }
@@ -3476,6 +3525,18 @@
 
     const progress = renderLeanPaneDetailSection("Progress and checks");
     progress.appendChild(renderLeanPaneLiveStatus(item));
+    if (item.leanCheck?.status === "checked" && (item.status === "disproved" || item.resultKind === "disproved")) {
+      const note = document.createElement("p");
+      note.className = "ol-lean-project-detail-meta";
+      note.textContent = "Checked counterexample—original claim disproved.";
+      progress.appendChild(note);
+    }
+    if (item.lastBatchOutcome) {
+      const note = document.createElement("p");
+      note.className = "ol-lean-project-detail-meta";
+      note.textContent = `Last Formalize all: ${leanPaneView.formatRepairOutcome({ ...item.lastBatchOutcome, targetLabel: item.label || item.leanDeclarationName }, "formalize")}`;
+      progress.appendChild(note);
+    }
     const shared = renderSharedMathematics(item.dependencies, `target:${item.id}`);
     if (shared) progress.appendChild(shared);
     const accountingNote = formatLeanPaneAccounting(item);
@@ -3532,7 +3593,7 @@
     const code = renderLeanPaneDetailSection("Lean code");
     if (item.leanStub) {
       code.appendChild(renderLeanCodeBlock("ol-lean-project-code", item.leanStub, "Copy stub"));
-    } else {
+    } else if (!item.leanArtifactContent) {
       const missing = document.createElement("p");
       missing.className = "ol-lean-project-missing";
       missing.textContent = "No Lean stub has been generated yet.";
@@ -4065,7 +4126,7 @@
       : operation === "formalize"
         ? ["formalized", "disproved"]
         : ["repaired"]);
-    const attentionStates = new Set(["failed", "skipped", "canceled", "needs_review", "disproved"]);
+    const attentionStates = new Set(["failed", "incomplete", "skipped", "canceled", "needs_review", "disproved"]);
     const completedEntries = batch.items.filter((entry) => completedStates.has(entry.state));
     const attentionEntries = batch.items.filter((entry) => attentionStates.has(entry.state));
     const reportedActiveEntry = batch.items.find((entry) => ["running", "waiting"].includes(entry.state)) || null;
@@ -4081,6 +4142,11 @@
     const activeIndex = activeEntry ? batch.items.indexOf(activeEntry) : -1;
     const total = batch.items.length;
     const completedCount = batch.items.filter((entry) => successfulStates.has(entry.state)).length;
+    const processedCount = batch.items.filter((entry) => !["pending", "running", "waiting"].includes(entry.state)).length;
+    const verifiedCount = batch.items.filter((entry) => entry.state === "formalized").length;
+    const disprovedCount = batch.items.filter((entry) => entry.state === "disproved").length;
+    const incompleteCount = batch.items.filter((entry) => entry.state === "incomplete").length;
+    const reviewCount = batch.items.filter((entry) => entry.state === "needs_review").length;
     const failedCount = batch.items.filter((entry) => entry.state === "failed").length;
     const skippedCount = batch.items.filter((entry) => entry.state === "skipped").length;
     const canceledCount = batch.items.filter((entry) => entry.state === "canceled").length;
@@ -4127,6 +4193,7 @@
       canceledCount,
       total
     });
+    if (operation === "formalize") count.textContent = `${verifiedCount} verified · ${disprovedCount} disproved · ${incompleteCount} incomplete · ${failedCount} failed · ${skippedCount} skipped${reviewCount ? ` · ${reviewCount} need review` : ""}${canceledCount ? ` · ${canceledCount} stopped` : ""}`;
     header.appendChild(count);
     panel.appendChild(header);
 
@@ -4143,7 +4210,8 @@
     }));
     progress.setAttribute("aria-valuemin", "0");
     progress.setAttribute("aria-valuemax", String(total));
-    progress.setAttribute("aria-valuenow", String(completedCount));
+    progress.setAttribute("aria-valuenow", String(processedCount));
+    if (operation === "formalize") progress.setAttribute("aria-label", `Formalize all: ${processedCount} of ${total} processed. ${count.textContent}`);
     for (const entry of batch.items) {
       const segment = document.createElement("span");
       const stateClass = entry === activeEntry
@@ -4154,7 +4222,7 @@
             ? "skipped"
             : entry.state === "canceled"
               ? "canceled"
-              : entry.state === "disproved" || entry.state === "needs_review"
+              : entry.state === "disproved" || entry.state === "needs_review" || entry.state === "incomplete"
                 ? "attention"
                 : successfulStates.has(entry.state)
                   ? "success"
@@ -4432,7 +4500,7 @@
     if (facts.dependencyCounts && facts.dependencies?.length) {
       const sharedSummary = document.createElement("p");
       const counts = facts.dependencyCounts;
-      sharedSummary.textContent = `Shared mathematics: ${counts.newlyProved || 0} newly proved · ${counts.reused || 0} reused · ${counts.blocked || 0} blocked.`;
+      sharedSummary.textContent = `Shared mathematics: ${counts.newlyProved || 0} newly proved · ${counts.reused || 0} reused · ${counts.blocked || 0} blocked${counts.unknownOrigin ? ` · ${counts.unknownOrigin} with unknown origin` : ""}.`;
       section.appendChild(sharedSummary);
       const shared = leanPaneView.renderSharedDependencies(facts.dependencies.map((dep) => ({
         ...dep, ready: dep.state === "ready", module_name: dep.module, declaration_name: dep.declaration,
@@ -4489,9 +4557,9 @@
         }
         const incomplete = item.reportingIncomplete ? " · no final Lea Status assessment" : "";
         const confidence = item.leaStatus?.confidence
-          ? ` · Lea confidence: ${item.leaStatus.confidence} (self-reported)` : "";
+          ? ` · Lea confidence: ${item.leaStatus.confidence} (self-reported)${item.leaStatus.scope ? ` · ${{ source_only: "Source assessment", partial_artifact: "Partial artifact", statement_and_proof: "Statement and proof" }[item.leaStatus.scope] || item.leaStatus.scope}` : ""}` : "";
         const detail = document.createElement("span");
-        detail.textContent = ` (${item.targetKind || "item"}): ${item.state}${item.reason ? ` · ${item.reason.replaceAll("_", " ")}` : ""}${confidence}${incomplete}`;
+        detail.textContent = ` (${item.targetKind || "item"}): ${item.state}${item.reason ? ` · ${item.reason === "dependency_wait" ? "waiting for a supporting result" : item.reason.replaceAll("_", " ")}` : ""}${confidence}${incomplete}`;
         row.appendChild(detail);
         list.appendChild(row);
       }
@@ -5042,7 +5110,53 @@
   };
 
   function renderPaneItemPrimaryAction(item, action) {
+    if (action.id.startsWith("dependency-")) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ol-lean-secondary-button ol-lean-item-primary-action";
+      button.textContent = action.label;
+      button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        button.disabled = true;
+        try { await runDependencyAction(item, action); }
+        catch (error) { rememberLeanPaneActionError(item, error, action.id); renderLeanPaneManifest(lastLeanPaneManifest); }
+        finally { button.disabled = false; }
+      });
+      return button;
+    }
     return action.id === "repair" ? renderRepairButton(item) : renderFormalizeButton(item, action);
+  }
+
+  async function runDependencyAction(item, action) {
+    if (action.id === "dependency-view") {
+      showLeanPane({ deferRefresh: true });
+      await ensureLeanPaneView();
+      if (leanPaneMainView !== "items") await setLeanPaneMainView("items");
+      if (!lastLeanPaneManifest) await refreshLeanPaneNow({});
+      const target = (lastLeanPaneManifest?.items || []).find(entry => entry.id === item.id
+        || entry.label === (item.label || item.targetLabel));
+      if (!target) throw new Error("Refresh the project inventory to locate this supporting result.");
+      revealLeanPaneItem(target);
+      const card = [...leanPaneBody.querySelectorAll(".ol-lean-project-item")].find(element => element.dataset.itemId === target.id);
+      const shared = card?.querySelector(".ol-lean-shared-results");
+      if (!shared) throw new Error("Supporting-result details are unavailable. Refresh status to reconnect.");
+      for (const detail of shared.querySelectorAll("details")) detail.open = true;
+      shared.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+      const focus = shared.querySelector("summary");
+      focus?.focus?.();
+      return;
+    }
+    const baseUrl = await chatCompanionBaseUrl();
+    const response = await fetch(`${baseUrl}/lean-pane/dependencies/wait`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(),
+        runId: item.apiRunId || item.leaStatus?.run_id,
+        action: action.id === "dependency-stop" ? "stop" : action.id === "dependency-arm" ? "continue" : "refresh" })
+    });
+    const body = await response.json();
+    if (!response.ok) throw companionRequestError(response, body);
+    await refreshLeanPaneNow({ background: true });
   }
 
   function renderPaneItemIconAction(item, action) {
@@ -5148,6 +5262,7 @@
   // Formalize/stub reuse the same companion paths as the primary button and
   // the in-document popover.
   async function runPaneOverflowAction(item, action) {
+    if (action.id.startsWith("dependency-")) return runDependencyAction(item, action);
     if (action.id === "edit") {
       openLeanPaneEdit(item);
       return;
@@ -6046,6 +6161,16 @@
 
   function actionSpecsForStatus(status, target, statusInfo = {}) {
     const definition = isDefinitionTarget(target);
+    const wait = statusInfo.dependencyWait;
+    if (wait) {
+      const action = wait.state === "stopped" ? { id: "dependency-arm", label: "Continue when ready" }
+        : wait.state === "unavailable" || wait.continuationBlocked ? { id: "dependency-refresh", label: "Refresh status" }
+          : { id: "dependency-view", label: "View supporting result" };
+      return [{ role: "theorem-action", label: action.label, primary: true, pendingText: "Checking…",
+        run: current => runDependencyAction({ ...current, ...statusInfo }, action) },
+      ...(wait.autoResume ? [{ role: "theorem-stop-wait-action", label: "Stop waiting", pendingText: "Stopping…",
+        run: current => runDependencyAction({ ...current, ...statusInfo }, { id: "dependency-stop" }) }] : [])];
+    }
     if (status === "paused") {
       const specs = statusInfo.recoveryState === "review" ? [] : [{
         role: "theorem-action", label: "Resume", primary: true, pendingText: "Resuming…",
@@ -6556,15 +6681,6 @@
     const content = typeof source?.content === "string" ? source.content : "";
     const sourceStartLine = Math.max(1, Number(enrichedTarget?.sourceStartLine) || 1);
     const sourceEndLine = Math.max(sourceStartLine, Number(enrichedTarget?.sourceEndLine) || sourceStartLine);
-    const lines = content.split(/\r?\n/);
-    const excerptStartLine = Math.max(1, sourceStartLine - TARGET_CONTEXT_RADIUS_LINES);
-    const excerptEndLine = Math.min(lines.length, sourceEndLine + TARGET_CONTEXT_RADIUS_LINES);
-    let sourceExcerpt = content
-      ? lines.slice(excerptStartLine - 1, excerptEndLine).join("\n")
-      : "";
-    if (sourceExcerpt.length > TARGET_CONTEXT_MAX_CHARS) {
-      sourceExcerpt = `${sourceExcerpt.slice(0, TARGET_CONTEXT_MAX_CHARS)}\n[excerpt truncated]`;
-    }
     const uniqueFiles = new Map();
     for (const file of candidates) {
       const normalized = normalizeDocPath(file?.path);
@@ -6590,38 +6706,21 @@
     const proofAssociation = currentTarget?.proofAssociation || { status: "missing", method: "none" };
     const sourceProof = String(currentTarget?.sourceProof || "").replace(/\r\n?/g, "\n");
     const proofHash = sourceProof ? await sha256(sourceProof) : "";
-    const { canonicalSourceTargetKind, sourceHashInputs } = await import(chrome.runtime.getURL("sourceIdentityCore.mjs"));
-    const sourceBundleCore = {
-      version: 2,
-      targetKey: String(enrichedTarget?.targetLabel || enrichedTarget?.label || ""),
-      targetKind: canonicalSourceTargetKind(enrichedTarget?.targetKind || enrichedTarget?.leanKind || enrichedTarget?.kind),
-      statement: String(enrichedTarget?.targetText || enrichedTarget?.naturalLanguageLatex || "").replace(/\r\n?/g, "\n"),
-      proof: sourceProof,
-      proofAssociation: {
-        status: String(proofAssociation.status || "missing"),
-        method: String(proofAssociation.method || "none"),
-        sourceFile: normalizeDocPath(proofAssociation.sourceFile || ""),
-        sourceStartLine: Number(proofAssociation.sourceStartLine || 0),
-        sourceEndLine: Number(proofAssociation.sourceEndLine || 0),
-        proofHash
-      },
-      statementLocation: { sourceFile, sourceStartLine, sourceEndLine },
-      uses: Array.isArray(enrichedTarget?.targetUses) ? enrichedTarget.targetUses.map(String) : [],
-      context: String(enrichedTarget?.targetContext || "").replace(/\r\n?/g, "\n"),
-      relevantSource: sourceExcerpt ? [{
-        kind: "surrounding-context",
-        path: sourceFile,
-        startLine: excerptStartLine,
-        endLine: excerptEndLine,
-        content: sourceExcerpt,
-        truncated: sourceExcerpt.endsWith("[excerpt truncated]")
-      }] : [],
+    const { buildSourceBundleCore, sourceHashInputs } = await import(chrome.runtime.getURL("sourceIdentityCore.mjs"));
+    const sourceBundleCore = buildSourceBundleCore({ ...currentTarget, ...enrichedTarget,
+      sourceFile, sourceStartLine, sourceEndLine, sourceProof, proofAssociation }, {
+      proofHash,
+      files: [...uniqueFiles].map(([path, fileContent]) => ({ path, content: fileContent })),
       mirror: verifyMirror && mirrorSnapshot?.mirrorRevision ? {
         revision: String(mirrorSnapshot.mirrorRevision),
         mirroredFileCount: Object.keys(mirrorSnapshot.mirroredFiles || {}).length,
         verified: true
       } : null
-    };
+    });
+    const excerpt = sourceBundleCore.relevantSource[0];
+    const sourceExcerpt = excerpt?.content || "";
+    const excerptStartLine = excerpt?.startLine || null;
+    const excerptEndLine = excerpt?.endLine || null;
     const { evidence, identity } = sourceHashInputs(sourceBundleCore);
     const sourceBundle = {
       ...sourceBundleCore,
@@ -7023,6 +7122,7 @@
       if (freshArchive) {
         lastLeanPaneFiles = await collectProjectTexFiles(projectId);
         lastLeanPaneProjectId = projectId;
+        leanPaneSourceCoverage = "complete";
       }
       return { disabled: true };
     }
@@ -8064,12 +8164,14 @@
     const row = popover.querySelector(`[data-usage='${key}']`);
     if (!row) return;
     const cost = Number(usage?.costUsd || 0);
-    row.querySelector("[data-field='cost']").textContent = !usage || usage.accountingUnavailable
+    row.querySelector("[data-field='cost']").textContent = usage?.usageDetails?.unpriced_calls || usage?.usageDetails?.cost_basis === "unavailable"
+      ? cost > 0 ? `${formatCost(cost)} recorded; pricing incomplete` : "Pricing unavailable"
+      : !usage || usage.accountingUnavailable
       ? "Usage unavailable"
       : usage?.incompleteUsageRuns
       ? cost > 0 ? `${formatCost(cost)} recorded so far` : "Awaiting usage"
       : usage?.unconfirmedUsageRuns
-        ? cost > 0 ? `${formatCost(cost)} recorded · unconfirmed` : "Usage unavailable"
+        ? cost > 0 ? formatCost(cost) : "Usage unavailable"
         : formatCost(cost);
     row.querySelector("[data-field='input']").textContent = formatTokens(usage?.inputTokens || 0);
     row.querySelector("[data-field='output']").textContent = formatTokens(usage?.outputTokens || 0);
@@ -8205,7 +8307,7 @@
           const baseUrl = await chatCompanionBaseUrl();
           const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/lean-pane/manifest`, {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ overleafProjectId: request.overleafProjectId, activePath: latestActiveTexPath, files })
+            body: JSON.stringify({ overleafProjectId: request.overleafProjectId, activePath: latestActiveTexPath, files, sourceCoverage: "complete" })
           }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS });
           if (!response.ok) throw new Error(payload.message || "The current document could not be parsed.");
           const item = sourceModule.selectSourceTarget(payload.items, request);

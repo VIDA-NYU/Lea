@@ -1190,6 +1190,20 @@ body.ol-lean-pane-resizing {
   grid-column: auto;
 }
 
+.ol-lean-project-progress-outcomes {
+  grid-column: 2 / -1;
+  font: 550 11px/1.4 var(--ol-sans);
+}
+
+.ol-lean-project-progress-outcome-verified {
+  color: var(--ol-ink-2);
+}
+
+.ol-lean-project-progress-outcome-disproved {
+  color: var(--ol-ink);
+  font-weight: 650;
+}
+
 .ol-lean-project-progress {
   position: relative;
   display: flex;
@@ -1231,6 +1245,10 @@ body.ol-lean-pane-resizing {
 
 .ol-lean-project-progress-segment-success {
   background: var(--ol-green);
+}
+
+.ol-lean-project-progress-segment-disproved {
+  background: var(--ol-amber);
 }
 
 .ol-lean-project-progress-segment-sorry-stubbed {
@@ -1360,6 +1378,14 @@ body.ol-lean-pane-resizing {
   white-space: nowrap;
 }
 
+.ol-lean-project-wait-message {
+  margin: 8px 0 0;
+  padding: 0;
+  color: var(--ol-ink);
+  font: 12px/1.45 var(--ol-sans);
+  overflow-wrap: anywhere;
+}
+
 .ol-lean-project-item-header:focus-visible,
 .ol-lean-project-summary-actions button:focus-visible,
 .ol-lean-project-detail-actions button:focus-visible {
@@ -1416,6 +1442,11 @@ body.ol-lean-pane-resizing {
 .ol-lean-project-check-chip-stubbed,
 .ol-lean-project-check-chip-paused {
   color: var(--ol-amber);
+  background: var(--ol-amber-soft);
+}
+
+.ol-lean-project-check-chip-disproved {
+  color: var(--ol-ink-2);
   background: var(--ol-amber-soft);
 }
 
