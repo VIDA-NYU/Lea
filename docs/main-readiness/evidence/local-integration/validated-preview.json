@@ -1,0 +1,14 @@
+{
+  "format_version": 1,
+  "feature_head": "3ff5bfe3ab21ff21a271834815a16f98d6d47502",
+  "main": "8fc9a74bb7de07b655105e46fe661eb3473482b2",
+  "source_tree": "d0de7585978f6af5fb7e90e92af980d9178dbced",
+  "manifest_sha256": "9e066c0bc3098491c260fd6fdfed97a608c7e4e1f31d8e2dfe198fc543f00eb8",
+  "raw_conflicts": [],
+  "resolution_paths": [],
+  "resolved_conflicts": 0,
+  "unresolved_conflicts": [],
+  "resolved_tree": "d0de7585978f6af5fb7e90e92af980d9178dbced",
+  "candidate_changes_from_feature": [],
+  "refs_and_worktree_unchanged": true
+}

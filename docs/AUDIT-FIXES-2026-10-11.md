@@ -136,3 +136,30 @@ GitHub settings and deployed workflows remain unchanged. Native candidate CI,
 actual integration and PR review/enforcement remain pending. Services are stopped,
 and live history/proofs are unchanged; see the [updated report](main-readiness/REPORT.md)
 for evidence and remaining gates.
+
+## Authorized local integration — 2026-10-12
+
+VIDA main `8fc9a74` was fetched, verified and integrated into `LeaCheckAddition`
+in local merge commit `043f6d4`. The reviewed resolution recipe handled all 99
+original conflicts without changing the feature tree; main is now an ancestor
+and fresh previews report zero conflicts. Local main and other refs remain
+unchanged. Follow-up commit `3ff5bfe` pins temporary test compilers, provisions
+compiler prerequisites for application CI and fixes a test's premature completion
+wait. Application/prover runtime code was unchanged.
+
+The complete adapter suite passes 1,021 tests; root JavaScript passes 746;
+cross-layer integration passes eight; browser passes three; preparation passes
+38. All 42 prover unit modules, three real Lean modules, three SafeVerify
+scenarios and 24 focused real certification checks pass. Typecheck, frontend/site
+builds, website tests, workflow lint and isolated container lifecycle checks pass.
+The original proof-certification regressions still fail closed. The
+[main-readiness report](main-readiness/REPORT.md) links the new evidence and
+records the initial fixture failures and corrections.
+
+Live history, proofs, projects and configuration remain unchanged; migration
+and restore ran only on copies. Test workers, listeners, containers and the small
+test image were cleaned up, preserving other projects' Docker images. Services
+remain stopped. No push, publication, main merge or GitHub settings change occurred.
+Native exact-candidate CI, PR review and enforcement remain later gates. The prior
+full production-image results are historical validation of unchanged runtime
+behavior; they were not repeated for this ancestry and test/CI setup change.

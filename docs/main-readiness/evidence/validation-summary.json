@@ -26,26 +26,30 @@
     "production_arm64_image": true,
     "production_amd64_image": true,
     "production_runtime_scenarios_per_architecture": 3,
-    "local_preparation_tests": 37,
+    "local_preparation_tests": 38,
     "guarded_readonly_preflight": true,
     "mode_pinned_resolution_paths": 133,
-    "manual_only_publication_controls": true
+    "manual_only_publication_controls": true,
+    "focused_real_certification_tests": 24,
+    "vida_main_integrated_locally": true,
+    "post_integration_conflicts": 0
   },
   "pending": {
     "remote_ci": "not dispatched or published; native AMD64/ARM64 workflow jobs not executed on GitHub",
-    "actual_feature_integration": "not performed; reviewed recipe resolves 99 raw conflicts",
     "feature_push_and_pr": "not authorized or performed",
     "main_enforcement": "proposed in LOCAL-PREPARATION.md; GitHub settings unchanged"
   },
   "operations": {
     "normal_services_started": false,
-    "merged": false,
+    "merged": true,
     "pushed": false,
     "published": false,
     "live_database_upgraded": false,
     "other_project_docker_data_removed": false,
     "remote_ci_dispatched": false,
-    "github_settings_changed": false
+    "github_settings_changed": false,
+    "merged_main_into_feature": true,
+    "merged_feature_into_main": false
   },
   "production_environment": {
     "python": "3.13.11",
@@ -60,5 +64,16 @@
     "real_checkout_applied": false,
     "services_stopped": true,
     "fresh_preview_required_after_head_change": true
-  }
+  },
+  "local_integration": {
+    "merge_commit": "043f6d46a9a148cfa4adfcff06d0241a6b444f9e",
+    "tested_code_commit": "3ff5bfe3ab21ff21a271834815a16f98d6d47502",
+    "vida_main": "8fc9a74bb7de07b655105e46fe661eb3473482b2",
+    "main_is_ancestor": true,
+    "source_tree_preserved_at_merge": true,
+    "application_runtime_changes": false,
+    "other_real_refs_preserved": true,
+    "services_stopped": true
+  },
+  "production_validation_scope": "Prior native ARM64 and emulated AMD64 image gate; images not rebuilt for ancestry integration and test/CI setup changes. Native exact-candidate CI remains pending."
 }

@@ -1,0 +1,17 @@
+[
+  {
+    "module": "tests.lsp.test_cascade_rename_integration",
+    "exit_code": 0,
+    "seconds": 23.11
+  },
+  {
+    "module": "tests.lsp.test_concurrent_checks",
+    "exit_code": 0,
+    "seconds": 71.35
+  },
+  {
+    "module": "tests.lsp.test_recovery_integration",
+    "exit_code": 0,
+    "seconds": 16.02
+  }
+]

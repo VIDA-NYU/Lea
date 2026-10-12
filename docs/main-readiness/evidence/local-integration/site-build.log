@@ -1,0 +1,7 @@
+
+> site:build
+> node public/build.mjs
+
+Built 5 pages, 17 files → public/dist
+Base path: /Lea/   Origin: https://vida-nyu.github.io
+Blog posts: 1

@@ -1,0 +1,3 @@
+✔ [2/2] Built Lea.Readiness.Helper (210ms)
+Build completed successfully (2 jobs).
+[{"scenario": "Targeted", "status": "ok", "evidence": true}, {"scenario": "Namespaced", "status": "ok", "evidence": true}, {"scenario": "Sorry", "status": "rejected", "evidence": true}]

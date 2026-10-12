@@ -1,0 +1,2 @@
+sha256:cedf76574aab951d186c74389732bcadefb1f4c942d143bfad4c2465e16b2c69
+{"both_backends": true, "preparation_failure_rejects_admission": true, "companion_exit_stops_adapter": true, "preparation_signal_exits_cleanly": true, "restart_resumed_readiness": true, "shutdown_exit_code": 0, "data_ownership_released": true, "runtime_ids": ["48d433d325c24e349509d4af66814376", "83a79be89c5f4eba9de6b1e0afcfb053", "43771e4798e04cfea84ebe60dc31126c"]}

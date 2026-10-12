@@ -1,10 +1,12 @@
 # Local integration preparation
 
-The preparation remains on `LeaCheckAddition`. The reviewed VIDA main is
-`8fc9a74bb7de07b655105e46fe661eb3473482b2`. Main integration, pushing, PR creation,
-publication, remote CI dispatch and GitHub settings changes require later
-authorization. Normal services remain stopped; tests use disposable repositories
-and compiler-command fixtures without application listeners or model calls.
+The work remains on `LeaCheckAddition`. VIDA main
+`8fc9a74bb7de07b655105e46fe661eb3473482b2` was integrated locally with explicit
+authorization in `043f6d4`; follow-up validation setup fixes are in `3ff5bfe`.
+The current preview has zero conflicts. Pushing, PR creation, publication,
+remote CI dispatch and GitHub settings changes still require later authorization.
+Normal services remain stopped. Validation uses isolated data and temporary
+listeners; no model calls or live migration occur. See the [current report](REPORT.md).
 
 ## Publication controls
 
@@ -28,8 +30,10 @@ automatic release triggers would be a separate reviewed change.
 The version 2 [manifest](merge-resolutions.json) preserves all 133 reviewed path
 choices and additionally pins their Git modes. The baseline has 131 regular files
 and two executable files. Only the two publication workflow blob selections
-changed for this preparation; their release machinery remains intact. Their
-reasons document the manual publication controls.
+changed during the initial preparation; their release machinery remains intact.
+Their reasons document the manual publication controls. Integration validation
+subsequently updated two fixture selections for the pinned test compiler and
+the asynchronous finalization wait. The 133 path choices and modes remain.
 
 `review_state: reviewed` records recipe review, not permission to perform a merge.
 `--record` produces a draft manifest; drafts cannot approve a preview. Review its
@@ -55,20 +59,24 @@ directory or symlink before Git starts a merge.
 The preview uses a temporary index and object directory, supports worktree Git
 directories, and preserves executable modes, symlinks and intentional deletions.
 It includes tracked deletions in its source snapshot. Its synthetic commits never
-update real refs or the real index. For the current reviewed main, the 99 raw
-conflicts resolve with zero candidate differences from the feature tree.
+update real refs or the real index. Before integration, 99 raw conflicts resolved
+with zero candidate differences from the feature tree. Main is now an ancestor
+of the feature and the preview reports zero conflicts.
 
 Snapshots bind exact commits, including documentation changes. An evidence
 snapshot stored inside a later report commit is historical evidence, not approval
 for that later HEAD. Regenerate the snapshot whenever HEAD, main, the manifest or
 the source tree changes. Do not edit hashes to make an old snapshot pass.
 
-## Pending integration, only after authorization
+## Future main integration, only after authorization
 
 After reviewing a fresh preview and receiving explicit authorization to integrate
 main into the feature branch, the additional `--apply` flag stages the reviewed
-merge. This flag was exercised only in disposable test repositories during local
-preparation; it was not used on this checkout.
+merge. The initial preparation exercised this flag only in disposable test
+repositories. The authorized integration then used it on this checkout, inspected
+the pending tree and created local merge commit `043f6d4`. Apply refuses to merge
+an already-integrated main a second time. A new main tip requires reviewing its
+delta and refreshing the manifest, not changing hashes to bypass preflight.
 
 The apply path rechecks the live main tip and clean branch immediately before
 mutation. It disables merge hooks and automatic rerere resolution, refuses
@@ -80,7 +88,9 @@ pending. It never commits, fetches, pushes, publishes or changes GitHub settings
 An unexpected post-mutation error can leave a pending merge. Inspect it and decide
 whether to abort; the tool does not discard files automatically. Do not commit a
 tree that failed validation. Successful staging must still receive inspection
-before the separately authorized merge commit is created.
+before committing. An explicit request to integrate main locally authorizes that
+inspection and local merge commit; it does not authorize pushing or merging the
+feature into main.
 
 ## Compiler preparation
 
@@ -88,7 +98,10 @@ CI cache download retries once. If both attempts fail, Lake must compile the
 missing targets. Mathlib build, the no-build completeness check, SafeVerify build
 and executable presence remain mandatory. Preparation honors `ELAN_HOME`, so
 isolated tests can exercise the command sequence without invoking a host compiler
-or installing anything.
+or installing anything. It selects the repository `lean-toolchain`, overriding an
+incorrect inherited compiler selection, and writes it to `GITHUB_ENV` in CI.
+Both the application and real-Lean jobs provision these compiler prerequisites.
+Companion fixtures copy that same toolchain rather than selecting floating stable.
 
 Run the local tests and syntax checks:
 
@@ -102,7 +115,21 @@ all three workflows. The fixture tests cover successful downloads, a recovered
 transient failure, exhausted downloads followed by successful compilation, and
 fatal build/completeness/verifier failures. Git tests exercise preview and actual
 pending-merge behavior inside disposable repositories, plus rejection cases and
-the default read-only CLI.
+the default read-only CLI. All 38 preparation tests pass, including toolchain
+selection and export for later CI steps.
+
+For application or compiler tests that include standalone Lean inputs, pin the
+test process to the installed repository version:
+
+```bash
+ELAN_TOOLCHAIN="$(cat apps/lea-standalone/prover/workspace/lean-toolchain)" npm test
+cd apps/lea-standalone/adapter
+ELAN_TOOLCHAIN="$(cat ../prover/workspace/lean-toolchain)" .venv/bin/python -m pytest -W error::pytest.PytestUnhandledThreadExceptionWarning
+```
+
+This changes the test process environment only. The post-fix root JavaScript
+suite also passes without a global override because its temporary projects now
+copy the pinned version.
 
 ## Proposed main enforcement, not applied
 
@@ -122,8 +149,9 @@ PR before configuring enforcement. Current main was verified without branch
 protection or effective rules during planning. This preparation contains no API
 mutation or enforcement bypass.
 
-The remaining stages require authorization: actual integration, feature publication
-and PR review, native AMD64/ARM64 CI on the exact candidate, and enforcement. Main
+Current main integration is complete. The remaining stages require authorization:
+feature publication and PR review, native AMD64/ARM64 CI on the exact candidate,
+and enforcement. Main
 merge and release are separate later decisions. The prior local production image
 checks remain evidence for unchanged runtime behavior; native candidate CI will
 rebuild images including these prepared scripts. Live database migration and

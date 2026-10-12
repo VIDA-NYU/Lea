@@ -1,0 +1,73 @@
+{
+  "date": "2026-10-12",
+  "branch": "LeaCheckAddition",
+  "vida_main": "8fc9a74bb7de07b655105e46fe661eb3473482b2",
+  "merge_commit": "043f6d46a9a148cfa4adfcff06d0241a6b444f9e",
+  "first_parent": "5517d7760b5bba74f6fbb6872cd75654458b8438",
+  "merge_tree": "201a75e4fdee57f121f8fc8a5daaff69eca5f1dc",
+  "merge_tree_equal_to_first_parent": true,
+  "tested_code_commit": "3ff5bfe3ab21ff21a271834815a16f98d6d47502",
+  "tested_code_tree": "d0de7585978f6af5fb7e90e92af980d9178dbced",
+  "post_integration_conflicts": 0,
+  "passed": {
+    "adapter_tests": 1021,
+    "javascript_tests": 746,
+    "cross_layer_tests": 8,
+    "browser_tests": 3,
+    "website_tests": 23,
+    "preparation_tests": 38,
+    "prover_unit_modules": 42,
+    "prover_real_lean_modules": 3,
+    "focused_real_certification_tests": 24,
+    "safeverify_scenarios": 3,
+    "typecheck": true,
+    "frontend_build": true,
+    "site_build": true,
+    "container_lifecycle": true,
+    "actionlint": "1.7.12",
+    "shell_and_python_syntax": true,
+    "diff_whitespace": true,
+    "live_data_preservation": true
+  },
+  "environment": {
+    "project_lean": "4.29.0",
+    "platform": "ARM64 macOS",
+    "python": "3.14.4",
+    "node": "22.22.3",
+    "uv": "0.11.14"
+  },
+  "scope": {
+    "application_prover_runtime_files_changed": false,
+    "dockerfile_changed": false,
+    "test_ci_and_recipe_changes": [
+      ".github/workflows/application-ci.yml",
+      "apps/overleaf-extension/tests/companion.test.mjs",
+      "apps/overleaf-extension/tests/leanPaneEdit.test.mjs",
+      "apps/overleaf-extension/tests/leanPaneRepair.test.mjs",
+      "docs/main-readiness/merge-resolutions.json",
+      "scripts/prepare-ci-lean.sh",
+      "tests/local_preparation/test_ci_preparation.py"
+    ],
+    "full_production_images_rebuilt": false,
+    "prior_production_image_results": "historical; ARM64 native and AMD64 emulated runtime gates previously passed",
+    "native_exact_candidate_ci": "not dispatched or executed"
+  },
+  "operations": {
+    "main_into_feature_merged": true,
+    "feature_into_main_merged": false,
+    "normal_services_started": false,
+    "pushed": false,
+    "published": false,
+    "github_settings_changed": false,
+    "live_database_upgraded": false,
+    "model_calls": false,
+    "other_project_docker_data_removed": false
+  },
+  "remaining_gates": [
+    "authorized feature push and PR review",
+    "native application/Lean/AMD64/ARM64 CI on exact candidate",
+    "main protection verification and enforcement"
+  ],
+  "snapshot_note": "Code evidence binds tested_code_commit; later documentation commits require fresh preview evidence.",
+  "evidence_format": "Logs replace repository/validation directory paths and normalize trailing whitespace; raw logs remain in the local validation directory."
+}

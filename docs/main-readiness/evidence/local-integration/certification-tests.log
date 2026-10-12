@@ -1,0 +1,11 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.14.4, pytest-9.0.3, pluggy-1.6.0
+rootdir: <repository>/apps/lea-standalone/adapter
+configfile: pyproject.toml
+plugins: anyio-4.13.0
+collected 24 items
+
+tests/test_check_evidence.py .............                               [ 54%]
+tests/test_certification_regressions.py ...........                      [100%]
+
+============================= 24 passed in 18.96s ==============================

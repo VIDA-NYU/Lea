@@ -1,16 +1,20 @@
 # VIDA main readiness — 2026-10-12
 
-Implementation and local validation remain on `LeaCheckAddition`. The application,
-proof-certification, migration, dependency and supervision checks listed below
-pass. **Both actual production images now build and pass the runtime harness:**
-ARM64 ran natively and AMD64 ran under emulation on this ARM64 host. The local
-production-image gate is complete. Local integration guards, manual publication
-controls and the proposed main enforcement procedure are now prepared and
-validated. Native GitHub CI jobs have not run. Actual integration, publication of
-the feature/PR and GitHub enforcement still require later authorization.
+VIDA main `8fc9a74` is now integrated locally into `LeaCheckAddition` by merge
+commit `043f6d4`. The reviewed merge preserved the exact feature tree, and the
+post-integration preview has zero conflicts. Application, compiler, browser,
+migration and supervision validation passes. Follow-up commit `3ff5bfe` fixes
+test compiler selection, a premature test wait and application CI prerequisites;
+application runtime behavior did not change.
 
-No merge or rebase of this checkout, push, publication, remote CI dispatch,
-GitHub settings change or live database upgrade was performed. Normal Lea
+The earlier actual production images passed their runtime harness: ARM64
+natively and AMD64 under emulation on this ARM64 host. Those image results remain
+historical evidence for unchanged runtime code. Native GitHub CI on the exact
+candidate, feature/PR publication, review and main enforcement remain pending.
+
+Only the feature branch received the authorized local main integration. The
+local `main` branch and other real refs were preserved. No push, publication,
+remote CI dispatch, GitHub settings change or live database upgrade was performed. Normal Lea
 listeners on 8001, 5173 and 31245 remain stopped. Test
 servers used temporary data and ports; owned test containers were removed. Other
 projects' Docker images, containers and volumes were left intact.
@@ -45,20 +49,24 @@ syntax was interpreted as an import of a module named `all`. The import utility
 now resolves `M`, with a regression and real kernel checks for targeted Mathlib
 imports and a compiled namespaced sibling.
 
-Raw Git merging still reports conflicts because the histories diverged before
-the mirror. [The resolution manifest](merge-resolutions.json) pins the reviewed
+Before integration, raw Git merging reported conflicts because the histories
+diverged before the mirror. [The resolution manifest](merge-resolutions.json) pins the reviewed
 main SHA, selected feature blob and Git mode for every affected path. The
 [preview script](../../scripts/preview-main.py) uses temporary Git objects and an
 index; it never merges into the checkout or updates real refs. The reviewed
-candidate resolves **99 raw conflicts**, leaves no unresolved conflicts and
-equals the tested feature tree. It also explicitly preserves historical feature
+pre-integration candidate resolved **99 raw conflicts**, left no unresolved
+conflicts and equaled the tested feature tree. It also preserved historical feature
 documentation that a raw merge would delete. Unknown conflicts, changed selected
 bytes, file modes or an advanced main fail the preview. Draft recipes cannot
 approve a preview. A guarded apply tool defaults to read-only preflight; its
-mutation path was tested only in disposable repositories.
+mutation path was initially tested in disposable repositories before use on this
+checkout under the later explicit integration authorization.
 
-This prepares a reviewed resolution recipe. A future authorized merge must use
-those choices and rerun the gates; it is not an automatically clean merge.
+The authorized local integration applied those choices, inspected the staged
+tree and committed both parents. Main is now an ancestor of the feature, and a
+fresh [post-integration preview](evidence/local-integration/validated-preview.json)
+has zero conflicts or additional candidate changes. A later advance of main
+requires reviewing that new delta and refreshing the recipe before integration.
 
 ## Dependency disposition
 
@@ -122,7 +130,11 @@ preserves database, configuration, proof, project, companion and Mathlib caches.
 checks. Real Lean tests reject disabled/missing compiler prerequisites. Native
 AMD64 and ARM64 jobs build and run the actual production image without publishing.
 The aggregate gate fails unless every job succeeds. CI installs Python 3.13 to
-match the production runtime.
+match the production runtime. The application job now prepares the pinned Lean
+compiler and SafeVerify before its full suites, as the separate real-Lean job
+does. The shared preparation script exports the repository's toolchain through
+`GITHUB_ENV` for subsequent standalone checks. Compiler fixture tests verify that
+selection even when the parent environment specifies an incorrect toolchain.
 
 Both website and container publication depend on the reusable application
 validation. Their local workflow definitions now accept only manual dispatch;
@@ -186,21 +198,22 @@ Lean 4.29.0; the harness checks the actual Node and Lean binary architectures.
 
 | Gate | Final result |
 | --- | --- |
-| Complete adapter suite | [1,021 passed](evidence/adapter-tests.log), 10 existing framework deprecation warnings; unhandled worker-thread warnings treated as errors. |
-| Root JavaScript | [746 passed](evidence/javascript-summary.log): 6 script/asset, 655 companion, 85 frontend; no skips. |
-| Cross-layer transport/persistence | [8 passed](evidence/integration-tests.log). |
-| Built frontend in Chromium | [3 passed](evidence/browser-tests.log): stale canvas after external edit/reload, gateway settings and vendored KaTeX trust behavior. |
-| Website | [23 passed](evidence/site-tests.log); build passed. |
-| Standalone prover | [42 unit modules](evidence/prover-unit.json) and [3 real Lean modules](evidence/prover-lean.json) passed, covering recovery, concurrency and cascade rename. |
-| Real SafeVerify | [3 isolated scenarios](evidence/safeverify.log) passed: targeted imports, compiled namespaced sibling and rejection of `sorry`, with evidence. |
-| Small container, real production entrypoint | [Passed](evidence/container-supervision.log): both backends, restart, shutdown, ownership reuse, preparation failure, companion death and interruption during preparation. This uses a fake Lake preparation command, not the full production compiler image. |
-| Frontend typecheck and production build | [Typecheck](evidence/typecheck.log) and [build](evidence/frontend-build.log) passed; native Lean asset serving/copy tests passed. |
+| Complete adapter suite | [1,021 passed](evidence/local-integration/adapter-tests.log), 10 existing framework deprecation warnings; unhandled worker-thread warnings treated as errors. |
+| Root JavaScript | [746 passed](evidence/local-integration/javascript-tests.log): 6 script/asset, 655 companion, 85 frontend; no skips. |
+| Cross-layer transport/persistence | [8 passed](evidence/local-integration/integration-tests.log). |
+| Built frontend in Chromium | [3 passed](evidence/local-integration/browser-tests.log): stale canvas after external edit/reload, gateway settings and vendored KaTeX trust behavior. |
+| Website | [23 passed](evidence/local-integration/site-tests.log); build passed. |
+| Standalone prover | [42 unit modules](evidence/local-integration/prover-unit.json) and [3 real Lean modules](evidence/local-integration/prover-lean.json) passed, covering recovery, concurrency and cascade rename. |
+| Focused real certification checks | [24 passed](evidence/local-integration/certification-tests.log), including cold/warm source capture, imports, warm reuse, classification-time changes and both P1 reproductions. |
+| Real SafeVerify | [3 isolated scenarios](evidence/local-integration/safeverify.log) passed: targeted imports, compiled namespaced sibling and rejection of `sorry`, with evidence. |
+| Small container, real production entrypoint | [Passed](evidence/local-integration/container-lifecycle.log): both backends, restart, shutdown, ownership reuse, preparation failure, companion death and interruption during preparation. This uses a fake Lake preparation command, not the full production compiler image. |
+| Frontend typecheck and production build | [Typecheck](evidence/local-integration/typecheck.log) and [build](evidence/local-integration/frontend-build.log) passed; native Lean asset serving/copy tests passed. |
 | Original four audit reproductions | [Source overwrite](evidence/source-attribution.json), [dependency edit](evidence/dependency-freshness.json), [classifier](evidence/classifier.json) and [unbound restart](evidence/unbound-restart.json) now show the corrected behavior. |
 | Migration, live preservation and copy restore | Passed as described above. |
 | Workflow/shell/Python syntax and whitespace | Passed. |
-| Local integration and CI preparation | [37 passed](evidence/local-preparation-tests.log): disposable Git integrations, default read-only preflight, stale/dirty/unknown inputs, ignored-file protection and bounded cache failure handling. |
-| Actual production ARM64 image | [Build](evidence/production-build-arm64.log) and [all three runtime scenarios](evidence/production-arm64.json) passed natively. |
-| Actual production AMD64 image | [Build](evidence/production-build-amd64.log) and [all three runtime scenarios](evidence/production-amd64.json) passed under emulation on ARM64. Native AMD64 CI remains unexecuted. |
+| Local integration and CI preparation | [38 passed](evidence/local-integration/local-preparation-tests.log): disposable Git integrations, stale/dirty/unknown inputs, ignored-file protection, bounded cache failure handling and pinned CI toolchain export. |
+| Actual production ARM64 image, prior gate | [Build](evidence/production-build-arm64.log) and [all three runtime scenarios](evidence/production-arm64.json) passed natively before this ancestry integration. |
+| Actual production AMD64 image, prior gate | [Build](evidence/production-build-amd64.log) and [all three runtime scenarios](evidence/production-amd64.json) passed under emulation before this ancestry integration. Native AMD64 CI remains unexecuted. |
 
 The browser fixture uses the real built React application and an isolated adapter
 with a stub prover. It does not establish real Overleaf-account/Chrome-extension
@@ -264,10 +277,10 @@ ports have no listeners, and no owned test or compiler workers remain.
 
 Remote CI was not dispatched and nothing was published. CI defines native AMD64
 and ARM64 runners; local emulation does not establish their results. The reviewed
-[merge preview](evidence/merge-preview-production.json) still resolves 99 conflicts
-with no candidate changes beyond the tested feature tree. A future authorized
-merge must use that recipe, rerun the required CI gates and confirm main has not
-advanced.
+[merge preview](evidence/merge-preview-production.json) resolved 99 conflicts
+with no candidate changes beyond the tested feature tree before the authorized
+ancestry integration described below. Native exact-candidate CI still needs to
+run after feature publication is authorized.
 
 ## Local preparation completed
 
@@ -301,21 +314,61 @@ with migration and restore exercised only on copies. [Cleanup](evidence/local-pr
 confirms no normal Lea listeners, running Docker containers or owned test/compiler
 workers. This step did not create containers or remove Docker data.
 
-Remaining merge gates, each requiring later authorization:
+That local preparation was followed by the authorized integration below. The
+remaining merge gates, each requiring later authorization, are:
 
-1. Refresh main and regenerate the preview from the exact clean feature HEAD;
-   review any newly advanced main changes. Integrate the approved main locally
-   and inspect/commit its pending merge. The real checkout still has 99 raw
-   conflicts because ancestry has not been integrated.
-2. Push the reviewed feature, open the PR and obtain review. Run the application,
+1. Push the reviewed feature, open the PR and obtain review. Run the application,
    real Lean and native AMD64/ARM64 GitHub checks on the exact candidate. Confirm
    the emitted aggregate `merge-gate` check context before requiring it.
-3. Apply and verify main protection: required PR, at least one approving review,
+2. Apply and verify main protection: required PR, at least one approving review,
    dismissal of stale approvals and an up-to-date required aggregate check.
 
 Merging the PR, releasing images/site and live migration/rechecks remain later
-decisions. Committed preview evidence binds `fc899f9`; the later documentation
-commit changes HEAD, so generate a fresh preview before any future apply.
+decisions. The earlier preparation snapshot binds `fc899f9` and remains
+historical evidence. Fresh snapshots are required whenever HEAD or main changes.
+
+## Authorized local integration completed
+
+[Merge inspection](evidence/local-integration/merge-inspection.json) verified the
+actual index matched the approved tree and contained no unresolved paths.
+[Merge commit evidence](evidence/local-integration/merge-commit.json) records
+`043f6d4` with parents `5517d77` and VIDA main `8fc9a74`. Its tree remained
+`201a75e4fdee57f121f8fc8a5daaff69eca5f1dc`; main's changes had already been ported
+before the ancestry merge. The local main branch and all other refs stayed at
+their original values.
+
+Validation initially exposed [test setup problems](evidence/local-integration/initial-validation-findings.json).
+Temporary companion projects selected a floating `stable` Lean toolchain, whose
+version lookup stalled eight cases. The isolated failing case passed with the
+installed pinned toolchain. The fixtures now copy the repository toolchain,
+and application CI provisions the compiler prerequisites before its suites.
+A subsequent run caught a retry test observing `finishedAt` before asynchronous
+finalization assigned its terminal status. It now waits for completion and a
+terminal status, retaining the assertions on paused/failed outcomes and partial
+proof preservation. These corrections are committed in `3ff5bfe`. Only the two
+affected existing fixture selections changed in the reviewed resolution manifest;
+all 133 choices and file modes remain reviewed.
+
+[Integrated candidate evidence](evidence/local-integration/validated-candidate.json)
+binds that code commit and confirms current VIDA main is an ancestor, no raw
+conflicts remain, and read-only preflight preserved refs/index/worktree. The full
+adapter, JavaScript, cross-layer, browser and preparation suites pass; all real
+Lean modules, SafeVerify scenarios and focused certification checks pass. The
+[validation summary](evidence/local-integration/validation.json) records their
+scope. No application/prover runtime code or Dockerfile changed in this step.
+Both full production images were validated previously; they were not rebuilt
+for the ancestry merge and test/CI setup changes. Native exact-candidate CI is
+still a required later gate.
+
+[Final preservation](evidence/local-integration/data-preservation-after.json)
+again verifies all 645 original files and the original database rows/revision,
+with migration and restore exercised only on copies. [Cleanup](evidence/local-integration/cleanup.json)
+confirms the proof/project file inventory is unchanged, reserved compiler fixture
+paths are removed, no normal listeners or owned workers remain, and the small
+test image/containers are gone. All 21 distinct baseline Docker image IDs remain.
+Normal services remain stopped, and nothing was pushed, published or changed on
+GitHub. This later report commit changes HEAD; regenerate a fresh preview before
+any future integration or exact-candidate gate.
 
 ## Local delivery
 
@@ -331,5 +384,6 @@ commit changes HEAD, so generate a fresh preview before any future apply.
 `b01afb7` recorded the initial readiness report and storage blocker. `8e818d7`
 contains the tested cross-platform packaging and production-harness fixes. A
 further local commit, `4c6d195`, records both completed image checks. `fc899f9`
-adds the local preparation above, followed by its evidence/report commit. No
-normal services were started as part of delivery.
+adds the local preparation above, followed by evidence/report commit `5517d77`.
+`043f6d4` integrates VIDA main locally; `3ff5bfe` contains the tested validation
+setup fixes. No normal services were started as part of delivery.

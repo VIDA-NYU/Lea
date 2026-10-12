@@ -1,0 +1,7 @@
+  ok   initial upstream build succeeds
+  ok   downstream check is ok before any edit
+  ok   upstream's own check still passes (renamed, not broken)
+  ok   rebuild of the renamed module succeeds
+  ok   warm re-check (post mark_stale) reports the break
+
+All cascade-rename integration checks passed.

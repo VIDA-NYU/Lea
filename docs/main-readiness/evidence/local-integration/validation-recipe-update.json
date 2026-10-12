@@ -1,0 +1,23 @@
+{
+  "main": "8fc9a74bb7de07b655105e46fe661eb3473482b2",
+  "reviewed_paths": 133,
+  "reviewed_updates": [
+    {
+      "path": "apps/overleaf-extension/tests/companion.test.mjs",
+      "previous_blob": "cfd3d3d40b61459896b18d2855f50080ccbcb982",
+      "reviewed_blob": "3f28a59d51afa7d80c92f09fad12ffdf4cab477c",
+      "mode": "100644",
+      "reasons": [
+        "project-pinned toolchain",
+        "wait for terminal state during asynchronous finalization"
+      ]
+    },
+    {
+      "path": "apps/overleaf-extension/tests/leanPaneEdit.test.mjs",
+      "previous_blob": "752e0fedf72d33549deb8864b317f617f090470c",
+      "reviewed_blob": "d27f78dcc4628de2a5b4f10ac36e8a1b734f51e4",
+      "mode": "100644"
+    }
+  ],
+  "other_choices_unchanged": true
+}

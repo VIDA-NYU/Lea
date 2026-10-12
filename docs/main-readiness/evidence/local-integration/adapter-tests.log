@@ -1,0 +1,123 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.14.4, pytest-9.0.3, pluggy-1.6.0
+rootdir: <repository>/apps/lea-standalone/adapter
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.13.0
+collected 1021 items
+
+tests/test_agent_roles.py ........                                       [  0%]
+tests/test_alignment_checks.py ..                                        [  0%]
+tests/test_artifacts.py ........                                         [  1%]
+tests/test_audit_boundaries.py ........                                  [  2%]
+tests/test_audit_project_lifecycle.py .....                              [  3%]
+tests/test_audit_proof_integrity.py .......................              [  5%]
+tests/test_authoring.py ...........                                      [  6%]
+tests/test_backfill.py ......                                            [  6%]
+tests/test_backup.py ..........                                          [  7%]
+tests/test_blueprint.py ..........                                       [  8%]
+tests/test_bridge.py ................................................... [ 13%]
+...............                                                          [ 15%]
+tests/test_certification_regressions.py ...........                      [ 16%]
+tests/test_check_evidence.py .............                               [ 17%]
+tests/test_checkpoint_continuation.py .................................. [ 21%]
+.............                                                            [ 22%]
+tests/test_collation.py .....................                            [ 24%]
+tests/test_concurrent_runs_e2e.py ..                                     [ 24%]
+tests/test_config.py .............                                       [ 25%]
+tests/test_custom_tools.py ..........                                    [ 26%]
+tests/test_db_code_steps.py ........                                     [ 27%]
+tests/test_db_messages.py .....                                          [ 28%]
+tests/test_db_seq.py ....                                                [ 28%]
+tests/test_db_seq_concurrent.py ....                                     [ 28%]
+tests/test_db_sessions.py .............                                  [ 30%]
+tests/test_db_skills.py ..........                                       [ 31%]
+tests/test_diagnostics.py .............................................  [ 35%]
+tests/test_filesystem.py ............                                    [ 36%]
+tests/test_formalizations.py ........                                    [ 37%]
+tests/test_formalize_batch_reports.py ...........                        [ 38%]
+tests/test_ghimport.py ................                                  [ 40%]
+tests/test_github_import_routes.py ...                                   [ 40%]
+tests/test_github_project_import.py .......                              [ 41%]
+tests/test_gitstore.py .....................................             [ 44%]
+tests/test_graph.py ........                                             [ 45%]
+tests/test_lea_status.py ........................                        [ 47%]
+tests/test_lsp_proxy.py .................                                [ 49%]
+tests/test_main_upgrade.py ..                                            [ 49%]
+tests/test_migrations.py ...........                                     [ 50%]
+tests/test_mirror_upsert.py .....                                        [ 51%]
+tests/test_multifile_skills.py ..............                            [ 52%]
+tests/test_netguard.py ...............................                   [ 55%]
+tests/test_origin.py .....                                               [ 56%]
+tests/test_overleaf_handoff.py ............                              [ 57%]
+tests/test_process_restart.py ....                                       [ 57%]
+tests/test_project_coordination.py .........                             [ 58%]
+tests/test_project_library.py .....................                      [ 60%]
+tests/test_projects.py ...........                                       [ 61%]
+tests/test_recovery.py .........................                         [ 64%]
+tests/test_routes_mcp_servers.py ...................                     [ 66%]
+tests/test_routes_projects.py .......................................... [ 70%]
+............................                                             [ 72%]
+tests/test_routes_runs.py ..............................                 [ 75%]
+tests/test_routes_runs_concurrency.py ....                               [ 76%]
+tests/test_routes_sessions.py ..................................         [ 79%]
+tests/test_routes_skills.py ...........                                  [ 80%]
+tests/test_routes_subagents.py ......                                    [ 81%]
+tests/test_runbroker.py .........                                        [ 82%]
+tests/test_runregistry.py ...............                                [ 83%]
+tests/test_runtime_restart.py ....                                       [ 84%]
+tests/test_search.py ........                                            [ 84%]
+tests/test_session_skills_mcp.py .........                               [ 85%]
+tests/test_session_tree.py .......                                       [ 86%]
+tests/test_settings.py .......................................           [ 90%]
+tests/test_skills_catalog.py ...                                         [ 90%]
+tests/test_store.py ........................................             [ 94%]
+tests/test_subagent_bridge.py .............................              [ 97%]
+tests/test_target_completion.py ......                                   [ 97%]
+tests/test_timeline_schema.py ..........                                 [ 98%]
+tests/test_uploads.py ........                                           [ 99%]
+tests/test_usage_details.py ....                                         [100%]
+
+=============================== warnings summary ===============================
+.venv/lib/python3.14/site-packages/fastapi/testclient.py:1
+  <repository>/apps/lea-standalone/adapter/.venv/lib/python3.14/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_custom_tools.py::test_tool_catalog_route_is_reachable_over_http
+  <repository>/apps/lea-standalone/adapter/app/main.py:65: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @app.on_event("startup")
+
+tests/test_custom_tools.py::test_tool_catalog_route_is_reachable_over_http
+tests/test_custom_tools.py::test_tool_catalog_route_is_reachable_over_http
+  <repository>/apps/lea-standalone/adapter/.venv/lib/python3.14/site-packages/fastapi/applications.py:4598: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    return self.router.on_event(event_type)  # ty: ignore[deprecated]
+
+tests/test_custom_tools.py::test_tool_catalog_route_is_reachable_over_http
+  <repository>/apps/lea-standalone/adapter/app/main.py:119: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @app.on_event("shutdown")
+
+tests/test_routes_subagents.py::test_put_stores_only_the_diff_from_default
+tests/test_routes_subagents.py::test_put_custom_prompt_and_model_are_stored
+tests/test_routes_subagents.py::test_reset_to_defaults_clears_the_override
+tests/test_routes_subagents.py::test_reset_to_defaults_clears_the_override
+tests/test_routes_subagents.py::test_malformed_values_are_dropped
+  <repository>/apps/lea-standalone/adapter/app/routes/subagents.py:159: PydanticDeprecatedSince20: The `dict` method is deprecated; use `model_dump` instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
+    incoming = subagent_overrides.sanitize(request.dict())
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================ 1021 passed, 10 warnings in 463.34s (0:07:43) =================
