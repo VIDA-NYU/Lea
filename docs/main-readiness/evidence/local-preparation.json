@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-12",
+  "branch": "LeaCheckAddition",
+  "tested_code_commit": "fc899f977b4ede26b49f78646ba0ded16630f7eb",
+  "vida_main": "8fc9a74bb7de07b655105e46fe661eb3473482b2",
+  "source_tree": "dff9507812234e5af7a73a1b913220a671213fd0",
+  "resolved_tree": "dff9507812234e5af7a73a1b913220a671213fd0",
+  "manifest_sha256": "fa438d39702e3b5c0eda10a13da03a1eec2f156242a76d5d06a17102c37536a8",
+  "reviewed_resolution_paths": 133,
+  "raw_conflicts": 99,
+  "candidate_changes_from_feature": [],
+  "checks": {
+    "python_syntax": true,
+    "bash_syntax": true,
+    "actionlint": "1.7.12",
+    "diff_whitespace": true,
+    "preparation_tests": 37
+  },
+  "test_log_sha256": "c2452324338bcfa8f8cbd6ede1823cdd3e5803e98a3692abe1300947c296130c",
+  "real_checkout_preflight": {
+    "remote_main_verified": true,
+    "applied": false,
+    "committed": false,
+    "refs_index_worktree_unchanged": true
+  },
+  "apply_mutation_test_scope": "disposable repositories only",
+  "publication_workflows": "local definitions are manual-only; deployed definitions unchanged",
+  "operations": {
+    "normal_services_started": false,
+    "real_checkout_merged": false,
+    "pushed": false,
+    "published": false,
+    "remote_ci_dispatched": false,
+    "github_settings_changed": false,
+    "live_database_upgraded": false,
+    "docker_data_removed": false
+  },
+  "prior_runtime_validation": "application and production runtime code unchanged during local preparation; earlier full-suite/image evidence remains historical; native exact-candidate CI pending",
+  "snapshot_scope": "committed-code evidence binds tested_code_commit; regenerate after any later HEAD change"
+}

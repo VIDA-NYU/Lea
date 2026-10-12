@@ -1,0 +1,15 @@
+{
+  "date": "2026-10-12",
+  "normal_ports_checked": [
+    8001,
+    5173,
+    31245
+  ],
+  "normal_lea_listeners": 0,
+  "running_docker_containers": 0,
+  "owned_test_or_compiler_workers": [],
+  "normal_services_started": false,
+  "owned_containers_created": false,
+  "docker_data_removed": false,
+  "other_project_resources_changed": false
+}

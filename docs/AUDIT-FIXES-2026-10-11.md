@@ -117,3 +117,22 @@ run. The work remains on `LeaCheckAddition`, services remain stopped, and nothin
 was merged, pushed or published. This addendum preserves the historical results
 above; the main-readiness report records the completed production gate, fixture
 corrections, cross-platform packaging fix and targeted Docker cleanup.
+
+## Local merge preparation — 2026-10-12
+
+Commit `fc899f9` prepares integration against verified VIDA main `8fc9a74` without
+merging this checkout. The reviewed recipe now pins file modes, and guarded
+integration defaults to read-only preflight. All 37 preparation regressions pass,
+including disposable pending merges, stale/dirty inputs, preservation of history,
+symlinks and deletions, and explicit rejection of ignored-file collisions before
+mutation. The real checkout's preflight resolves 99 conflicts in temporary Git
+storage with no candidate-tree differences or changes to refs/index/worktree.
+
+Local image/site workflows are manual-only, with release write permissions scoped
+to their jobs. CI cache preparation retries once while retaining mandatory Mathlib
+and SafeVerify compilation/completeness checks. Proposed main protection and the
+later authorization gates are documented in the [local preparation runbook](main-readiness/LOCAL-PREPARATION.md).
+GitHub settings and deployed workflows remain unchanged. Native candidate CI,
+actual integration and PR review/enforcement remain pending. Services are stopped,
+and live history/proofs are unchanged; see the [updated report](main-readiness/REPORT.md)
+for evidence and remaining gates.

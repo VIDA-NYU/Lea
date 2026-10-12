@@ -25,10 +25,17 @@
     "syntax_and_whitespace": true,
     "production_arm64_image": true,
     "production_amd64_image": true,
-    "production_runtime_scenarios_per_architecture": 3
+    "production_runtime_scenarios_per_architecture": 3,
+    "local_preparation_tests": 37,
+    "guarded_readonly_preflight": true,
+    "mode_pinned_resolution_paths": 133,
+    "manual_only_publication_controls": true
   },
   "pending": {
-    "remote_ci": "not dispatched or published; native AMD64/ARM64 workflow jobs not executed on GitHub"
+    "remote_ci": "not dispatched or published; native AMD64/ARM64 workflow jobs not executed on GitHub",
+    "actual_feature_integration": "not performed; reviewed recipe resolves 99 raw conflicts",
+    "feature_push_and_pr": "not authorized or performed",
+    "main_enforcement": "proposed in LOCAL-PREPARATION.md; GitHub settings unchanged"
   },
   "operations": {
     "normal_services_started": false,
@@ -36,7 +43,9 @@
     "pushed": false,
     "published": false,
     "live_database_upgraded": false,
-    "other_project_docker_data_removed": false
+    "other_project_docker_data_removed": false,
+    "remote_ci_dispatched": false,
+    "github_settings_changed": false
   },
   "production_environment": {
     "python": "3.13.11",
@@ -44,5 +53,12 @@
     "lean": "4.29.0",
     "arm64": "native Linux ARM64",
     "amd64": "emulated Linux AMD64 on ARM64 Docker Desktop"
+  },
+  "local_preparation": {
+    "tested_code_commit": "fc899f977b4ede26b49f78646ba0ded16630f7eb",
+    "vida_main": "8fc9a74bb7de07b655105e46fe661eb3473482b2",
+    "real_checkout_applied": false,
+    "services_stopped": true,
+    "fresh_preview_required_after_head_change": true
   }
 }

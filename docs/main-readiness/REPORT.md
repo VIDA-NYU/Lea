@@ -4,11 +4,14 @@ Implementation and local validation remain on `LeaCheckAddition`. The applicatio
 proof-certification, migration, dependency and supervision checks listed below
 pass. **Both actual production images now build and pass the runtime harness:**
 ARM64 ran natively and AMD64 ran under emulation on this ARM64 host. The local
-production-image gate is complete. Native GitHub CI jobs have not run, and a
-future merge still needs the reviewed resolution recipe and authorization.
+production-image gate is complete. Local integration guards, manual publication
+controls and the proposed main enforcement procedure are now prepared and
+validated. Native GitHub CI jobs have not run. Actual integration, publication of
+the feature/PR and GitHub enforcement still require later authorization.
 
-No merge, rebase, push, publication, remote CI dispatch or live database upgrade
-was performed. Normal Lea listeners on 8001, 5173 and 31245 remain stopped. Test
+No merge or rebase of this checkout, push, publication, remote CI dispatch,
+GitHub settings change or live database upgrade was performed. Normal Lea
+listeners on 8001, 5173 and 31245 remain stopped. Test
 servers used temporary data and ports; owned test containers were removed. Other
 projects' Docker images, containers and volumes were left intact.
 
@@ -44,13 +47,15 @@ imports and a compiled namespaced sibling.
 
 Raw Git merging still reports conflicts because the histories diverged before
 the mirror. [The resolution manifest](merge-resolutions.json) pins the reviewed
-main SHA and selected feature blob for every affected path. The
+main SHA, selected feature blob and Git mode for every affected path. The
 [preview script](../../scripts/preview-main.py) uses temporary Git objects and an
 index; it never merges into the checkout or updates real refs. The reviewed
 candidate resolves **99 raw conflicts**, leaves no unresolved conflicts and
 equals the tested feature tree. It also explicitly preserves historical feature
 documentation that a raw merge would delete. Unknown conflicts, changed selected
-bytes or an advanced main fail the preview.
+bytes, file modes or an advanced main fail the preview. Draft recipes cannot
+approve a preview. A guarded apply tool defaults to read-only preflight; its
+mutation path was tested only in disposable repositories.
 
 This prepares a reviewed resolution recipe. A future authorized merge must use
 those choices and rerun the gates; it is not an automatically clean merge.
@@ -120,8 +125,12 @@ The aggregate gate fails unless every job succeeds. CI installs Python 3.13 to
 match the production runtime.
 
 Both website and container publication depend on the reusable application
-validation. Registry write permission remains restricted to publication jobs;
-the validation job is read-only. All three workflow files pass actionlint 1.7.12.
+validation. Their local workflow definitions now accept only manual dispatch;
+merging or tagging cannot publish once this version reaches main. Registry write
+permission remains restricted to image publication jobs. Website build uses
+read permission for Pages metadata; only deployment receives Pages and identity
+write permissions. The validation jobs are read-only. All three workflow files
+pass actionlint 1.7.12.
 The official binary's release checksum was verified before local use. These
 workflow definitions have not run on GitHub. Repository branch protection was
 not changed; after authorized publication, VIDA should require `merge-gate`.
@@ -189,6 +198,7 @@ Lean 4.29.0; the harness checks the actual Node and Lean binary architectures.
 | Original four audit reproductions | [Source overwrite](evidence/source-attribution.json), [dependency edit](evidence/dependency-freshness.json), [classifier](evidence/classifier.json) and [unbound restart](evidence/unbound-restart.json) now show the corrected behavior. |
 | Migration, live preservation and copy restore | Passed as described above. |
 | Workflow/shell/Python syntax and whitespace | Passed. |
+| Local integration and CI preparation | [37 passed](evidence/local-preparation-tests.log): disposable Git integrations, default read-only preflight, stale/dirty/unknown inputs, ignored-file protection and bounded cache failure handling. |
 | Actual production ARM64 image | [Build](evidence/production-build-arm64.log) and [all three runtime scenarios](evidence/production-arm64.json) passed natively. |
 | Actual production AMD64 image | [Build](evidence/production-build-amd64.log) and [all three runtime scenarios](evidence/production-amd64.json) passed under emulation on ARM64. Native AMD64 CI remains unexecuted. |
 
@@ -259,6 +269,54 @@ with no candidate changes beyond the tested feature tree. A future authorized
 merge must use that recipe, rerun the required CI gates and confirm main has not
 advanced.
 
+## Local preparation completed
+
+Commit `fc899f9` contains the guarded integration tools, version 2 resolution
+manifest, manual publication controls, scoped permissions and bounded CI cache
+retry. [The preparation runbook](LOCAL-PREPARATION.md) documents the exact
+preflight commands and proposed main protection settings. It contains no remote
+settings mutation. Main protection and effective rules were absent at the last
+read-only planning check; enforcement is still pending.
+
+[Recipe review](evidence/local-preparation-recipe-review.json) confirms all 133
+path choices remain, now with 131 regular and two executable file modes. Only the
+two publication workflow blob selections changed. [The committed-code preview](evidence/merge-preview-local-preparation.json)
+resolves all 99 raw conflicts and equals that feature tree.
+[Read-only preflight evidence](evidence/local-preparation-readonly.json) confirms
+the live remote main matched the pinned SHA and the real refs, index and worktree
+were unchanged; no merge was started. The apply path rejects ignored local path
+collisions explicitly before calling Git, rather than relying solely on Git's
+overwrite flag. Its mutation tests used only disposable repositories.
+
+[Validation details](evidence/local-preparation.json) record 37 passing tests,
+workflow lint and syntax checks. Runtime application code, the Dockerfile and
+proof behavior did not change during this preparation. The earlier full suites
+and production runtime results remain evidence for that behavior; they were not
+rerun for these preparation-only changes. Native CI must rebuild and validate
+the exact eventual candidate, including the new scripts.
+
+[Data verification](evidence/data-preservation-local-preparation.json) again
+confirms the unchanged live revision, old rows and all 645 inventoried files,
+with migration and restore exercised only on copies. [Cleanup](evidence/local-preparation-cleanup.json)
+confirms no normal Lea listeners, running Docker containers or owned test/compiler
+workers. This step did not create containers or remove Docker data.
+
+Remaining merge gates, each requiring later authorization:
+
+1. Refresh main and regenerate the preview from the exact clean feature HEAD;
+   review any newly advanced main changes. Integrate the approved main locally
+   and inspect/commit its pending merge. The real checkout still has 99 raw
+   conflicts because ancestry has not been integrated.
+2. Push the reviewed feature, open the PR and obtain review. Run the application,
+   real Lean and native AMD64/ARM64 GitHub checks on the exact candidate. Confirm
+   the emitted aggregate `merge-gate` check context before requiring it.
+3. Apply and verify main protection: required PR, at least one approving review,
+   dismissal of stale approvals and an up-to-date required aggregate check.
+
+Merging the PR, releasing images/site and live migration/rechecks remain later
+decisions. Committed preview evidence binds `fc899f9`; the later documentation
+commit changes HEAD, so generate a fresh preview before any future apply.
+
 ## Local delivery
 
 - `aa87313`: previous proof-evidence and lifecycle fixes already committed at the
@@ -272,5 +330,6 @@ advanced.
 
 `b01afb7` recorded the initial readiness report and storage blocker. `8e818d7`
 contains the tested cross-platform packaging and production-harness fixes. A
-further local commit contains both completed image checks and this updated report.
-No normal services were started as part of delivery.
+further local commit, `4c6d195`, records both completed image checks. `fc899f9`
+adds the local preparation above, followed by its evidence/report commit. No
+normal services were started as part of delivery.
