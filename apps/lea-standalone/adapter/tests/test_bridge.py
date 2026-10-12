@@ -735,7 +735,7 @@ def test_approval_relay_allow(tmp_path, monkeypatch):
     _run_in_thread_and_resolve(ctx, "allow")
 
     assert received["decision"] == "allow"  # the decision reached the generator
-    assert store.get_run(ctx.run_id)["status"] == "proved"
+    assert store.get_run(ctx.run_id)["status"] == "needs_review"
     types = [i["type"] for i in _drain(queue)]
     assert "approval_requested" in types and "approval_resolved" in types
 
@@ -1077,7 +1077,7 @@ def test_enqueued_runs_execute_fifo(tmp_path, monkeypatch):
     )), "all queued runs reach a terminal status"
     assert executed == ["first", "second", "third"], "FIFO order preserved"
     for run_id in run_ids:
-        assert store.get_run(run_id)["status"] == "proved"
+        assert store.get_run(run_id)["status"] == "needs_review"
 
 
 def test_queued_run_executes_its_snapshotted_model(tmp_path, monkeypatch):
@@ -1147,7 +1147,7 @@ def test_finished_broker_buffer_ends_in_done(tmp_path, monkeypatch):
     types = [item["type"] for item in replay]
     assert "assistant_delta" in types
     assert types[-1] == "done"
-    assert replay[-1]["payload"]["status"] == "proved"
+    assert replay[-1]["payload"]["status"] == "needs_review"
 
 
 def test_interrupted_queued_run_is_skipped_and_broker_sealed(tmp_path, monkeypatch):
@@ -1970,3 +1970,7 @@ def test_coordinator_toolset_does_not_freeze_out_dynamic_tools(tmp_path, monkeyp
 
     assert "late_tool" in names, "a tool registered during the run was excluded"
     assert "spawn_subagent" in names
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

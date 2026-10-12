@@ -77,8 +77,33 @@ def _validity(
 ) -> tuple[str, str, bool, str | None]:
     """Current verdict, explanation, check freshness and declaration kind."""
     result_kind = (latest_run or {}).get("result_kind")
+    classifier_detail = (latest_run or {}).get('result_detail')
+    if result_kind in {'proved', 'disproved'} and classifier_detail and classifier_detail.strip().upper() != result_kind.upper():
+        return 'needs_review', 'The earlier completion classification needs review.', False, None
     if result_kind == "disproved":
-        return "disproved", "A verified disproof was reported.", False, None
+        current_steps = steps or []
+        if any(s.get('check_current') and s.get('check_status') == 'error' for s in current_steps):
+            return 'failing', 'The current disproof artifact failed its Lean check.', False, None
+        fresh = [s for s in current_steps if s.get('check_current') and s.get('check_status') == 'ok']
+        if not fresh:
+            return 'unchecked', 'The disproof needs a current Lean check.', False, None
+        if formalization.get('source_hash') and (artifact or {}).get('source_hash') and formalization['source_hash'] != artifact['source_hash']:
+            return 'stale', 'The source statement changed after this disproof was recorded.', False, None
+        with connect() as conn:
+            rows = conn.execute('''select t.*, b.content as blob_content from timeline t
+                left join artifact_blobs b on b.id=t.after_blob_id where t.kind='code'
+                and t.run_id=? order by t.id desc''', (latest_run['id'],)).fetchall()
+        seen = set()
+        for row in rows:
+            if row['path'] in seen:
+                continue
+            seen.add(row['path'])
+            if row['check_status'] != 'ok' or contains_sorry_marker(row['blob_content'] or ''):
+                continue
+            certified = {**dict(row), 'code': row['blob_content'] or ''}
+            if any(_certified_namespace_revision(formalization, certified, current) for current in fresh):
+                return 'disproved', 'A verified disproof was reported.', True, None
+        return 'needs_review', 'The successful disproof run did not check this artifact revision.', True, None
     current_steps = steps or []
     name = formalization.get("declaration_name")
     declaration = next(
@@ -87,7 +112,7 @@ def _validity(
         None,
     )
     match, reason = checked_target(formalization, current_steps)
-    check_current = any(step.get("check_status") == "ok" for step in current_steps)
+    check_current = any(step.get("check_status") == "ok" and step.get("check_current") for step in current_steps)
     kind = declaration.kind if declaration else None
     # A review result is a verdict about this target. No later chat, file
     # classification or manual check may promote it.
@@ -99,7 +124,7 @@ def _validity(
         return ("draft" if not name and primary is None else "planned"), "No current artifact is linked to this target.", False, kind
     if not declaration:
         return "needs_review", f"The artifact does not declare the requested {name or 'target'}.", check_current, None
-    if any(step.get("check_status") == "error" for step in current_steps):
+    if any(step.get("check_status") == "error" and step.get("check_current") for step in current_steps):
         return "failing", "The current artifact failed its Lean check.", False, kind
     if contains_sorry_marker(next((step.get("code") or "" for step in current_steps if target_declaration(step.get("code"), name, formalization.get("kind") or "theorem")), "")):
         return "failing", "The requested declaration still contains sorry or admit.", False, kind
@@ -138,7 +163,10 @@ def _validity(
             if row["path"] not in seen_paths:
                 seen_paths.add(row["path"])
                 run_steps.append(store._code_step_from_row(row))
-        certified, _ = checked_target(formalization, run_steps)
+        certified, _ = checked_target(formalization, run_steps, require_current=False)
+        if not certified and '.' in (formalization.get('declaration_name') or ''):
+            certified, _ = checked_target({**formalization, 'declaration_name': formalization['declaration_name'].rsplit('.', 1)[-1]},
+                                         run_steps, require_current=False)
         if not certified or not _certified_namespace_revision(formalization, certified, match):
             return "needs_review", "The successful run did not check this target revision.", True, kind
     return ("defined" if formalization.get("kind") == "definition" else "proved"), "The requested declaration passed Lean in a successful target run.", True, kind
@@ -376,6 +404,7 @@ def decorate(rows: list[dict]) -> list[dict]:
                 active["pending_approval"] = None
         safe_verify = None
         if verification:
+            from .proof_evidence import verification_current
             safe_verify = {
                 "id": verification["id"],
                 "status": verification["status"],
@@ -385,11 +414,7 @@ def decorate(rows: list[dict]) -> list[dict]:
                     str(verification["code_step_id"])
                     if verification.get("code_step_id") is not None else None
                 ),
-                "current": bool(
-                    step
-                    and verification.get("code_step_id") is not None
-                    and str(verification["code_step_id"]) == str(step["id"])
-                ),
+                "current": verification_current(verification, step),
                 "created_at": verification["created_at"],
             }
         item.update(

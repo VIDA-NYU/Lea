@@ -1,0 +1,25 @@
+{
+  "backup_directory": "/Users/danielarturi/Developer/VIDA_Dev/LeaEcosystem/apps/lea-standalone/data/backups/pre-proof-evidence-20261011",
+  "migrated_revision": "0032_proof_check_evidence",
+  "integrity_check": "ok",
+  "tables": {
+    "sessions": {
+      "count": 153,
+      "existing_columns_unchanged": true
+    },
+    "runs": {
+      "count": 288,
+      "existing_columns_unchanged": true
+    },
+    "timeline": {
+      "count": 4962,
+      "existing_columns_unchanged": true
+    },
+    "artifact_blobs": {
+      "count": 778,
+      "existing_columns_unchanged": true
+    }
+  },
+  "evidence_records_backfilled": 0,
+  "live_database_revision": "0031_usage_details"
+}

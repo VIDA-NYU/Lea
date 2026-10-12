@@ -1,0 +1,996 @@
+
+MODULE tests.agent.test_gate
+per-tool gate (A8) tests:
+  ok   gate fired once on write_file
+  ok   approval carries args
+  ok   allowed -> write executed (FileChanged)
+  ok   always_session -> executed (FileChanged)
+  ok   gate still fired on deny
+  ok   denied -> NOT executed (no FileChanged)
+  ok   denied -> tool result is the declined-error
+  ok   non-allow decision -> deny (no FileChanged)
+  ok   non-gated tool: no approval event
+  ok   non-gated tool: ran (FileChanged)
+  ok   gate=None: no approval events
+  ok   gate=None: tool ran (FileChanged)
+
+All gate tests passed.
+
+MODULE tests.agent.test_lea_status
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.008s
+
+OK
+
+MODULE tests.agent.test_project_library
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.002s
+
+OK
+
+MODULE tests.agent.test_run_events
+agent (run_events + run) tests:
+  ok   event order
+  ok   turn-1 ToolCalled write_file
+  ok   turn-1 ToolCalled lean_check
+  ok   turn-1 UsageUpdated cost
+  ok   write_file result content
+  ok   lean_check result content
+  ok   Finished.reason completed
+  ok   Finished.text
+  ok   Finished.turns
+  ok   Finished cumulative usage
+  ok   Finished cumulative cost
+  ok   Finished result kind proved
+  ok   transcript turns
+  ok   transcript has messages
+  ok   max_turns Finished reason
+  ok   max_turns Finished turns
+  ok   finished on max_turns
+  ok   result is the SUMMARY, not an error
+  ok   only the budgeted tool turns ran (2), then the summary
+  ok   summary streamed as assistant text
+  ok   summary folded into the returned transcript
+  ok   max_cost Finished reason
+  ok   max_cost runs no summary request
+  ok   max_cost preserves incurred usage
+  ok   max_cost preserves incurred cost
+  ok   narration instruction added
+  ok   narration instruction omitted by default
+  ok   forced narration before tool call
+  ok   forced narration persisted before tool call
+  ok   forced narration usage included
+  ok   failed final gate eventually completes
+  ok   final gate checked before and after repair
+  ok   failed gate resumed the model loop
+  ok   model received final gate failure
+  ok   no-artifact run eventually completes
+  ok   no-artifact recovery used lean_check
+  ok   no-artifact recovery resumed the model loop
+  ok   model received no-artifact correction
+  ok   failed final gate hits max_turns next
+  ok   gate loop stops at max_turns, plus one summary turn
+  ok   failed final gate checked once with max_turns
+  ok   passing final gate completes
+  ok   passing final gate checked latest proof
+  ok   explicit check completes
+  ok   explicit successful check not duplicated
+  ok   edit after check completes
+  ok   edit after check rechecked
+  ok   result classifier proved
+  ok   result classifier disproved
+  ok   result classifier ambiguous
+  ok   sorry skeleton is NOT 'completed'
+  ok   sorry skeleton ends as a chat turn (no false Proved)
+  ok   sorry skeleton hands back to the user
+  ok   assistant turn: benign 'assistant' reason
+  ok   assistant turn: answered in prose
+  ok   assistant turn: full toolset available
+  ok   assistant turn: search_mathlib actually called
+  ok   text-only history serializes without error
+  ok   latest user message preserved
+  ok   assistant turns use parts format
+  ok   reasoning item persisted beside originating tool call
+  ok   reasoning item remains internal
+  ok   run completes with caller-provided messages
+  ok   caller context stays first (not prepended)
+  ok   task stays second
+
+All agent tests passed.
+
+MODULE tests.agent.test_stalled
+........
+----------------------------------------------------------------------
+Ran 8 tests in 0.008s
+
+OK
+
+MODULE tests.condenser.test_condenser
+  ok   prune masks all-but-recent
+  ok   prune keeps recent verbatim
+  ok   prune placeholder on old
+  ok   prune preserves tool_result id
+  ok   prune shrinks the estimate
+  ok   prune left input dicts untouched
+  ok   prune returned a different list object
+  ok   prune skips non-prunable tools
+  ok   prune skips tiny results
+  ok   referenced_files distinct, first-seen order
+  ok   referenced_files empty when no tool calls
+  ok   trigger computed from limit×threshold
+  ok   should_compact true at/over trigger
+  ok   should_compact false under trigger
+  ok   limit 0 disables compaction
+  ok   summarize reports it folded
+  ok   summarize shrinks history
+  ok   summarize keeps the goal first
+  ok   summarize folded in the summary block
+  ok   summarize orphans no tool_result
+  ok   summarize tail starts at assistant
+  ok   summarize no-ops with too few turns
+  ok   summarize degrades to no-op on empty summary
+  ok   condense returns a CondenseResult
+  ok   condense pruned without summarizing
+  ok   condense marks changed
+  ok   condense summarized when prune not enough
+  ok   condense accounts summary usage
+  ok   loop emitted a Compacted event
+  ok   loop compaction pruned a superseded read_file
+  ok   loop compaction reduced the estimate
+  ok   loop still finished
+
+All condenser (G1) tests passed.
+
+MODULE tests.events.test_diagnostics
+diagnostics (v2.4) tests:
+  ok    defaults are prover/None/{}
+  ok    Diagnostic in AgentEvent union
+  ok    carries severity/code/message/source/remedy/context
+  ok    Diagnostic is frozen
+  ok    no scope → drain is empty
+  ok    one diagnostic drained
+  ok    severity/code preserved
+  ok    kwargs become context
+  ok    drain clears
+  ok    None context entries dropped
+  ok    once=True collapses repeats
+  ok    once=True holds across drains
+  ok    unknown severity → notice
+  ok    worker-thread reports reach the parent
+  ok    child scope does not leak to parent
+
+All diagnostics tests passed.
+
+MODULE tests.events.test_events
+events (A1) tests:
+  ok   FileChanged.path
+  ok   CheckResult ok status
+  ok   CheckResult detail defaults None
+  ok   CheckResult error detail
+  ok   VerifyResult ok status
+  ok   VerifyResult detail defaults None
+  ok   VerifyResult rejected detail
+  ok   Error.message
+  ok   FileChanged is frozen
+  ok   CheckResult is frozen
+  ok   VerifyResult is frozen
+  ok   Error is frozen
+  ok   FileChanged in AgentEvent union
+  ok   CheckResult in AgentEvent union
+  ok   VerifyResult in AgentEvent union
+  ok   Error in AgentEvent union
+  ok   FileChanged keeps compatible path and optional snapshot
+  ok   legacy FileChanged omits snapshot
+  ok   FileChanged captures immutable content
+
+All events tests passed.
+
+MODULE tests.events.test_meaning_emit
+meaning-event emission (A2) tests:
+  ok   write .lean ok -> one FileChanged
+  ok   FileChanged carries the resolved path
+  ok   FileChanged path is absolute
+  ok   edit .lean ok -> FileChanged
+  ok   write with 'Error:' result -> no event
+  ok   write non-.lean -> no event
+  ok   write without path -> no event
+  ok   clean check -> one CheckResult
+  ok   clean check status ok
+  ok   clean check detail None
+  ok   error check -> CheckResult
+  ok   error check status error
+  ok   error check detail = first error line
+  ok   error check carries the resolved path
+  ok   search_mathlib -> no event
+  ok   bash -> no event
+
+All meaning-emit tests passed.
+
+MODULE tests.interface.test_check
+interface.check (A5) tests:
+  ok   clean -> CheckResult
+  ok   clean status ok
+  ok   clean detail None
+  ok   clean path carried
+  ok   error status error
+  ok   error detail = first error line
+  ok   missing file -> error verdict
+  ok   missing file detail set
+  ok   warning-only -> ok
+  ok   warning-only detail None
+  ok   cold=False (default) calls lean_check
+  ok   cold=True calls lean_check_cold, not lean_check
+  ok   cold=True verdict still classified correctly
+
+All interface.check tests passed.
+
+MODULE tests.interface.test_facade
+interface facade (A7) tests:
+  ok   __all__ 'run_events' is importable
+  ok   __all__ 'check' is importable
+  ok   __all__ 'verify' is importable
+  ok   __all__ 'rebuild' is importable
+  ok   __all__ 'AgentEvent' is importable
+  ok   __all__ 'AssistantTextDelta' is importable
+  ok   __all__ 'TurnStarted' is importable
+  ok   __all__ 'ToolCalled' is importable
+  ok   __all__ 'ToolResulted' is importable
+  ok   __all__ 'ToolApprovalRequested' is importable
+  ok   __all__ 'LeaStatusUpdateRequested' is importable
+  ok   __all__ 'LeaStatusUpdateAck' is importable
+  ok   __all__ 'ProjectLibraryRequested' is importable
+  ok   __all__ 'ProjectLibraryAck' is importable
+  ok   __all__ 'UsageUpdated' is importable
+  ok   __all__ 'Compacted' is importable
+  ok   __all__ 'FileChanged' is importable
+  ok   __all__ 'CheckResult' is importable
+  ok   __all__ 'VerifyResult' is importable
+  ok   __all__ 'Error' is importable
+  ok   __all__ 'Diagnostic' is importable
+  ok   __all__ 'DependencyReadinessRequested' is importable
+  ok   __all__ 'DependencyReadinessAck' is importable
+  ok   __all__ 'SubagentStarted' is importable
+  ok   __all__ 'SubagentProgress' is importable
+  ok   __all__ 'SubagentFinished' is importable
+  ok   __all__ 'Finished' is importable
+  ok   __all__ 'request_child_stop' is importable
+  ok   run_events exported
+  ok   check is callable
+  ok   verify is callable
+  ok   check defined in interface
+  ok   verify defined in interface
+  ok   AssistantTextDelta is events.AssistantTextDelta
+  ok   TurnStarted is events.TurnStarted
+  ok   ToolCalled is events.ToolCalled
+  ok   ToolResulted is events.ToolResulted
+  ok   ToolApprovalRequested is events.ToolApprovalRequested
+  ok   UsageUpdated is events.UsageUpdated
+  ok   FileChanged is events.FileChanged
+  ok   CheckResult is events.CheckResult
+  ok   VerifyResult is events.VerifyResult
+  ok   Error is events.Error
+  ok   Finished is events.Finished
+  ok   AgentEvent is events.AgentEvent
+  ok   one-line adapter import works
+  ok   ToolApprovalRequested exported
+  ok   ToolApprovalRequested is events class
+
+All interface facade tests passed.
+
+MODULE tests.interface.test_rebuild
+interface.rebuild tests:
+  ok   clean -> CheckResult
+  ok   clean status ok
+  ok   clean detail None
+  ok   clean path carried
+  ok   error status error
+  ok   error detail = first error line
+  ok   missing file -> error verdict
+  ok   missing file detail set
+
+All interface.rebuild tests passed.
+
+MODULE tests.interface.test_verify
+interface.verify (A6) tests:
+  ok   signature strips body
+  ok   lemma works
+  ok   picks the last theorem
+  ok   no theorem -> None
+  ok   top-level -> no wrapper
+  ok   opens the namespace
+  ok   closes the namespace
+  ok   target keeps targeted Mathlib import
+  ok   target keeps trusted Lea sibling
+  ok   target keeps each import once
+  ok   target omits untrusted package root
+  ok   target ignores commented barrel import
+  ok   target opens the namespace
+  ok   target closes the namespace
+  ok   target keeps the signature + sorry
+  ok   sorry_target keeps the local def
+  ok   sorry_target keeps imports
+  ok   sorry_target keeps the namespace
+  ok   sorry_target sorries every lemma
+  ok   sorry_target drops the real proofs
+  ok   sorry_target keeps lemma headers
+  ok   no theorems -> defs untouched
+  ok   verify target keeps the def
+  ok   verify target sorries both lemmas
+  ok   verify maps grader ok -> ok
+  ok   verify target carries the trusted prelude, not a duplicated raw import
+  ok   target retains narrow import
+  ok   target does not widen to Mathlib barrel
+  ok   safe_verify registered
+  ok   safe_verify is opt-in
+  ok   safe_verify off by default
+  ok   safe_verify selectable when named
+  ok   safe_verify needs a path
+  ok   ok -> OK text
+  ok   rejected -> REJECTED + detail
+  ok   error is not a pass
+  ok   unavailable surfaced
+  ok   build lib is first on LEAN_PATH
+  ok   inherited LEAN_PATH preserved
+  ok   LEAN_PATH unchanged when no build lib
+  ok   passed -> VerifyResult
+  ok   passed -> ok
+  ok   ok detail is None
+  ok   failed -> rejected
+  ok   rejected carries detail
+  ok   grader raise -> error
+  ok   error detail mentions cause
+  ok   binary missing -> unavailable
+  ok   no theorem -> error
+  ok   error detail set
+  skip integration (set LEA_RUN_SV_INTEGRATION=1 to run the real grader)
+  skip targeted-import integration (set LEA_RUN_SV_INTEGRATION=1)
+  skip sibling integration (set LEA_RUN_SV_INTEGRATION=1)
+
+All interface.verify tests passed.
+
+MODULE tests.lsp.test_dispatch_unit
+lsp_daemon dispatch unit tests:
+  ok   both checks issued waitForDiagnostics
+  ok   both checks returned
+  ok   A got A's diagnostics, not B's
+  ok   A's path is attributed correctly
+  ok   B got B's diagnostics, not A's
+  ok   B's path is attributed correctly
+  ok   id-colliding server request did not short-circuit A
+  ok   the colliding server request was acked (null result)
+  ok   clean file returns OK
+  ok   check raised instead of hanging on stream close
+  ok   daemon marked broken after stream close
+
+All lsp_daemon dispatch unit tests passed.
+
+MODULE tests.lsp.test_lsp_daemon
+lsp_daemon mark_stale tests:
+  ok   daemon starts non-stale
+  ok   mark_stale sets the flag
+  ok   mark_stale on an unstarted root tracks nothing new
+  ok   stale daemon was shut down
+  ok   a fresh daemon replaced it
+  ok   the new daemon starts non-stale
+  ok   same daemon reused when not stale/broken/exhausted
+  ok   no premature shutdown
+lsp_daemon close_documents_under tests (B1):
+  ok   closed both of agentA's documents
+  ok   didClose sent for each agentA uri
+  ok   agentB's document was left open
+  ok   agentA uris dropped from opened
+  ok   agentA locks dropped
+  ok   agentB uri still tracked
+  ok   agentA closed
+  ok   agentAB not closed (not a string-prefix false match)
+  ok   agentAB still open
+  ok   nothing closed while in flight
+  ok   no didClose sent for the in-flight uri
+  ok   in-flight uri stays open
+  ok   no daemons → closes nothing, no raise
+  ok   module fan-out closed the daemon's matching doc
+
+All lsp_daemon mark_stale tests passed.
+
+MODULE tests.lsp.test_recovery
+...............................
+----------------------------------------------------------------------
+Ran 31 tests in 0.268s
+
+OK
+
+MODULE tests.mcp.test_mcp
+[mcp] server 'bad' failed to start: [Errno 2] No such file or directory: 'definitely-not-a-real-binary-xyz'; continuing without its tools
+[mcp] tool 'bash' from server 'stub' clashes; exposing it as 'stub__bash'
+mcp integration tests:
+  ok   picks the innermost ValueError, not the ExceptionGroup
+  ok   strips the exception class name
+  ok   drops the trailing box-drawing line
+  ok   empty stderr yields empty summary
+  ok   no error line falls back to the last prose line
+  ok   empty manager start/stop is a no-op
+  ok   start() did not raise on unstartable server
+  ok   no tools from failed server
+  ok   secret registered by bare name
+  ok   echo registered by bare name
+  ok   secret tool call returns server value
+  ok   echo tool call passes args
+  ok   echo schema carries input_schema
+  ok   echo schema carries description
+  ok   colliding tool prefixed to stub__bash
+  ok   built-in bash still bare
+  ok   prefixed tool calls the MCP server
+  ok   bare MCP tools unregistered after stop
+  ok   prefixed MCP tool unregistered after stop
+  ok   built-in bash survives MCP stop
+
+All mcp tests passed.
+
+MODULE tests.prompt.test_domain_cascades
+domain-scoped tactic cascade tests (v2.3 item 26):
+  ok   MeasureTheory file yields a hint
+  ok   hint names the domain
+  ok   hint carries the domain tactic
+  ok   a plain proof yields no domain hint
+  ok   empty text yields no hint
+  ok   first check surfaces the hint
+  ok   the domain is recorded in the set
+  ok   a second check on the same domain is silent
+  ok   multi-domain file yields a hint
+  ok   both domains present
+  ok   domains appear in table order
+  ok   already-seen domain is suppressed
+  ok   the new domain still surfaces
+  ok   polynomial degree tactic is not in the base prompt
+  ok   the flat cascade still ships in the prompt
+  ok   helper resolves a relative path against working_dir
+  ok   helper surfaces the domain
+  ok   helper dedups on the second check
+  ok   a missing file yields no hint, no crash
+  ok   no path arg → no hint
+
+All domain-cascade item-26 tests passed.
+
+MODULE tests.prompt.test_import_policy
+prompt targeted-import policy tests:
+  ok   default: forbids Mathlib barrel
+  ok   default: maps source paths to imports
+  ok   default: requires suggest_imports
+  ok   default: requires a clean re-check
+  ok   interactive: forbids Mathlib barrel
+  ok   interactive: maps source paths to imports
+  ok   interactive: requires suggest_imports
+  ok   interactive: requires a clean re-check
+  ok   overleaf_faithful: forbids Mathlib barrel
+  ok   overleaf_faithful: maps source paths to imports
+  ok   overleaf_faithful: requires suggest_imports
+  ok   overleaf_faithful: requires a clean re-check
+  ok   old broad-import instruction removed
+  ok   Overleaf prompt preserves the source method
+  ok   Overleaf prompt rejects silent mathematical repairs
+  ok   Overleaf prompt treats a missing proof as non-blocking
+  ok   Overleaf prompt reserves blocking for semantic changes
+  ok   Overleaf prompt reassesses legacy missing-proof blockers
+  ok   Overleaf prompt honors an author-authorized best-effort continuation
+  ok   Overleaf prompt prefers faithful failure
+  ok   Overleaf source pauses are disabled by default
+  ok   Overleaf opt-in permits source pauses
+  ok   Overleaf continuation also defaults to no source pause
+
+All prompt targeted-import policy tests passed.
+
+MODULE tests.prompt.test_namespace
+prompt namespace (D32) tests:
+  ok   default keeps namespace Lea.Misc
+  ok   default keeps the Lea/Misc write path
+  ok   explicit Lea.Misc == default
+  ok   project namespace stated
+  ok   project end-namespace stated
+  ok   project block mentions importable name
+  ok   project block invites sibling imports
+  ok   no Lea.Misc namespace residue
+  ok   no Lea/Misc path residue
+  ok   project block uses the workspace dir
+  ok   project block uses the namespace
+  ok   default WORKSPACE path retargeted away
+
+All prompt namespace tests passed.
+
+MODULE tests.providers.test_litellm_stream
+providers (LiteLLM stream) tests:
+  ok   event[0] TextDelta 'Hello '
+  ok   event[1] TextDelta 'world'
+  ok   event[2] ToolCall assembled args
+  ok   event[3] _ToolMeta id
+  ok   last event is Done
+  ok   no duplicate tool calls
+  ok   Done.usage
+  ok   Done.cost == 0.003
+  ok   model passed through
+  ok   stream=True
+  ok   max_tokens from model_kwargs
+  ok   system message first
+  ok   openai function-tool shape
+  ok   blocking: TextDelta whole content
+  ok   blocking: ToolCall assembled
+  ok   blocking: _ToolMeta id
+  ok   blocking: Done usage
+  ok   blocking: Done cost
+  ok   gpt-5.6: explicit provider prefix
+  ok   gpt-5.6: medium reasoning preserved
+  ok   gpt-5.6: stateless Responses request
+  ok   gpt-5.6: encrypted reasoning requested
+  ok   gpt-5.6: caller kwargs not mutated
+  ok   gpt-5.6: reasoning captured for replay
+  ok   gpt-5.6: reasoning replayed on assistant turn
+  ok   gpt-5.6: function call id preserved
+  ok   gpt-5.6: tool result call id preserved
+  ok   legacy: model routing unchanged
+  ok   legacy: no GPT-5.6 request fields
+  ok   legacy: provider-specific reasoning omitted
+
+All providers tests passed.
+
+MODULE tests.providers.test_usage_details
+........[lea] pricing unavailable for 'unmapped': unmapped
+.
+----------------------------------------------------------------------
+Ran 9 tests in 0.008s
+
+OK
+
+MODULE tests.registry.test_http_boundaries
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.126s
+
+OK
+
+MODULE tests.registry.test_registry
+tool registry tests:
+  ok   built-in registered: read_file
+  ok   built-in registered: write_file
+  ok   built-in registered: edit_file
+  ok   built-in registered: lean_check
+  ok   built-in registered: bash
+  ok   built-in registered: search_mathlib
+  ok   built-in registered: suggest_imports
+  ok   None: built-ins present in order
+  ok   None: handlers cover schemas
+  ok   None: a handler is callable
+  ok   list: exactly the selected names, in order
+  ok   list: handlers match selection
+  ok   unknown tool → ToolError
+  ok   duplicate register → ToolError
+  ok   decorator: registered
+  ok   decorator: schema assembled
+  ok   decorator: handler works
+  ok   import_tool_modules([]) no-op
+  ok   bad tool module → ToolError
+
+All registry tests passed.
+
+MODULE tests.registry.test_registry_scope
+ContextVar-scoped registry tests (v2.3 item 27):
+  ok   no-scope register lands in the global
+  ok   and resolves
+  ok   no-scope unregister removes from the global
+  ok   scoped tool resolves while the scope is open
+  ok   scoped tool did NOT touch the global
+  ok   build_toolset(None) includes the overlay tool
+  ok   built-ins still present alongside the overlay
+  ok   overlay tool is gone after pop (no explicit unregister)
+  ok   scoped=False lands in the global even inside a scope
+  ok   and survives the scope pop
+  ok   registering a scoped tool over a built-in raises
+  ok   overlay tool comes after the built-ins
+  ok   global built-in resolves with no scope
+  ok   overlay-only tool resolves via get_tool
+  ok   global still resolves through the scope
+  ok   thread A saw its own overlay tool
+  ok   thread B saw its own overlay tool
+  ok   thread B's tool SURVIVED thread A's teardown (the fix)
+  ok   neither overlay leaked into the global
+
+All registry-scope item-27 tests passed.
+
+MODULE tests.skills.test_skills
+skills tests:
+  ok   empty list → empty string
+  ok   contains first skill body
+  ok   contains second skill body
+  ok   header uses file stem
+  ok   order preserved
+  ok   missing skill → SkillError
+  ok   skill appended to system prompt
+  ok   base prompt unchanged without skills
+  ok   skill comes after base content
+  ok   prompt points non-project proofs to Lea.Misc
+  ok   prompt disallows common namespace
+  ok   prompt disallows experimental namespace
+  ok   prompt disallows examples namespace
+
+All skills tests passed.
+
+MODULE tests.subagents.test_subagent_depth_budget
+spawn_subagent depth/budget/wiring tests (v2.3 item 18):
+  ok   spawn at the depth cap is refused
+  ok   the refusal names the depth cap
+  ok   no child activation was started when refused
+  ok   a depth-0 coordinator started exactly one child
+  ok   the child runs at depth 1
+  ok   the child's toolset excludes spawn_subagent
+  ok   the child's toolset is the built-in default
+  ok   the child drops MCP servers
+  ok   the child's turns are bounded to the ceiling
+  ok   the child works in an isolated .lea/tmp scratch dir
+  ok   the scratch dir is inside the parent's working_dir
+  ok   the scratch dir was actually created
+  ok   result reports the candidate
+  ok   result reports the lean_check verdict ok
+  ok   result carries the child's summary
+  ok   an errored candidate surfaces the error verdict
+  ok   the error detail is included
+  ok   spawn outside an activation refuses cleanly
+  ok   an empty prompt is refused
+  ok   spawn_subagent absent from the default toolset
+  ok   spawn_subagent present when named explicitly
+  ok   unlimited parent → default child cap
+  ok   a large parent cap is clamped to the ceiling
+  ok   a small parent cap is inherited
+  ok   a zero/negative parent cap floors at 1
+
+All spawn_subagent item-18 tests passed.
+
+MODULE tests.subagents.test_subagent_overrides
+subagent override + cost-cap tests (D6):
+  ok   override model wins
+  ok   override max_turns wins
+  ok   override max_cost → max_cost_usd
+  ok   override system_prompt → prompt head
+  ok   profile tools kept (⊆ parent)
+  ok   no model override → inherit coordinator
+  ok   profile max_turns used
+  ok   no max_cost → uncapped
+  ok   profile system_prompt used
+  ok   other role unaffected by a different role's override
+  ok   override tool the parent has is kept
+  ok   override tool the parent LACKS is tightened away
+  ok   a garbage override falls back to profile defaults
+  ok   the run finished
+  ok   it stopped after exactly one real turn (cost cap)
+  ok   the cost that tripped the cap is reported
+
+All subagent override + cost-cap tests passed (D6).
+
+MODULE tests.subagents.test_subagent_parallel
+subagent concurrency tests (E2):
+  ok   both children returned a render
+  ok   progress streamed from BOTH children
+  ok   both children reported a typed result
+  ok   the post-batch drain is empty (results already emitted)
+  ok   both OVERLAPPED (passed the barrier → clean candidate)
+  ok   both children still returned a render under the cap
+  ok   neither overlapped (barrier broke → no candidate)
+  ok   both summaries are SOLO
+  ok   both children produced a result (the failure didn't kill the sibling)
+  ok   the failing child rendered an error
+  ok   the failing child's result reason is 'error'
+  ok   the healthy sibling still completed cleanly
+  ok   the fast child was reported while the slow one was still running
+  ok   the slow child had NOT been reported yet
+  ok   two children were announced (Started)
+  ok   two children finished
+  ok   both spawns OVERLAPPED in the one turn (clean candidates)
+  ok   both spawns were issued in the SAME turn
+  ok   the loop terminated cleanly (exactly one terminal event)
+  ok   both read_file calls produced a result
+  ok   first result is file a (order preserved)
+  ok   second result is file b (order preserved)
+
+All subagent concurrency tests passed (E2).
+
+MODULE tests.subagents.test_subagent_permissions
+subagent permission-composition tests (v2.3 item 21):
+  ok   a declared subset of the parent's is kept
+  ok   declared order is preserved
+  ok   tools the parent lacks are dropped
+  ok   generalist under a full parent = the built-ins
+  ok   generalist under a read-only parent = only its tools
+  ok   a child cannot inherit spawn_subagent by declaring it
+  ok   the generalist child never gets spawn_subagent
+  ok   an unknown declared tool no longer raises
+  ok   the unknown tool is absent from the child
+  ok   the known tools survive alongside it
+  ok   the human is told which tool went missing
+  ok   a generalist child gets no MCP tool
+  ok   a generalist child keeps the http tool
+  ok   a role naming an MCP tool does not raise
+  ok   the MCP name is dropped from the child
+  ok   the rest of the role's toolset survives
+  ok   effective ⊆ parent and no spawn, across all combos
+  ok   the child cannot write beyond a write-less parent
+  ok   the child keeps the overlap with the parent
+  ok   the spawned child inherited no write tool from a write-less parent
+  ok   the spawned child kept the parent's read tools
+  ok   the child working_dir is under the parent's (path tightens)
+
+All subagent permission item-21 tests passed.
+
+MODULE tests.subagents.test_subagent_profile_loading
+declarative agent profile tests (v2.3 item 19):
+  ok   premise-search ships
+  ok   proof-candidate ships
+  ok   premise-search omits model → inherits
+  ok   premise-search is scoped read-only
+  ok   premise-search caps turns
+  ok   premise-search carries a prompt head
+  ok   read-only role cannot write or check
+  ok   unknown role errors with a hint
+  ok   unknown key is rejected
+  ok   missing system_prompt is rejected
+  ok   empty system_prompt is rejected
+  ok   non-list tools is rejected
+  ok   non-string tool entry is rejected
+  ok   zero/negative max_turns is rejected
+  ok   name mismatch with filename is rejected
+  ok   a prompt-only profile is valid
+  ok   an omitted profile model inherits the parent's
+  ok   the profile's scoped tools are applied
+  ok   the profile's explicit cap is honored
+  ok   the profile prompt becomes the child's role head
+  ok   the child drops MCP
+  ok   an explicit profile model overrides
+  ok   an uncapped profile clamps the unlimited parent
+  ok   generalist toolset excludes spawn_subagent
+  ok   generalist toolset is the built-in default
+  ok   generalist has no role head
+  ok   generalist turns are bounded
+  ok   a named role spawned exactly one child
+  ok   the child ran the role's scoped toolset
+  ok   the child carries the role's prompt head
+  ok   the child ran at depth 1
+  ok   an unknown role is refused, not downgraded
+  ok   no child was spawned for an unknown role
+
+All agent-profile item-19 tests passed.
+
+MODULE tests.subagents.test_subagent_prompt_composition
+subagent prompt composition tests (v2.3 item 20):
+  ok   no head → core byte-identical
+  ok   empty head → core byte-identical
+  ok   the core is preserved
+  ok   the role head is present
+  ok   hard rule appears before the role head
+  ok   hard rule is re-asserted after the role head
+  ok   the invariant is stated at least twice (bracketed)
+  ok   the adversarial head is included verbatim
+  ok   the statement rule still appears
+  ok   the invariant reassertion comes AFTER the adversarial head
+  ok   footer forbids modifying the statement after the adversary
+  ok   footer forbids sorry/axiom after the adversary
+  ok   footer asserts precedence over the role
+  ok   HARD_RULES contains the statement invariant
+  ok   default core contains the statement invariant
+  ok   default core forbids sorry/axiom
+  ok   interactive core contains the statement invariant
+  ok   interactive core forbids sorry/axiom
+
+All subagent prompt-composition item-20 tests passed.
+
+MODULE tests.subagents.test_subagent_result_envelope
+subagent typed-result envelope tests (v2.3 item 22):
+  ok   render names the result id (audit handle)
+  ok   render reports the candidate
+  ok   render reports the verdict
+  ok   render carries the summary
+  ok   render does not embed the transcript
+  ok   to_event yields a SubagentFinished
+  ok   the event carries every typed field
+  ok   drain returns the recorded result
+  ok   a second drain is empty (drain clears)
+  ok   the transcript is captured from the child
+  ok   the transcript content lives in the struct
+  ok   the rendered tool_result does not dump the transcript
+  ok   result_id is the child's agent id and appears in the render
+  ok   the verdict and candidate are typed
+  ok   two spawns recorded two results
+  ok   result ids are unique
+  ok   an errored child records a result
+  ok   errored result has no verdict
+  ok   errored result reason is 'error'
+  ok   errored result has an empty transcript
+  ok   spawn still returns a rendered result without a scope
+  ok   drain with no scope is empty
+
+All subagent result-envelope item-22 tests passed.
+
+MODULE tests.subagents.test_subagent_started
+subagent spawn-started tests (D1):
+  ok   plan scratch dir was created
+  ok   a valid call yields a SpawnPlan
+  ok   plan child depth is parent+1
+  ok   plan carries a result id
+  ok   plan label prefers the description
+  ok   plan scratch dir is under the run's .lea/tmp
+  ok   missing prompt refuses with a string
+  ok   depth cap refuses with a string
+  ok   unknown role refuses with a string
+  ok   no activation refuses with a string
+  ok   run_prepared recorded one result
+  ok   recorded result reuses the plan's id
+  ok   the plan id shows in the model-facing render
+  ok   the verdict is typed through
+  ok   a raising child STILL records a result
+  ok   the error result reuses the plan id
+  ok   the error result has reason 'error'
+  ok   the error result carries no candidate
+  ok   the tool_result is the explicit failure string
+  ok   exactly one SubagentStarted was emitted
+  ok   exactly one SubagentFinished was emitted
+  ok   Started is emitted STRICTLY before Finished
+  ok   Started and Finished share the result_id
+  ok   Started carries the delegated task label
+  ok   Started names the role
+
+All subagent spawn-started D1 tests passed.
+
+MODULE tests.subagents.test_subagent_streaming
+subagent live-streaming + stop tests (E1 / D2):
+  ok   every yielded item is a SubagentProgress
+  ok   progress is tagged with the child's result_id
+  ok   the child's events streamed in order
+  ok   the generator returns the render string
+  ok   exactly one typed result was recorded
+  ok   the recorded result carries the child's verdict
+  ok   driver returns a render string
+  ok   driver records exactly one result
+  ok   driver result id matches the plan
+  ok   request_child_stop found the live child
+  ok   the child stopped almost immediately (a couple of turns at most)
+  ok   the child ended on an interrupted Finished
+  ok   the interrupted child still records a typed result
+  ok   stopping an unknown child returns False
+  ok   coordinator stop halted the child
+  ok   flag registered at prepare time
+  ok   flag cleared after the child finishes
+
+All subagent streaming + stop tests passed (E1 / D2).
+
+MODULE tests.tools.test_fallback_bounds
+tools fallback-bounds tests (item 6 / D74):
+  ok   all cold checks completed
+  ok   all cold checks succeeded
+  ok   never more than 2 cold compiles at once (saw 2)
+  ok   the bound was actually exercised (>1 concurrent)
+  ok   all rebuilds completed
+  ok   mark_stale called once per successful build
+  ok   build+mark_stale windows are disjoint (stale is inside the lock)
+
+All fallback-bounds tests passed.
+
+MODULE tests.tools.test_import_policy
+Targeted import policy tests:
+  ok   write rejects bare Mathlib import
+  ok   rejected broad file is not created
+  ok   targeted Mathlib module is allowed
+  ok   targeted proof is written
+  ok   commented Mathlib text does not trigger the gate
+  ok   edit retaining broad import is rejected
+  ok   rejected edit leaves file unchanged
+  ok   agent-facing check rejects a shell-written broad import
+  ok   operator override permits exceptional broad import
+  ok   analysis copy uses broad import internally
+  ok   analysis copy enables import-bump linter
+  ok   suggestion contains declaration import
+  ok   suggestion contains tactic import
+  ok   suggestion excludes Mathlib barrel
+  ok   analysis scratch is removed
+  ok   original proof is untouched
+  ok   needed targeted current import is retained
+  ok   linter-reported redundant import is removed
+
+All targeted import policy tests passed.
+
+MODULE tests.tools.test_read_sandbox
+Read-path sandbox + scrubbed shell env tests (AUDIT-2026-07-24 S4):
+  ok   a proof in the session dir reads normally
+  ok   a project-relative Overleaf source reads from the run workspace
+  ok   Mathlib source under the Lake root reads normally
+  ok   a project-mate's proof is readable
+  ok   config/lea.local.toml is refused
+  ok   the provider key never appears in the reply
+  ok   .env is refused
+  ok   the anthropic key never appears in the reply
+  ok   a ../ traversal is refused
+  ok   /etc/hosts is refused
+  ok   read without a run context still works (unchanged)
+  ok   OPENAI_API_KEY is withheld from the shell
+  ok   ANTHROPIC_API_KEY is withheld from the shell
+  ok   GEMINI_API_KEY is withheld from the shell
+  ok   GITHUB_TOKEN is withheld from the shell
+  ok   ANTHROPIC_AUTH_TOKEN is withheld from the shell
+  ok   AWS_SECRET_ACCESS_KEY is withheld from the shell
+  ok   SOME_SERVICE_PASSWORD is withheld from the shell
+  ok   PATH survives (the shell must still work)
+  ok   a command cannot echo the provider key
+  ok   a command cannot echo the GitHub token
+  ok   a plain command still runs
+
+All read-sandbox tests passed.
+
+MODULE tests.tools.test_rebuild_module
+rebuild_module (tools.py) tests:
+  ok   no literal 'error:' in Lake's own raw log
+  ok   rebuild_module's returned text IS classified as an error
+  ok   a usable one-line summary is extractable
+  ok   the summary names the failing module
+  ok   returncode 0 -> not classified as an error
+  ok   mark_stale was called exactly once on success
+  ok   mark_stale was called with this build's lake_root
+  ok   mark_stale was not called on a failed build
+  ok   still classified as an error
+
+All rebuild_module tests passed.
+
+MODULE tests.tools.test_run_context
+Run-context + bash cwd tests (item 8):
+  ok   working_dir defaults to None
+  ok   run_key defaults to None
+  ok   candidate_dir defaults to None
+  ok   working_dir is set inside the block
+  ok   run_key is set inside the block
+  ok   candidate_dir is set inside the block
+  ok   working_dir resets to None after the block
+  ok   run_key resets to None after the block
+  ok   candidate_dir resets to None after the block
+  ok   both bash calls completed
+  ok   thread 0 saw its own marker (marker_0.txt)
+  ok   thread 0 did NOT see the peer's file content (iam-1)
+  ok   thread 1 saw its own marker (marker_1.txt)
+  ok   thread 1 did NOT see the peer's file content (iam-0)
+  ok   a peer thread never sees this thread's working_dir
+  ok   write_file resolved against the working dir
+  ok   read_file finds the file the write just made
+  ok   lean_check no longer reports the file missing
+  ok   no run context → unchanged behaviour
+
+All run-context tests passed.
+
+MODULE tests.tools.test_safeverify_scratch
+SafeVerify scratch/semaphore tests (item 7 / D74·H2·H9):
+  ok   both verify calls completed
+  ok   no cross-contamination / deletion observed
+  ok   scratch_dir was threaded through to verify_proof
+  ok   each call got a DISTINCT scratch dir
+  ok   both verdicts are ok
+  ok   all verify_proof calls completed
+  ok   never more than 2 compiles at once (saw 2)
+  ok   the bound was actually exercised (>1 concurrent)
+
+All SafeVerify scratch/semaphore tests passed.
+
+MODULE tests.tools.test_write_sandbox
+Write-path sandbox tests (v2.3 hardening):
+  ok   relative write lands under working_dir
+  ok   relative write is not left in the process cwd
+  ok   success message names the confined path
+  ok   absolute write inside the workspace is allowed
+  ok   escaping absolute write is refused with an error
+  ok   the escaping file is NOT created
+  ok   no sibling tree is created by the rejected write
+  ok   `..` traversal out of the workspace is refused
+  ok   the traversed file is NOT created
+  ok   edit_file refuses a path outside the workspace
+  ok   the out-of-workspace file is untouched
+  ok   child write to a canonical path lands in its scratch dir
+  ok   child write is NOT written to the canonical path
+  ok   child write reports success (not an error)
+  ok   success message names the redirected scratch path
+  ok   child relative write lands in scratch
+  ok   write without a run context still works (unchanged)
+  ok   success message returned when unconfined
+
+All write-sandbox tests passed.

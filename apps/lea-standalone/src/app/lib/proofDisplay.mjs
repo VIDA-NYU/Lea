@@ -20,7 +20,8 @@ export function codeStepContainsSorry(step) {
   return hasSorryLikeCode(step.code) || hasSorryLikeCheckDetail(step.check_detail);
 }
 
-export function deriveCodeStepProofStatus(step) {
+export function deriveCodeStepProofStatus(step, { historical = false } = {}) {
+  if (!historical && step?.check_current !== true) return 'unchecked';
   if (!step || !step.check_status || step.check_status === 'unchecked') return 'unchecked';
   if (step.check_status === 'error') return 'failed';
   if (step.check_status !== 'ok') return 'unchecked';

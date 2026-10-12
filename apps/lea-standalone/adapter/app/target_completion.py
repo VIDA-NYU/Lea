@@ -23,7 +23,7 @@ def target_declaration(code: str | None, name: str | None, kind: str) -> LeanDec
     return item
 
 
-def checked_target(formalization: dict, steps: list[dict]) -> tuple[dict | None, str]:
+def checked_target(formalization: dict, steps: list[dict], *, require_current=True) -> tuple[dict | None, str]:
     """Find a passing snapshot of the requested declaration, not a helper."""
     name = formalization.get("declaration_name")
     if not name:
@@ -39,7 +39,7 @@ def checked_target(formalization: dict, steps: list[dict]) -> tuple[dict | None,
         return None, f"The requested declaration {name} is ambiguous across artifacts."
     if candidates:
         step, code, declaration = candidates[0]
-        if step.get("check_status") != "ok":
+        if step.get("check_status") != "ok" or (require_current and not step.get("check_current")):
             return None, "The requested declaration has no passing Lean check."
         if declaration_contains_sorry(code, declaration.full_name):
             return None, "The requested declaration still uses sorry or admit."

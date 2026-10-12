@@ -70,35 +70,17 @@ def project_paths(repo: Path):
 
 
 def environment_hash(project: dict, repo: Path, path: Path) -> str:
-    root = lake_root(repo)
-    values = {}
-    values["inspector"] = digest(INSPECTOR.read_bytes())
-    values["verification_protocol"] = 1
+    from lea.check_evidence import manifest, environment_hash as fingerprint, CheckFailure
+    try:
+        environment = fingerprint(manifest(path, path.read_text(), lake_root(repo)))
+    except (OSError, UnicodeError, CheckFailure) as exc:
+        environment = digest({'unavailable': str(exc), 'source': digest(path.read_bytes()) if path.exists() else None})
     from lea import safeverify
     binary = safeverify.safe_verify_binary()
-    values["auditor"] = [str(binary), binary.stat().st_size, binary.stat().st_mtime_ns] if binary else None
-    if root:
-        from .recovery import _dependency_fingerprints
-        # Include package revisions, but not unrelated sibling proof files.
-        values.update({k: v for k, v in _dependency_fingerprints(root).items()
-                       if not k.startswith("proofs/")})
-    seen = set()
-    def visit(current):
-        if current in seen:
-            return
-        seen.add(current)
-        try:
-            code = current.read_text()
-        except (OSError, UnicodeError):
-            values[str(current)] = None
-            return
-        values[str(current)] = digest(code.encode())
-        for imported in direct_imports(code):
-            target = root / "proofs" / Path(imported.replace(".", "/") + ".lean") if root else None
-            if target and target.is_file():
-                visit(target)
-    visit(path)
-    return digest(values)
+    return digest({'source': digest(path.read_bytes()) if path.exists() else None,
+        'environment': environment, 'protocol': 1,
+        'auditor': [str(binary), binary.stat().st_size, binary.stat().st_mtime_ns] if binary else None,
+        'inspector': digest(INSPECTOR.read_bytes())})
 
 
 def _lexical(code: str) -> list[dict]:
@@ -202,14 +184,22 @@ def audit_module(path: Path, declarations: list[dict]):
     with tempfile.TemporaryDirectory(prefix="definition-audit-", dir=path.parent / ".lea/tmp" if
         (path.parent / ".lea/tmp").is_dir() else None) as temp:
         scratch = Path(temp) / "Definitions.lean"
-        scratch.write_text(path.read_text() + "\ntheorem __lea_library_definition_audit : True := by trivial\n")
-        return verify(str(scratch))
+        scratch.write_text(path.read_bytes().decode('utf-8') + "\ntheorem __lea_library_definition_audit : True := by trivial\n")
+        result = verify(str(scratch))
+        if result.execution:
+            from lea.events import VerifyResult
+            content = path.read_bytes().decode('utf-8')
+            from lea.check_evidence import source_identity
+            execution = {**result.execution, 'source_path': str(path.resolve()), 'source_identity': source_identity(path), 'content_sha256': digest(content.encode())}
+            return VerifyResult(result.status, result.detail, execution, content)
+        return result
 
 
 def refresh(project: dict, *, repo: Path | None = None) -> list[dict]:
     repo = repo or project_repo(project)
     pid = project["id"]
-    with lock(pid):
+    from lea.check_evidence import coordinator
+    with coordinator(lake_root(repo) or repo).lease(), lock(pid):
         with connect() as conn:
             old = {r["path"]: dict(r) for r in conn.execute(
                 "select * from project_library_modules where project_id = ?", (pid,))}
@@ -240,17 +230,21 @@ def refresh(project: dict, *, repo: Path | None = None) -> list[dict]:
 
 def validate_module(project: dict, relative: str, *, repo: Path | None = None) -> list[dict]:
     repo = repo or project_repo(project)
-    with lock(project["id"]):
+    from lea.check_evidence import mutation
+    with mutation(repo), lock(project["id"]):
         refresh(project, repo=repo)
         with connect() as conn:
             row = conn.execute("select * from project_library_modules where project_id=? and path=?",
                                (project["id"], relative)).fetchone()
         if not row:
             raise ValueError("This file is not a canonical project module.")
-        if row["build_status"] != "unchecked":
-            return entries(project, repo=repo, path=relative)
         path = repo / relative
+        from lea.check_evidence import freshness
+        if row["build_status"] != "unchecked" and freshness(
+                json.loads(row['check_evidence_json'] or '{}'), path)[0]:
+            return entries(project, repo=repo, path=relative)
         status, audit_status, detail = "error", None, None
+        execution = None
         declarations = json.loads(row["declarations_json"])
         try:
             built = rebuild(str(path))
@@ -266,17 +260,20 @@ def validate_module(project: dict, relative: str, *, repo: Path | None = None) -
                     decl["semantic_key"] = semantic_key(decl)
                 audit = audit_module(path, declarations)
                 audit_status, detail = audit.status, audit.detail
+                execution = getattr(audit, "execution", None)
         except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
             detail = str(exc)
+        from lea.check_evidence import freshness
         # A check never certifies bytes edited while the checker was running.
         if (not path.exists() or digest(path.read_bytes()) != row["source_hash"]
-                or environment_hash(project, repo, path) != row["environment_hash"]):
+                or (execution and not freshness(execution, path)[0])):
             return refresh(project, repo=repo)
         with write() as conn:
             conn.execute("""update project_library_modules set declarations_json=?,build_status=?,
-                verify_status=?,detail=?,updated_at=? where project_id=? and path=?
+                verify_status=?,detail=?,updated_at=?,check_evidence_json=?,environment_hash=? where project_id=? and path=?
                 and source_hash=? and environment_hash=?""",
-                (dumps(declarations), status, audit_status, detail, utc_now(), project["id"], relative,
+                (dumps(declarations), status, audit_status, detail, utc_now(), dumps(execution) if execution else None,
+                 environment_hash(project, repo, path), project["id"], relative,
                  row["source_hash"], row["environment_hash"]))
         return entries(project, repo=repo, path=relative)
 
@@ -296,7 +293,13 @@ def entries(project: dict, *, repo: Path | None = None, path: str | None = None)
         for declaration in json.loads(row["declarations_json"]):
             decl = dict(declaration)
             axioms = decl.get("axioms")
-            reusable = (row["build_status"] == "ok" and row["verify_status"] == "ok"
+            from lea.check_evidence import freshness
+            try:
+                evidence = json.loads(row['check_evidence_json'] or '{}')
+            except (ValueError, TypeError):
+                evidence = {}
+            current = freshness(evidence, repo / row['path'])[0]
+            reusable = (current and row["build_status"] == "ok" and row["verify_status"] == "ok"
                 and decl.get("visibility") == "public" and axioms is not None
                 and not (set(axioms) - ALLOWED_AXIOMS) and decl["kind"] not in {"axiom", "recursor"})
             owner = owners.get(row["path"])

@@ -9,7 +9,6 @@ from threading import Lock, RLock
 from fastapi import HTTPException
 
 from . import formalizations, project_coordination, store
-from .artifacts import classify_lean_artifact
 from .db import write
 
 _locks = {}
@@ -48,6 +47,7 @@ def _same(left, right):
 
 def check(session_id, path, absolute: Path, checker, *, formalization_id=None,
           author=None, summary=None, expected=None):
+    from lea.check_evidence import public_execution, coordinator, lake_root
     session = _session(session_id)
     with project_coordination.mutation(session.get("project_id")):
         with file_guard(absolute):
@@ -60,7 +60,7 @@ def check(session_id, path, absolute: Path, checker, *, formalization_id=None,
                 conflict()
         result = checker(str(absolute), allow_cold=False) if author == "cascade" else checker(str(absolute))
         execution = getattr(result, "execution", None) or {}
-        with file_guard(absolute):
+        with coordinator(lake_root(absolute) or absolute.parent).lease(), file_guard(absolute):
             if execution.get("content_sha256") != digest:
                 conflict()
             try:
@@ -68,17 +68,18 @@ def check(session_id, path, absolute: Path, checker, *, formalization_id=None,
                     conflict()
             except OSError:
                 conflict()
-            persisted, updated = store.persist_pinned_check(session_id, path, step,
-                status=result.status, detail=result.detail,
-                artifact_kind=classify_lean_artifact(content.decode()) if result.status == "ok" else None,
-                formalization_id=formalization_id, author=author, summary=summary)
+            from .proof_evidence import record_check
+            persisted, updated = record_check(session_id, path, absolute, result, expected=step,
+                require_current=True, content=content.decode(), formalization_id=formalization_id,
+                author=author, summary=summary)
             if not persisted:
                 conflict()
         response = {"path": path, "status": result.status, "detail": result.detail,
-                    "execution": getattr(result, "execution", None),
+                    "execution": public_execution(getattr(result, "execution", None)),
                     "formalization_id": formalization_id or (step or {}).get("formalization_id")}
-        if updated and (author or step["session_id"] != session_id or (
-            formalization_id and step.get("formalization_id") != formalization_id)):
+        response.update(check_current=bool(updated and updated.get("check_current")),
+                        check_stale_reason=updated.get("check_stale_reason") if updated else "missing_evidence")
+        if updated:
             response["code_step"] = updated
         return response
 
@@ -101,7 +102,10 @@ def save(session_id, path, absolute: Path, content: str, *, formalization_id=Non
          base_revision=None, note=None):
     session = _session(session_id)
     project_id = session.get("project_id")
-    with project_coordination.file_edit(project_id), file_guard(absolute):
+    if store.has_active_run(session_id) or (project_id and (store.project_has_active_run(project_id) or store.project_has_active_import(project_id))):
+        raise HTTPException(409, detail={"error": "project_busy", "message": "Wait for active project work before editing proofs."})
+    from lea.check_evidence import mutation
+    with mutation(absolute), project_coordination.file_edit(project_id), file_guard(absolute):
         if store.has_active_run(session_id) or (project_id and (
             store.project_has_active_run(project_id) or store.project_has_active_import(project_id))):
             raise HTTPException(409, detail={"error": "project_busy",
@@ -144,6 +148,7 @@ def save(session_id, path, absolute: Path, content: str, *, formalization_id=Non
 
 
 def verify(session_id, path, absolute: Path, verifier, *, formalization_id=None):
+    from lea.check_evidence import coordinator, lake_root
     session = _session(session_id)
     with project_coordination.mutation(session.get("project_id")):
         with file_guard(absolute):
@@ -152,7 +157,7 @@ def verify(session_id, path, absolute: Path, verifier, *, formalization_id=None)
             if step and (step.get("content_lost") or step["code"].encode() != content):
                 conflict()
         result = verifier(str(absolute))
-        with file_guard(absolute):
+        with coordinator(lake_root(absolute) or absolute.parent).lease(), file_guard(absolute):
             try:
                 if absolute.read_bytes() != content:
                     conflict()
@@ -163,8 +168,11 @@ def verify(session_id, path, absolute: Path, verifier, *, formalization_id=None)
                 formalization_id=formalization_id, path=path, status=result.status,
                 detail=result.detail, code_step_id=(step or {}).get("id"),
                 run_id=(step or {}).get("run_id"), expected=step,
-                require_current=True, persist_session=True)
+                require_current=True, persist_session=True,
+                execution=getattr(result, "execution", None), content=content.decode())
             if event is None:
                 conflict()
+        from .proof_evidence import verification_current
         return {"path": path, "status": result.status, "detail": result.detail,
+                "current": verification_current(event, step),
                 "formalization_id": formalization_id, "verification_event": event}

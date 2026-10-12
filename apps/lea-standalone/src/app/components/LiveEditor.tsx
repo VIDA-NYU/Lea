@@ -3,7 +3,7 @@ import type { SafeVerifyResult } from '../lib/api';
 import { LeanQuery } from '../lib/leanQuery';
 import { useProofSession } from '../stores/proofSession';
 
-type SaveResult = { status: string; detail?: string | null };
+type SaveResult = { status: string; detail?: string | null; current?: boolean; check_current?: boolean; check_stale_reason?: string | null };
 
 // How long after the last keystroke we auto-save. Long enough not to commit on
 // every character (git churn / redundant checks), short enough to feel automatic.
@@ -100,7 +100,9 @@ export function LiveEditor({
         // The write always persists (a snapshot); the verdict just annotates it.
         setSave({
           state: 'saved',
-          detail: result.status === 'ok' ? 'lean_check: 0 errors' : result.detail || `lean_check: ${result.status}`,
+          detail: result.status === 'ok'
+            ? result.check_current === true ? 'lean_check: 0 errors' : 'recheck required'
+            : result.detail || `lean_check: ${result.status}`,
         });
       } catch (err) {
         if (disposed) return;
@@ -266,7 +268,7 @@ export function LiveEditor({
       if (!owned()) return;
       setVerify({ state: 'done', status: result.status, detail: result.detail ?? undefined });
       // Surface the result as a box above the composer (collapse / send-to-Lea).
-      setVerifySurface({ status: result.status, detail: result.detail ?? null } as SafeVerifyResult);
+      setVerifySurface({ status: result.status, detail: result.detail ?? null, current: result.current } as SafeVerifyResult);
     } catch (err) {
       if (!owned()) return;
       const detail = err instanceof Error ? err.message : String(err);

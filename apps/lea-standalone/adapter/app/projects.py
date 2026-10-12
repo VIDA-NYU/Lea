@@ -614,7 +614,7 @@ def record_namespace_migration_check(
     if not steps:
         return None
     previous = steps[0]
-    return store.add_code_step(
+    step = store.add_code_step(
         previous["session_id"], None, path,
         content=content,
         author="environment",
@@ -631,6 +631,16 @@ def record_namespace_migration_check(
         }},
     )
 
+    if result is not None:
+        from .proof_evidence import record_check
+        from lea.events import CheckResult
+        if isinstance(result, CheckResult):
+            accepted, checked = record_check(previous['session_id'], path, result.path, result,
+                formalization_id=previous.get('formalization_id'))
+            if checked:
+                return checked
+    return step
+
 
 def migrate_project_namespace(
     project: dict,
@@ -641,7 +651,10 @@ def migrate_project_namespace(
     expected_namespace: str | None = None,
     check_fn=None,
 ) -> dict:
-    with project_coordination.migration(project["id"]):
+    from lea.check_evidence import mutation as environment_mutation
+    with project_coordination.read(project["id"]):
+        pass  # Reject an already active namespace migration before waiting for I/O.
+    with environment_mutation(proofs_root), project_coordination.migration(project["id"]):
         project = store.get_project(project["id"])
         if project is None:
             raise ProjectIdentityError("project_missing", "Project no longer exists.", status=404)

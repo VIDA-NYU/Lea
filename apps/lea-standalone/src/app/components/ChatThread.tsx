@@ -761,10 +761,12 @@ export function ChatThread({
           </div>
         )}
         {verifySurface && (
-          <div className={`verify-box ${verifySurface.status === 'ok' ? 'ok' : 'bad'}`}>
+          <div className={`verify-box ${verifySurface.status === 'ok' && verifySurface.current === true ? 'ok' : 'bad'}`}>
             <div className="verify-box-head">
               <span className="verify-box-title">
-                🛡 SafeVerify {verifySurface.status === 'ok' ? '✓ passed' : verifySurface.status}
+                🛡 SafeVerify {verifySurface.status === 'ok'
+                  ? verifySurface.current === true ? '✓ passed' : 'recheck required'
+                  : verifySurface.status}
               </span>
               <span className="verify-box-spacer" />
               {verifySurface.detail && (

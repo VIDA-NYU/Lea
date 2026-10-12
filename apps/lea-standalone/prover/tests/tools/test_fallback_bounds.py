@@ -52,12 +52,12 @@ def test_cold_check_semaphore_bounds_concurrency():
 
     class FakeProcess:
         returncode = 0
-        stdout = stderr = None
+        stdin = stdout = stderr = None
         def __init__(self, *args, **kwargs):
             with mlock:
                 live["now"] += 1
                 live["max"] = max(live["max"], live["now"])
-        def communicate(self, timeout=None):
+        def communicate(self, timeout=None, input=None):
             time.sleep(0.05)
             with mlock:
                 live["now"] -= 1
@@ -153,4 +153,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from unittest.mock import patch
+    from tests.check_fixtures import unit_environment
+    with patch('lea.check_evidence.prepared_environment', unit_environment):
+        main()

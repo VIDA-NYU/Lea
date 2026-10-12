@@ -369,6 +369,8 @@ class SubagentResult:
     stop_reason: str                # child's Finished.reason, or 'error'
     summary: str                    # child's final text
     transcript: list = field(default_factory=list, repr=False)
+    execution: dict | None = None
+    content: str | None = None
 
     def render(self) -> str:
         """Compact, explicit prose for the parent — evidence, not a verdict of record;
@@ -397,7 +399,7 @@ class SubagentResult:
             check_detail=self.check_detail,
             stop_reason=self.stop_reason,
             summary=self.summary,
-            transcript=self.transcript,
+            transcript=self.transcript, execution=self.execution, content=self.content,
         )
 
 
@@ -420,6 +422,8 @@ def _build_result(
         stop_reason=finished.reason if finished else "error",
         summary=finished.text if finished else "",
         transcript=list(finished.transcript.get("messages", [])) if finished else [],
+        execution=last_check.execution if last_check else None,
+        content=last_check.content if last_check else None,
     )
 
 

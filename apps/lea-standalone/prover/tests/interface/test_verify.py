@@ -433,4 +433,17 @@ def main():
 
 
 if __name__ == "__main__":
+    from tests.check_fixtures import unit_environment
+    from lea import check_evidence
+    from functools import wraps
+    from unittest.mock import patch
+    def unit_test(fn):
+        @wraps(fn)
+        def run():
+            with patch.object(check_evidence, 'prepared_environment', unit_environment):
+                return fn()
+        return run
+    for name, value in list(globals().items()):
+        if name.startswith('test_') and 'integration' not in name and callable(value):
+            globals()[name] = unit_test(value)
     main()

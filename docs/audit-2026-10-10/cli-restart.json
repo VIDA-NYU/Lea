@@ -1,0 +1,9 @@
+{
+  "uvicorn_cli_restart": {
+    "initial_state": "ready",
+    "state_after_shutdown": "stopping",
+    "health_ok": true,
+    "process_still_running": true,
+    "new_run_http_status": 503
+  }
+}

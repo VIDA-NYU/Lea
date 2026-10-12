@@ -990,7 +990,7 @@ export async function leanCheckSession(
   sessionId: string,
   path?: string,
   formalizationId?: string,
-): Promise<{ path: string; status: 'ok' | 'error'; detail?: string | null; execution?: LeanCheckExecution; diagnostics?: Diagnostic[]; lean_check_runtime?: LeanCheckRuntime }> {
+): Promise<{ path: string; status: 'ok' | 'error'; check_current: boolean; check_stale_reason?: string | null; detail?: string | null; execution?: LeanCheckExecution; diagnostics?: Diagnostic[]; lean_check_runtime?: LeanCheckRuntime }> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/lean-check`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1006,7 +1006,7 @@ export async function verifySession(
   sessionId: string,
   path?: string,
   formalizationId?: string,
-): Promise<{ path: string; status: SafeVerifyStatus; detail?: string | null }> {
+): Promise<{ path: string; status: SafeVerifyStatus; current: boolean; detail?: string | null }> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

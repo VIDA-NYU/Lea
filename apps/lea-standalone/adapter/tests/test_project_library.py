@@ -403,3 +403,7 @@ def test_readiness_never_retries_failed_dependency(project, monkeypatch):
     assert deps.readiness(run["id"], str(path)) == first
     assert deps.get(dep_id, reconcile=False)["state"] == "failed"
     assert deps.get(dep_id, reconcile=False)["attempts"] == prior_attempts
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

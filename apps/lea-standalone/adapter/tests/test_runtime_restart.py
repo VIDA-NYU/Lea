@@ -2,8 +2,25 @@
 
 import time
 from types import SimpleNamespace
+import pytest
+from fastapi import HTTPException
 
 from app import db, runtime
+
+
+def test_unbound_control_does_not_close_admission(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'runtime.sqlite3')
+    db.init_db()
+    runtime.bind_server(None)
+    runtime.set_state('ready')
+    try:
+        with pytest.raises(HTTPException) as rejected:
+            runtime.begin_drain(restart=True)
+        assert rejected.value.status_code == 409
+        assert runtime.accepting_work()
+        assert runtime.snapshot()['restart_supported'] is False
+    finally:
+        runtime.set_state('ready')
 
 
 class _Registry:

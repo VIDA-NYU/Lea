@@ -7,6 +7,34 @@ import pytest
 from app import db, formalizations, store
 
 
+def test_manual_check_cannot_certify_a_different_disproof(tmp_path, monkeypatch):
+    _fresh(tmp_path, monkeypatch)
+    session = store.create_session('disproof')
+    target = store.create_formalization(project_id=None, loose_session_id=session['id'],
+        display_title='False assertion', declaration_name='requested_false_assertion')
+    store.link_session_formalization(session['id'], target['id'])
+    store.link_formalization_file(target['id'], 'Counterexample.lean', 'primary')
+    run = store.create_run(session['id'], 'test', None, 3, focus_formalization_id=target['id'])
+    code = 'theorem counterexample : ¬False := by simp\n'
+    store.add_code_step(session['id'], run['id'], 'Counterexample.lean', content=code,
+        check_status='ok', artifact_kind='proof', formalization_id=target['id'])
+    store.update_run(run['id'], 'disproved', result_kind='disproved')
+    assert formalizations.get(target['id'])['validity_status'] == 'disproved'
+    assert store.session_detail(session['id'])['status'] == 'disproved'
+    assert store.list_sessions()[0]['status'] == 'disproved'
+    store.add_code_step(session['id'], None, 'Counterexample.lean', content=code,
+        check_status='ok', artifact_kind='proof', formalization_id=target['id'])
+    assert formalizations.get(target['id'])['validity_status'] == 'disproved'
+    assert store.session_detail(session['id'])['status'] == 'disproved'
+    assert store.list_sessions()[0]['status'] == 'disproved'
+    store.add_code_step(session['id'], None, 'Counterexample.lean',
+        content='theorem unrelated : True := by trivial\n', check_status='ok',
+        artifact_kind='proof', formalization_id=target['id'])
+    assert formalizations.get(target['id'])['validity_status'] == 'needs_review'
+    assert store.session_detail(session['id'])['status'] == 'needs_review'
+    assert store.list_sessions()[0]['status'] == 'needs_review'
+
+
 def _fresh(tmp_path, monkeypatch):
     path = tmp_path / "test.sqlite3"
     monkeypatch.setattr(db, "DB_PATH", path)
@@ -300,3 +328,7 @@ def test_a_formalizations_sessions_exclude_subagent_children(tmp_path, monkeypat
     ids = [s["id"] for s in decorated["sessions"]]
     assert parent["id"] in ids
     assert child["id"] not in ids, "a sub-agent is not a session you can open"
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

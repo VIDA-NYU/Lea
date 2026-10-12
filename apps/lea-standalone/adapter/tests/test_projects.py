@@ -4,6 +4,8 @@ touch the real workspace."""
 
 from __future__ import annotations
 
+import pytest
+
 import subprocess
 
 from app import db, projects, store
@@ -275,3 +277,7 @@ def test_migration_proceeds_once_no_run_is_active(tmp_path, monkeypatch):
     assert artifacts["t"]["module_name"] == "Lea.Renamed.p"
     assert artifacts["other"]["module_name"] == "Lea.Demonstration.other"
     assert "namespace Lea.Renamed" in (proofs / "Lea" / "Renamed" / "p.lean").read_text()
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

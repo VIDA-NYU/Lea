@@ -1,5 +1,7 @@
 """A passing helper file must not certify a different requested declaration."""
 
+import pytest
+
 from app import db, formalizations, projects, store
 from app.routes.projects import project_target_status_by_slug
 from app.target_completion import checked_target, target_declaration
@@ -222,3 +224,7 @@ def test_historical_compile_promoted_definition_is_now_reviewed_without_rewritin
                         artifact_kind="proof", formalization_id=target["id"])
     store.update_run(second["id"], "proved", result_kind="defined")
     assert formalizations.get(target["id"])["validity_status"] == "needs_review"
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

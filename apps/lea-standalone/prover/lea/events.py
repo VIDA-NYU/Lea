@@ -54,16 +54,16 @@ class ToolApprovalRequested:
 @dataclass(frozen=True)
 class FileChanged:
     """A proof file changed on disk. Meaning-level (D17): the adapter reacts to this
-    directly — commit to git + insert a code_step — without decoding which tool ran.
-    Carries `path` only; the bytes are read from disk (filesystem-canonical, D3/D8),
-    never shipped in the event.
+    directly — persist an immutable code step — without decoding which tool ran.
+    Built-in writers capture the exact written content. Legacy event producers
+    may omit content; that snapshot alone does not certify a check.
 
     `path` is the RESOLVED path the tool actually wrote — absolute whenever the tool
-    could resolve it. It has to be: the consumer reads the file back from a different
-    process and working directory, where a relative name means something else entirely.
+    could resolve it, so consumers can associate the snapshot with its canonical file.
     (This previously said "relative to the session dir", which was never what was sent
     and would have been unreadable by the adapter if it had been.)"""
     path: str
+    content: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +75,7 @@ class CheckResult:
     status: str
     detail: str | None = None
     execution: dict | None = None
+    content: str | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,8 @@ class VerifyResult:
     (None on a clean 'ok')."""
     status: str
     detail: str | None = None
+    execution: dict | None = None
+    content: str | None = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +234,8 @@ class SubagentFinished:
     stop_reason: str
     summary: str
     transcript: list
+    execution: dict | None = None
+    content: str | None = None
 
 
 @dataclass(frozen=True)

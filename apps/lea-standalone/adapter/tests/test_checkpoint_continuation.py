@@ -498,14 +498,14 @@ def test_completion_reuses_only_current_saved_verification(paused, monkeypatch, 
     monkeypatch.setattr(agent, "_provider_stream", provider)
     monkeypatch.setattr(agent, "_classify_final_result", lambda **_: ("proved", None, Usage(), 0.0))
     monkeypatch.setitem(registry.REGISTRY, "lean_check", replace(registry.REGISTRY["lean_check"],
-        handler=lambda args: checks.append(args) or "Lean check passed."))
+        handler=lambda args: checks.append(args) or CheckText("Lean check passed.", mock_execution(args["path"]), Path(args["path"]).read_text())))
     queue = Queue()
     bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=row["id"], task="Continue",
         config=cfg, events=queue, autonomous=True, purpose="overleaf_solver"))
     finished = store.get_run(row["id"])
     assert finished["status"] == "proved", finished.get("result_detail")
     assert len(calls) == 1
-    assert len(checks) == (1 if revision in {"source", "dependencies"} else 0)
+    assert len(checks) == 1  # Legacy checkpoints have no compiler-input evidence.
     assert finished["cost_usd"] == pytest.approx(0.01)
 
 
@@ -598,3 +598,10 @@ def test_migration_rejects_unreviewed_or_uncertain_state(paused, problem):
         runs.continue_run(old["id"], request())
     with db.connect() as conn:
         assert conn.execute("select count(*) from runs where resumes_run_id=?", (old["id"],)).fetchone()[0] == 0
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")
+
+from lea.check_runtime import CheckText
+from evidence_fixtures import mock_execution

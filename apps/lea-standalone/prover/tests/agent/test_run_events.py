@@ -755,4 +755,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from tests.check_fixtures import mocked_tool_inputs
+    with mocked_tool_inputs():
+        main()

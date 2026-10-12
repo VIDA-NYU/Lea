@@ -1,41 +1,38 @@
+"""Canonical adapter launcher; importable without starting a server."""
 from __future__ import annotations
-
-import sys
+import argparse
 import os
-
-print("[startup] importing uvicorn", flush=True)
+from pathlib import Path
+import sys
 import uvicorn
-
-print("[startup] importing app.main", flush=True)
-from app.main import app
 from app import runtime
 
 
 class DrainingServer(uvicorn.Server):
     def handle_exit(self, sig: int, frame) -> None:
-        # Uvicorn's default handler closes listeners before lifespan shutdown.
-        # Keep SSE and stop/approval routes available until workers have settled.
         runtime.begin_drain(restart=False)
 
-print("[startup] creating uvicorn config", flush=True)
-config = uvicorn.Config(
-    app,
-    host="127.0.0.1",
-    port=8001,
-    loop="asyncio",
-    http="h11",
-    log_level="debug",
-)
 
-print("[startup] starting server", flush=True)
-try:
-    server = DrainingServer(config)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8001)
+    parser.add_argument("--log-level", default="debug")
+    args = parser.parse_args(argv)
+    from app.main import app
+    server = DrainingServer(uvicorn.Config(app, host=args.host, port=args.port,
+        loop="asyncio", http="h11", log_level=args.log_level))
     runtime.bind_server(server)
-    server.run()
-    if not server.started:
-        raise RuntimeError("Adapter startup failed")
+    try:
+        server.run()
+        if not server.started:
+            raise RuntimeError("Adapter startup failed")
+    finally:
+        runtime.bind_server(None)
     if runtime.restart_requested():
-        os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])
-except Exception as exc:
-    print(f"[startup] failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-    raise
+        original = list(sys.argv[1:] if argv is None else argv)
+        os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *original])
+
+
+if __name__ == "__main__":
+    main()

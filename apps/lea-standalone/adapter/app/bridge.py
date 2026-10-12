@@ -712,7 +712,7 @@ def _read_after(path: str) -> str | None:
     ever set), and the divergence path declines to diff rather than reporting the
     whole file as deleted by the human."""
     try:
-        return Path(path).read_text()
+        return Path(path).read_bytes().decode('utf-8')
     except (OSError, UnicodeDecodeError):
         logger.debug("Could not read after-state of %s", path, exc_info=True)
         return None
@@ -1159,7 +1159,8 @@ def _subagent_progress_payload(child_id: str, result_id: str, inner) -> dict | N
     if isinstance(inner, ToolCalled):
         return {**base, "kind": "tool", "tool": inner.name}
     if isinstance(inner, CheckResult):
-        return {**base, "kind": "check", "status": inner.status, "execution": inner.execution}
+        from lea.check_evidence import public_execution
+        return {**base, "kind": "check", "status": inner.status, "execution": public_execution(inner.execution)}
     if isinstance(inner, Finished):
         return {**base, "kind": "finished", "reason": inner.reason}
     return None
@@ -1221,8 +1222,9 @@ def _forward_to_child_broker(broker, inner, started: dict) -> None:
         _flush_child_narration(broker, started)
         emit(broker, "status", {"status": "tool_call", "message": f"Running {inner.name}", "turn": None})
     elif isinstance(inner, CheckResult):
+        from lea.check_evidence import public_execution
         emit(broker, "status", {"status": "lean_check", "check_status": inner.status,
-                                "check_detail": inner.detail, "execution": inner.execution})
+                                "check_detail": inner.detail, "execution": public_execution(inner.execution)})
 
 
 def _subagent_error(ev: SubagentFinished) -> str | None:
@@ -1327,7 +1329,7 @@ def _populate_subagent(
         if not cand.is_absolute():
             cand = repo / cand
         try:
-            content = cand.read_text()
+            content = cand.read_bytes().decode('utf-8')
         except OSError:
             content = None
         if content is not None:
@@ -1337,6 +1339,11 @@ def _populate_subagent(
                 check_status=ev.check_status, check_detail=ev.check_detail,
                 artifact_kind=_classify(content) if ev.check_status == "ok" else None,
             )
+            if ev.check_status in {'ok', 'error'}:
+                from .proof_evidence import record_check
+                record_check(child_id, cand.name, cand,
+                    CheckResult(str(cand), ev.check_status, ev.check_detail, ev.execution, ev.content),
+                    run_id=child_run_id)
 
 
 def _finalize_started_subagent(
@@ -1551,6 +1558,13 @@ def _try_promote(
         formalization_id=formalization_id,
         provenance={"promoted_from": winner.result_id},
     )
+    from .proof_evidence import record_check
+    accepted, checked = record_check(session_id, rel, canonical, verdict, run_id=run_id,
+                                    formalization_id=formalization_id)
+    if not accepted or not checked or not checked.get('check_current'):
+        _restore_file(canonical, previous)
+        return None
+    step = checked
     emit(events, "code_step", step)
     emit(events, "status", {
         "status": "promoted",
@@ -2051,7 +2065,7 @@ def _run_lea(context: RunnerContext) -> None:
                     if path != checked_path or step.get("check_status") != "ok":
                         continue
                     try:
-                        if (repo / path).read_text() != step.get("code"):
+                        if (repo / path).read_bytes().decode('utf-8') != step.get("code"):
                             continue
                     except (OSError, UnicodeDecodeError):
                         continue
@@ -2139,7 +2153,7 @@ def _run_lea(context: RunnerContext) -> None:
                         if not path.is_file():
                             raise ValueError("An assessed artifact is missing from this run workspace; restore it before reporting")
                         if path.is_file():
-                            after = path.read_text()
+                            after = path.read_bytes().decode('utf-8')
                             if after != file.get("code"):
                                 step = store.add_code_step(session_id, run_id, file["path"], content=after,
                                     author="agent", turn=current_turn, formalization_id=file.get("formalization_id") or focus_formalization_id)
@@ -2208,12 +2222,10 @@ def _run_lea(context: RunnerContext) -> None:
                 formalization_id = _attributable_formalization(
                     rel, focus_formalization_id
                 )
-                # The file on disk *is* the after-state — the prover has already
-                # written it. Reading it here is what makes the stored content and
-                # the streamed snapshot the same bytes by construction, rather than
-                # two derivations of it that can disagree (the old path committed to
-                # git, then asked git what it had committed).
-                after = _read_after(ev.path)
+                # Built-in writers carry their exact snapshot. Legacy producers
+                # can supply only a path; rereading it preserves history without
+                # attributing any later check to those bytes.
+                after = ev.content if ev.content is not None else _read_after(ev.path)
                 step = store.add_code_step(
                     session_id, run_id, rel, content=(after or ""),
                     author="agent", turn=current_turn, summary=last_intent,
@@ -2239,56 +2251,34 @@ def _run_lea(context: RunnerContext) -> None:
                 formalization_id = _attributable_formalization(
                     rel, focus_formalization_id
                 )
-                step_id = step_id_by_path.get(rel)
-                if step_id is None:
-                    # A file this run never wrote through write_file/edit_file — a
-                    # bash-written file, or one checked before its first write. It
-                    # has no step from this run to back-fill, so the verdict had
-                    # nowhere to go and was dropped. Record the check against the
-                    # file's current content instead: a verdict with no step is a
-                    # result the user never sees.
-                    after = _read_after(ev.path)
-                    step = store.add_code_step(
-                        session_id, run_id, rel, content=(after or ""),
-                        author="agent", turn=current_turn, summary=last_intent,
-                        check_status=ev.status, check_detail=ev.detail,
-                        artifact_kind=(_classify(after) if (ev.status == "ok" and after is not None) else None),
-                        content_lost=after is None,
-                        formalization_id=formalization_id,
-                    )
-                    if formalization_id:
-                        store.link_formalization_file(
-                            formalization_id, rel, "generated"
-                        )
-                    step_id_by_path[rel] = step["id"]
-                    if after is None:
-                        diagnose(events, session_id, run_id, "step_error", "code.content_lost",
-                                 f"lean_check ran on {rel}, but the file could not be read back to store it.",
-                                 turn=current_turn, path=rel, step_id=step["id"])
-                    if ev.status == "ok":
-                        checked_artifact_kind = step.get("artifact_kind")
-                        if "scratch" not in rel.lower():
-                            produced_clean = True
-                    emit(events, "code_step", step)
-                else:
-                    artifact_kind = None
-                    if ev.status == "ok":
-                        current_step = store.latest_code_step_for_path(session_id, rel)
-                        if current_step and current_step["id"] == step_id:
-                            artifact_kind = _classify(current_step["code"])
-                    updated = store.set_code_step_check(step_id, ev.status, ev.detail, artifact_kind=artifact_kind)
-                    if updated:
-                        if ev.status == "ok":
-                            checked_artifact_kind = updated.get("artifact_kind") or _classify(updated["code"])
-                            if "scratch" not in rel.lower():
-                                produced_clean = True
-                        emit(events, "code_step", updated)
+                from .proof_evidence import record_check
+                accepted, updated = record_check(session_id, rel, Path(ev.path), ev,
+                    run_id=run_id, formalization_id=formalization_id)
+                current = store.latest_code_step_for_path(session_id, rel)
+                after = _read_after(ev.path)
+                if after is not None and (not current or current['code'] != after):
+                    current = store.add_code_step(session_id, run_id, rel, content=after,
+                        author='agent', turn=current_turn, summary=last_intent,
+                        formalization_id=formalization_id)
+                    emit(events, 'code_step', current)
+                if current:
+                    step_id_by_path[rel] = current['id']
+                if updated:
+                    emit(events, 'code_step', updated)
+                if accepted and updated and updated.get('check_current') and ev.status == 'ok':
+                    checked_artifact_kind = updated.get('artifact_kind')
+                    produced_clean = 'scratch' not in rel.lower()
+                if not accepted:
+                    diagnose(events, session_id, run_id, 'step_error', 'proof.check_stale',
+                        'This check does not certify the current proof inputs. Check the current revision again.',
+                        turn=current_turn, path=rel)
+                from lea.check_evidence import public_execution
                 emit(events, "status", {
                     "status": "lean_check", "message": f"lean_check: {ev.status}",
                     "turn": current_turn, "check_status": ev.status, "check_detail": ev.detail,
-                    "execution": ev.execution,
+                    "execution": public_execution(ev.execution),
                 })
-                if project and ev.status == "ok":
+                if project and ev.status == "ok" and accepted:
                     from .project_dependencies import publish_owned
                     published = publish_owned(run_id, rel)
                     if published:
@@ -2488,8 +2478,9 @@ def _run_lea(context: RunnerContext) -> None:
                     child_broker = runbroker.get(started["run_id"])
                     if child_broker is not None:
                         _flush_child_narration(child_broker, started)
-                        emit(child_broker, "done",
-                             {"status": "error" if ev.check_status == "error" else "proved"})
+                        child_step = store.latest_code_step_for_path(started['child_id'], Path(ev.candidate_path).name) if ev.candidate_path else None
+                        child_current = bool(child_step and child_step.get('check_current') and child_step.get('check_status') == 'ok')
+                        emit(child_broker, "done", {"status": 'proved' if child_current else 'needs_review'})
                     runbroker.drop(started["run_id"])
                     child_id, child_title = started["child_id"], started["title"]
                 else:
@@ -2556,133 +2547,141 @@ def _run_lea(context: RunnerContext) -> None:
                          turn=current_turn, source="prover")
 
             elif isinstance(ev, Finished):
-                flush_narration()
-                # Deterministic collation (item 25): if the coordinator delegated but
-                # produced no clean proof of its own, promote the best compiling child
-                # candidate as the session's proof (re-verified at the canonical path).
-                # Runs BEFORE the artifact-result classification so the promoted verdict
-                # settles the session's outcome. Never clobbers a clean coordinator proof.
-                if not produced_clean and subagent_results:
-                    promoted = _promote_winner(
-                        subagent_results, session_id=session_id, run_id=run_id,
-                        repo=repo, namespace=namespace,
-                        formalization_id=focus_formalization_id,
-                        turn=current_turn, events=events,
-                    )
-                    if promoted:
-                        checked_artifact_kind = promoted.get("artifact_kind") or checked_artifact_kind
-                        step_id_by_path[promoted["path"]] = promoted["id"]
-                        produced_clean = True
-                final_text = _final_text_for_result(ev)
-                persist_assistant(final_text)
-                final_status, result_kind = _completed_artifact_result(ev, checked_artifact_kind)
-                final_result_kind = result_kind
-                final_result_detail = None if result_kind == "defined" else ev.result_detail
-                if focus_formalization_id and ev.reason == "completed" and result_kind != "disproved":
-                    # A successful file check is evidence only for the declaration it
-                    # contains. The run must have checked the current target snapshot.
-                    checked_steps = []
-                    for path, step_id in step_id_by_path.items():
-                        step = store.latest_code_step_for_path(session_id, path)
-                        if not step or step.get("id") != step_id:
-                            continue
-                        try:
-                            if (repo / path).read_text() != step.get("code"):
+                from lea.check_evidence import mutation as environment_mutation
+                with environment_mutation(repo):
+                    flush_narration()
+                    # Deterministic collation (item 25): if the coordinator delegated but
+                    # produced no clean proof of its own, promote the best compiling child
+                    # candidate as the session's proof (re-verified at the canonical path).
+                    # Runs BEFORE the artifact-result classification so the promoted verdict
+                    # settles the session's outcome. Never clobbers a clean coordinator proof.
+                    if not produced_clean and subagent_results:
+                        promoted = _promote_winner(
+                            subagent_results, session_id=session_id, run_id=run_id,
+                            repo=repo, namespace=namespace,
+                            formalization_id=focus_formalization_id,
+                            turn=current_turn, events=events,
+                        )
+                        if promoted:
+                            checked_artifact_kind = promoted.get("artifact_kind") or checked_artifact_kind
+                            step_id_by_path[promoted["path"]] = promoted["id"]
+                            produced_clean = True
+                    final_text = _final_text_for_result(ev)
+                    persist_assistant(final_text)
+                    current_checks = [store.latest_code_step_for_path(session_id, path) for path in step_id_by_path]
+                    produced_clean = any(step and step.get('check_current') and step.get('check_status') == 'ok'
+                        and 'scratch' not in step['path'].lower() for step in current_checks)
+                    final_status, result_kind = _completed_artifact_result(ev, checked_artifact_kind)
+                    final_result_kind = result_kind
+                    final_result_detail = None if result_kind == "defined" else ev.result_detail
+                    if ev.reason == 'completed' and result_kind in {'proved', 'defined', 'disproved'} and not produced_clean:
+                        final_status = final_result_kind = 'needs_review'
+                        final_result_detail = 'The current proof inputs have no fresh passing Lean check.'
+                    if focus_formalization_id and ev.reason == "completed" and result_kind != "disproved":
+                        # A successful file check is evidence only for the declaration it
+                        # contains. The run must have checked the current target snapshot.
+                        checked_steps = []
+                        for path, step_id in step_id_by_path.items():
+                            step = store.latest_code_step_for_path(session_id, path)
+                            if not step or step.get("id") != step_id:
                                 continue
-                        except (OSError, UnicodeDecodeError):
-                            continue
-                        checked_steps.append(step)
-                    match, reason = checked_target(focused_formalization or {}, checked_steps)
-                    successful_result = ev.result_kind == "proved" or (
-                        focused_formalization.get("kind") == "definition" and ev.result_kind == "defined"
+                            try:
+                                if (repo / path).read_bytes().decode('utf-8') != step.get("code"):
+                                    continue
+                            except (OSError, UnicodeDecodeError):
+                                continue
+                            checked_steps.append(step)
+                        match, reason = checked_target(focused_formalization or {}, checked_steps)
+                        successful_result = ev.result_kind == "proved" or (
+                            focused_formalization.get("kind") == "definition" and ev.result_kind == "defined"
+                        )
+                        if ev.result_kind == "needs_review" or not successful_result or match is None:
+                            final_status = final_result_kind = "needs_review"
+                            final_result_detail = ev.result_detail or reason or "Lea requested review of this target."
+                        else:
+                            final_status = "proved"
+                            final_result_kind = "defined" if focused_formalization.get("kind") == "definition" else "proved"
+                    if context.purpose == "project_dependency" and ev.reason == "completed":
+                        from . import project_dependencies
+                        dependency_id = (store.get_run(run_id) or {}).get("dependency_id")
+                        dependency = project_dependencies.get(dependency_id, reconcile=False)
+                        if dependency and final_result_kind in {"proved", "defined"}:
+                            published = project_dependencies.publish_owned(run_id, dependency["path"], final=True)
+                            if published:
+                                emit(events, "project_dependency", {"outcome": "published", "dependency": published})
+                                dependency = published
+                        if not dependency or not dependency.get("ready"):
+                            final_status = final_result_kind = "needs_review"
+                            final_result_detail = "The canonical dependency has not passed its pinned statement and verification checks."
+                    if spend_capped and ev.reason != "completed":
+                        # Our own cap-triggered stop, not a user cancel: label it. A
+                        # run that completed anyway (finished the proof in the same
+                        # turn the cap tripped) keeps its real result.
+                        final_result_kind = "max_spend"
+                        final_result_detail = _MAX_SPEND_DETAIL
+                    stop_reason = None
+                    recoverable = False
+                    if spend_capped and ev.reason != "completed":
+                        stop_reason = "global_spend_cap"
+                        recoverable = True
+                    elif ev.reason == "max_cost":
+                        stop_reason = "cost_cap"
+                        recoverable = True
+                    elif ev.reason == "max_turns":
+                        stop_reason = "turn_cap"
+                        recoverable = True
+                    elif ev.reason in {"source_obstruction", "status_reporting_failed", "dependency_wait", "stalled"}:
+                        stop_reason = ev.reason
+                        recoverable = True
+                    elif ev.reason == "interrupted":
+                        stop_reason = (store.get_run(run_id) or {}).get("stop_requested_reason") or "user_stop"
+                        recoverable = True
+                        if stop_reason == "timeout":
+                            final_result_detail = "Time limit reached; the run stopped at a turn boundary."
+                    if ev.reason in {"stalled", "dependency_wait"}:
+                        final_result_detail = ev.text
+                    final_stop_reason = stop_reason
+                    final_recoverable = recoverable
+                    if final_result_detail:
+                        final_result_detail = _redact(final_result_detail)
+                    store.update_run(
+                        run_id, final_status, final_text=final_text,
+                        input_tokens=ev.usage.input_tokens, output_tokens=ev.usage.output_tokens,
+                        cost_usd=ev.cost,
+                        usage_status="final", usage_details=ev.usage.usage_details,
+                        result_kind=final_result_kind, result_detail=final_result_detail,
+                        stop_reason=stop_reason, recoverable=recoverable,
                     )
-                    if ev.result_kind == "needs_review" or not successful_result or match is None:
-                        final_status = final_result_kind = "needs_review"
-                        final_result_detail = ev.result_detail or reason or "Lea requested review of this target."
-                    else:
-                        final_status = "proved"
-                        final_result_kind = "defined" if focused_formalization.get("kind") == "definition" else "proved"
-                if context.purpose == "project_dependency" and ev.reason == "completed":
-                    from . import project_dependencies
-                    dependency_id = (store.get_run(run_id) or {}).get("dependency_id")
-                    dependency = project_dependencies.get(dependency_id, reconcile=False)
-                    if dependency and final_result_kind in {"proved", "defined"}:
-                        published = project_dependencies.publish_owned(run_id, dependency["path"], final=True)
-                        if published:
-                            emit(events, "project_dependency", {"outcome": "published", "dependency": published})
-                            dependency = published
-                    if not dependency or not dependency.get("ready"):
-                        final_status = final_result_kind = "needs_review"
-                        final_result_detail = "The canonical dependency has not passed its pinned statement and verification checks."
-                if spend_capped and ev.reason != "completed":
-                    # Our own cap-triggered stop, not a user cancel: label it. A
-                    # run that completed anyway (finished the proof in the same
-                    # turn the cap tripped) keeps its real result.
-                    final_result_kind = "max_spend"
-                    final_result_detail = _MAX_SPEND_DETAIL
-                stop_reason = None
-                recoverable = False
-                if spend_capped and ev.reason != "completed":
-                    stop_reason = "global_spend_cap"
-                    recoverable = True
-                elif ev.reason == "max_cost":
-                    stop_reason = "cost_cap"
-                    recoverable = True
-                elif ev.reason == "max_turns":
-                    stop_reason = "turn_cap"
-                    recoverable = True
-                elif ev.reason in {"source_obstruction", "status_reporting_failed", "dependency_wait", "stalled"}:
-                    stop_reason = ev.reason
-                    recoverable = True
-                elif ev.reason == "interrupted":
-                    stop_reason = (store.get_run(run_id) or {}).get("stop_requested_reason") or "user_stop"
-                    recoverable = True
-                    if stop_reason == "timeout":
-                        final_result_detail = "Time limit reached; the run stopped at a turn boundary."
-                if ev.reason in {"stalled", "dependency_wait"}:
-                    final_result_detail = ev.text
-                final_stop_reason = stop_reason
-                final_recoverable = recoverable
-                if final_result_detail:
-                    final_result_detail = _redact(final_result_detail)
-                store.update_run(
-                    run_id, final_status, final_text=final_text,
-                    input_tokens=ev.usage.input_tokens, output_tokens=ev.usage.output_tokens,
-                    cost_usd=ev.cost,
-                    usage_status="final", usage_details=ev.usage.usage_details,
-                    result_kind=final_result_kind, result_detail=final_result_detail,
-                    stop_reason=stop_reason, recoverable=recoverable,
-                )
-                reset_persisted_spend_cache()
-                if reporting_context:
-                    def record_reporting_completion():
-                        latest_status = lea_status_store.latest(run_id)
-                        if not latest_status or latest_status["kind"] != "final":
-                            logger.info("lea_status.incomplete run=%s reason=%s missing_initial=%s", run_id, ev.reason, not latest_status)
-                            if ev.reason == "completed":
-                                diagnose(events, session_id, run_id, "step_error", "status.reporting_incomplete",
-                                         "The run completed without a final Lea Status update; the last published assessment is retained.", turn=current_turn)
-                    _best_effort("status completion", run_id, record_reporting_completion)
-                # Everything past this point is BOOKKEEPING: the run's outcome is
-                # already durable above. Each piece is guarded on its own so one
-                # failure neither loses the others nor escapes to the handler below,
-                # which used to rewrite a proved run to 'failed' over a locked DB or an
-                # unserializable transcript (AUDIT-2026-07-24 C6).
-                _best_effort("usage breakdown", run_id,
-                             lambda: store.replace_run_usage_breakdown(run_id, usage.rows()))
-                # Persist the faithful conversation for the next activation to replay
-                # (multi-turn, D16). Only here, on Finished — an errored run stores none.
-                _best_effort("transcript", run_id,
-                             lambda: store.set_run_transcript(run_id, ev.transcript.get("messages", [])))
-                # Structured artifact index (4.1): record which declarations this
-                # run's checked files hold, keyed to the run's own FileChanged set.
-                _best_effort("artifact index", run_id,
-                             lambda: _record_run_artifacts(
-                                 session_id, run_id, project, namespace,
-                                 dict(step_id_by_path),
-                                 focus_formalization_id=focus_formalization_id,
-                                 completion_verified=final_result_kind in {"proved", "defined"},
-                                 source_hash=focus_source_hash))
+                    reset_persisted_spend_cache()
+                    if reporting_context:
+                        def record_reporting_completion():
+                            latest_status = lea_status_store.latest(run_id)
+                            if not latest_status or latest_status["kind"] != "final":
+                                logger.info("lea_status.incomplete run=%s reason=%s missing_initial=%s", run_id, ev.reason, not latest_status)
+                                if ev.reason == "completed":
+                                    diagnose(events, session_id, run_id, "step_error", "status.reporting_incomplete",
+                                             "The run completed without a final Lea Status update; the last published assessment is retained.", turn=current_turn)
+                        _best_effort("status completion", run_id, record_reporting_completion)
+                    # Everything past this point is BOOKKEEPING: the run's outcome is
+                    # already durable above. Each piece is guarded on its own so one
+                    # failure neither loses the others nor escapes to the handler below,
+                    # which used to rewrite a proved run to 'failed' over a locked DB or an
+                    # unserializable transcript (AUDIT-2026-07-24 C6).
+                    _best_effort("usage breakdown", run_id,
+                                 lambda: store.replace_run_usage_breakdown(run_id, usage.rows()))
+                    # Persist the faithful conversation for the next activation to replay
+                    # (multi-turn, D16). Only here, on Finished — an errored run stores none.
+                    _best_effort("transcript", run_id,
+                                 lambda: store.set_run_transcript(run_id, ev.transcript.get("messages", [])))
+                    # Structured artifact index (4.1): record which declarations this
+                    # run's checked files hold, keyed to the run's own FileChanged set.
+                    _best_effort("artifact index", run_id,
+                                 lambda: _record_run_artifacts(
+                                     session_id, run_id, project, namespace,
+                                     dict(step_id_by_path),
+                                     focus_formalization_id=focus_formalization_id,
+                                     completion_verified=final_result_kind in {"proved", "defined"},
+                                     source_hash=focus_source_hash))
 
     except recovery.CheckpointWriteError as exc:
         logger.exception("Run %s paused because its checkpoint could not be saved", run_id)

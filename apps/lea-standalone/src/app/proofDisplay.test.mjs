@@ -14,6 +14,7 @@ const step = (extra = {}) => ({
   path: 'Proof.lean',
   commit_sha: 'sha',
   check_status: 'ok',
+  check_current: true,
   check_detail: null,
   code: 'theorem t : True := by\n  trivial\n',
   created_at: '2026-06-16T00:00:00Z',
@@ -94,4 +95,11 @@ test('reviewed unknown artifacts retain the review verdict', () => {
 test('Lean comments mentioning sorry do not make the code a stub', () => {
   assert.equal(hasSorryLikeCode('-- sorry here is only a note\ntheorem t : True := by\n  trivial\n'), false);
   assert.equal(hasSorryLikeCode('/- admit in a comment -/\ntheorem t : True := by\n  trivial\n'), false);
+});
+
+
+test('current badges require evidence while history retains recorded checks', () => {
+  assert.equal(deriveCodeStepProofStatus(step({check_current: false})), 'unchecked');
+  assert.equal(deriveCodeStepProofStatus(step({check_current: undefined})), 'unchecked');
+  assert.equal(deriveCodeStepProofStatus(step({check_current: false}), {historical: true}), 'proved');
 });

@@ -1,0 +1,11 @@
+{
+  "dependency_edit": {
+    "upstream_save_check": "ok",
+    "downstream_status_after_save": "proved",
+    "downstream_status_after_rebuild": "proved",
+    "downstream_check_current": true,
+    "actual_downstream_check": "error",
+    "actual_downstream_detail": "/private/var/folders/7v/bwwzmh557fq01rdzwhsyys2h0000gn/T/lea-audit-dependency-oy7smq5q/workspace/proofs/Lea/DependencyAudit/Downstream.lean:3:29: error: Unknown identifier `base`",
+    "formalization_status": "proved"
+  }
+}

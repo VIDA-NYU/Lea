@@ -1,6 +1,7 @@
 """Small real-process probe for drain ordering and the data-directory lock."""
 
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -96,7 +97,17 @@ def test_process_drain_preserves_health_and_rejects_duplicate_owner(tmp_path):
 
         draining = _json(f"http://127.0.0.1:{port}/api/runtime/restart", {"shutdown": True})
         assert draining["lifecycle_state"] == "draining"
-        assert _json(f"http://127.0.0.1:{port}/api/health")["lifecycle_state"] == "draining"
+        liveness = _json(f"http://127.0.0.1:{port}/api/health")
+        assert liveness["lifecycle_state"] == "draining" and liveness['ok'] is True
+        assert liveness['ready'] is False
+        with pytest.raises(HTTPError) as unavailable:
+            _json(f"http://127.0.0.1:{port}/api/ready")
+        assert unavailable.value.code == 503
+        assert unavailable.value.headers['Retry-After'] == '5'
+        assert _json(f"http://127.0.0.1:{port}/api/health")["ready"] is False
+        with pytest.raises(HTTPError) as not_ready:
+            _json(f"http://127.0.0.1:{port}/api/ready")
+        assert not_ready.value.code == 503
         with pytest.raises(HTTPError) as rejected:
             _json(f"http://127.0.0.1:{port}/api/runs", {"message": "new work"})
         assert rejected.value.code == 503
@@ -109,6 +120,56 @@ def test_process_drain_preserves_health_and_rejects_duplicate_owner(tmp_path):
             if process is not None and process.poll() is None:
                 process.kill()
                 process.wait(timeout=5)
+
+
+@pytest.mark.parametrize('launcher', ['canonical', 'uvicorn'])
+def test_production_launchers_restart_or_reject_without_wedging(tmp_path, launcher):
+    port = _port()
+    prover = tmp_path / 'prover'
+    (prover / 'workspace/proofs').mkdir(parents=True)
+    (prover / 'lea').mkdir()
+    (prover / 'pyproject.toml').write_text('[project]\nname="fixture"\n')
+    env = dict(os.environ, LEA_SHARED_DATA_DIR=str(tmp_path / 'data'), LEA_ROOT=str(prover))
+    adapter = Path(__file__).resolve().parents[1]
+    args = [str(adapter / 'run_api.py')] if launcher == 'canonical' else ['-m', 'uvicorn', 'app.main:app']
+    process = subprocess.Popen([sys.executable, *args, '--host', '127.0.0.1', '--port', str(port),
+        '--log-level', 'error'], cwd=adapter, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        before = _wait_health(port, process, timeout=20)
+        assert before['ready'] is True
+        assert before['restart_supported'] is (launcher == 'canonical')
+        if launcher == 'uvicorn':
+            with pytest.raises(HTTPError) as unsupported:
+                _json(f'http://127.0.0.1:{port}/api/runtime/restart', {})
+            assert unsupported.value.code == 409
+            assert _json(f'http://127.0.0.1:{port}/api/ready')['ready'] is True
+            return
+        _json(f'http://127.0.0.1:{port}/api/runtime/restart', {})
+        deadline = time.monotonic() + 20
+        after = before
+        while time.monotonic() < deadline:
+            try:
+                after = _json(f'http://127.0.0.1:{port}/api/health')
+                if after['runtime_id'] != before['runtime_id'] and after['ready']:
+                    break
+            except OSError:
+                pass
+            time.sleep(.05)
+        assert after['runtime_id'] != before['runtime_id']
+        assert after['ready'] is True
+        _json(f'http://127.0.0.1:{port}/api/runtime/restart', {'shutdown': True})
+        process.wait(timeout=10)
+        assert process.returncode == 0
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        for pipe in (process.stdout, process.stderr):
+            pipe.close()
 
 
 def test_process_startup_recovers_safe_boundary_and_pauses_uncertain_model(tmp_path, monkeypatch):

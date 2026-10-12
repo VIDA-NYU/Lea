@@ -321,6 +321,14 @@ def _list_sessions(
             """,
             (*params, int(limit)),
         ).fetchall()
+    heads = {}
+    if rows:
+        with connect() as conn:
+            ids = [row['id'] for row in rows]
+            marks = ','.join('?' for _ in ids)
+            latest = conn.execute(f"{TIMELINE_WITH_BLOB} where t.id in (select max(id) from timeline "
+                f"where kind='code' and lower(path) not like '%scratch%' and session_id in ({marks}) group by session_id)", ids).fetchall()
+        heads = {row['session_id']: _code_step_from_row(row) for row in latest}
     sessions = []
     status_targets = []
     for row in rows:
@@ -332,8 +340,11 @@ def _list_sessions(
         # re-running reads 'proved'/'ok', never 'running' — the sidebar needs this
         # separate signal to show a running dot for background runs.
         active_run_count = int(data.pop("active_run_count", 0) or 0)
+        recorded_status = data.pop("latest_check_status", None)
+        projected = heads.get(data['id'])
+        recorded_status = recorded_status if projected and projected.get('check_current') else None
         data["status"] = _derive_session_status(
-            data.pop("latest_check_status", None),
+            recorded_status,
             data.pop("latest_artifact_kind", None),
             int(data.pop("code_step_count", 0) or 0),
             bool(active_run_count),
@@ -359,13 +370,11 @@ def _list_sessions(
             raw = [row_to_dict(row) for row in conn.execute(
                 f"select * from formalizations where id in ({marks})", target_ids
             ).fetchall()]
-        reviewed_ids = {
-            item["id"] for item in formalization_service.decorate(raw)
-            if item["validity_status"] == "needs_review"
-        }
+        target_verdicts = {item['id']: item['validity_status'] for item in formalization_service.decorate(raw)
+                           if item['validity_status'] in {'needs_review', 'disproved'}}
         for session, fid in zip(sessions, status_targets):
-            if fid in reviewed_ids:
-                session["status"] = "needs_review"
+            if fid in target_verdicts:
+                session["status"] = target_verdicts[fid]
     return sessions
 
 
@@ -1307,7 +1316,7 @@ def delete_project_cascade(project_id: str) -> bool:
             # `messages`/`code_steps` are pre-cutover rows kept until the contract
             # step drops them; they're still cleared so a delete doesn't leave half
             # a session behind in tables that are still readable.
-            for table in ("timeline", "messages", "code_steps", "status_events",
+            for table in ("proof_check_evidence", "timeline", "messages", "code_steps", "status_events",
                           "run_usage_breakdown", "runs"):
                 conn.execute(f"delete from {table} where session_id in ({marks})", session_ids)
             conn.execute(f"delete from sessions where id in ({marks})", session_ids)
@@ -1317,7 +1326,9 @@ def delete_project_cascade(project_id: str) -> bool:
             # eagerly here would silently blank another project's history.
             conn.execute(
                 "delete from artifact_blobs where id not in "
-                "(select after_blob_id from timeline where after_blob_id is not null)"
+                "(select after_blob_id from timeline where after_blob_id is not null "
+                "union select blob_id from proof_check_evidence "
+                "union select blob_id from verification_events where blob_id is not null)"
             )
         # The artifact index is scoped by project OR by session (`scope` is whichever
         # applies), and was left behind entirely (AUDIT-2026-07-24 C9). A stale row
@@ -2588,6 +2599,8 @@ def record_verification_event(
     expected: dict | None = None,
     require_current: bool = False,
     persist_session: bool = False,
+    execution: dict | None = None,
+    content: str | None = None,
 ) -> dict | None:
     event_id = str(uuid4())
     with write() as conn:
@@ -2601,13 +2614,15 @@ def record_verification_event(
             """
             insert into verification_events (
                 id, formalization_id, session_id, run_id, code_step_id,
-                path, status, detail, created_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                path, status, detail, created_at, blob_id, evidence_json
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_id, formalization_id, session_id, run_id,
                 int(code_step_id) if code_step_id is not None else None,
                 path, status, detail, utc_now(),
+                _put_blob(conn, content) if content is not None else None,
+                json.dumps(execution) if execution else None,
             ),
         )
         row = conn.execute(
@@ -2735,7 +2750,7 @@ def current_code_steps_for_formalization(
             select * from (
               select
                 t.*,
-                b.content as blob_content,
+                b.content as blob_content, {PROOF_EVIDENCE_COLUMNS},
                 b.sha256 as blob_sha256,
                 ff.role as formalization_file_role,
                 s.title as updating_session_title,
@@ -2747,7 +2762,7 @@ def current_code_steps_for_formalization(
               join formalizations f on f.id = ff.formalization_id
               join timeline t on t.kind = 'code' and t.path = ff.path
               join sessions s on s.id = t.session_id
-              left join artifact_blobs b on b.id = t.after_blob_id
+              left join artifact_blobs b on b.id = t.after_blob_id {PROOF_EVIDENCE_JOINS}
               where ff.formalization_id = ? and {scope_clause} {revision_clause}
             )
             where rn = 1
@@ -2790,17 +2805,12 @@ def code_steps_for_project_path(
     reads only `check_status`/`session_id`/`created_at`, so hydrating every historical
     revision of every file — each formerly its own connection and its own full copy of
     the proof — was work whose result was discarded."""
-    content_join = "left join artifact_blobs b on b.id = c.after_blob_id" if include_content else ""
-    content_column = "b.content as blob_content" if include_content else "'' as blob_content"
     with connect() as conn:
-        rows = conn.execute(
-            f"select c.*, {content_column} from timeline c "
-            f"join sessions s on s.id = c.session_id {content_join} "
-            "where s.project_id = ? and c.kind = 'code' and c.path = ? "
-            "order by c.created_at desc, c.id desc",
-            (project_id, path),
-        ).fetchall()
-    return [_code_step_from_row(r) for r in rows]
+        rows = conn.execute(f"{TIMELINE_WITH_BLOB} join sessions s on s.id=t.session_id "
+            "where s.project_id=? and t.kind='code' and t.path=? order by t.created_at desc,t.id desc",
+            (project_id, path)).fetchall()
+    projected = [_code_step_from_row(r) for r in rows]
+    return projected if include_content else [{**step, 'code': ''} for step in projected]
 
 
 def safe_verify_ok_sessions(project_id: str) -> set[str]:
@@ -2821,7 +2831,16 @@ def safe_verify_ok_sessions(project_id: str) -> set[str]:
             "where s.project_id = ? and r.safe_verify_status = 'ok'",
             (project_id,),
         ).fetchall()
-    return {row["id"] for row in rows}
+    from .proof_evidence import verification_current
+    result = set()
+    for row in rows:
+        with connect() as conn:
+            event = conn.execute('select * from verification_events where session_id=? order by created_at desc limit 1', (row['id'],)).fetchone()
+        if event:
+            step = current_proof_step(row['id'], event['path'])
+            if verification_current(dict(event), step):
+                result.add(row['id'])
+    return result
 
 
 def latest_agent_code_step(session_id: str) -> dict | None:
@@ -3004,7 +3023,8 @@ def latest_check_for_project_path(project_id: str, path: str) -> dict | None:
         row = conn.execute(
             """
             select t.check_status, t.check_detail, t.author, t.data, t.created_at,
-                   b.sha256 as checked_sha256
+                   b.sha256 as checked_sha256, t.check_evidence_id, t.session_id, t.path,
+                   b.content as code, t.after_blob_id as blob_id
             from timeline t
             join sessions s on s.id = t.session_id
             left join artifact_blobs b on b.id = t.after_blob_id
@@ -3018,6 +3038,8 @@ def latest_check_for_project_path(project_id: str, path: str) -> dict | None:
     if not row:
         return None
     result = row_to_dict(row)
+    from .proof_evidence import project_step
+    result = project_step(result)
     if result.get("data"):
         try:
             result["author"] = json.loads(result["data"]).get("reason") or result["author"]
@@ -3264,9 +3286,16 @@ def _message_from_row(row) -> dict:
 # with 200 steps opened 200 connections; `graph.build_graph` did it per revision of
 # per file. Aliased to `blob_content` because `timeline.content` already exists (it
 # holds message text), so `b.content` would collide on the way out.
+PROOF_EVIDENCE_COLUMNS = "e.evidence_json as proof_evidence_json, ep.namespace as evidence_namespace, es.parent_id as evidence_parent_id"
+PROOF_EVIDENCE_JOINS = (
+    " left join sessions es on es.id=t.session_id "
+    "left join projects ep on ep.id=es.project_id "
+    "left join proof_check_evidence e on e.id=t.check_evidence_id and e.blob_id=t.after_blob_id "
+    "and e.session_id=t.session_id and e.path=t.path and e.project_id is es.project_id "
+)
 TIMELINE_WITH_BLOB = (
-    "select t.*, b.content as blob_content from timeline t "
-    "left join artifact_blobs b on b.id = t.after_blob_id"
+    f"select t.*, b.content as blob_content, {PROOF_EVIDENCE_COLUMNS} from timeline t "
+    "left join artifact_blobs b on b.id = t.after_blob_id" + PROOF_EVIDENCE_JOINS
 )
 
 
@@ -3286,7 +3315,7 @@ def _code_step_from_row(row, *, code: str | None = None) -> dict:
         if code is None:
             code = blob_content(d["after_blob_id"]) or ""
     d.pop("blob_content", None)
-    return {
+    result = {
         "id": str(d["id"]),
         "session_id": d["session_id"],
         "run_id": d["run_id"],
@@ -3302,7 +3331,13 @@ def _code_step_from_row(row, *, code: str | None = None) -> dict:
         "content_lost": bool(d["content_lost"]),
         "created_at": d["created_at"],
         "code": code,
+        "blob_id": d.get("after_blob_id"),
+        "check_evidence_id": d.get("check_evidence_id"),
     }
+    from .proof_evidence import project_step
+    record = {'evidence_json': d.get('proof_evidence_json'), 'namespace': d.get('evidence_namespace'),
+              'parent_id': d.get('evidence_parent_id')} if 'proof_evidence_json' in d else None
+    return project_step(result, record)
 
 
 def add_message(
@@ -4134,7 +4169,7 @@ def session_detail(session_id: str) -> dict | None:
     # Scratch/probe files (exact?/apply? scratchpads) are excluded so a session is
     # only 'ok' when an actual proof compiles, not when a throwaway probe does (M14).
     real_steps = [c for c in code_steps if "scratch" not in (c["path"] or "").lower()]
-    latest_check_status = real_steps[-1]["check_status"] if real_steps else None
+    latest_check_status = real_steps[-1]["check_status"] if real_steps and real_steps[-1].get("check_current") else None
     latest_artifact_kind = real_steps[-1]["artifact_kind"] if real_steps else None
     latest_code_run_status = None
     run_row = None
@@ -4166,8 +4201,8 @@ def session_detail(session_id: str) -> dict | None:
     if latest_formalization_id:
         from . import formalizations as formalization_service
         target = formalization_service.get(latest_formalization_id)
-        if target and target["validity_status"] == "needs_review":
-            derived_status = "needs_review"
+        if target and target["validity_status"] in {"needs_review", "disproved"}:
+            derived_status = target["validity_status"]
     return {
         **session,
         **usage,
@@ -4221,7 +4256,11 @@ def _safe_verify_summary(run: dict) -> dict | None:
     status = run.get("safe_verify_status")
     if not status:
         return None
-    return {"run_id": run.get("id"), "status": status, "detail": run.get("safe_verify_detail")}
+    with connect() as conn:
+        event = conn.execute('select * from verification_events where session_id=? order by created_at desc limit 1', (run['session_id'],)).fetchone()
+    from .proof_evidence import verification_current
+    current = verification_current(dict(event), current_proof_step(run['session_id'], event['path'])) if event else False
+    return {"run_id": run.get("id"), "status": status, "detail": run.get("safe_verify_detail"), "current": current}
 
 
 # --- whole-database usage aggregates (AUDIT-2026-07-24 C1) -------------------

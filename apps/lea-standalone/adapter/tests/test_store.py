@@ -969,3 +969,7 @@ def test_the_change_token_moves_only_on_a_real_write(tmp_path, monkeypatch):
 
     store.update_run(run["id"], "proved")
     assert store.sessions_change_token() > after_run
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

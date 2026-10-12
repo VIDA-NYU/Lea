@@ -75,9 +75,11 @@ class CheckBudget:
 
 class CheckText(str):
     """A normal tool-result string carrying its own optional execution evidence."""
-    def __new__(cls, text: str, execution: dict | None = None):
+    def __new__(cls, text: str, execution: dict | None = None, captured_content: str | None = None, snapshot_path: str | None = None):
         result = super().__new__(cls, text)
         result.execution = execution
+        result.captured_content = captured_content
+        result.snapshot_path = snapshot_path
         return result
 
 
@@ -86,9 +88,10 @@ class CheckOutcome:
     status: str
     output: str
     execution: dict
+    captured_content: str | None = None
 
     def text(self) -> CheckText:
-        return CheckText(self.output, self.execution)
+        return CheckText(self.output, self.execution, self.captured_content)
 
 
 def lsp_disabled() -> bool:
@@ -120,3 +123,16 @@ def stop_process(proc: subprocess.Popen, *, deadline: float | None = None) -> No
         proc.wait(timeout=max(0.001, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         pass
+
+
+def serialize_result(result):
+    if isinstance(result, CheckText):
+        return {"text": str(result), "execution": result.execution,
+                "captured_content": result.captured_content, "snapshot_path": result.snapshot_path}
+    return str(result)
+
+
+def restore_result(value):
+    if isinstance(value, dict) and "text" in value:
+        return CheckText(value["text"], value.get("execution"), value.get("captured_content"), value.get("snapshot_path"))
+    return str(value)

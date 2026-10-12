@@ -1,0 +1,62 @@
+
+> test:integration
+> node --test tests/integration/*.test.mjs
+
+TAP version 13
+# Subtest: adapter wire contract: events, done vocabulary, persistence, completed-run reattach
+ok 1 - adapter wire contract: events, done vocabulary, persistence, completed-run reattach
+  ---
+  duration_ms: 3385.201958
+  type: 'test'
+  ...
+# Subtest: companion end-to-end: /formalize drives a run to formalized with a session link
+ok 2 - companion end-to-end: /formalize drives a run to formalized with a session link
+  ---
+  duration_ms: 710.839583
+  type: 'test'
+  ...
+# Subtest: companion push channel: /events streams jobs-changed during a formalize (PLAN 3.1)
+ok 3 - companion push channel: /events streams jobs-changed during a formalize (PLAN 3.1)
+  ---
+  duration_ms: 521.100833
+  type: 'test'
+  ...
+# Subtest: retry lifecycle: a failed changed-source attempt retains the previous proof as stale history
+ok 4 - retry lifecycle: a failed changed-source attempt retains the previous proof as stale history
+  ---
+  duration_ms: 992.125084
+  type: 'test'
+  ...
+# Subtest: companion end-to-end: a failing run surfaces as failed, not as a hang
+ok 5 - companion end-to-end: a failing run surfaces as failed, not as a hang
+  ---
+  duration_ms: 548.474125
+  type: 'test'
+  ...
+# Subtest: the ledger engine keeps a changed-source failed retry stale
+ok 6 - the ledger engine keeps a changed-source failed retry stale
+  ---
+  duration_ms: 86.439958
+  type: 'test'
+  ...
+# Subtest: a checked target with an explicit review result stays needs_review
+ok 7 - a checked target with an explicit review result stays needs_review
+  ---
+  duration_ms: 561.22475
+  type: 'test'
+  ...
+# Subtest: Overleaf manual edits preserve the adapter's pinned proof history
+ok 8 - Overleaf manual edits preserve the adapter's pinned proof history
+  ---
+  duration_ms: 567.249042
+  type: 'test'
+  ...
+1..8
+# tests 8
+# suites 0
+# pass 8
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 7867.30775

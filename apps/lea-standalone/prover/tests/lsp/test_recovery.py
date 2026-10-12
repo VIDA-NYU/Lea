@@ -167,6 +167,11 @@ class TransportTests(unittest.TestCase):
 
 class RecoveryTests(unittest.TestCase):
     def setUp(self):
+        from tests.check_fixtures import unit_environment
+        from lea import check_evidence
+        self.environment_patch = patch.object(check_evidence, 'prepared_environment', unit_environment)
+        self.environment_patch.start()
+        self.addCleanup(self.environment_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.root = str(Path(self.temp.name).resolve())
         self.file = Path(self.root, 'Example.lean')
@@ -327,6 +332,41 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(len(errors), 12)
             self.assertEqual(len(self.created), 2)
             self.assertEqual(lsp._roots[self.root].failures, 1)
+
+    def test_late_failure_does_not_repeat_a_completed_failed_recovery(self):
+        with patch.object(lsp, 'LeanDaemon', self.factory()):
+            lsp.check_via_lsp(str(self.file), 'x', self.root)
+        old = self.created[0]
+        entered, release = threading.Event(), threading.Event()
+        def fail_old(path, content, *, budget=None):
+            if path.endswith('Slow.lean'):
+                entered.set()
+                if not release.wait(2):
+                    raise AssertionError('Delayed observer was not released')
+            raise CheckFailure('transport', 'old generation failed')
+        old.check = fail_old
+        errors = []
+        def slow():
+            try:
+                lsp.check_via_lsp(str(self.file.with_name('Slow.lean')), 'x', self.root,
+                                  budget=CheckBudget(3))
+            except CheckFailure as exc:
+                errors.append(exc.kind)
+        with patch.object(lsp, 'LeanDaemon', self.factory(99)):
+            thread = threading.Thread(target=slow)
+            thread.start()
+            self.assertTrue(entered.wait(1))
+            try:
+                with self.assertRaises(CheckFailure):
+                    lsp.check_via_lsp(str(self.file), 'x', self.root, budget=CheckBudget(2))
+                self.assertEqual(lsp._roots[self.root].failures, 1)
+            finally:
+                release.set()
+                thread.join(3)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, ['transport'])
+        self.assertEqual(lsp._roots[self.root].failures, 1)
+        self.assertEqual(len(self.created), 2)
 
     def test_timeout_retires_daemon_without_fallback(self):
         transport = AutoTransport()

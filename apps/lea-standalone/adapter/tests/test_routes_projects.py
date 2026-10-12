@@ -223,7 +223,7 @@ def _checked_rename_target(proofs, *, kind="theorem", result_kind="proved"):
 def test_namespace_rename_preserves_certification_and_original_history(tmp_path, monkeypatch, kind, verdict):
     proofs = _setup(tmp_path, monkeypatch)
     project, target, original, _ = _checked_rename_target(proofs, kind=kind, result_kind=verdict)
-    monkeypatch.setattr(projects_route, "interface_check", lambda _path: SimpleNamespace(status="ok", detail=None))
+    monkeypatch.setattr(projects_route, "interface_check", lambda _path: CheckResult(_path, "ok"))
 
     # Certification survives successive renames, without attributing the new
     # namespace bytes to the agent's original completed run.
@@ -1424,3 +1424,9 @@ def test_a_normal_upload_still_works(tmp_path, monkeypatch):
 
     assert row["filename"] == "notes.md"
     assert row["stored_path"] == ".lea/files/notes.md"
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")
+
+from lea.events import CheckResult

@@ -1,11 +1,14 @@
 """C3 tests: session.status is the working-copy verdict, derived (D14/P2).
 
+
 A session has no stored status column — its status is computed from the latest
 code_step's check_status on every read, so it can never drift from the source of
 truth. Run lifecycle (running/done/failed) is NOT here; it lives on runs.status.
 These tests pin the vocabulary, the latest-wins rule, and that `list_sessions`
 and `session_detail` agree.
 """
+
+import pytest
 
 import sqlite3
 
@@ -200,3 +203,7 @@ def test_user_edit_verdict_overrides_after_a_run(tmp_path, monkeypatch):
     # user edits outside the run (run_id=None) and breaks it
     store.add_code_step(session["id"], None, "p.lean", content="proof-b", author="user", check_status="error")
     assert store.session_detail(session["id"])["status"] == "error"
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

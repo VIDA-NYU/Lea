@@ -893,7 +893,7 @@ def project_target_status_by_slug(slug: str, declarations: str = "", formalizati
         content = ""
         if exists:
             try:
-                content = absolute.read_text()
+                content = absolute.read_bytes().decode('utf-8')
             except OSError:
                 exists = False
         shared_file = exists and _shared_artifact(
@@ -930,7 +930,7 @@ def project_target_status_by_slug(slug: str, declarations: str = "", formalizati
         artifact_source_hash = (row or {}).get("source_hash")
         checked_sha = (check or {}).get("checked_sha256")
         content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest() if exists else None
-        check_current = bool(checked_sha and checked_sha == content_sha and check.get("check_status") == "ok")
+        check_current = bool(checked_sha and checked_sha == content_sha and check.get("check_status") == "ok" and check.get("check_current"))
         declared = target_declaration(content, name, (formalization or {}).get("kind") or "theorem") if exists else None
         validity = (formalization or {}).get("validity_status") or "unavailable"
         validity_reason = (formalization or {}).get("validity_reason") or "No authoritative target verdict is available."

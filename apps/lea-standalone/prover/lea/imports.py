@@ -56,11 +56,23 @@ def without_comments(code: str) -> str:
     return "".join(chars)
 
 
+_SEGMENT = r"(?:[^\W\d][\w']*|«[^»\n]+»)"
+_MODULE = re.compile(_SEGMENT + r"(?:\." + _SEGMENT + r")*")
+
+
+def module_parts(name: str) -> list[str]:
+    return [part[1:-1] if part.startswith('«') else part for part in re.findall(r"«[^»]+»|[^.]+", name)]
+
+
 def direct_imports(code: str) -> list[str]:
-    """Return direct module names from real Lean import commands, preserving order."""
-    modules: list[str] = []
+    """Real imports, including Unicode and Lean's quoted identifier segments."""
+    modules = []
     for match in IMPORT_COMMAND_RE.finditer(without_comments(code)):
-        for module in match.group("modules").split():
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_'.]*", module):
-                modules.append(module)
+        header = match.group('modules')
+        cursor = 0
+        for module in _MODULE.finditer(header):
+            if header[cursor:module.start()].strip():
+                break
+            modules.append(module.group())
+            cursor = module.end()
     return list(dict.fromkeys(modules))

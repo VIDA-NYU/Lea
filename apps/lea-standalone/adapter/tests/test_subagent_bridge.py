@@ -1,5 +1,6 @@
 """Bridge sub-agent handling (v2.3 item 24): enablement + SubagentFinished → child session.
 
+
 These pin the adapter side of sub-agents, without a live prover run:
 
   * `_with_subagents` adds the opt-in `spawn_subagent` onto the coordinator's default
@@ -11,6 +12,8 @@ These pin the adapter side of sub-agents, without a live prover run:
   * a missing/unreadable candidate is tolerated (child still lands, just unchecked);
   * the child transcript never lands on the PARENT's timeline.
 """
+
+import pytest
 
 from pathlib import Path
 from queue import Queue
@@ -902,3 +905,7 @@ def test_run_lea_persists_context_compaction_as_a_durable_marker(tmp_path, monke
     detail = store.session_detail(session["id"])
     markers = [m for m in detail["messages"] if m.get("kind") == "compaction"]
     assert len(markers) == 1
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

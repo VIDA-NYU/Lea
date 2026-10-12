@@ -121,10 +121,10 @@ def manifest(*, run: dict, config, repo: Path) -> dict:
         if root_path.exists():
             role_contents.extend(_file_fingerprint(p) for p in sorted(root_path.rglob("*.yaml")))
             role_contents.extend(_file_fingerprint(p) for p in sorted(root_path.rglob("*.md")))
-    from lea import agent, mcp, registry, tools, project_library_tools, providers, condenser, events, stall, usage, subagents
+    from lea import agent, mcp, registry, tools, project_library_tools, providers, condenser, events, stall, usage, subagents, check_evidence, lean_checks, check_runtime, interface, lsp_daemon
     tool_code = [_file_fingerprint(Path(module.__file__))
                  for module in (agent, tools, registry, mcp, project_library_tools,
-                                providers, condenser, events, stall, usage, subagents)]
+                                providers, condenser, events, stall, usage, subagents, check_evidence, lean_checks, check_runtime, interface, lsp_daemon)]
     tool_modules = {}
     for name in config.tool_modules:
         try:

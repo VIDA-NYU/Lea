@@ -293,14 +293,8 @@ def _theorem_signature(path: str | None) -> str:
 
 
 def _parse_result_kind(text: str) -> str:
-    value = (text or "").strip().upper()
-    if "DISPROVED" in value:
-        return "disproved"
-    if "PROVED" in value:
-        return "proved"
-    if "NEEDS_REVIEW" in value or "NEEDS REVIEW" in value:
-        return "needs_review"
-    return "needs_review"
+    return {"PROVED": "proved", "DISPROVED": "disproved", "NEEDS_REVIEW": "needs_review"}.get(
+        (text or "").strip().upper(), "needs_review")
 
 
 def _classify_final_result(
@@ -398,16 +392,17 @@ def _meaning_events(tool_name: str, args: dict, result: str) -> list:
     # carried the unresolved name, `_relativize` could not place it under the parent's
     # working dir, and the adapter looked for it in the session root. No candidate, no
     # code step, no error — just a child that appeared to have produced nothing.
-    path = str(_run_relative_path(raw))
+    path = getattr(result, "snapshot_path", None) or (getattr(result, "execution", None) or {}).get("source_path") or str(_run_relative_path(raw))
     if tool_name in {"write_file", "edit_file"}:
         if path.endswith(".lean") and _tool_result_ok(result):
-            return [FileChanged(path)]
+            return [FileChanged(path, content=getattr(result, "captured_content", None))]
         return []
     if tool_name == "lean_check":
         err = _lean_check_has_error(result)
         return [CheckResult(path, "error" if err else "ok",
                             _first_error_line(result) if err else None,
-                            execution=getattr(result, "execution", None))]
+                            execution=getattr(result, "execution", None),
+                            content=getattr(result, "captured_content", None))]
     return []
 
 
@@ -420,6 +415,8 @@ class ProofVerificationState:
         self.latest_check_path: str | None = None
         self.latest_check_output: str | None = None
         self.latest_check_passed: bool | None = None
+        self.latest_check_execution: dict | None = None
+        self.latest_check_content: str | None = None
 
     def note_tool_result(self, tool_name: str, args: dict, result: str) -> None:
         raw = args.get("path")
@@ -431,7 +428,7 @@ class ProofVerificationState:
         # below silently fails when the model writes `candidate.lean` and then checks
         # `./candidate.lean` — two spellings of one file, so a checked proof reads as
         # an unchecked write.
-        path = str(_run_relative_path(raw))
+        path = getattr(result, "snapshot_path", None) or (getattr(result, "execution", None) or {}).get("source_path") or str(_run_relative_path(raw))
         if tool_name in {"write_file", "edit_file"}:
             if _tool_result_ok(result) and path.endswith(".lean"):
                 self.latest_proof_path = path
@@ -442,6 +439,9 @@ class ProofVerificationState:
             # — `sorry` is a warning, so checking errors alone would accept a
             # skeleton as a finished proof (a false "Proved").
             passed = not _lean_check_has_error(result) and not _lean_check_has_sorry(result)
+            self.latest_proof_path = self.latest_proof_path or path
+            self.latest_check_execution = getattr(result, "execution", None)
+            self.latest_check_content = getattr(result, "captured_content", None)
             self.latest_check_path = path
             self.latest_check_output = result
             self.latest_check_passed = passed
@@ -451,8 +451,11 @@ class ProofVerificationState:
     def needs_final_check(self) -> bool:
         if not self.latest_proof_path:
             return False
+        from .check_evidence import freshness
         return (
-            self.unchecked_write
+            self.latest_check_content is None
+            or not freshness(self.latest_check_execution, self.latest_proof_path)[0]
+            or self.unchecked_write
             or self.latest_check_path != self.latest_proof_path
         )
 
@@ -462,6 +465,7 @@ class ProofVerificationState:
             and not self.unchecked_write
             and self.latest_check_path == self.latest_proof_path
             and self.latest_check_passed is True
+            and not self.needs_final_check()
         )
 
 
@@ -767,6 +771,7 @@ def _run_events_inner(
         total_usage.output_tokens = int(resume_state.get("output_tokens", 0))
         total_usage.usage_details = resume_state.get("usage_details")
     total_cost = float(resume_state.get("cost_usd", 0.0)) if resume_state else 0.0
+    from .check_runtime import serialize_result, restore_result
     proof_state = ProofVerificationState()
     if resume_state:
         proof_state.__dict__.update(resume_state.get("proof_state", {}))
@@ -803,7 +808,7 @@ def _run_events_inner(
         if tool_calls is not None:
             state["tool_calls"] = tool_calls
         if completed_tools is not None:
-            state["completed_tools"] = {str(k): str(v) for k, v in completed_tools.items()}
+            state["completed_tools"] = {str(k): serialize_result(v) for k, v in completed_tools.items()}
         if final_result is not None:
             state["final_result"] = final_result
         if material_publication_rejected is not None:
@@ -868,9 +873,12 @@ def _run_events_inner(
     assistant_mode = bool(resume_state.get("assistant_mode")) if resume_state else False
     if resume_state and resume_state.get("stage") == "final_result":
         final = resume_state["final_result"]
+        kind, detail = final['kind'], final['detail']
+        if kind in {'proved', 'disproved', 'defined'} and not proof_state.latest_proof_verified():
+            kind, detail = 'needs_review', 'Saved completion has no current proof evidence. Recheck the current revision.'
         yield Finished("completed", final["text"], turn, session_id, model,
                        total_usage, total_cost, transcript(turn),
-                       result_kind=final["kind"], result_detail=final["detail"])
+                       result_kind=kind, result_detail=detail)
         return
     if resume_state and reporting_stop == "stalled":
         yield Finished("stalled", stall.explanation(proof_state), turn, session_id, model,
@@ -1105,7 +1113,7 @@ def _run_events_inner(
                     if resume_state and resume_state.get("stage") == "model_complete" else None
                 )
                 if saved_final_check is not None:
-                    result = saved_final_check
+                    result = restore_result(saved_final_check)
                 else:
                     yield ToolCalled("lean_check", check_args)
                     final_check_id = uuid.uuid4().hex
@@ -1131,7 +1139,7 @@ def _run_events_inner(
                             "in this run's toolset.",
                             tool="lean_check", turn=turn, path=check_path,
                         )
-                    _record("invocation_result", {"id": final_check_id, "result": str(result)})
+                    _record("invocation_result", {"id": final_check_id, "result": serialize_result(result)})
                 preview = result[:200] + "..." if len(result) > 200 else result
                 yield ToolResulted("lean_check", result, preview)
                 for ev in _meaning_events("lean_check", check_args, result):
@@ -1177,13 +1185,15 @@ def _run_events_inner(
                 model=model,
                 messages=messages,
                 final_text=final_text,
-                theorem_signature=_theorem_signature(proof_state.latest_proof_path),
+                theorem_signature=safeverify.theorem_signature(proof_state.latest_check_content or "") or "",
                 config=config,
             )
             total_usage.add(result_usage)
             total_cost += result_cost
             if result_usage.input_tokens or result_usage.output_tokens or result_cost or result_usage.usage_details:
                 yield UsageUpdated(result_usage.input_tokens, result_usage.output_tokens, result_cost, result_usage.usage_details)
+            if not proof_state.latest_proof_verified():
+                result_kind, result_detail = "needs_review", "Proof inputs changed after the final check. Recheck the current revision."
             save_position("final_result", final_result={
                 "text": final_text, "kind": result_kind, "detail": result_detail,
             })
@@ -1235,8 +1245,8 @@ def _run_events_inner(
                 hint = _domain_cascade_for_check(tc.get("args") or {}, working_dir, surfaced_domains)
                 if hint:
                     from .check_runtime import CheckText
-                    r = CheckText(f"{r}\n\n{hint}", getattr(r, "execution", None))
-            _record("invocation_result", {"id": invocation_id, "result": str(r)})
+                    r = CheckText(f"{r}\n\n{hint}", getattr(r, "execution", None), getattr(r, "captured_content", None))
+            _record("invocation_result", {"id": invocation_id, "result": serialize_result(r)})
             return r
 
         # Results by tool-call index, reassembled in the original order below so the
@@ -1244,7 +1254,7 @@ def _run_events_inner(
         # (E2) and its independent read-only tools may too (E3); everything else stays
         # serial and in order.
         results_by_idx: dict[int, str] = {
-            int(k): v for k, v in (resume_state.get("completed_tools", {}) if resume_state else {}).items()
+            int(k): restore_result(v) for k, v in (resume_state.get("completed_tools", {}) if resume_state else {}).items()
         } if resume_state and resume_state.get("stage") == "model_complete" else {}
         if resume_state and resume_state.get("stage") == "model_complete":
             resume_state = None
@@ -1430,11 +1440,22 @@ def _run_events_inner(
                 save_position("model_complete", assistant_parts=assistant_parts,
                               tool_calls=tool_calls, completed_tools=results_by_idx,
                               material_publication_rejected=material_publication_rejected)
-                if config.status_reporting:
+                # Publish serial meaning before another tool can mutate the file.
+                if idx not in refused_idx:
                     yield ToolResulted(tc["name"], result, result[:200])
                     for ev in _meaning_events(tc["name"], tc["args"], result):
                         yield ev
                     proof_state.note_tool_result(tc["name"], tc["args"], result)
+                    if tc['name'] == 'bash' and proof_state.latest_proof_path:
+                        from .check_evidence import digest
+                        changed_path = Path(proof_state.latest_proof_path)
+                        try:
+                            changed = changed_path.read_bytes().decode('utf-8')
+                            if digest(changed.encode()) != (proof_state.latest_check_execution or {}).get('content_sha256'):
+                                yield FileChanged(str(changed_path), content=changed)
+                                proof_state.unchecked_write = True
+                        except (OSError, UnicodeError):
+                            proof_state.unchecked_write = True
                     emitted_idx.add(idx)
 
         # Phase 3 — E2: run this turn's spawns concurrently, streaming all their live

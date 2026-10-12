@@ -189,7 +189,7 @@ def test_lean_check_without_author_still_backfills_as_before(tmp_path, monkeypat
 
     result = sessions_route.lean_check_session(session["id"], PathRequest(path="Lea/Misc/p.lean"))
 
-    assert "code_step" not in result
+    assert result["code_step"]["check_current"] is True
     steps = store.session_detail(session["id"])["code_steps"]
     assert len(steps) == 1
 
@@ -669,8 +669,12 @@ def test_manual_check_persists_execution_and_transition_diagnostics(tmp_path, mo
         return CheckResult(path, 'ok', execution=execution)
     monkeypatch.setattr(sessions_route, 'interface_check', check)
     result = sessions_route.lean_check_session(session['id'], PathRequest(path='Lea/Misc/p.lean'))
-    assert result['execution'] == execution
+    assert all(result['execution'][key] == value for key, value in execution.items())
     stored = store.session_detail(session['id'])['diagnostics']
     assert [d['code'] for d in stored] == ['lean.lsp_cold_fallback', 'lean.check_execution']
     assert 'broken pipe' in stored[0]['detail']
     assert stored[1]['context']['execution'] == execution
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

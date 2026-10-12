@@ -754,6 +754,11 @@ def check_via_lsp(file_path, content, lake_root, *, budget=None):
                 budget.execution["failure"] = exc.as_dict()
                 with state.condition:
                     current = _daemons.get(key)
+                    # A late observer of the retired generation must not count
+                    # the same failed recovery again after its owner has exited.
+                    if (state.state == 'degraded' and time.monotonic() < state.retry_at
+                            and state.probing != owner):
+                        raise exc
                     # Join a sibling's recovery, or reuse its already healthy
                     # replacement. Late failures cannot reopen its outage.
                     joined = (state.probing and state.probing != owner) or (

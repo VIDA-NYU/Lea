@@ -124,6 +124,7 @@ CATALOG: dict[str, tuple[str, str | None]] = {
     "lean.lsp_recovering": ("Recovering Lean server", "The check will retry through a fresh Lean server."),
     "lean.lsp_recovered": ("Lean server recovered", None),
     "lean.check_execution": ("Lean check finished", None),
+    "proof.check_stale": ("Proof inputs changed", "Check the current revision again before treating it as certified."),
     "code.content_lost": (
         "A written file could not be read back",
         "The step is recorded, but its contents are not stored — the file may have "

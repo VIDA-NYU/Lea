@@ -191,7 +191,8 @@ def test_prover_resumes_saved_model_result_without_repeating_request(tmp_path, m
     assert events[-1].usage.input_tokens == 7
 
 
-def test_prover_finishes_saved_final_classification_without_second_model_call(tmp_path, monkeypatch):
+@pytest.mark.parametrize('evidence', ['legacy', 'current', 'changed'])
+def test_prover_finishes_saved_final_classification_without_second_model_call(tmp_path, monkeypatch, evidence):
     from lea import agent
     from lea.config import LeaConfig
     from lea.events import Finished
@@ -206,12 +207,21 @@ def test_prover_finishes_saved_final_classification_without_second_model_call(tm
         "turn": 1, "input_tokens": 11, "output_tokens": 4, "cost_usd": 0.03,
         "final_result": {"text": "Finished proof", "kind": "proved", "detail": "Target checked"},
     }
+    if evidence != 'legacy':
+        from evidence_fixtures import mock_execution
+        path = tmp_path / 'Target.lean'
+        path.write_text('theorem target : True := by trivial\n')
+        saved['proof_state'] = dict(latest_proof_path=str(path), latest_check_path=str(path),
+            latest_check_passed=True, latest_check_output='OK', latest_check_content=path.read_text(),
+            latest_check_execution=mock_execution(path), unchecked_write=False)
+        if evidence == 'changed':
+            path.write_text('theorem target : False := by trivial\n')
     events = list(agent.run_events(config, saved["messages"], session_id="test",
                                    working_dir=str(tmp_path), resume_state=saved,
                                    checkpoint_callback=lambda *_: None))
     assert len(events) == 1
     assert isinstance(events[0], Finished)
-    assert events[0].result_kind == "proved"
+    assert events[0].result_kind == ('proved' if evidence == 'current' else 'needs_review')
     assert events[0].cost == 0.03
 
 

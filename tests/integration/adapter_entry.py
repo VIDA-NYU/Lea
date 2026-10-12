@@ -89,7 +89,7 @@ def stub_run_events(config, messages, *, namespace=None, session_id=None,
     yield FileChanged(str(proof_path))
     yield UsageUpdated(11, 7, 0.002)
     yield ToolCalled("lean_check", {"path": str(proof_path)})
-    yield CheckResult(str(proof_path), "ok", None)
+    yield stub_check(str(proof_path))
     yield Finished("completed", f"Proved {decl}.", 1, session_id, config.model,
                    Usage(input_tokens=11, output_tokens=7), 0.002, {"messages": []},
                    result_kind="needs_review" if "[stub:review]" in task else "proved")
@@ -104,8 +104,15 @@ from app.routes import sessions as session_routes, projects as project_routes
 def stub_check(path, **kwargs):
     content = Path(path).read_bytes()
     bad = b"bad_tactic" in content
+    from lea.check_evidence import environment_hash, lake_root, _configuration, source_identity
+    from uuid import uuid4
+    root = lake_root(path)
+    environment = {'configuration': _configuration(root) if root else {}, 'files': {}}
     return CheckResult(path, "error" if bad else "ok", "unknown tactic" if bad else None,
-                       execution={"content_sha256": hashlib.sha256(content).hexdigest()})
+        execution={'check_id': uuid4().hex, 'evidence_version': 1,
+            'content_sha256': hashlib.sha256(content).hexdigest(), 'source_path': path, 'source_identity': source_identity(path),
+            'environment': environment, 'environment_sha256': environment_hash(environment)},
+        content=content.decode())
 
 session_routes.interface_check = project_routes.interface_check = stub_check
 session_routes.interface_rebuild = stub_check

@@ -569,6 +569,8 @@ export interface CodeStep {
   // True when the step's content couldn't be recovered (a pre-v2.3 row whose git
   // pointer didn't resolve). The step still exists — it says something happened.
   content_lost?: boolean;
+  check_current?: boolean;
+  check_stale_reason?: string | null;
   check_status?: 'ok' | 'error' | 'unchecked' | null;
   check_detail?: string | null;
   artifact_kind?: 'proof' | 'definition' | 'mixed' | 'unknown' | string | null;
@@ -639,6 +641,7 @@ export interface ApprovalEvent {
 export type SafeVerifyStatus = 'ok' | 'rejected' | 'error' | 'unavailable' | 'running' | 'pending';
 
 export interface SafeVerifyResult {
+  current?: boolean;
   run_id?: string;
   status: SafeVerifyStatus;
   detail?: string | null;

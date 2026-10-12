@@ -96,6 +96,13 @@ def health() -> dict:
     return {"ok": True, **runtime.snapshot(), "capabilities": {"lea_status": {"version": 1, "admission_enabled": admission_enabled(), "independent_checks": False, "source_pause_policy": 1}, "overleaf_source_refresh": {"version": 1}, "project_library": {"version": 1, "dependency_coordination": True}}}
 
 
+@app.get("/api/ready")
+def readiness() -> dict:
+    if not runtime.accepting_work():
+        raise HTTPException(503, detail=runtime.snapshot(), headers={"Retry-After": "5"})
+    return runtime.snapshot()
+
+
 class RestartRequest(BaseModel):
     force: bool = False
     cancel: bool = False

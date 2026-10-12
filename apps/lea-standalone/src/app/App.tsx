@@ -621,7 +621,7 @@ export default function App() {
         ? undefined : formalizationScope;
     const result = await verifySession(selectedSessionId, target, focusId);
     if (!owned()) return result;
-    setSafeVerify({ status: result.status, detail: result.detail });
+    setSafeVerify({ status: result.status, detail: result.detail, current: result.current });
     bumpFormalizationRefresh();
     return result;
   };

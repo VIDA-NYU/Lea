@@ -28,6 +28,7 @@ import shutil
 import sys
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("LEAN_CHECK_TIMEOUT", "30")
 
@@ -71,6 +72,13 @@ def _scenario_two_thread(lake_root: str) -> None:
     """Original guard: one Good + one Bad file, hammered concurrently."""
     GOOD.write_text(GOOD_SRC)
     BAD.write_text(BAD_SRC)
+    # Cold Mathlib loading belongs to setup. The measured concurrent checks keep
+    # their 30s deadlines and run against the same established warm server.
+    from lea.check_runtime import CheckBudget
+    warm = check_via_lsp(str(GOOD), GOOD_SRC, lake_root, budget=CheckBudget(90))
+    if 'no errors' not in warm:
+        fail(f'Warm-up check failed: {warm!r}')
+        return
 
     verdicts: dict[str, list] = {"good": [], "bad": []}
     errors: list[str] = []
@@ -134,6 +142,11 @@ def _scenario_multi_child(lake_root: str) -> None:
         src = GOOD_SRC if good else BAD_SRC
         p.write_text(src)
         children.append((d, p, src, good))
+    from lea.check_runtime import CheckBudget
+    for _directory, path, src, good in children:
+        warm = check_via_lsp(str(path), src, lake_root, budget=CheckBudget(90))
+        if good != ('no errors' in warm):
+            fail(f'Child warm-up check was incorrect: {warm!r}')
 
     results: dict[int, list] = {i: [] for i in range(CHILDREN)}
     errors: list[str] = []
@@ -155,22 +168,40 @@ def _scenario_multi_child(lake_root: str) -> None:
 
     threads = [threading.Thread(target=hammer, args=(i, p, src))
                for i, (_d, p, src, _g) in enumerate(children)]
-    for t in threads:
-        t.start()
-
     # Reap child0's scratch dir once its single-round thread is done, while the
     # longer-running siblings are still hammering their own files.
     child0_dir, child0_path = children[0][0], children[0][1]
     child0_uri = Path(child0_path).resolve().as_uri()
     sibling_uris = {i: Path(children[i][1]).resolve().as_uri() for i in range(1, CHILDREN)}
-    threads[0].join()
     daemon = lsp_daemon._daemons.get(lake_root)
-    open_before = _opened_snapshot(daemon, child0_uri)
-    n_closed = lsp_daemon.close_documents_under(str(child0_dir))
-    open_after = _opened_snapshot(daemon, child0_uri)
-    siblings_intact = all(_opened_snapshot(daemon, u) for u in sibling_uris.values())
-    for t in threads[1:]:
-        t.join()
+    entered = {uri: threading.Event() for uri in sibling_uris.values()}
+    release = threading.Event()
+    original_request = daemon._request
+    def wait_for_reap(method, params, timeout, budget=None):
+        if method == 'textDocument/waitForDiagnostics' and params.get('uri') in entered:
+            entered[params['uri']].set()
+            if not release.wait(15):
+                raise AssertionError('Reap test did not release its diagnostic barrier')
+        return original_request(method, params, timeout, budget)
+    with patch.object(daemon, '_request', wait_for_reap):
+        for t in threads:
+            t.start()
+        try:
+            # Every sibling must have opened its document and hold its check
+            # lease before reaping. Thread-start order alone cannot guarantee it.
+            if not all(event.wait(10) for event in entered.values()):
+                fail('A sibling did not reach the diagnostic barrier')
+            threads[0].join(timeout=10)
+            if threads[0].is_alive():
+                fail('child0 did not finish before its reap')
+            open_before = _opened_snapshot(daemon, child0_uri)
+            n_closed = lsp_daemon.close_documents_under(str(child0_dir))
+            open_after = _opened_snapshot(daemon, child0_uri)
+            siblings_intact = all(_opened_snapshot(daemon, u) for u in sibling_uris.values())
+        finally:
+            release.set()
+            for t in threads:
+                t.join()
 
     # --- correctness: every verdict attributed to its OWN file, no cross-talk ---
     if errors:

@@ -109,6 +109,7 @@ def check(path: str, *, cold: bool = False, allow_cold: bool = True) -> CheckRes
         "error" if err else "ok",
         _first_error_line(out) if err else None,
         execution=getattr(out, "execution", None),
+        content=getattr(out, "captured_content", None),
     )
 
 
@@ -132,7 +133,7 @@ def rebuild(path: str) -> CheckResult:
     )
 
 
-def verify(path: str) -> VerifyResult:
+def _verify_impl(path: str) -> VerifyResult:
     """Audit a finished proof with SafeVerify (kernel replay + axiom whitelist).
 
     No agent run. Derives the target from the proof's own main theorem, so it
@@ -152,7 +153,7 @@ def verify(path: str) -> VerifyResult:
     p = Path(path)
     if not p.exists():
         return VerifyResult("error", f"File not found: {path}")
-    code = p.read_text()
+    code = p.read_bytes().decode('utf-8')
 
     signature = safeverify.theorem_signature(code)
     if not signature:
@@ -201,3 +202,31 @@ def verify(path: str) -> VerifyResult:
             return VerifyResult("ok" if ok else "rejected", None if ok else detail)
         except Exception as exc:  # noqa: BLE001 — report any failure as an error verdict, not a crash
             return VerifyResult("error", f"{type(exc).__name__}: {exc}")
+
+
+def verify(path: str) -> VerifyResult:
+    from .check_evidence import lake_root, prepared_environment, environment_hash, freshness, PROTOCOL_VERSION
+    from .check_runtime import CheckBudget, CheckFailure
+    if not safeverify.is_available():
+        return VerifyResult('unavailable', 'SafeVerify is not built on this server.')
+    p = Path(path).resolve()
+    budget = CheckBudget()
+    try:
+        content = p.read_bytes().decode('utf-8')
+        from .check_evidence import digest
+        from .check_evidence import source_identity
+        budget.execution.update(content_sha256=digest(content.encode()), source_path=str(p), source_identity=source_identity(p))
+        with prepared_environment(p, content, lake_root(p), budget) as environment:
+            binary = safeverify.safe_verify_binary()
+            if binary:
+                from .check_evidence import file_hash, file_version
+                environment = {**environment, 'files': {**environment['files'], 'verifier:safeverify': {
+                    'path': str(binary), 'sha256': file_hash(binary), 'version': file_version(binary), 'kind': 'verifier'}}}
+            budget.execution.update(evidence_version=PROTOCOL_VERSION, environment=environment,
+                                    environment_sha256=environment_hash(environment))
+            result = _verify_impl(str(p))
+            if not freshness(budget.execution, p)[0]:
+                return VerifyResult('error', 'Proof inputs changed during kernel verification.', budget.finish(), content)
+            return VerifyResult(result.status, result.detail, budget.finish(), content)
+    except (OSError, UnicodeError, CheckFailure) as exc:
+        return VerifyResult('error', str(exc))

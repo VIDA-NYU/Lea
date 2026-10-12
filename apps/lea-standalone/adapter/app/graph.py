@@ -105,11 +105,11 @@ def _base_status(lean: str | None, file: str | None, latest: dict | None, has_so
     """Per-node status before the dependency-aware ``ready`` overlay."""
     if not lean or not file:
         return "planned"
-    if latest and latest.get("check_status") == "error":
+    if latest and latest.get("check_status") == "error" and latest.get("check_current"):
         return "failed"
     if has_sorry:
         return "stated"
-    if latest and latest.get("check_status") == "ok":
+    if latest and latest.get("check_status") == "ok" and latest.get("check_current"):
         return "proved"
     return "stated"  # decl exists but is unchecked / unknown — stated, not proved
 

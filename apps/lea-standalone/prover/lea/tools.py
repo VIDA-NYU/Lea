@@ -5,6 +5,7 @@ import re
 import subprocess
 import tempfile
 import threading
+from functools import wraps
 from pathlib import Path
 
 from .imports import IMPORT_COMMAND_RE, direct_imports, without_comments
@@ -324,6 +325,26 @@ def _broad_import_error(path: Path, content: str) -> str | None:
     )
 
 
+def _mutating(fn):
+    @wraps(fn)
+    def guarded(*args, **kwargs):
+        from .check_evidence import mutation
+        from .check_runtime import CheckBudget
+        from .runctx import current_should_stop
+        raw = args[0] if args else kwargs.get('path')
+        if fn.__name__ in {'write_file', 'edit_file'}:
+            try:
+                path = _sandboxed_write_path(raw)
+            except _SandboxViolation:
+                return fn(*args, **kwargs)
+        else:
+            path = (current_working_dir() or os.getcwd()) if fn.__name__ == 'bash' else _run_relative_path(raw)
+        with mutation(path, budget=CheckBudget(should_stop=current_should_stop())):
+            return fn(*args, **kwargs)
+    return guarded
+
+
+@_mutating
 def write_file(path: str, content: str) -> str:
     try:
         p = _sandboxed_write_path(path)
@@ -333,9 +354,11 @@ def write_file(path: str, content: str) -> str:
         return policy_error
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content)
-    return f"Wrote {len(content)} bytes to {p}"
+    from .check_runtime import CheckText
+    return CheckText(f"Wrote {len(content)} bytes to {p}", captured_content=content, snapshot_path=str(p.resolve()))
 
 
+@_mutating
 def edit_file(path: str, old_string: str, new_string: str) -> str:
     try:
         p = _sandboxed_write_path(path)
@@ -353,7 +376,8 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
     if policy_error := _broad_import_error(p, updated):
         return policy_error
     p.write_text(updated)
-    return "OK"
+    from .check_runtime import CheckText
+    return CheckText("OK", captured_content=updated, snapshot_path=str(p.resolve()))
 
 
 def lean_check(path: str, *, use_lsp: bool = True, allow_cold: bool = True) -> str:
@@ -404,6 +428,7 @@ def _generated_lean_check(path: str) -> str:
     return lean_check(path)
 
 
+@_mutating
 def rebuild_module(path: str) -> str:
     """Force a real `lake build` of the Lean module at `path`, so its compiled
     `.olean` on disk reflects the file's *current* source.
@@ -551,6 +576,7 @@ def scrubbed_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if not _is_secret_env(k)}
 
 
+@_mutating
 def bash(command: str, timeout: int = 120) -> str:
     # Run in the active run's working dir (item 8) instead of the process-global
     # cwd, so under concurrent runs one run's shell command can't land in

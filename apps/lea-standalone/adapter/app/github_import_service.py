@@ -298,6 +298,12 @@ def confirm_import(
 
 
 def _exclusive_add(path: Path, content: str, expected_hash: str) -> str:
+    from lea.check_evidence import mutation
+    with mutation(path):
+        return _exclusive_add_impl(path, content, expected_hash)
+
+
+def _exclusive_add_impl(path: Path, content: str, expected_hash: str) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
@@ -551,6 +557,7 @@ def _check_import(import_id: str, proofs_root: Path) -> None:
             if row.get("check_status") in {"ok", "error"}:
                 continue
             absolute = repo / path
+            result = None
             try:
                 result = interface_check(str(absolute))
                 status = "ok" if result.status == "ok" else "error"
@@ -558,13 +565,12 @@ def _check_import(import_id: str, proofs_root: Path) -> None:
             except Exception as exc:
                 status, detail = "error", str(exc)
             if row.get("code_step_id"):
-                content = absolute.read_text(encoding="utf-8", errors="replace") if absolute.is_file() else ""
-                store.set_code_step_check(
-                    str(row["code_step_id"]),
-                    status,
-                    detail,
-                    classify_lean_artifact(content),
-                )
+                from .proof_evidence import record_check
+                if result is not None:
+                    current = store.current_proof_step(imported['session_id'], path) or {}
+                    record_check(imported['session_id'], path, absolute, result,
+                        formalization_id=current.get('formalization_id'))
+
             store.set_github_import_file_check(import_id, row["source_path"], status, detail)
 
         progress = store.github_import_progress(import_id)

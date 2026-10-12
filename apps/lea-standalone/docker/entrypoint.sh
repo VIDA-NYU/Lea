@@ -11,4 +11,4 @@ set -euo pipefail
 echo "[lea] starting UI on http://localhost:8001"
 echo "[lea] open it, then add your API key in Settings (no key needed to start)."
 cd /app/adapter
-exec .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8001
+exec .venv/bin/python run_api.py --host 0.0.0.0 --port 8001

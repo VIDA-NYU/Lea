@@ -259,3 +259,7 @@ def test_safe_verify_cannot_certify_a_coalesced_replacement(proof, monkeypatch):
         assert error.value.status_code == 409
     assert formalizations.current_snapshot(target['id'])['safe_verify'] is None
     assert store.session_detail(session['id'])['safe_verify'] is None
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

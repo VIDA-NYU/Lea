@@ -1,0 +1,9 @@
+{
+  "matching_service_or_lean_workers": [],
+  "listeners": {
+    "8001": "",
+    "5173": "",
+    "31245": ""
+  },
+  "test_containers": ""
+}

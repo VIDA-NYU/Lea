@@ -3,6 +3,7 @@ from queue import Queue
 from threading import Thread
 
 import pytest
+from evidence_fixtures import certified_unit_inputs
 
 
 @pytest.fixture(autouse=True)

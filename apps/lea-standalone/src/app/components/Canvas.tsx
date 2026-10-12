@@ -19,6 +19,9 @@ import {
 export interface CheckOutcome {
   status: string;
   detail?: string | null;
+  current?: boolean;
+  check_current?: boolean;
+  check_stale_reason?: string | null;
 }
 
 // The right-hand canvas: navigable, syntax-highlighted Lean snapshots with a
@@ -99,6 +102,7 @@ export function Canvas({
           ? {
               status: currentSnapshot.safe_verify.status,
               detail: currentSnapshot.safe_verify.detail,
+              current: true,
             }
           : null
       )
@@ -174,7 +178,7 @@ export function Canvas({
   const pickFile = (path: string) => onIndexChange(latestIndexForPath(codeSteps, path));
 
   const [busy, setBusy] = useState(false);
-  const [verify, setVerify] = useState<{ status: SafeVerifyStatus; detail?: string | null } | null>(null);
+  const [verify, setVerify] = useState<{ status: SafeVerifyStatus; detail?: string | null; current?: boolean } | null>(null);
 
   // Reset the transient SafeVerify result when the shown step changes.
   useEffect(() => {
@@ -227,7 +231,7 @@ export function Canvas({
     try {
       const result = await onVerify(shownPath);
       if (!current()) return;
-      setVerify({ status: result.status as SafeVerifyStatus, detail: result.detail });
+      setVerify({ status: result.status as SafeVerifyStatus, detail: result.detail, current: result.current });
     } catch (err) {
       if (!current()) return;
       setVerify({ status: 'error', detail: err instanceof Error ? err.message : String(err) });
@@ -236,7 +240,7 @@ export function Canvas({
     }
   };
 
-  const proofStatus = deriveCodeStepProofStatus(step);
+  const proofStatus = deriveCodeStepProofStatus(step, { historical: !isFileCurrent });
   const verdict = proofStatus === 'proved'
     ? { cls: 'ok', text: '✓ compiles' }
     : proofStatus === 'defined'
@@ -247,12 +251,13 @@ export function Canvas({
     ? { cls: 'stub', text: '○ checked stub' }
     : proofStatus === 'failed'
     ? { cls: 'err', text: '✗ errors' }
-    : { cls: 'idle', text: '○ not checked' };
+    : { cls: 'idle', text: step?.check_stale_reason ? '○ recheck required' : '○ not checked' };
 
   // Live result (this session) wins; otherwise fall back to the persisted verdict
   // when viewing the shown file's current snapshot, so a reload still shows
   // SafeVerify ✓ (M24) — and it stays on the main proof, not a later scratch.
-  const shownVerify = verify ?? (isFileCurrent ? persistedVerify ?? null : null);
+  const liveVerify = verify?.status === 'ok' && (verify.current !== true || step?.check_current !== true) ? null : verify;
+  const shownVerify = liveVerify ?? (isFileCurrent && persistedVerify?.current === true ? persistedVerify : null);
   const conversationBehind = Boolean(
     showingCurrent
     && currentSnapshot?.conversation

@@ -75,7 +75,7 @@ def test_reads_and_mutations_defer_for_entire_migration(tmp_path, monkeypatch, b
         def paused_check(_):
             entered.set()
             assert release.wait(5)
-            return SimpleNamespace(status="ok", detail=None)
+            return CheckResult(_, "ok")
         monkeypatch.setattr(routes, "interface_check", paused_check)
     with ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(rename, project)
@@ -218,3 +218,9 @@ def test_retryable_read_contract_over_http(tmp_path, monkeypatch):
             assert response.headers["Retry-After"] == "1"
             assert response.json()["detail"]["error"] == "project_renaming"
     assert client.get(f"{base}/identity").json()["namespaceRevision"] != identity["namespaceRevision"]
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")
+
+from lea.events import CheckResult

@@ -1,0 +1,8 @@
+[92m19:40:28 - LiteLLM:WARNING[0m: get_model_cost_map.py:271 - LiteLLM: Failed to fetch remote model cost map from https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json: [Errno 8] nodename nor servname provided, or not known. Falling back to local backup.
+  ok   initial upstream build succeeds
+  ok   downstream check is ok before any edit
+  ok   upstream's own check still passes (renamed, not broken)
+  ok   rebuild of the renamed module succeeds
+  ok   warm re-check (post mark_stale) reports the break
+
+All cascade-rename integration checks passed.

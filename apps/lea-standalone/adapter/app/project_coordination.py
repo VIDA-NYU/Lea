@@ -6,7 +6,7 @@ disk I/O, so migration cannot pass its active-run check ahead of a new run.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass, field
 from functools import wraps
 import inspect
@@ -204,7 +204,22 @@ def guarded(resolver, *, write=False, metadata=False, admission=False):
             bound = signature.bind(*args, **kwargs)
             bound.apply_defaults()
             project_id = resolver(bound.arguments)
-            return project_id, mutation(project_id, admission=admission) if write else read(project_id)
+            @contextmanager
+            def coordinated():
+                with ExitStack() as stack:
+                    if project_id:
+                        state = _state(project_id)
+                        with state.lock:
+                            _available(state)
+                    if write and fn.__name__ not in {'write_file_session', 'write_project_file'} and not any(word in fn.__name__ for word in ('check', 'verify', 'rebuild')):
+                        from lea.check_evidence import mutation as environment_mutation
+                        from .config import load_config
+                        from pathlib import Path
+                        root = load_config().lea_root or Path(__file__).resolve().parents[2] / 'prover'
+                        stack.enter_context(environment_mutation(root / 'workspace'))
+                    revision = stack.enter_context(mutation(project_id, admission=admission) if write else read(project_id))
+                    yield revision
+            return project_id, coordinated()
 
         def finish(result, project_id, revision):
             if metadata and project_id and isinstance(result, dict):

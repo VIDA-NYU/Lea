@@ -101,6 +101,8 @@ def snapshot() -> dict:
         queued = 0
     return {
         "runtime_id": IDENTITY,
+        "ready": accepting_work(),
+        "restart_supported": _server is not None,
         "lifecycle_state": state(),
         "active_runs": runregistry.registry.active_count(),
         "active_operations": _active_operations,
@@ -116,7 +118,13 @@ def restart_requested() -> bool:
 def begin_drain(*, force: bool = False, restart: bool = True) -> dict:
     global _restart_requested, _force, _drain_worker
     with _guard:
+        if _server is None:
+            from fastapi import HTTPException
+            raise HTTPException(409, detail={"code": "restart_unavailable",
+                "message": "Start the adapter through run_api.py to enable restart control."})
         if _state == "draining":
+            if not restart:
+                _restart_requested = False
             if force:
                 _force = True
             return snapshot()
