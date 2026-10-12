@@ -37,25 +37,21 @@ stream. Both front ends talk to this single adapter on **:8001**.
 Persistence is split deliberately (see design-decision tags `D1`/`D6`/`D7`/`D8`/`D14`
 sprinkled through the adapter source, documented in `docs/`):
 
-- **Git owns proof content.** Every `FileChanged` is committed to the session's git
-  repo (`gitstore.py`); a `code_step` DB row stores only the SHA + path.
-- **SQLite owns metadata.** `adapter/app/db.py` defines `sessions`, `runs`,
-  `code_steps`, messages, usage. A session has **no stored status** — its status is
-  *derived* from the latest `code_step`'s check verdict so it can't drift.
+- **SQLite owns proof history and metadata.** `artifact_blobs` retains immutable
+  proof snapshots; `timeline` references those blobs. Git remains useful for
+  working repositories, uploads and export, but is not the only proof-history copy.
+- A session has **no stored status**. Its current certification is derived from
+  the relevant timeline verdict and matching source/dependency check evidence.
 - The streamed SSE payload carries the file snapshot for the live canvas; the
-  `lean_check` verdict is **back-filled** into the `code_step` row when it returns.
+  `lean_check` verdict attaches only to the immutable blob actually checked.
+  Historical `check_status` and derived `check_current` are separate projections.
 
 `autonomous` runs (the Overleaf path, `D19`) disable the per-tool approval gate and
 use the non-interactive prompt variant; interactive UI runs keep the approval gate.
 
-### ⚠️ Stale docs to ignore
-
-The root `README.md` and `apps/lea-standalone/README.md` predate the in-process
-refactor. Treat as **wrong**: references to `apps/lea-ui/`, a `vendor/lea-prover`
-git submodule, an `npm run dev:lea` script, and a "bundled Lea API on :8000". The
-prover is vendored at `apps/lea-standalone/prover/` and runs in-process; there is
-no :8000 service. Trust `scripts/setup.mjs`, `package.json`, and the adapter source
-over the prose READMEs.
+The prover is vendored at `apps/lea-standalone/prover/` and runs in-process.
+Container builds use the monorepo root and serve both backends. Use the canonical
+`adapter/run_api.py` launcher; readiness is `/api/ready`.
 
 ## Ports
 
@@ -128,7 +124,7 @@ npm test -w apps/overleaf-extension                 # node --test tests/*.test.m
 ```
 apps/lea-standalone/
   adapter/app/        FastAPI backend: main.py (wiring), bridge.py (prover seam),
-                      db.py, gitstore.py, store.py, config.py, routes/{runs,sessions,settings}.py
+                      db.py, store.py, proof_evidence.py, config.py, routes/{runs,sessions,settings}.py
   adapter/tests/      pytest suites (test_bridge, test_db_*, test_routes_*, ...)
   src/app/            React UI (App.tsx, components/, stores/ [zustand], hooks/, *.test.mjs)
   prover/             vendored Lea prover (its own lea/ package + workspace/ Lake project)
@@ -145,8 +141,9 @@ scripts/              monorepo setup.mjs, env.mjs (.env read/patch), reset-local
 
 - **Keep the two apps talking to one backend on :8001.** Don't reintroduce a
   separate prover HTTP server — the adapter drives the prover in-process.
-- **Don't store derived state.** Session status is computed from the latest
-  `code_step` verdict; proof bytes live in git, not the DB. Preserve that split.
+- **Don't store derived state.** Session status and check freshness are computed
+  from immutable recorded verdicts and current evidence. Preserve SQL proof blobs,
+  timeline history and the append-only evidence table.
 - The shared model list is consumed by both Node apps via `packages/lea-model-catalog`
   and by the adapter's `models_catalog.py` — keep them consistent.
 - Changes to the vendored prover under `apps/lea-standalone/prover/` are picked up

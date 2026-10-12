@@ -13,8 +13,9 @@ Overleaf page -> Chrome extension -> companion (:31245) -> FastAPI adapter (:800
 The adapter then drives the vendored prover at `apps/lea-standalone/prover/`
 in-process. The companion does not start its own prover backend.
 
-For beta testers installing from a pinned release tag, see
-[BETA_INSTALL.md](BETA_INSTALL.md).
+For the VIDA-hosted Docker installation and Chrome side-load steps, see
+[BETA_INSTALL.md](BETA_INSTALL.md). The image already runs both the adapter and
+the companion; only the unpacked extension is loaded separately in Chrome.
 
 ## Pieces
 
@@ -215,6 +216,8 @@ OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 GEMINI_API_KEY=
 GOOGLE_API_KEY=
+PORTKEY_API_KEY=          # Portkey AI gateway; models are portkey/@provider-slug/model
+PORTKEY_BASE_URL=         # the gateway's /v1 root (blank = Portkey's hosted service)
 LEA_JOB_TIMEOUT_SECONDS=900
 ```
 

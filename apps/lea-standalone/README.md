@@ -12,6 +12,28 @@ It translates typed prover events into Server-Sent Events for the browser,
 commits proof changes to git, stores timeline metadata in SQLite, and exposes
 manual `lean_check` and SafeVerify endpoints.
 
+## Run The VIDA Image
+
+From this directory:
+
+```sh
+docker compose pull
+docker compose up
+```
+
+This anonymously pulls `ghcr.io/vida-nyu/leaui:main`, which contains the UI,
+adapter, prover, Overleaf companion, Lean, and Mathlib for both AMD64 and ARM64.
+The download is about 3.7 GB and the extracted image about 10.7 GB; keep at
+least 20 GB free in Docker during extraction. Open `http://localhost:8001`;
+the companion is exposed on `:31245`. Runtime data and proofs persist in the
+host directories declared by `docker-compose.yml`.
+
+To build the same image from the checkout instead, use:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
 ## First-Time Setup
 
 From the monorepo root, the recommended setup is:
@@ -80,6 +102,9 @@ narrate_tool_steps = true
 openai_api_key = ""
 anthropic_api_key = ""
 google_api_key = ""
+# Portkey AI gateway: model = "portkey/@provider-slug/model"
+PORTKEY_API_KEY = ""
+PORTKEY_BASE_URL = "https://your-gateway.example.edu/v1"   # omit for Portkey's hosted service
 ```
 
 Provider keys are exported into the adapter process environment when config is

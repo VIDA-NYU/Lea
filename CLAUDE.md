@@ -38,7 +38,7 @@ Persistence is split deliberately (see design-decision tags `D1`/`D6`/`D7`/`D8`/
 sprinkled through the adapter source, documented in `docs/`):
 
 - **SQL owns proof content** (inverted in v2.3 — git used to own it). Every
-  `FileChanged` reads the file's after-state and stores it as a content-addressed
+  `FileChanged` preserves the captured write as a content-addressed
   blob (`artifact_blobs`); the `timeline` row points at it. Git is now only
   *transport* for non-proof assets (uploads, project files), never the store.
 - **One `timeline` table** holds messages and code steps (`adapter/app/db.py`
@@ -46,13 +46,16 @@ sprinkled through the adapter source, documented in `docs/`):
   `id` IS the ordering key — the old per-session `seq` counter was a
   read-modify-write across two tables that silently issued duplicates under
   concurrent writers. A session has **no stored status** — it's *derived* from the
-  latest code row's check verdict so it can't drift.
+  latest code row's verdict and current source/dependency evidence.
 - The streamed SSE payload and the stored row carry the **same bytes**, so the live
-  canvas and a reload can't disagree; the `lean_check` verdict is **back-filled**
-  onto the row when it returns.
+  canvas and a reload can't disagree. An append-only `proof_check_evidence` row
+  binds a verdict to the checked blob and compiler environment. Backfill requires
+  matching captured bytes; current success also requires fresh dependencies.
 - **Migrations are real** (`adapter/migrations/`, Alembic). The DB is no longer
   disposable — "just reset it" now means "delete the user's proofs". Any pending
   migration snapshots the DB first (`adapter/app/backup.py` → `data/backups/`).
+- `check_current` and stale reasons are derived on read. Evidence-less history
+  remains available, but requires an explicit recheck for current certification.
 
 `autonomous` runs (the Overleaf path, `D19`) disable the per-tool approval gate and
 use the non-interactive prompt variant; interactive UI runs keep the approval gate.
