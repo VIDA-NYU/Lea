@@ -1,0 +1,50 @@
+
+> test:scripts
+> node --test scripts/*.test.mjs apps/lea-standalone/scripts/lean-assets.test.mjs
+
+TAP version 13
+# Subtest: production and dev serve the same fixed InfoView assets without accepting extra paths
+ok 1 - production and dev serve the same fixed InfoView assets without accepting extra paths
+  ---
+  duration_ms: 5.542042
+  type: 'test'
+  ...
+# Subtest: Vite development middleware serves the same editor URLs
+ok 2 - Vite development middleware serves the same editor URLs
+  ---
+  duration_ms: 142.179333
+  type: 'test'
+  ...
+# Subtest: preflight checks only the services requested by the launcher
+ok 3 - preflight checks only the services requested by the launcher
+  ---
+  duration_ms: 1.541042
+  type: 'test'
+  ...
+# Subtest: preflight reports every conflicting port in one actionable error
+ok 4 - preflight reports every conflicting port in one actionable error
+  ---
+  duration_ms: 0.278041
+  type: 'test'
+  ...
+# Subtest: port probes reject an existing listener without disturbing it
+ok 5 - port probes reject an existing listener without disturbing it
+  ---
+  duration_ms: 7.152166
+  type: 'test'
+  ...
+# Subtest: a rejected --fresh launch exits before config creation or data reset
+ok 6 - a rejected --fresh launch exits before config creation or data reset
+  ---
+  duration_ms: 233.653167
+  type: 'test'
+  ...
+1..6
+# tests 6
+# suites 0
+# pass 6
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 329.661625

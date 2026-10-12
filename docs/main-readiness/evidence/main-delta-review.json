@@ -1,0 +1,198 @@
+[
+  {
+    "path": ".dockerignore",
+    "state": "copy_main"
+  },
+  {
+    "path": ".env.example",
+    "state": "clean_port"
+  },
+  {
+    "path": ".github/workflows/publish-image.yml",
+    "state": "copy_main"
+  },
+  {
+    "path": "README.md",
+    "state": "clean_port"
+  },
+  {
+    "path": "apps/lea-standalone/.gitignore",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/Dockerfile",
+    "state": "manual_review"
+  },
+  {
+    "path": "apps/lea-standalone/README.md",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/adapter/app/config.py",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/adapter/app/models_catalog.py",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/adapter/app/routes/settings.py",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/adapter/app/settings.py",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/adapter/tests/test_config.py",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/adapter/tests/test_settings.py",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/config/lea.local.example.toml",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/docker-compose.dev.yml",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/docker-compose.yml",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/docker/entrypoint.sh",
+    "state": "manual_review"
+  },
+  {
+    "path": "apps/lea-standalone/docker/prepare-mathlib.sh",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/docs/INSTALL.md",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/prover/lea/providers.py",
+    "state": "manual_review"
+  },
+  {
+    "path": "apps/lea-standalone/prover/tests/providers/test_litellm_stream.py",
+    "state": "manual_review"
+  },
+  {
+    "path": "apps/lea-standalone/run-lea.sh",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/src/app/components/SettingsPage.tsx",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/lea-standalone/src/app/lib/api.ts",
+    "state": "clean_port"
+  },
+  {
+    "path": "apps/lea-standalone/start-lea.command",
+    "state": "copy_main"
+  },
+  {
+    "path": "apps/overleaf-extension/BETA_INSTALL.md",
+    "state": "manual_review"
+  },
+  {
+    "path": "apps/overleaf-extension/README.md",
+    "state": "clean_port"
+  },
+  {
+    "path": "apps/overleaf-extension/companion/server.mjs",
+    "state": "clean_port"
+  },
+  {
+    "path": "apps/overleaf-extension/extension/content.js",
+    "state": "clean_port"
+  },
+  {
+    "path": "apps/overleaf-extension/extension/options.html",
+    "state": "clean_port"
+  },
+  {
+    "path": "apps/overleaf-extension/extension/options.js",
+    "state": "clean_port"
+  },
+  {
+    "path": "apps/overleaf-extension/tests/companion.test.mjs",
+    "state": "clean_port"
+  },
+  {
+    "path": "install.sh",
+    "state": "copy_main"
+  },
+  {
+    "path": "package-lock.json",
+    "state": "copy_main"
+  },
+  {
+    "path": "packages/lea-model-catalog/models.json",
+    "state": "copy_main"
+  },
+  {
+    "path": "public/README.md",
+    "state": "copy_main"
+  },
+  {
+    "path": "public/assets/css/site.css",
+    "state": "copy_main"
+  },
+  {
+    "path": "public/assets/fonts/ibm-plex-mono-600-lea.woff2",
+    "state": "copy_main"
+  },
+  {
+    "path": "public/assets/img/lea-wordmark-dark.svg",
+    "state": "copy_main"
+  },
+  {
+    "path": "public/assets/img/lea-wordmark-light.svg",
+    "state": "copy_main"
+  },
+  {
+    "path": "public/build.mjs",
+    "state": "copy_main"
+  },
+  {
+    "path": "public/content/blog/2026-08-11-introducing-lea.md",
+    "state": "copy_main"
+  },
+  {
+    "path": "public/content/install.md",
+    "state": "copy_main"
+  },
+  {
+    "path": "public/lib/pages/home.mjs",
+    "state": "copy_main"
+  },
+  {
+    "path": "public/lib/templates.mjs",
+    "state": "copy_main"
+  },
+  {
+    "path": "public/lib/wordmark.mjs",
+    "state": "copy_main"
+  },
+  {
+    "path": "public/scripts/build-wordmark.py",
+    "state": "copy_main"
+  },
+  {
+    "path": "public/serve.mjs",
+    "state": "copy_main"
+  },
+  {
+    "path": "public/site.config.mjs",
+    "state": "copy_main"
+  }
+]

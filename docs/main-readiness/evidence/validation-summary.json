@@ -1,0 +1,41 @@
+{
+  "date": "2026-10-12",
+  "branch": "LeaCheckAddition",
+  "vida_main": "8fc9a74bb7de07b655105e46fe661eb3473482b2",
+  "local_environment": {
+    "lean": "4.29.0",
+    "platform": "arm64 macOS",
+    "python": "3.14.4",
+    "node": "22.22.3",
+    "uv": "0.11.14"
+  },
+  "passed": {
+    "adapter_tests": 1021,
+    "javascript_tests": 746,
+    "cross_layer_tests": 8,
+    "browser_tests": 3,
+    "website_tests": 23,
+    "standalone_unit_modules": 42,
+    "real_lean_modules": 3,
+    "safe_verify_owned_scenarios": 3,
+    "two_backend_supervision": true,
+    "typecheck": true,
+    "production_frontend_build": true,
+    "actionlint": "1.7.12",
+    "syntax_and_whitespace": true
+  },
+  "pending": {
+    "production_arm64_image": "Docker disk exhausted during Mathlib extraction",
+    "production_amd64_image": "not attempted while storage remains exhausted",
+    "production_runtime_harness": "requires actual completed images",
+    "remote_ci": "not dispatched or published"
+  },
+  "operations": {
+    "normal_services_started": false,
+    "merged": false,
+    "pushed": false,
+    "published": false,
+    "live_database_upgraded": false,
+    "other_project_docker_data_removed": false
+  }
+}

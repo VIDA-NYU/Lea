@@ -1,0 +1,25 @@
+> test
+> npm run test:scripts && npm test -w apps/overleaf-extension && npm run test:frontend -w apps/lea-standalone
+> test:scripts
+> node --test scripts/*.test.mjs apps/lea-standalone/scripts/lean-assets.test.mjs
+# tests 6
+# pass 6
+# fail 0
+# cancelled 0
+# skipped 0
+> overleaf-lean-stub-mvp@0.1.0 test
+> npm run check:katex-assets && node --test tests/*.test.mjs
+> overleaf-lean-stub-mvp@0.1.0 check:katex-assets
+> node scripts/sync-katex-assets.mjs --check
+# tests 655
+# pass 655
+# fail 0
+# cancelled 0
+# skipped 0
+> lea-interface@0.0.1 test:frontend
+> node --test src/app/*.test.mjs
+# tests 85
+# pass 85
+# fail 0
+# cancelled 0
+# skipped 0

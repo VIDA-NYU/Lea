@@ -1,0 +1,152 @@
+
+> site:test
+> node --test "public/tests/*.test.mjs"
+
+TAP version 13
+# Subtest: escapes HTML in text
+ok 1 - escapes HTML in text
+  ---
+  duration_ms: 2.197708
+  type: 'test'
+  ...
+# Subtest: headings get slug ids, and repeats are disambiguated
+ok 2 - headings get slug ids, and repeats are disambiguated
+  ---
+  duration_ms: 1.941208
+  type: 'test'
+  ...
+# Subtest: a single newline inside a paragraph is a space, not a break
+ok 3 - a single newline inside a paragraph is a space, not a break
+  ---
+  duration_ms: 1.004291
+  type: 'test'
+  ...
+# Subtest: two trailing spaces force a hard break
+ok 4 - two trailing spaces force a hard break
+  ---
+  duration_ms: 0.137875
+  type: 'test'
+  ...
+# Subtest: inline markup
+ok 5 - inline markup
+  ---
+  duration_ms: 0.300583
+  type: 'test'
+  ...
+# Subtest: emphasis does not fire inside snake_case identifiers
+ok 6 - emphasis does not fire inside snake_case identifiers
+  ---
+  duration_ms: 0.068459
+  type: 'test'
+  ...
+# Subtest: code spans are immune to the link and emphasis passes
+ok 7 - code spans are immune to the link and emphasis passes
+  ---
+  duration_ms: 0.593
+  type: 'test'
+  ...
+# Subtest: links: external gets target, internal is rewritten onto the base path
+ok 8 - links: external gets target, internal is rewritten onto the base path
+  ---
+  duration_ms: 0.37875
+  type: 'test'
+  ...
+# Subtest: images render with lazy loading
+ok 9 - images render with lazy loading
+  ---
+  duration_ms: 0.832458
+  type: 'test'
+  ...
+# Subtest: fenced code is highlighted and gets a copy button
+ok 10 - fenced code is highlighted and gets a copy button
+  ---
+  duration_ms: 1.136167
+  type: 'test'
+  ...
+# Subtest: fenced code contents are never treated as markdown
+ok 11 - fenced code contents are never treated as markdown
+  ---
+  duration_ms: 0.264
+  type: 'test'
+  ...
+# Subtest: unordered and ordered lists, with the author's own start number
+ok 12 - unordered and ordered lists, with the author's own start number
+  ---
+  duration_ms: 0.3525
+  type: 'test'
+  ...
+# Subtest: nested list items
+ok 13 - nested list items
+  ---
+  duration_ms: 0.066041
+  type: 'test'
+  ...
+# Subtest: tables render with alignment and a scroll wrapper
+ok 14 - tables render with alignment and a scroll wrapper
+  ---
+  duration_ms: 0.157916
+  type: 'test'
+  ...
+# Subtest: blockquotes, and Note: callouts
+ok 15 - blockquotes, and Note: callouts
+  ---
+  duration_ms: 0.154042
+  type: 'test'
+  ...
+# Subtest: thematic breaks
+ok 16 - thematic breaks
+  ---
+  duration_ms: 0.035916
+  type: 'test'
+  ...
+# Subtest: raw HTML blocks pass through
+ok 17 - raw HTML blocks pass through
+  ---
+  duration_ms: 0.036583
+  type: 'test'
+  ...
+# Subtest: frontmatter parses strings and lists, and is stripped from the body
+ok 18 - frontmatter parses strings and lists, and is stripped from the body
+  ---
+  duration_ms: 0.157625
+  type: 'test'
+  ...
+# Subtest: a document with no frontmatter is returned whole
+ok 19 - a document with no frontmatter is returned whole
+  ---
+  duration_ms: 0.061125
+  type: 'test'
+  ...
+# Subtest: excerpt skips headings and code, and truncates on a word boundary
+ok 20 - excerpt skips headings and code, and truncates on a word boundary
+  ---
+  duration_ms: 0.264791
+  type: 'test'
+  ...
+# Subtest: slugify
+ok 21 - slugify
+  ---
+  duration_ms: 0.085292
+  type: 'test'
+  ...
+# Subtest: highlighter escapes, and never matches mid-identifier
+ok 22 - highlighter escapes, and never matches mid-identifier
+  ---
+  duration_ms: 1.121875
+  type: 'test'
+  ...
+# Subtest: an unknown language is escaped but left unhighlighted
+ok 23 - an unknown language is escaped but left unhighlighted
+  ---
+  duration_ms: 0.050292
+  type: 'test'
+  ...
+1..23
+# tests 23
+# suites 0
+# pass 23
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 129.343875

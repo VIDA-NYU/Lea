@@ -1,0 +1,38 @@
+#25 129.0 /root/.cache/mathlib/147c1d950c2b9605.ltar: No space left on device (os error 28)
+#25 129.0 /root/.cache/mathlib/65c8da117446cf5e.ltar: No space left on device (os error 28)
+#25 129.0 /root/.cache/mathlib/eb799c1c93beb728.ltar: No space left on device (os error 28)
+#25 129.0 uncaught exception: resource exhausted (error code: 28, no space left on device)
+#25 129.0   file: /root/.cache/mathlib/165ae8438a26a803.ltar.part and/or /root/.cache/mathlib/165ae8438a26a803.ltar
+#25 ERROR: process "/bin/sh -c cd workspace  && lake exe cache get  && lake build Mathlib  && lake build --no-build Mathlib  && echo \"[build] complete Mathlib cache verified\"  && cd /app/prover/third_party/SafeVerify  && rm -rf .lake/packages && mkdir -p .lake  && ln -s /app/prover/workspace/.lake/packages .lake/packages  && lake build safe_verify  && test -x .lake/build/bin/safe_verify  && echo \"[build] SafeVerify built against the shared Mathlib\"  && rm -rf /root/.cache/mathlib  && echo \"[build] retained dependency metadata for runtime cache repair\"" did not complete successfully: exit code: 1
+------
+ > [runtime  7/22] RUN cd workspace  && lake exe cache get  && lake build Mathlib  && lake build --no-build Mathlib  && echo "[build] complete Mathlib cache verified"  && cd /app/prover/third_party/SafeVerify  && rm -rf .lake/packages && mkdir -p .lake  && ln -s /app/prover/workspace/.lake/packages .lake/packages  && lake build safe_verify  && test -x .lake/build/bin/safe_verify  && echo "[build] SafeVerify built against the shared Mathlib"  && rm -rf /root/.cache/mathlib  && echo "[build] retained dependency metadata for runtime cache repair":
+129.0 /root/.cache/mathlib/266be54c5cf088d6.ltar: No space left on device (os error 28)
+129.0 /root/.cache/mathlib/a29719ab9e8d80fb.ltar: No space left on device (os error 28)
+129.0 /root/.cache/mathlib/eaa88c413b083bd5.ltar: No space left on device (os error 28)
+129.0 /root/.cache/mathlib/d5b7c66716133714.ltar: No space left on device (os error 28)
+129.0 /root/.cache/mathlib/c3cdafb2d82cedbd.ltar: No space left on device (os error 28)
+129.0 /root/.cache/mathlib/147c1d950c2b9605.ltar: No space left on device (os error 28)
+129.0 /root/.cache/mathlib/65c8da117446cf5e.ltar: No space left on device (os error 28)
+129.0 /root/.cache/mathlib/eb799c1c93beb728.ltar: No space left on device (os error 28)
+129.0 uncaught exception: resource exhausted (error code: 28, no space left on device)
+129.0   file: /root/.cache/mathlib/165ae8438a26a803.ltar.part and/or /root/.cache/mathlib/165ae8438a26a803.ltar
+------
+Dockerfile:87
+--------------------
+  86 |     WORKDIR /app/prover
+  87 | >>> RUN cd workspace \
+  88 | >>>  && lake exe cache get \
+  89 | >>>  && lake build Mathlib \
+  90 | >>>  && lake build --no-build Mathlib \
+  91 | >>>  && echo "[build] complete Mathlib cache verified" \
+  92 | >>>  && cd /app/prover/third_party/SafeVerify \
+  93 | >>>  && rm -rf .lake/packages && mkdir -p .lake \
+  94 | >>>  && ln -s /app/prover/workspace/.lake/packages .lake/packages \
+  95 | >>>  && lake build safe_verify \
+  96 | >>>  && test -x .lake/build/bin/safe_verify \
+  97 | >>>  && echo "[build] SafeVerify built against the shared Mathlib" \
+  98 | >>>  && rm -rf /root/.cache/mathlib \
+  99 | >>>  && echo "[build] retained dependency metadata for runtime cache repair"
+ 100 |
+--------------------
+ERROR: failed to build: failed to solve: process "/bin/sh -c cd workspace  && lake exe cache get  && lake build Mathlib  && lake build --no-build Mathlib  && echo \"[build] complete Mathlib cache verified\"  && cd /app/prover/third_party/SafeVerify  && rm -rf .lake/packages && mkdir -p .lake  && ln -s /app/prover/workspace/.lake/packages .lake/packages  && lake build safe_verify  && test -x .lake/build/bin/safe_verify  && echo \"[build] SafeVerify built against the shared Mathlib\"  && rm -rf /root/.cache/mathlib  && echo \"[build] retained dependency metadata for runtime cache repair\"" did not complete successfully: exit code: 1

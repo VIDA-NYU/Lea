@@ -1,0 +1,22 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {},
+  "metadata": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "dependencies": {
+      "prod": 370,
+      "dev": 273,
+      "optional": 74,
+      "peer": 8,
+      "peerOptional": 0,
+      "total": 650
+    }
+  }
+}

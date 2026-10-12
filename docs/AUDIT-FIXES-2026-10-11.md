@@ -97,3 +97,20 @@ control.
 The adapter suite retains existing framework deprecation warnings. Dependency
 advisories, merge-conflict resolution, bundle size and historical proof repair
 remain outside this implementation.
+
+## Main-readiness follow-up — 2026-10-12
+
+The original fixes above were committed in `aa87313`. The subsequent authorized
+main-readiness work reconciles VIDA main's gateway and two-backend container
+changes, patches the scoped JavaScript advisories, adds application publication
+gates and validates upgrade/restore behavior. It also fixes dependency discovery
+for Lean's `import all` syntax, found by real SafeVerify checks. The four original
+reproductions still demonstrate corrected behavior after reconciliation.
+
+See the [main-readiness report](main-readiness/REPORT.md) for final test evidence,
+the reviewed conflict-resolution recipe, dependency disposition and migration
+instructions. Local application and compiler checks pass; the full production
+ARM64/AMD64 image gate remains pending because Docker ran out of space. The work
+remains on `LeaCheckAddition`, services remain stopped, and nothing was merged,
+pushed or published. This addendum does not replace the historical results above
+or claim that the remaining production gate has passed.
