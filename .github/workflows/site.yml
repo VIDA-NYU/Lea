@@ -22,6 +22,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validation:
+    uses: ./.github/workflows/application-ci.yml
+    permissions:
+      contents: read
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -53,7 +58,7 @@ jobs:
           path: public/dist
 
   deploy:
-    needs: build
+    needs: [build, validation]
     runs-on: ubuntu-latest
     environment:
       name: github-pages

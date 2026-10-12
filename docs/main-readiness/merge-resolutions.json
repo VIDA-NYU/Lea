@@ -1,0 +1,671 @@
+{
+  "main": "8fc9a74bb7de07b655105e46fe661eb3473482b2",
+  "mirror_baseline": "91cc152",
+  "resolutions": {
+    ".dockerignore": {
+      "choice": "feature",
+      "feature_blob": "7d00562bb810522e2aa7294b1fc4a659f7c2fb4e",
+      "reason": "Combine main\u2019s two-backend packaging with the canonical bound launcher, readiness, private-data exclusions and reviewed companion imports."
+    },
+    ".env.example": {
+      "choice": "feature",
+      "feature_blob": "7b16ff4b6e8a1171915cbe009ab3857e33c452a5",
+      "reason": "Keep the reviewed feature bytes after porting main\u2019s unique settings and installation delta."
+    },
+    ".github/workflows/publish-image.yml": {
+      "choice": "feature",
+      "feature_blob": "6e7a9a6da28199375c4369a1d1d8bb6a96ab3530",
+      "reason": "Keep main\u2019s publication capability gated by complete read-only application and native architecture validation."
+    },
+    ".github/workflows/site.yml": {
+      "choice": "feature",
+      "feature_blob": "ffbf2c0c1f4c6cacfac719aa354951f6c287c618",
+      "reason": "Keep main\u2019s publication capability gated by complete read-only application and native architecture validation."
+    },
+    "AGENTS.md": {
+      "choice": "feature",
+      "feature_blob": "c8b844b2ee6d478d55b53b3f2048fdf865c658fb",
+      "reason": "Preserve feature architecture guidance and reconcile main\u2019s current installation and container layout."
+    },
+    "CLAUDE.md": {
+      "choice": "feature",
+      "feature_blob": "e97bcdf8427c8daf967f0b2c42b34d3dcc499718",
+      "reason": "Preserve feature architecture guidance and reconcile main\u2019s current installation and container layout."
+    },
+    "IMPORTS.md": {
+      "choice": "feature",
+      "feature_blob": "ef67fd1df7403ca687ef1d623457da50275b138b",
+      "reason": "Keep the reviewed feature bytes after porting main\u2019s unique settings and installation delta."
+    },
+    "apps/lea-standalone/Dockerfile": {
+      "choice": "feature",
+      "feature_blob": "97ce90944df780a7a6ff1ce9d1feef1c9b3dba0a",
+      "reason": "Combine main\u2019s two-backend packaging with the canonical bound launcher, readiness, private-data exclusions and reviewed companion imports."
+    },
+    "apps/lea-standalone/adapter/app/artifacts.py": {
+      "choice": "feature",
+      "feature_blob": "b8928b5b42d91a5e18533873171e543966387803",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/app/bridge.py": {
+      "choice": "feature",
+      "feature_blob": "3eb58c26111b24c0d569fe1612929c958abe3d46",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/app/diagnostics.py": {
+      "choice": "feature",
+      "feature_blob": "20d990076ded8d2ad70120f0909aada57120e574",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/app/formalizations.py": {
+      "choice": "feature",
+      "feature_blob": "d87e2fdaf3f1b931bb0800d246eff97de7e83301",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/app/github_import_service.py": {
+      "choice": "feature",
+      "feature_blob": "7f54c48f389d2c670ad726d4b68f612c88522975",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/app/github_project_import.py": {
+      "choice": "feature",
+      "feature_blob": "0f22afa169c7d124fdda13a575e4fddbf51107ac",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/app/main.py": {
+      "choice": "feature",
+      "feature_blob": "ad31457e16aa390560456510302e45b5e1dd8be2",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/app/projects.py": {
+      "choice": "feature",
+      "feature_blob": "85fb9fd37957b6c44ad7d19037aff366854704d6",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/app/routes/formalizations.py": {
+      "choice": "feature",
+      "feature_blob": "dcf12f0c2306c10e18cf3df2a2ecbdceee25d64a",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/app/routes/projects.py": {
+      "choice": "feature",
+      "feature_blob": "ffd32f7c3fa48509306480a5288e58d169b83f9a",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/app/routes/runs.py": {
+      "choice": "feature",
+      "feature_blob": "deba26438c4f2068cfc6cad3424746c025f52794",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/app/routes/sessions.py": {
+      "choice": "feature",
+      "feature_blob": "7b725c2d37628e41cb07b14994f6fbea959f1143",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/app/runregistry.py": {
+      "choice": "feature",
+      "feature_blob": "030d3f1761e0e32e619a8f9922aaf2928b4e1922",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/app/store.py": {
+      "choice": "feature",
+      "feature_blob": "604ec1563f316bfb79584950eb599d53baa99fc8",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/app/uploads.py": {
+      "choice": "feature",
+      "feature_blob": "40ee75e0193c7886d3ef93739787b2aa18f9e0ca",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/tests/test_bridge.py": {
+      "choice": "feature",
+      "feature_blob": "91d217dc37df3c85954a0c715e94a370de86770e",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/tests/test_concurrent_runs_e2e.py": {
+      "choice": "feature",
+      "feature_blob": "444ff1c6f0a4cde0b2de502af04303fe322c55be",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/tests/test_formalizations.py": {
+      "choice": "feature",
+      "feature_blob": "19c17fe3f455225640bed7d26b9bd3d62de5e05e",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/tests/test_github_import_routes.py": {
+      "choice": "feature",
+      "feature_blob": "2d57cc86f1fa2523dc524edf87de0083a1f9fb07",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/tests/test_github_project_import.py": {
+      "choice": "feature",
+      "feature_blob": "83420e380bd9ca9798ddc4bdd2b761f90a3efc95",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/tests/test_netguard.py": {
+      "choice": "feature",
+      "feature_blob": "f03c989cadc0dabc06fca5197bf7368d9564b70b",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/tests/test_projects.py": {
+      "choice": "feature",
+      "feature_blob": "17fbcef1a03e4e53e08580f92acbc8bde42026a4",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/tests/test_routes_projects.py": {
+      "choice": "feature",
+      "feature_blob": "7a089ac19c2d5c1928d77b823678f5a4bc1ea195",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/tests/test_routes_runs.py": {
+      "choice": "feature",
+      "feature_blob": "740a47034c22680be3780385db2726122c722706",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/tests/test_routes_sessions.py": {
+      "choice": "feature",
+      "feature_blob": "7a8cd1616f8a980946f59ca3dc1542b828a2fbc0",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/tests/test_store.py": {
+      "choice": "feature",
+      "feature_blob": "9736d64fd6f81fa9bb4f5ae038b6f0741ef4dabb",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/adapter/tests/test_subagent_bridge.py": {
+      "choice": "feature",
+      "feature_blob": "d9f8674b1c45fe06ef2be074a0576a50dc7d3312",
+      "reason": "Retain source/dependency evidence, migration, current projections and recovery while integrating main\u2019s settings and gateway support."
+    },
+    "apps/lea-standalone/design/v2-architecture.md": {
+      "choice": "feature",
+      "feature_blob": "222a23d7273d35e69402ff064c5e99dffab8bc57",
+      "reason": "Keep the reviewed feature bytes after porting main\u2019s unique settings and installation delta."
+    },
+    "apps/lea-standalone/design/v2-ui-design.md": {
+      "choice": "feature",
+      "feature_blob": "e1087e2d1eda41bb21cb64132ad0cb68cfab3b6f",
+      "reason": "Keep the reviewed feature bytes after porting main\u2019s unique settings and installation delta."
+    },
+    "apps/lea-standalone/design/v2.0.1-merge-reconciliation.md": {
+      "choice": "feature",
+      "feature_blob": "63b66cd5cc988da5a3e280cd514e5bd088d9eda1",
+      "reason": "Keep the reviewed feature bytes after porting main\u2019s unique settings and installation delta."
+    },
+    "apps/lea-standalone/design/v2.0.1-refactor.md": {
+      "choice": "feature",
+      "feature_blob": "a8778b50bb3492bd14a4a6ca1bde760e3b88d46c",
+      "reason": "Keep the reviewed feature bytes after porting main\u2019s unique settings and installation delta."
+    },
+    "apps/lea-standalone/design/v2.1-projects-architecture.md": {
+      "choice": "feature",
+      "feature_blob": "4fb76b93bde1c87293d8682236022d98e185a2e3",
+      "reason": "Keep the reviewed feature bytes after porting main\u2019s unique settings and installation delta."
+    },
+    "apps/lea-standalone/design/v2.1-ui-design.md": {
+      "choice": "feature",
+      "feature_blob": "474173aba7d7f5f1602a1f923bd4df856dc89119",
+      "reason": "Keep the reviewed feature bytes after porting main\u2019s unique settings and installation delta."
+    },
+    "apps/lea-standalone/design/v2.1.1-progress.html": {
+      "choice": "feature",
+      "feature_blob": "f3555b88dcb11d345b7ae78f6307d3b94b6789a6",
+      "reason": "Keep the reviewed feature bytes after porting main\u2019s unique settings and installation delta."
+    },
+    "apps/lea-standalone/design/v2.2-live-editor-architecture.md": {
+      "choice": "feature",
+      "feature_blob": "73d35cb8a20bee4b40ab792d8c1be9e8faf1adb9",
+      "reason": "Keep the reviewed feature bytes after porting main\u2019s unique settings and installation delta."
+    },
+    "apps/lea-standalone/design/v2.2-live-editor-progress.html": {
+      "choice": "feature",
+      "feature_blob": "4cabd46349f624fdec19fb331cc8d8a73ee42f69",
+      "reason": "Keep the reviewed feature bytes after porting main\u2019s unique settings and installation delta."
+    },
+    "apps/lea-standalone/docker/entrypoint.sh": {
+      "choice": "feature",
+      "feature_blob": "0a9e5de7026247cb771b79ed8fbe97e832b02ec4",
+      "reason": "Combine main\u2019s two-backend packaging with the canonical bound launcher, readiness, private-data exclusions and reviewed companion imports."
+    },
+    "apps/lea-standalone/docker/prepare-mathlib.sh": {
+      "choice": "feature",
+      "feature_blob": "7fee749a5f8b11e803f84fc8aba5414a6e9295eb",
+      "reason": "Keep the reviewed feature bytes after porting main\u2019s unique settings and installation delta."
+    },
+    "apps/lea-standalone/prover/DESIGN.md": {
+      "choice": "feature",
+      "feature_blob": "8f9bdb8bb296945ef02341edc5f6fea830a875df",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/docs/README.md": {
+      "choice": "feature",
+      "feature_blob": "46778c10fb7ef59f980f67aeeb6d4dc227e37541",
+      "reason": "Preserve feature architecture guidance and reconcile main\u2019s current installation and container layout."
+    },
+    "apps/lea-standalone/prover/docs/decisions.md": {
+      "choice": "feature",
+      "feature_blob": "0fbcceace944819a78011f4b945e0e995c14f3c4",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/docs/design.html": {
+      "choice": "feature",
+      "feature_blob": "907713eed1f074602a8224d8151dc5c97b793c25",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/docs/design.md": {
+      "choice": "feature",
+      "feature_blob": "ad241a29fe8cfe2a9773af5c53e4d980a32397a2",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/docs/lean-lsp-mcp.md": {
+      "choice": "feature",
+      "feature_blob": "4d7fcd4711ca1863a9cc0922c2267b1195c4afee",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/lea-api-design.md": {
+      "choice": "feature",
+      "feature_blob": "9e3b97b9e1625fc2c8f17f344c6e3add62e794fe",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/lea-roadmap.md": {
+      "choice": "feature",
+      "feature_blob": "f8c009797d5fd360bdd177ec631e734a1c675d0d",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/lea/agent.py": {
+      "choice": "feature",
+      "feature_blob": "fd517f1a9b2548415cd64a76424f0c0d2b3b7ea1",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/lea/condenser.py": {
+      "choice": "feature",
+      "feature_blob": "609306d4a3772fd9354f015c35784e36c05bcd04",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/lea/diagnostics.py": {
+      "choice": "feature",
+      "feature_blob": "18375fdf0bf5f803ccc02ba8eb4d6c691cf5e64d",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/lea/events.py": {
+      "choice": "feature",
+      "feature_blob": "9e5df992a7892f7fd146331153e7b7d1fe234738",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/lea/http_tools.py": {
+      "choice": "feature",
+      "feature_blob": "d7eaab45e4be798b244182f5fe24268921fd434f",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/lea/imports.py": {
+      "choice": "feature",
+      "feature_blob": "419729d2c19072fd965d63b80bb044e404653358",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/lea/interface.py": {
+      "choice": "feature",
+      "feature_blob": "9980e49fa23605284eff957db11ce9880f5ae308",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/lea/lsp_daemon.py": {
+      "choice": "feature",
+      "feature_blob": "5cee5013d5b41cffa38eb8e1e5883dfca22ee117",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/lea/providers.py": {
+      "choice": "feature",
+      "feature_blob": "86765b57251be6ecb54e9bdc91491c9d2d23fdc1",
+      "reason": "Combine main\u2019s gateway routing and cache behavior with current token, pricing, reasoning and streaming semantics."
+    },
+    "apps/lea-standalone/prover/lea/subagents.py": {
+      "choice": "feature",
+      "feature_blob": "de2cdf7346c816a052433f47f73b32def4ed8663",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/lea/tools.py": {
+      "choice": "feature",
+      "feature_blob": "92263f725b15c4aeba6d2639850d7a45f7bb3445",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/tests/agent/test_run_events.py": {
+      "choice": "feature",
+      "feature_blob": "c80975b4a16eb3bd8477593cb049e40f79277c5f",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/tests/lsp/test_concurrent_checks.py": {
+      "choice": "feature",
+      "feature_blob": "1205110dfe32d60b46fa50a6cc319a39c885f6f0",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/tests/lsp/test_lsp_daemon.py": {
+      "choice": "feature",
+      "feature_blob": "fce4c5cb8e1553f4fd0dc48ed203f006defa7fae",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/tests/prompt/test_import_policy.py": {
+      "choice": "feature",
+      "feature_blob": "73a8fb1037b4e6d18f7b538a89176e7d36a4682d",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/prover/tests/providers/test_litellm_stream.py": {
+      "choice": "feature",
+      "feature_blob": "84a85b0312a187a99b6695614906e06d81c91fe0",
+      "reason": "Combine main\u2019s gateway routing and cache behavior with current token, pricing, reasoning and streaming semantics."
+    },
+    "apps/lea-standalone/prover/tests/tools/test_fallback_bounds.py": {
+      "choice": "feature",
+      "feature_blob": "63e4d0b78dbd6730daa5ccd6bcfe87f079120254",
+      "reason": "Retain immutable source capture, dependency preparation, structured recovery and final verification from the feature."
+    },
+    "apps/lea-standalone/src/app/App.tsx": {
+      "choice": "feature",
+      "feature_blob": "34cc238242f3bd521d6c6ee799f78464edad61ba",
+      "reason": "Retain the feature\u2019s current certification, timeline and usage UI with main\u2019s gateway settings."
+    },
+    "apps/lea-standalone/src/app/components/Canvas.tsx": {
+      "choice": "feature",
+      "feature_blob": "1fcd4191c206897acd3bdda5399f06ba207b8aba",
+      "reason": "Retain the feature\u2019s current certification, timeline and usage UI with main\u2019s gateway settings."
+    },
+    "apps/lea-standalone/src/app/components/ChatThread.tsx": {
+      "choice": "feature",
+      "feature_blob": "563a0d62a3637f243d5b78411813fb3cc37a7bc7",
+      "reason": "Retain the feature\u2019s current certification, timeline and usage UI with main\u2019s gateway settings."
+    },
+    "apps/lea-standalone/src/app/components/ProjectWindow.tsx": {
+      "choice": "feature",
+      "feature_blob": "e9112217d152be2c3d4d98d4e2d713d206b3ee0b",
+      "reason": "Retain the feature\u2019s current certification, timeline and usage UI with main\u2019s gateway settings."
+    },
+    "apps/lea-standalone/src/app/components/Sidebar.tsx": {
+      "choice": "feature",
+      "feature_blob": "d4b35242d36fcf1f066f42a75694e11921019ecf",
+      "reason": "Retain the feature\u2019s current certification, timeline and usage UI with main\u2019s gateway settings."
+    },
+    "apps/lea-standalone/src/app/hooks/useProofStream.ts": {
+      "choice": "feature",
+      "feature_blob": "569edcf8039976352ec5c837096370603b9b1c79",
+      "reason": "Retain the feature\u2019s current certification, timeline and usage UI with main\u2019s gateway settings."
+    },
+    "apps/lea-standalone/src/app/lib/api.ts": {
+      "choice": "feature",
+      "feature_blob": "24fdfdd5d7ae618bca2103124189c9885479e9bf",
+      "reason": "Retain the feature\u2019s current certification, timeline and usage UI with main\u2019s gateway settings."
+    },
+    "apps/lea-standalone/src/app/lib/formalizations.mjs": {
+      "choice": "feature",
+      "feature_blob": "cf79bdf9722e7e7b534146877e3c3bd153ef065d",
+      "reason": "Retain the feature\u2019s current certification, timeline and usage UI with main\u2019s gateway settings."
+    },
+    "apps/lea-standalone/src/app/lib/types.ts": {
+      "choice": "feature",
+      "feature_blob": "3d72779fdcf0ceadcc508dd341263dba3c7a983b",
+      "reason": "Retain the feature\u2019s current certification, timeline and usage UI with main\u2019s gateway settings."
+    },
+    "apps/lea-standalone/src/app/stores/proofSession.ts": {
+      "choice": "feature",
+      "feature_blob": "14639e45b9fdb2ee26bc23ec73ecf37d153d95ed",
+      "reason": "Retain the feature\u2019s current certification, timeline and usage UI with main\u2019s gateway settings."
+    },
+    "apps/lea-standalone/src/styles/lea-v2.css": {
+      "choice": "feature",
+      "feature_blob": "d64c94ba342dbf190c9e50ed8c8d27aa920ed7d7",
+      "reason": "Retain the feature\u2019s current certification, timeline and usage UI with main\u2019s gateway settings."
+    },
+    "apps/overleaf-extension/AUDIT.md": {
+      "choice": "feature",
+      "feature_blob": "e23070cb77b296fa894968c45b8997cec7222009",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/BETA_INSTALL.md": {
+      "choice": "feature",
+      "feature_blob": "8bde135a11911ab4a790e74cf65b7e0098c02bed",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/companion/jobStore.mjs": {
+      "choice": "feature",
+      "feature_blob": "5d6cc21cda63826a34594cfa59bb624fa67f19dd",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/companion/leaApiClient.mjs": {
+      "choice": "feature",
+      "feature_blob": "bd28fb77648a8d90b668ae4a793a668593f17c89",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/companion/server.mjs": {
+      "choice": "feature",
+      "feature_blob": "63f1eacdc682f0bc535fbbfe1e2245fa31a86536",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/extension/content.css": {
+      "choice": "feature",
+      "feature_blob": "ed7835170335a297406ba2fbabbdb7bb1ff28c6d",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/extension/content.js": {
+      "choice": "feature",
+      "feature_blob": "75ecfd9d73d4641cccb9866b6a7fa63ca7d85c30",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/extension/eventsClient.mjs": {
+      "choice": "feature",
+      "feature_blob": "2fac39baac8ecb5c1a30bb9ac540492fe1bf5a60",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/extension/leanPaneView.mjs": {
+      "choice": "feature",
+      "feature_blob": "552e2e5858a916e9e67568b3b5caa688d0ce4fc1",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/extension/manifest.json": {
+      "choice": "feature",
+      "feature_blob": "e63562985fa6f095a278c391edda8be60b35fc76",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/extension/options.html": {
+      "choice": "feature",
+      "feature_blob": "8d4d9f6dc67d5e81db3b25df17086a401d4e7b28",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/extension/options.js": {
+      "choice": "feature",
+      "feature_blob": "0d91b9b89c2132420463f3ad7c302995b9f042c8",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/extension/vendor/katex/katex.min.css": {
+      "choice": "feature",
+      "feature_blob": "4839cdf73e09fa8755c8f7fdb5edc6450054bdbe",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/extension/vendor/katex/katex.min.js": {
+      "choice": "feature",
+      "feature_blob": "459290a941f7af1b074b66629c1b0544c694a335",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/package.json": {
+      "choice": "feature",
+      "feature_blob": "4668dee57d3dbaefcb39ed35090fe9bf98ed785e",
+      "reason": "Keep patched locked dependencies and the tested fixed editor asset plugin after main reconciliation."
+    },
+    "apps/overleaf-extension/tests/companion.test.mjs": {
+      "choice": "feature",
+      "feature_blob": "cfd3d3d40b61459896b18d2855f50080ccbcb982",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/tests/contentActions.test.mjs": {
+      "choice": "feature",
+      "feature_blob": "281766518c814ddd9c67321b5b0997c219df51cb",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/tests/eventBus.test.mjs": {
+      "choice": "feature",
+      "feature_blob": "58096e31b78aafc81ba0313d368426df24adac05",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/tests/fixtures/extension-theme-preview.html": {
+      "choice": "feature",
+      "feature_blob": "da24d5c9c07cbc7ee561613bce55de424cd1f68c",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/tests/leaApiClient.test.mjs": {
+      "choice": "feature",
+      "feature_blob": "301e01c3ee970160be7ac06be400225e6b0fefbf",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/tests/leanPaneBatch.test.mjs": {
+      "choice": "feature",
+      "feature_blob": "669efbd6f01c29a7cb07ced54f8e21c33b70a829",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/tests/leanPaneEdit.test.mjs": {
+      "choice": "feature",
+      "feature_blob": "752e0fedf72d33549deb8864b317f617f090470c",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "apps/overleaf-extension/tests/leanPaneView.test.mjs": {
+      "choice": "feature",
+      "feature_blob": "349e0d574cb10dcc6932987c9ec2824e4a8c8292",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes."
+    },
+    "docs/FEATURE-counterexample-workflows.md": {
+      "choice": "feature",
+      "feature_blob": "dba44b8c9b2ea9957ebfe98764d8f694fb7ca59a",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/FEATURE-overleaf-comment-marked-theorems.md": {
+      "choice": "feature",
+      "feature_blob": "17fb636d698f12eca2d0d0494a22a63189a8979c",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/FEATURE-overleaf-definition-tags.md": {
+      "choice": "feature",
+      "feature_blob": "4c7c50743c7fee082cf70d8f42eb092c1f7bc1bf",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/FEATURE-overleaf-inline-lea-tags.md": {
+      "choice": "feature",
+      "feature_blob": "42bd976c29c04ddd3c465dc97bf1dc24483a2c2d",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/FEATURE-overleaf-lean-pane-chat-mirror.md": {
+      "choice": "feature",
+      "feature_blob": "31ed948a659fe8c1ce5360c6cfeb1df3eb7d992b",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/FEATURE-overleaf-lean-pane-file-organization.md": {
+      "choice": "feature",
+      "feature_blob": "21215a34d8c59305282ea755ca27fb59f9e23954",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/FEATURE-overleaf-lean-pane-file-progress-bars.md": {
+      "choice": "feature",
+      "feature_blob": "7c3fd19bd34d3ba579b6d994c9fe1bb4fa48cfa9",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/FEATURE-overleaf-lean-pane-manual-edit.md": {
+      "choice": "feature",
+      "feature_blob": "84d65de85d1d2203e38405f7b0402f5a439fa3d5",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/FEATURE-overleaf-lean-pane.md": {
+      "choice": "feature",
+      "feature_blob": "674b83a3d1001fff8c4127bf8741b35b21e4fe7b",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/FEATURE-overleaf-project-names.md": {
+      "choice": "feature",
+      "feature_blob": "dd18d4d81b2e6afaba97b8695bc6f0be75e257d1",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/FEATURE-overleaf-self-repair.md": {
+      "choice": "feature",
+      "feature_blob": "61cf208b0725a201ba55bc4a94b7ba4a495592a6",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/PLAN-edit-save-latency.md": {
+      "choice": "feature",
+      "feature_blob": "1a61672f42a808f40a223e3793c142fb045afb31",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/PLAN-manual-edit-bugfix-round2.md": {
+      "choice": "feature",
+      "feature_blob": "197cbf12c5df617e73d5db12c3d991249b8ab636",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/PLAN-overleaf-inline-lea-tags.md": {
+      "choice": "feature",
+      "feature_blob": "c43f450f637dc96529f37673c7e45af450186ba9",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/PLAN-overleaf-lean-pane-chat-mirror.md": {
+      "choice": "feature",
+      "feature_blob": "d605b0e4b9f9d01ed0808d69bf61f030d7452ae4",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/PLAN-overleaf-lean-pane-improvements.md": {
+      "choice": "feature",
+      "feature_blob": "3c6e66610cda31756d7d1e6d25186610018c461b",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/PLAN-overleaf-lean-pane-manual-edit.md": {
+      "choice": "feature",
+      "feature_blob": "72d02cea727c99f30eaabb552857cdce40ed43d9",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/PLAN-overleaf-self-repair.md": {
+      "choice": "feature",
+      "feature_blob": "5804efdf82512d968c5fe14808f43aa7d27c6b05",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/PLAN-overleaf-tex-mirror.md": {
+      "choice": "feature",
+      "feature_blob": "fe843fa20006f8db65c09f16eecb4e37f08ddb7c",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/PLAN-self-repair-stale-offers.md": {
+      "choice": "feature",
+      "feature_blob": "fedb2b81dfb55d13c70be30270746ac11f9f2c35",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/WEEKLY-REPORT-2026-06-30-to-07-06.md": {
+      "choice": "feature",
+      "feature_blob": "0e248023fdcccffcba0327c2f11ba27770a116c5",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/cascade-testing-fixture.tex": {
+      "choice": "feature",
+      "feature_blob": "1f16ed92c7dd16899d5ec55cdad85be596847ca9",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "docs/cascade-testing-guide.tex": {
+      "choice": "feature",
+      "feature_blob": "cb8d8ae40c730eb501e59f825d097958e2bf842b",
+      "reason": "Retain feature design, audit and implementation history; these deletions arise from divergent mirrored ancestry."
+    },
+    "package-lock.json": {
+      "choice": "feature",
+      "feature_blob": "a132f673549eaf2f526a36e1f1e7ec270bb377f0",
+      "reason": "Keep patched locked dependencies and the tested fixed editor asset plugin after main reconciliation."
+    },
+    "package.json": {
+      "choice": "feature",
+      "feature_blob": "d8125e9f023bd828451ea8dcedcf548361f59243",
+      "reason": "Keep patched locked dependencies and the tested fixed editor asset plugin after main reconciliation."
+    },
+    "start-dev.sh": {
+      "choice": "feature",
+      "feature_blob": "7cb57668c3eaf5541efdb847ebc5bf690fe6bf13",
+      "reason": "Keep the reviewed feature bytes after porting main\u2019s unique settings and installation delta."
+    },
+    "tests/integration/adapter_entry.py": {
+      "choice": "feature",
+      "feature_blob": "dfc838a708557abf7d4972c34fc8737e8a7315a3",
+      "reason": "Preserve cross-layer current-evidence regressions and isolated adapter/companion fixture contracts."
+    },
+    "tests/integration/formalize.e2e.test.mjs": {
+      "choice": "feature",
+      "feature_blob": "01e80f379c6610dfe9aecf8e9126f3f350277065",
+      "reason": "Preserve cross-layer current-evidence regressions and isolated adapter/companion fixture contracts."
+    }
+  }
+}

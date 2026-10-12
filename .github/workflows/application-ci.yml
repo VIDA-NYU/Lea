@@ -1,0 +1,124 @@
+name: Application checks
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: application-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  application:
+    name: application
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.14'
+      - run: npm ci
+      - run: uv sync --frozen --python 3.13 --directory apps/lea-standalone/adapter
+      - name: Merge resolution preview
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/preview-main.py --main-ref origin/main --output validation/merge-preview.json
+      - name: Application and transport tests
+        run: |
+          npm test
+          npm run test:integration
+          npm run site:test
+          npm run typecheck -w apps/lea-standalone
+          npm run build -w apps/lea-standalone
+          npm run site:build
+          npm audit --omit=dev --audit-level=low
+          bash tests/integration/container_supervision.sh
+      - name: Adapter and standalone prover tests
+        run: |
+          mkdir -p validation
+          cd apps/lea-standalone/adapter
+          .venv/bin/python -m pytest -W error::pytest.PytestUnhandledThreadExceptionWarning
+          cd ../../..
+          apps/lea-standalone/adapter/.venv/bin/python scripts/test-prover.py --suite unit --output-dir validation/prover-unit
+      - name: Browser regressions
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: application-validation
+          path: |
+            validation
+            test-results
+          if-no-files-found: ignore
+  lean:
+    name: real-lean
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.14'
+      - run: uv sync --frozen --python 3.13 --directory apps/lea-standalone/adapter
+      - name: Prepare real Lean and SafeVerify
+        run: bash scripts/prepare-ci-lean.sh
+      - name: Real compiler, recovery, concurrency, cascade and kernel checks
+        run: |
+          apps/lea-standalone/adapter/.venv/bin/python scripts/test-prover.py --suite lean --output-dir validation/prover-lean
+          apps/lea-standalone/adapter/.venv/bin/python tests/integration/safeverify_real.py
+          cd apps/lea-standalone/adapter
+          LEA_RUN_REAL_LEAN=1 .venv/bin/python -m pytest tests/test_check_evidence.py tests/test_certification_regressions.py -W error::pytest.PytestUnhandledThreadExceptionWarning
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lean-validation
+          path: validation
+          if-no-files-found: ignore
+  container:
+    name: container-${{ matrix.arch }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Reserve space for the full compiler image
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/checkout@v4
+      - name: Supervision regressions
+        run: python3 tests/integration/container_lifecycle.py
+      - name: Build actual production image without publishing
+        run: docker build --platform linux/${{ matrix.arch }} -t lea-validation:${{ matrix.arch }} -f apps/lea-standalone/Dockerfile .
+      - name: Production entrypoint, both backends, compiler and persistence
+        run: python3 tests/integration/production_container.py --image lea-validation:${{ matrix.arch }} --output validation/container-${{ matrix.arch }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: container-validation-${{ matrix.arch }}
+          path: validation
+          if-no-files-found: ignore
+  merge-gate:
+    name: merge-gate
+    if: always()
+    needs: [application, lean, container]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every application gate
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: python3 -c 'import json,os; assert all(v["result"] == "success" for v in json.loads(os.environ["RESULTS"]).values())'
