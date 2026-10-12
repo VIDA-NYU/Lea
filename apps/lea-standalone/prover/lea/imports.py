@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 IMPORT_COMMAND_RE = re.compile(
-    r"(?m)^[ \t]*(?:(?:public|private|protected|meta)\s+)*import[ \t]+"
+    r"(?m)^[ \t]*(?:(?:public|private|protected|meta)\s+)*import[ \t]+(?:all[ \t]+)?"
     r"(?P<modules>[^\n]+?)[ \t]*$"
 )
 

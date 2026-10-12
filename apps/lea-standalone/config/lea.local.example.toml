@@ -22,3 +22,11 @@ lea_root = "prover"
 # openai_api_key = "..."
 # Any other provider works too, keyed by its LiteLLM env var name:
 # MISTRAL_API_KEY = "..."
+#
+# Portkey AI gateway. Select a gateway model as `portkey/<catalog-name>` — the
+# catalog name is exactly what your gateway expects (typically `@provider-slug/model`):
+#   model = "portkey/@vertexai-jdoe/anthropic.claude-opus-4-8"
+# PORTKEY_BASE_URL is the gateway's /v1 root (a self-hosted gateway such as your
+# institution's); omit it for Portkey's hosted service. The Settings page edits both.
+# PORTKEY_API_KEY = "..."
+# PORTKEY_BASE_URL = "https://your-gateway.example.edu/v1"

@@ -8,6 +8,7 @@ import {
   LEA_MODEL_OPTIONS,
   buildOverleafDocumentUrl,
   buildSettingsResponse,
+  companionListenHost,
   createServer,
   ensureStartupLeaRuntime,
   handleChatInterrupt,
@@ -55,6 +56,12 @@ import {
 import { hashFormalizationInput, hashTargetText } from "../shared/theoremParser.mjs";
 import { buildLeanPaneManifest } from "../shared/leanPaneManifest.mjs";
 import { createEventBus } from "../companion/eventBus.mjs";
+
+test("companion listen host stays loopback-local unless a container overrides it", () => {
+  assert.equal(companionListenHost({}), "127.0.0.1");
+  assert.equal(companionListenHost({ LEA_COMPANION_HOST: "0.0.0.0" }), "0.0.0.0");
+  assert.equal(companionListenHost({ LEA_COMPANION_HOST: "  " }), "127.0.0.1");
+});
 
 test("buildOverleafDocumentUrl builds the canonical public-Overleaf URL", () => {
   assert.equal(
@@ -4741,6 +4748,7 @@ function inferProviderValidationFamily(url) {
   if (text.startsWith("https://api.openai.com/")) return "openai";
   if (text.startsWith("https://generativelanguage.googleapis.com/")) return "google";
   if (text.startsWith("https://api.anthropic.com/")) return "anthropic";
+  if (text.startsWith("https://api.portkey.ai/") || text.startsWith("https://gateway.example.edu/")) return "portkey";
   return "";
 }
 
@@ -6160,7 +6168,8 @@ test("formalize on the /api backend tags the theorem formalized when the run suc
     targetText: "A theorem."
   }, state);
 
-  await waitFor(() => ["formalized", "needs_review", "failed"].includes(state.jobs[result.body.jobId]?.status));
+  // A concurrent compiler/container suite can delay filesystem work on CI.
+  await waitFor(() => ["formalized", "needs_review", "failed"].includes(state.jobs[result.body.jobId]?.status), { timeoutMs: 10000 });
   assert.equal(state.jobs[result.body.jobId]?.status, "formalized", JSON.stringify(state.jobs[result.body.jobId]));
   const job = state.jobs[result.body.jobId];
   assert.equal(job.exitCode, 0);
@@ -7485,4 +7494,59 @@ test("rename snapshot: start/finish events bracket failed renames and clear loca
   assert.equal((await rename).statusCode, 500);
   assert.equal(events.at(-1).phase, "finished");
   assert.equal(state.projectRenames.size, 0);
+});
+
+test("settings verify a Portkey key against the configured gateway", async () => {
+  const leaRepo = await makeLeaRepo();
+  const calls = [];
+  const state = await makeState({
+    leaRepoPath: leaRepo,
+    env: { PORTKEY_BASE_URL: "https://gateway.example.edu/v1/" },
+    fetchImpl: makeProviderValidationFetch(calls)
+  });
+
+  const result = await handleUpdateLeaSettings({
+    leaRepoPath: leaRepo,
+    leaApiBaseUrl: "http://127.0.0.1:8001",
+    leaModel: "portkey/@vertexai-jdoe/anthropic.claude-opus-4-8",
+    leaMaxTurns: 20,
+    leaProviderApiKeys: { portkey: "pk-live" }
+  }, state);
+
+  assert.equal(result.statusCode, 200, JSON.stringify(result.body));
+  assert.equal(result.body.leaProvider, "portkey");
+  assert.equal(result.body.leaProviderKeys.portkey.configured, true);
+  assert.equal(state.env.PORTKEY_API_KEY, "pk-live");
+  // Verified at the gateway's own model listing (trailing slash folded), with the
+  // same auth the prover sends — not at api.portkey.ai.
+  assert.deepEqual(calls.map((call) => call.family), ["portkey"]);
+  assert.equal(calls[0].url, "https://gateway.example.edu/v1/models");
+  assert.equal(calls[0].options.headers["x-portkey-api-key"], "pk-live");
+
+  const envFile = await fs.readFile(state.envPath, "utf8");
+  assert.match(envFile, /PORTKEY_API_KEY=pk-live/);
+  assert.match(envFile, /LEA_MODEL=portkey\/@vertexai-jdoe\/anthropic\.claude-opus-4-8/);
+});
+
+test("settings reject a Portkey key the gateway turns away", async () => {
+  const leaRepo = await makeLeaRepo();
+  const calls = [];
+  const state = await makeState({
+    leaRepoPath: leaRepo,
+    env: {},
+    fetchImpl: makeProviderValidationFetch(calls, { portkey: 401 })
+  });
+
+  const result = await handleUpdateLeaSettings({
+    leaRepoPath: leaRepo,
+    leaApiBaseUrl: "http://127.0.0.1:8001",
+    leaModel: "portkey/@vertexai-jdoe/anthropic.claude-opus-4-8",
+    leaMaxTurns: 20,
+    leaProviderApiKeys: { portkey: "pk-bad" }
+  }, state);
+
+  assert.equal(result.statusCode, 400);
+  assert.equal(result.body.error, "invalid_portkey_key");
+  assert.equal(calls[0].url, "https://api.portkey.ai/v1/models"); // no override → hosted default
+  assert.equal(state.env.PORTKEY_API_KEY, undefined);
 });

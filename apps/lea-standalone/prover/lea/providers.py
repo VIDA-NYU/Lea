@@ -5,6 +5,12 @@ unified event stream (`TextDelta | ToolCall | _ToolMeta | Done`). Messages use
 Lea's neutral format and are converted to OpenAI shape here; LiteLLM translates
 from there to whatever provider the model name selects (`gemini/…`,
 `anthropic/…`, `openai/…`, `openrouter/…`, …). Cost comes from LiteLLM.
+Models behind a Portkey AI gateway (`portkey/…`) are pointed at the gateway:
+Anthropic-family models through its native Messages route, everything else
+through the `openai/` path — see the Portkey section below.
+
+Anthropic-family models (any route) get prompt-cache breakpoints — see
+`_with_cache_breakpoints`.
 """
 
 import json
@@ -21,6 +27,7 @@ from .usage import merge_details, legacy_details
 
 @dataclass
 class Usage:
+    # Inclusive prompt tokens remain separate from the optional cache details.
     input_tokens: int = 0
     output_tokens: int = 0
     usage_details: dict | None = field(default=None, compare=False)
@@ -34,6 +41,14 @@ class Usage:
             details = legacy_details()
         self.usage_details = merge_details(self.usage_details, details)
         self.raw_usages.extend(other.raw_usages)
+
+    @property
+    def cache_read_tokens(self) -> int:
+        return int((self.usage_details or {}).get("cached_input_tokens") or 0)
+
+    @property
+    def cache_write_tokens(self) -> int:
+        return int((self.usage_details or {}).get("cache_write_tokens") or 0)
 
 
 @dataclass
@@ -143,11 +158,230 @@ def _is_openai_gpt_5_6(model: str) -> bool:
     return normalized == "gpt-5.6" or normalized.startswith("gpt-5.6-")
 
 
-def _litellm_model(model: str) -> str:
-    """Make GPT-5.6 provider resolution independent of LiteLLM's remote model map."""
+# --- Portkey AI gateway -------------------------------------------------------
+# A Portkey gateway (hosted, or self-hosted like NYU's) fronts many providers behind
+# ONE OpenAI-compatible endpoint. LiteLLM has no native Portkey provider, so Lea
+# routes these through LiteLLM's `openai/` path with the gateway as `api_base`.
+# Anthropic-family models are the exception: Portkey also serves the Anthropic
+# Messages API natively (`{root}/v1/messages`), and Lea takes that route via
+# LiteLLM's `anthropic/` provider — see `_portkey_anthropic_kwargs` for why.
+#
+# Model IDs: `portkey/<catalog-name>`, where the catalog name is whatever the
+# gateway expects — typically Portkey's model-catalog syntax `@provider-slug/model`
+# (e.g. `portkey/@vertexai-jdoe/anthropic.claude-opus-4-8`). Only the leading
+# `portkey/` is stripped; the rest reaches the gateway verbatim. A bare `@slug/model`
+# (already in gateway syntax) is recognised as Portkey too.
+#
+# Auth/endpoint come from the environment, like every other provider's key:
+#   PORTKEY_API_KEY      required — sent as `x-portkey-api-key` (and as the Bearer
+#                        token, which Portkey's OpenAI-compat mode also accepts)
+#   PORTKEY_BASE_URL     the gateway's `/v1` root; unset → Portkey's hosted service
+#   PORTKEY_VIRTUAL_KEY / PORTKEY_CONFIG / PORTKEY_PROVIDER
+#                        optional routing headers for gateways that need them
+PORTKEY_PREFIX = "portkey/"
+PORTKEY_DEFAULT_BASE_URL = "https://api.portkey.ai/v1"
+_PORTKEY_OPTIONAL_HEADERS = {
+    "PORTKEY_VIRTUAL_KEY": "x-portkey-virtual-key",
+    "PORTKEY_CONFIG": "x-portkey-config",
+    "PORTKEY_PROVIDER": "x-portkey-provider",
+}
+
+
+def is_portkey_model(model: str) -> bool:
+    """Whether ``model`` is served through a Portkey gateway."""
+    return model.startswith(PORTKEY_PREFIX) or model.startswith("@")
+
+
+def portkey_model_name(model: str) -> str:
+    """The model name the gateway expects: the `portkey/` prefix (if any) stripped,
+    everything else untouched — `portkey/@vertexai-x/anthropic.claude-opus-4-8`
+    becomes `@vertexai-x/anthropic.claude-opus-4-8`."""
+    return model[len(PORTKEY_PREFIX):] if model.startswith(PORTKEY_PREFIX) else model
+
+
+def portkey_base_url(env: dict | None = None) -> str:
+    env = os.environ if env is None else env
+    return (env.get("PORTKEY_BASE_URL") or "").strip().rstrip("/") or PORTKEY_DEFAULT_BASE_URL
+
+
+def _portkey_gateway_root(base_url: str) -> str:
+    """The gateway's root, for LiteLLM providers that append their own path.
+
+    `PORTKEY_BASE_URL` conventionally includes the `/v1` (it is the OpenAI-compat
+    root, and the `openai/` path posts to `{base}/chat/completions`), but LiteLLM's
+    `anthropic/` provider appends `/v1/messages` itself — handing it the `/v1` form
+    would post to `/v1/v1/messages`.
+    """
+    root = base_url.rstrip("/")
+    return root[: -len("/v1")] if root.endswith("/v1") else root
+
+
+def _portkey_split_catalog(name: str) -> tuple[str | None, str]:
+    """Split a Portkey model-catalog name `@provider-slug/model` into the slug and
+    the bare model name. A non-catalog name passes through with no slug."""
+    if name.startswith("@") and "/" in name:
+        slug, bare = name.split("/", 1)
+        return slug, bare
+    return None, name
+
+
+def _portkey_api_key() -> str:
+    api_key = os.environ.get("PORTKEY_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "Portkey models need the PORTKEY_API_KEY environment variable "
+            "(add the Portkey key in Settings → API keys)."
+        )
+    return api_key
+
+
+def _portkey_headers(api_key: str, model_kwargs: dict, *defaults: tuple[str, str]) -> dict:
+    """Portkey routing headers: the key, `defaults` (lowest precedence), the optional
+    env-supplied headers, then the caller's `extra_headers`, which win so a run can
+    still override a routing header explicitly."""
+    headers = {"x-portkey-api-key": api_key}
+    headers.update(dict(defaults))
+    for env_name, header in _PORTKEY_OPTIONAL_HEADERS.items():
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            headers[header] = value
+    headers.update(model_kwargs.get("extra_headers") or {})
+    return headers
+
+
+def _portkey_kwargs(model_kwargs: dict) -> dict:
+    """LiteLLM kwargs that point an `openai/` call at the Portkey gateway.
+
+    `strict-open-ai-compliance` asks the gateway to normalise provider-native
+    finish reasons (Anthropic's `tool_use`) to the OpenAI vocabulary; the stream
+    parser tolerates the raw label anyway, but ask for the dialect we parse against.
+    """
+    out = dict(model_kwargs)
+    api_key = _portkey_api_key()
+    out["extra_headers"] = _portkey_headers(
+        api_key, out, ("x-portkey-strict-open-ai-compliance", "true"),
+    )
+    out.setdefault("api_key", api_key)
+    out.setdefault("api_base", portkey_base_url())
+    return out
+
+
+def _portkey_anthropic_kwargs(model: str, model_kwargs: dict) -> dict:
+    """LiteLLM kwargs that point an `anthropic/` call at the Portkey gateway's
+    native Messages route.
+
+    Why not the OpenAI-compatible route like everything else: the gateway's
+    chat-completions translation drops `cache_control` from tool results, so the
+    moving prompt-cache breakpoint (`_with_cache_breakpoints`) — the one that makes
+    a long tool-using conversation cheap — cannot survive it. The native route
+    carries the breakpoints and the cache usage counters verbatim, and needs no
+    finish-reason translation. It is how Claude Code runs through Portkey.
+
+    Auth follows Portkey's documented Anthropic-SDK shape: the Portkey key in
+    `x-portkey-api-key`, the provider slug from the catalog name in
+    `x-portkey-provider`, and the bare model name in the request body.
+    """
+    out = dict(model_kwargs)
+    api_key = _portkey_api_key()
+    slug, _bare = _portkey_split_catalog(portkey_model_name(model))
+    defaults = (("x-portkey-provider", slug),) if slug else ()
+    out["extra_headers"] = _portkey_headers(api_key, out, *defaults)
+    out.setdefault("api_key", api_key)
+    out.setdefault("api_base", _portkey_gateway_root(portkey_base_url()))
+    return out
+
+
+def _portkey_route_missing(exc: Exception) -> bool:
+    """Whether a gateway error means the native Messages route itself is absent
+    (an older gateway build) rather than the request being bad — only then is
+    falling back to the chat-completions dialect the right move."""
+    return getattr(exc, "status_code", None) in (404, 405, 501)
+
+
+def _portkey_cost_candidates(model: str) -> list[str]:
+    """Model names to try in LiteLLM's price map for a gateway model.
+
+    The gateway name carries a provider slug and often a vendor prefix
+    (`@vertexai-x/anthropic.claude-opus-4-8`); the price map knows the model as
+    `claude-opus-4-8`. Try the bare name, then the name after its first `.`.
+    """
+    name = portkey_model_name(model)
+    if name.startswith("@") and "/" in name:
+        name = name.split("/", 1)[1]
+    candidates = [name]
+    if "." in name:
+        candidates.append(name.split(".", 1)[1])
+    return [c for c in candidates if c]
+
+
+def _is_anthropic_family(model: str) -> bool:
+    """Whether the model is a Claude, however it is reached: `anthropic/…`, a bare
+    `claude-…`, Bedrock's `anthropic.claude-…`, Vertex, or a gateway catalog name
+    with the vendor prefix inside it."""
+    return "claude" in model.lower()
+
+
+def _litellm_model(model: str, *, portkey_native: bool = False) -> str:
+    """Make GPT-5.6 provider resolution independent of LiteLLM's remote model map,
+    and send Portkey models down LiteLLM's OpenAI-compatible path — or, for a
+    Claude taking the gateway's native Messages route, the `anthropic/` path with
+    the bare model name (the provider slug travels as a header)."""
+    if is_portkey_model(model):
+        if portkey_native:
+            return f"anthropic/{_portkey_split_catalog(portkey_model_name(model))[1]}"
+        return f"openai/{portkey_model_name(model)}"
     if _is_openai_gpt_5_6(model) and "/" not in model:
         return f"openai/{model}"
     return model
+
+
+_CACHE_BREAKPOINT = {"type": "ephemeral"}
+
+
+def _with_cache_breakpoints(oai_messages: list) -> list:
+    """A copy of the OpenAI-shaped messages with Anthropic prompt-cache breakpoints.
+
+    Anthropic caching is an explicit prefix match (unlike Gemini/OpenAI, which
+    cache server-side with no opt-in): content up to a `cache_control` breakpoint
+    is cached for ~5 minutes and re-served at ~0.1x the input rate, for a one-time
+    ~1.25x write premium. Two breakpoints (the API allows four):
+
+      1. The system prompt. The request renders tools -> system -> messages, so
+         this one breakpoint caches the tool schemas AND the system prompt, both
+         byte-identical across every turn of a run.
+      2. The last block of the final message — the "moving" breakpoint. Each turn
+         re-sends the whole conversation, and last turn's breakpoint is a prefix
+         of this turn's request, so the history is a cache read and only the new
+         suffix is written.
+
+    LiteLLM carries `cache_control` from a system content block, a user content
+    block, and a tool message (message-level) through to the Messages API, and
+    Bedrock/Vertex's equivalents. Prefixes under the model's minimum (~4k tokens
+    on Opus) silently don't cache, so this is safe for tiny conversations too.
+    Messages are rebuilt, never marked in place: `_to_openai_messages` makes fresh
+    dicts each turn, so a marker can't linger on a block that is no longer last.
+    """
+    if not oai_messages:
+        return oai_messages
+    out = [dict(m) for m in oai_messages]
+    system = out[0]
+    if system.get("role") == "system" and isinstance(system.get("content"), str):
+        system["content"] = [
+            {"type": "text", "text": system["content"], "cache_control": _CACHE_BREAKPOINT},
+        ]
+    if len(out) < 2:
+        return out
+    last = out[-1]
+    content = last.get("content")
+    if last.get("role") == "user" and isinstance(content, str):
+        last["content"] = [{"type": "text", "text": content, "cache_control": _CACHE_BREAKPOINT}]
+    elif last.get("role") == "user" and isinstance(content, list) and content:
+        last["content"] = [*content[:-1], {**content[-1], "cache_control": _CACHE_BREAKPOINT}]
+    else:
+        # A tool result (LiteLLM reads its cache_control at message level) or an
+        # assistant turn.
+        last["cache_control"] = _CACHE_BREAKPOINT
+    return out
 
 
 def _gpt_5_6_kwargs(tools: list, model_kwargs: dict) -> dict:
@@ -300,13 +534,24 @@ def _terminal_done(model: str, response: dict, reasoning_items: list) -> Done:
             output_details = raw.get("completion_tokens_details") or raw.get("output_tokens_details")
             if output_details:
                 normalized["completion_tokens_details"] = output_details
-            cost_response = dict(response, model=response_model, usage=normalized)
-            full_response = litellm.ModelResponse(**cost_response)
-            full_response._hidden_params.update(hidden)
-            cost = litellm.completion_cost(completion_response=full_response,
-                                          model=_litellm_model(model))
-            if cost is None or not math.isfinite(cost) or cost < 0:
-                raise ValueError("no valid pricing returned")
+            candidates = ([response.get("model"), *_portkey_cost_candidates(model)]
+                          if is_portkey_model(model) else [response_model])
+            last_error = None
+            for pricing_model in dict.fromkeys(candidate for candidate in candidates if candidate):
+                try:
+                    cost_response = dict(response, model=pricing_model, usage=normalized)
+                    full_response = litellm.ModelResponse(**cost_response)
+                    full_response._hidden_params.update(hidden)
+                    cost = litellm.completion_cost(completion_response=full_response,
+                                                  model=pricing_model)
+                    if cost is None or not math.isfinite(cost) or cost < 0:
+                        raise ValueError("no valid pricing returned")
+                    details["pricing_model"] = pricing_model
+                    break
+                except Exception as error:
+                    last_error = error
+            else:
+                raise last_error or ValueError("no known upstream pricing model")
             basis = "cache_aware_estimate"
         else:
             basis = "unavailable"
@@ -349,17 +594,67 @@ def stream(model: str, system: str, messages: list, tools: list,
         yield the same event types, so the agent loop is identical either way.
     """
     model_kwargs = dict(model_kwargs or {})
+    portkey = is_portkey_model(model)
+    anthropic = _is_anthropic_family(model)
+
+    if portkey and anthropic:
+        # The gateway's native Messages route (prompt caching survives it). If the
+        # gateway predates the route, fall back to its chat-completions dialect —
+        # but only when nothing has been yielded yet: once events are out, a
+        # re-run would duplicate them, and any other error would just recur.
+        native = _build_call(
+            model, _litellm_model(model, portkey_native=True), system, messages, tools,
+            _portkey_anthropic_kwargs(model, model_kwargs), cache_breakpoints=True,
+        )
+        started = False
+        try:
+            for event in _run(model, native, streaming):
+                started = True
+                yield event
+            return
+        except Exception as exc:  # noqa: BLE001 — classified below
+            if started or not _portkey_route_missing(exc):
+                raise
+            print(
+                f"[lea] Portkey gateway has no native Anthropic route ({exc}); falling "
+                "back to its chat-completions dialect (prompt caching unavailable)",
+                file=sys.stderr,
+            )
+
     is_gpt_5_6 = _is_openai_gpt_5_6(model)
     if is_gpt_5_6:
         model_kwargs = _gpt_5_6_kwargs(tools, model_kwargs)
+    if portkey:
+        model_kwargs = _portkey_kwargs(model_kwargs)
+    call = _build_call(
+        model, _litellm_model(model), system, messages, tools, model_kwargs,
+        include_reasoning=is_gpt_5_6,
+        # Through the gateway's chat-completions translation the breakpoints are
+        # dropped from tool results (see _portkey_anthropic_kwargs) — not worth
+        # the list-shaped system message it would cost.
+        cache_breakpoints=anthropic and not portkey,
+    )
+    yield from _run(model, call, streaming)
+
+
+def _build_call(model: str, litellm_model: str, system: str, messages: list, tools: list,
+                model_kwargs: dict, *, include_reasoning: bool = False,
+                cache_breakpoints: bool = False) -> dict:
+    """The `litellm.completion` kwargs for one turn."""
+    oai_messages = _to_openai_messages(system, messages, include_reasoning=include_reasoning)
+    if cache_breakpoints:
+        oai_messages = _with_cache_breakpoints(oai_messages)
     # Merge so an explicit model_kwargs api_key wins over the env-derived one,
     # instead of colliding (both supplying api_key raises "got multiple values").
-    call = dict(
-        model=_litellm_model(model),
-        messages=_to_openai_messages(system, messages, include_reasoning=is_gpt_5_6),
+    return dict(
+        model=litellm_model,
+        messages=oai_messages,
         tools=_to_openai_tools(tools) or None,
         **{**_api_key_kwargs(model), **model_kwargs},
     )
+
+
+def _run(model: str, call: dict, streaming: bool):
     if streaming:
         yield from _stream_streaming(model, call)
     else:

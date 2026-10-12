@@ -219,3 +219,9 @@ def test_changes_during_classification_prevent_terminal_success(workspace, monke
     final = next(event for event in reversed(events) if isinstance(event, Finished))
     assert final.result_kind == 'needs_review'
     assert 'changed' in final.result_detail
+
+
+def test_import_all_resolves_the_module_instead_of_the_modifier():
+    from lea.imports import direct_imports
+    assert direct_imports("import all Init.Data.Array.Basic\npublic import Mathlib.Data.Nat.Prime.Basic\n") == [
+        "Init.Data.Array.Basic", "Mathlib.Data.Nat.Prime.Basic"]

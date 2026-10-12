@@ -29,6 +29,7 @@ from lea.config import LeaConfig  # the one config dataclass (re-exported below)
 
 __all__ = [
     "LeaConfig", "load_config", "configured_provider_keys", "ROOT", "LEGACY_KEY_ENV",
+    "PROVIDER_ENDPOINT_ENV", "configured_provider_endpoints", "provider_endpoint",
     "permission_tier", "PERMISSION_TIERS", "DEFAULT_PERMISSION_TIER", "github_token",
     "write_private_text", "read_config_data",
 ]
@@ -96,6 +97,48 @@ LEGACY_KEY_ENV = {
     "openai_api_key": "OPENAI_API_KEY",
 }
 _ENV_KEY_RE = re.compile(r"[A-Z][A-Z0-9_]*_API_KEY")
+
+# Provider ENDPOINT settings — not secrets, but read from the environment by the
+# prover exactly like the keys are (`lea.providers` reads `PORTKEY_BASE_URL`). They
+# are stored at the TOML root under their env-var name and exported alongside the
+# keys, but reported separately: Settings shows a URL as a URL, never as a masked
+# key. Value = the default the prover applies when nothing is configured.
+PROVIDER_ENDPOINT_ENV: dict[str, str] = {
+    "PORTKEY_BASE_URL": "https://api.portkey.ai/v1",
+}
+
+
+def _provider_endpoints(data: dict) -> dict[str, str]:
+    """The provider endpoint overrides present in the TOML, env-var-keyed."""
+    return {
+        env_name: str(data[env_name]).strip()
+        for env_name in PROVIDER_ENDPOINT_ENV
+        if data.get(env_name) and str(data[env_name]).strip()
+    }
+
+
+def configured_provider_endpoints(path: Path | None = None) -> dict[str, str]:
+    """Endpoint overrides saved in the config file (read-only; no export)."""
+    config_path = path or ROOT / "config" / "lea.local.toml"
+    return _provider_endpoints(read_config_data(config_path))
+
+
+def provider_endpoint(env_name: str, path: Path | None = None) -> dict[str, str | None]:
+    """The EFFECTIVE value of a provider endpoint and where it comes from.
+
+    Same precedence the prover sees: the saved file (which `load_config` exports)
+    beats a shell export, which beats the built-in default. `source` lets Settings
+    show an inherited value as a placeholder rather than as something the user
+    typed and can clear.
+    """
+    default = PROVIDER_ENDPOINT_ENV[env_name]
+    saved = configured_provider_endpoints(path).get(env_name)
+    if saved:
+        return {"value": saved, "source": "config", "default": default}
+    exported = (os.environ.get(env_name) or "").strip()
+    if exported:
+        return {"value": exported, "source": "env", "default": default}
+    return {"value": default, "source": "default", "default": default}
 
 
 def _provider_keys(data: dict) -> dict[str, str]:
@@ -216,8 +259,10 @@ def load_config(path: Path | None = None) -> LeaConfig:
 
     # Secrets go to the process environment (litellm reads them there), not onto
     # the config object — so the config is loggable and the prover, running
-    # in-process, sees the keys the same way the old subprocess did.
-    _export_provider_keys(_provider_keys(data))
+    # in-process, sees the keys the same way the old subprocess did. Endpoint
+    # overrides (a Portkey gateway URL) ride along: the prover reads them from the
+    # same place, and clearing one must retract it from the environment too.
+    _export_provider_keys({**_provider_keys(data), **_provider_endpoints(data)})
 
     return LeaConfig(
         model=data.get("model", "gemini/gemini-3.1-pro-preview"),

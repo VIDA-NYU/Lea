@@ -78,6 +78,11 @@
               Anthropic
               <input id="anthropic-api-key" name="anthropicApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep current key">
             </label>
+            <label>
+              Portkey gateway
+              <input id="portkey-api-key" name="portkeyApiKey" type="password" autocomplete="off" placeholder="Leave blank to keep current key">
+              <small>For models named <code>portkey/@provider-slug/model</code>. Set the gateway URL in the Lea UI's Settings (or <code>PORTKEY_BASE_URL</code> in <code>.env</code>).</small>
+            </label>
           </fieldset>
         </section>
 

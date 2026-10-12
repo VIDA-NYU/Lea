@@ -52,7 +52,8 @@
   const MODEL_FAMILY_LABELS = {
     openai: "OpenAI",
     google: "Google AI",
-    anthropic: "Anthropic"
+    anthropic: "Anthropic",
+    portkey: "Portkey gateway"
   };
   const DEFAULT_MODEL_OPTIONS = [
     { value: DEFAULT_LEA_MODEL, label: DEFAULT_LEA_MODEL, family: "openai" }
@@ -7957,7 +7958,9 @@
         ? "google"
         : env === "ANTHROPIC_API_KEY" || env === "ANTHROPIC_AUTH_TOKEN"
           ? "anthropic"
-          : "";
+          : env === "PORTKEY_API_KEY"
+            ? "portkey"
+            : "";
     return family ? popover.querySelector(`[data-role='provider-key-input'][data-family='${family}']`) : null;
   }
 

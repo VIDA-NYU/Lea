@@ -509,8 +509,8 @@ def test_completion_reuses_only_current_saved_verification(paused, monkeypatch, 
     assert finished["cost_usd"] == pytest.approx(0.01)
 
 
-def install_supported_predecessor(old, cfg, repo):
-    release = json.loads(Path(recovery.__file__).with_name("checkpoint_compatibility.json").read_text())[0]
+def install_supported_predecessor(old, cfg, repo, release_index=0):
+    release = json.loads(Path(recovery.__file__).with_name("checkpoint_compatibility.json").read_text())[release_index]
     current = recovery.manifest(run=old, config=cfg, repo=repo)
     assert current["tool_code_digests"] == release["destination"], "Compatibility must pin the reviewed destination runtime"
     state, manifest, checkpoint_id = recovery.continuation_checkpoint(old["id"])
@@ -520,6 +520,19 @@ def install_supported_predecessor(old, cfg, repo):
     with db.write() as conn:
         conn.execute("update run_checkpoints set payload=?,manifest=? where id=?", (json.dumps(state), json.dumps(manifest), checkpoint_id))
     return state, manifest, checkpoint_id
+
+
+@pytest.mark.parametrize("release_index", [1, 2, 3])
+def test_reviewed_provider_change_requires_a_settled_exact_runtime(paused, release_index):
+    old, cfg, repo, _ = paused
+    state, manifest, _ = install_supported_predecessor(old, cfg, repo, release_index)
+    current = recovery.manifest(run=old, config=cfg, repo=repo)
+    assert recovery.compatible_crash_manifest(manifest, current, state)
+    uncertain = {**state, "stage": "tools"}
+    assert not recovery.compatible_runtime(manifest, current, uncertain)
+    changed = {**current, "tool_code_digests": [*current["tool_code_digests"]]}
+    changed["tool_code_digests"][5] = "an-unreviewed-provider-change"
+    assert not recovery.compatible_runtime(manifest, changed, state)
 
 
 def test_known_settled_predecessor_migrates_without_replay_or_recount(paused, monkeypatch):

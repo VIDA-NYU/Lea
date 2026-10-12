@@ -40,6 +40,18 @@ except Exception as _exc:  # noqa: BLE001
 # Entries in litellm.model_cost that aren't real, selectable chat models.
 _SKIP_VALUES = {"sample_spec"}
 
+# Models behind a Portkey AI gateway. LiteLLM has no Portkey provider — the prover
+# routes `portkey/<catalog-name>` (or a bare `@provider-slug/model` catalog name)
+# through LiteLLM's openai-compatible path at `PORTKEY_BASE_URL` — so the provider
+# has to be recognised HERE, before LiteLLM is asked, or `get_llm_provider` raises
+# and Settings would stop prompting for the key. Mirrors `lea.providers`.
+PORTKEY_PROVIDER = "portkey"
+PORTKEY_PREFIX = "portkey/"
+
+
+def is_portkey_model(model: str) -> bool:
+    return bool(model) and (model.startswith(PORTKEY_PREFIX) or model.startswith("@"))
+
 
 def is_available() -> bool:
     return _AVAILABLE
@@ -91,6 +103,7 @@ def _normalize_provider(provider: str) -> str:
 # here falls back to LiteLLM's near-universal `<PROVIDER>_API_KEY` convention.
 _PROVIDER_KEYS: dict[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
+    PORTKEY_PROVIDER: ("PORTKEY_API_KEY",),
     "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
     "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
     "azure": ("AZURE_API_KEY",),
@@ -107,6 +120,8 @@ _PROVIDER_KEYS: dict[str, tuple[str, ...]] = {
 
 def provider_for(model: str) -> str | None:
     """The model's LiteLLM provider, normalized. Environment-independent."""
+    if is_portkey_model(model):
+        return PORTKEY_PROVIDER
     if not _AVAILABLE or not model:
         return None
     try:
