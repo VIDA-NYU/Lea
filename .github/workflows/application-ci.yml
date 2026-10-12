@@ -29,6 +29,8 @@ jobs:
       - name: Merge resolution preview
         if: github.event_name == 'pull_request'
         run: python3 scripts/preview-main.py --main-ref origin/main --output validation/merge-preview.json
+      - name: Local integration guards and compiler preparation
+        run: python3 -m unittest discover -s tests/local_preparation -v
       - name: Application and transport tests
         run: |
           npm test

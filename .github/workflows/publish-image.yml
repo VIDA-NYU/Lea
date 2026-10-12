@@ -4,18 +4,7 @@
 name: Publish container image
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-    paths:
-      - ".dockerignore"
-      - ".github/workflows/publish-image.yml"
-      - "package.json"
-      - "package-lock.json"
-      - "packages/**"
-      - "scripts/**"
-      - "apps/lea-standalone/**"
-      - "apps/overleaf-extension/**"
+  # Merging and tagging must not publish. Dispatch only for an approved release.
   workflow_dispatch:
 
 permissions:
