@@ -22,13 +22,13 @@
     "typecheck": true,
     "production_frontend_build": true,
     "actionlint": "1.7.12",
-    "syntax_and_whitespace": true
+    "syntax_and_whitespace": true,
+    "production_arm64_image": true,
+    "production_amd64_image": true,
+    "production_runtime_scenarios_per_architecture": 3
   },
   "pending": {
-    "production_arm64_image": "Docker disk exhausted during Mathlib extraction",
-    "production_amd64_image": "not attempted while storage remains exhausted",
-    "production_runtime_harness": "requires actual completed images",
-    "remote_ci": "not dispatched or published"
+    "remote_ci": "not dispatched or published; native AMD64/ARM64 workflow jobs not executed on GitHub"
   },
   "operations": {
     "normal_services_started": false,
@@ -37,5 +37,12 @@
     "published": false,
     "live_database_upgraded": false,
     "other_project_docker_data_removed": false
+  },
+  "production_environment": {
+    "python": "3.13.11",
+    "node": "22.23.3",
+    "lean": "4.29.0",
+    "arm64": "native Linux ARM64",
+    "amd64": "emulated Linux AMD64 on ARM64 Docker Desktop"
   }
 }

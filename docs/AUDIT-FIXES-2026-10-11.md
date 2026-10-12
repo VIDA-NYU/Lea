@@ -109,8 +109,11 @@ reproductions still demonstrate corrected behavior after reconciliation.
 
 See the [main-readiness report](main-readiness/REPORT.md) for final test evidence,
 the reviewed conflict-resolution recipe, dependency disposition and migration
-instructions. Local application and compiler checks pass; the full production
-ARM64/AMD64 image gate remains pending because Docker ran out of space. The work
-remains on `LeaCheckAddition`, services remain stopped, and nothing was merged,
-pushed or published. This addendum does not replace the historical results above
-or claim that the remaining production gate has passed.
+instructions. After the user freed Docker space, both actual production images
+built and passed all runtime scenarios: ARM64 natively and AMD64 under emulation.
+The checks cover legacy-schema history, real Lean/SafeVerify, stale source and
+imports, restart/shutdown and incomplete-cache repair. Native remote CI has not
+run. The work remains on `LeaCheckAddition`, services remain stopped, and nothing
+was merged, pushed or published. This addendum preserves the historical results
+above; the main-readiness report records the completed production gate, fixture
+corrections, cross-platform packaging fix and targeted Docker cleanup.

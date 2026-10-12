@@ -2,9 +2,10 @@
 
 Implementation and local validation remain on `LeaCheckAddition`. The application,
 proof-certification, migration, dependency and supervision checks listed below
-pass. **The production-image gate remains open:** the full ARM64 image build
-exhausted Docker's disk during Mathlib extraction. The full AMD64 image and the
-production-image runtime harness have not run. This is not a merge approval.
+pass. **Both actual production images now build and pass the runtime harness:**
+ARM64 ran natively and AMD64 ran under emulation on this ARM64 host. The local
+production-image gate is complete. Native GitHub CI jobs have not run, and a
+future merge still needs the reviewed resolution recipe and authorization.
 
 No merge, rebase, push, publication, remote CI dispatch or live database upgrade
 was performed. Normal Lea listeners on 8001, 5173 and 31245 remain stopped. Test
@@ -83,9 +84,9 @@ replacement is available.
 
 `lean4monaco` 1.1.14 advertises Node 25 while the established runtime uses Node 22.
 The local typecheck, production build, asset HTTP tests and browser tests pass on
-Node 22.22.3. The full production image's Node 22 runtime still needs the pending
-image gate. The existing approximately 8.3 MB frontend chunk warning remains;
-bundle reduction is outside this plan.
+Node 22.22.3. Both production images also pass with Node 22.23.3, including the
+target-architecture companion binary. The existing approximately 8.3 MB frontend
+chunk warning remains; bundle reduction is outside this plan.
 
 ## Packaging, readiness and CI
 
@@ -93,6 +94,14 @@ The actual Dockerfile uses the monorepo root, frozen Python dependencies, the
 patched frontend assets, one shared Mathlib installation and SafeVerify. It now
 copies the shared `leanCheckRuntime.mjs` helper needed by the companion. The
 small image regression exposed that missing runtime import before it was fixed.
+The frontend stage uses `BUILDPLATFORM` for architecture-independent browser
+assets; the companion takes its Node binary from a separate target-platform
+stage. This fixed a Go/esbuild crash while building the frontend under AMD64
+emulation. This follows Docker's [native build-stage pattern](https://docs.docker.com/build/building/multi-platform/).
+Mathlib cache fetching retries once after transient download failure, then lets
+Lake compile any missing targets. A complete Mathlib build, the no-build
+completeness check and the SafeVerify executable build remain mandatory. The
+AMD64 retry recovered eight SSL-failed downloads and all required builds passed.
 Docker build context exclusions cover private environment files, local settings,
 databases, proof working directories and host dependency/build directories.
 
@@ -133,6 +142,8 @@ integrity checking. It received no manufactured evidence or timeline evidence
 references. Restoring the disposable database returned it to the original
 revision and rows; restoring all 645 files into a disposable directory reproduced
 their hashes. The live database and user proofs were not modified.
+[Verification after the production-image tests](evidence/data-preservation-production.json)
+again confirms the same rows, revision and all 645 file hashes.
 
 Tests additionally cover upgrades from main's `0019_custom_tools`, the feature's
 `0031_usage_details`, an empty database and an already-current database, plus
@@ -161,8 +172,8 @@ For a future authorized rollout:
 ## Validation evidence
 
 Local compiler: Lean 4.29.0 on ARM64 macOS; Python 3.14.4; uv 0.11.14;
-Node 22.22.3. Production Python 3.13 and Linux architecture behavior remain
-subject to the actual-image checks.
+Node 22.22.3. Both Linux production images use Python 3.13.11, Node 22.23.3 and
+Lean 4.29.0; the harness checks the actual Node and Lean binary architectures.
 
 | Gate | Final result |
 | --- | --- |
@@ -178,8 +189,8 @@ subject to the actual-image checks.
 | Original four audit reproductions | [Source overwrite](evidence/source-attribution.json), [dependency edit](evidence/dependency-freshness.json), [classifier](evidence/classifier.json) and [unbound restart](evidence/unbound-restart.json) now show the corrected behavior. |
 | Migration, live preservation and copy restore | Passed as described above. |
 | Workflow/shell/Python syntax and whitespace | Passed. |
-| Actual production ARM64 image | **Pending** after [disk exhaustion](evidence/production-build-blocker.log) during Mathlib cache extraction. |
-| Actual production AMD64 image/runtime | **Pending**, not attempted against the same exhausted Docker disk. |
+| Actual production ARM64 image | [Build](evidence/production-build-arm64.log) and [all three runtime scenarios](evidence/production-arm64.json) passed natively. |
+| Actual production AMD64 image | [Build](evidence/production-build-amd64.log) and [all three runtime scenarios](evidence/production-amd64.json) passed under emulation on ARM64. Native AMD64 CI remains unexecuted. |
 
 The browser fixture uses the real built React application and an isolated adapter
 with a stub prover. It does not establish real Overleaf-account/Chrome-extension
@@ -193,16 +204,18 @@ parsing, companion image layout and test fixture timing. A companion success tes
 uses a 10-second filesystem completion deadline rather than 3 seconds under
 concurrent compiler/container load; its behavior assertions are unchanged.
 
-## Remaining production-image gate
+## Production-image gate completed
 
-The shared Docker VM has a 59 GB filesystem. The ARM64 build exhausted it; after
-removing only this task's identified unshared build cache, roughly 2.6 GB remained.
-Other projects account for substantial volume/image usage. Their data was not
-pruned. The user chose to free Docker space locally. No other project's “unused”
-volume is presumed disposable.
+The shared Docker VM has a 59 GB filesystem. The earlier ARM64 build exhausted
+it, as recorded in the [original blocker log](evidence/production-build-blocker.log).
+The user freed space; the next check showed about 33 GB available, enough to finish
+both full images. Only this task's superseded ARM64 image and exact unshared cache
+descendants were removed during the builds. No other project's Docker data was
+selected for cleanup.
 
-Once space is available, run the actual Dockerfile and owned runtime harness
-sequentially from the monorepo root:
+Both final images were built from the actual Dockerfile. The evidence records
+their image IDs, Dockerfile digest, binary versions, build results and runtime
+assertions. To reproduce from the monorepo root:
 
 ```bash
 docker build --platform linux/arm64 -t lea-readiness:arm64 -f apps/lea-standalone/Dockerfile .
@@ -211,13 +224,40 @@ docker build --platform linux/amd64 -t lea-readiness:amd64 -f apps/lea-standalon
 python3 tests/integration/production_container.py --image lea-readiness:amd64 --output /tmp/lea-production-amd64.json
 ```
 
-The harness checks old-schema upgrade/history, both backends and SPA, real Lean
-rechecks, SafeVerify, source overwrite, broken imported source despite old oleans,
-restart/readiness, shutdown and repair of a deliberately incomplete Mathlib cache.
-It removes only its own containers and temporary mounts. Local AMD64 execution
-on this ARM64 host would be emulated; CI defines native runners for both platforms.
-Record results, fix any failures, rerun affected gates and update this report
-before considering the system ready for a proper merge.
+Each image passed upgrades from `0019_custom_tools` and `0031_usage_details`,
+preserving old successful history while leaving evidence-less certification
+unchecked. Both backends and the SPA worked. Real Lean and SafeVerify passed;
+editing an imported helper invalidated certification and its failed rebuild
+could not fall back to the old olean. An external target overwrite invalidated
+freshness and returned HTTP 409 `proof_revision_changed`, retaining the immutable
+checked source. Saving the replacement created a new revision whose invalid
+proof failed Lean. Restoring and rechecking recovered freshness. Restart changed
+runtime identity and resumed readiness; shutdown exited with code 0. A third
+scenario removed `Mathlib.olean` in a disposable layer and required cache repair
+before admission.
+
+The production harness needed three fixture corrections: the mounted seed script
+explicitly imports the adapter; historical timestamps sort before current edits;
+and host edits are confirmed visible through Docker Desktop's mount before the
+single freshness assertion. The external-edit case now expects the existing
+revision-conflict guard and uses an explicit save to check replacement bytes.
+These changes did not alter application or prover behavior. The affected gates
+were rerun against both final images. The earlier complete application suites
+remain the validation for unchanged application code.
+
+[Final cleanup](evidence/production-cleanup.json) removed both final test images,
+all owned test containers and the 34 new unshared cache entries descending from
+their Mathlib layers. All 22 baseline image inventory records and 216 baseline
+cache IDs remain present; other projects' volumes were not touched. Docker has
+about 25 GiB free. All 62 remaining Docker containers are stopped, the normal Lea
+ports have no listeners, and no owned test or compiler workers remain.
+
+Remote CI was not dispatched and nothing was published. CI defines native AMD64
+and ARM64 runners; local emulation does not establish their results. The reviewed
+[merge preview](evidence/merge-preview-production.json) still resolves 99 conflicts
+with no candidate changes beyond the tested feature tree. A future authorized
+merge must use that recipe, rerun the required CI gates and confirm main has not
+advanced.
 
 ## Local delivery
 
@@ -230,5 +270,7 @@ before considering the system ready for a proper merge.
 - `814d79b`: application/compiler/container publication gates, migration and
   browser checks, backup verification and the pinned merge-resolution recipe.
 
-An additional local commit contains this report and its evidence. No normal
-services were started as part of delivery.
+`b01afb7` recorded the initial readiness report and storage blocker. `8e818d7`
+contains the tested cross-platform packaging and production-harness fixes. A
+further local commit contains both completed image checks and this updated report.
+No normal services were started as part of delivery.

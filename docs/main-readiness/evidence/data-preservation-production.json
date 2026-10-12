@@ -1,0 +1,16 @@
+{
+  "live_database_unchanged": true,
+  "files_unchanged": 645,
+  "backup_files_verified": 645,
+  "restored_files_verified": 645,
+  "counts": {
+    "sessions": 153,
+    "runs": 288,
+    "timeline": 4962,
+    "artifact_blobs": 778
+  },
+  "copy_upgrade": "0032_proof_check_evidence",
+  "unsupported_evidence_backfilled": false,
+  "restore_on_copy": true,
+  "live_revision": "0031_usage_details"
+}
