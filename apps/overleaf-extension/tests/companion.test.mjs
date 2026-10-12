@@ -4372,7 +4372,8 @@ async function makeLeaRepo() {
   await fs.mkdir(path.join(dir, "workspace", "projects"), { recursive: true });
   await fs.mkdir(path.join(dir, "workspace", "proofs"), { recursive: true });
   await fs.writeFile(path.join(dir, "pyproject.toml"), "[project]\nname = \"lea-prover\"\n", "utf8");
-  await fs.writeFile(path.join(dir, "workspace", "lean-toolchain"), "leanprover/lean4:stable\n", "utf8");
+  await fs.copyFile(new URL("../../lea-standalone/prover/workspace/lean-toolchain", import.meta.url),
+    path.join(dir, "workspace", "lean-toolchain"));
   await fs.writeFile(path.join(dir, "workspace", "lakefile.lean"), "import Lake\nopen Lake DSL\n", "utf8");
   return dir;
 }
@@ -5834,7 +5835,11 @@ for (const scenario of [
   const result = await handleFormalize({ overleafProjectId: "project-1", targetKind: scenario.kind,
     targetLabel: "marker", targetText: "Current mathematical source." }, state, { batch: scenario.batch });
   assert.equal(result.statusCode, 200);
-  await waitFor(() => Boolean(state.jobs[result.body.jobId]?.finishedAt));
+  // Finalization writes finishedAt before awaiting its log and terminal status.
+  await waitFor(() => {
+    const current = state.jobs[result.body.jobId];
+    return Boolean(current?.finishedAt) && current.status !== "in_progress";
+  });
   const job = state.jobs[result.body.jobId];
   assert.equal(job.status, scenario.stopReason ? "paused" : "failed");
   assert.equal(job.recordedProofPath, proofPath);

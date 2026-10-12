@@ -21,7 +21,8 @@ async function makeLeaRepo() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lea-repair-repo-"));
   await fs.mkdir(path.join(dir, "workspace", "proofs"), { recursive: true });
   await fs.writeFile(path.join(dir, "pyproject.toml"), "[project]\nname = \"lea-prover\"\n", "utf8");
-  await fs.writeFile(path.join(dir, "workspace", "lean-toolchain"), "leanprover/lean4:stable\n", "utf8");
+  await fs.copyFile(new URL("../../lea-standalone/prover/workspace/lean-toolchain", import.meta.url),
+    path.join(dir, "workspace", "lean-toolchain"));
   await fs.writeFile(path.join(dir, "workspace", "lakefile.lean"), "import Lake\nopen Lake DSL\n", "utf8");
   return dir;
 }

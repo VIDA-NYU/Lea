@@ -14,7 +14,8 @@ async function makeLeaRepo() {
   // rather than actually computing a status, which would mask this file's
   // manifest-level regression test rather than exercise it.
   await fs.writeFile(path.join(dir, "pyproject.toml"), "[project]\nname = \"lea-prover\"\n", "utf8");
-  await fs.writeFile(path.join(dir, "workspace", "lean-toolchain"), "leanprover/lean4:stable\n", "utf8");
+  await fs.copyFile(new URL("../../lea-standalone/prover/workspace/lean-toolchain", import.meta.url),
+    path.join(dir, "workspace", "lean-toolchain"));
   await fs.writeFile(path.join(dir, "workspace", "lakefile.lean"), "import Lake\nopen Lake DSL\n", "utf8");
   return dir;
 }

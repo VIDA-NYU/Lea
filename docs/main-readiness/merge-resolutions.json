@@ -586,8 +586,8 @@
     },
     "apps/overleaf-extension/tests/companion.test.mjs": {
       "choice": "feature",
-      "feature_blob": "cfd3d3d40b61459896b18d2855f50080ccbcb982",
-      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes.",
+      "feature_blob": "3f28a59d51afa7d80c92f09fad12ffdf4cab477c",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes. Test Lean projects copy the repository toolchain instead of resolving floating stable. Retry regressions wait for a terminal status rather than the early completion timestamp.",
       "feature_mode": "100644"
     },
     "apps/overleaf-extension/tests/contentActions.test.mjs": {
@@ -622,8 +622,8 @@
     },
     "apps/overleaf-extension/tests/leanPaneEdit.test.mjs": {
       "choice": "feature",
-      "feature_blob": "752e0fedf72d33549deb8864b317f617f090470c",
-      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes.",
+      "feature_blob": "d27f78dcc4628de2a5b4f10ac36e8a1b734f51e4",
+      "reason": "Retain coordinated target identity, current-status semantics and extension behavior while porting main\u2019s gateway and HTTP changes. Test Lean projects copy the repository toolchain instead of resolving floating stable.",
       "feature_mode": "100644"
     },
     "apps/overleaf-extension/tests/leanPaneView.test.mjs": {

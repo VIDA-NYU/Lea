@@ -11,6 +11,8 @@ elan_bin="${ELAN_HOME:-$HOME/.elan}/bin"
 export PATH="$elan_bin:$PATH"
 if [[ -n "${GITHUB_PATH:-}" ]]; then echo "$elan_bin" >> "$GITHUB_PATH"; fi
 cd apps/lea-standalone/prover/workspace
+export ELAN_TOOLCHAIN="$(cat lean-toolchain)"
+if [[ -n "${GITHUB_ENV:-}" ]]; then echo "ELAN_TOOLCHAIN=$ELAN_TOOLCHAIN" >> "$GITHUB_ENV"; fi
 # Retry one transient cache failure; missing targets still have to compile.
 lake exe cache get || lake exe cache get \
   || echo "[ci] Mathlib cache download incomplete; compiling missing targets."

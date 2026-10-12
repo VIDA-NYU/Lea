@@ -26,6 +26,8 @@ jobs:
           version: '0.11.14'
       - run: npm ci
       - run: uv sync --frozen --python 3.13 --directory apps/lea-standalone/adapter
+      - name: Prepare pinned compiler for application tests
+        run: bash scripts/prepare-ci-lean.sh
       - name: Merge resolution preview
         if: github.event_name == 'pull_request'
         run: python3 scripts/preview-main.py --main-ref origin/main --output validation/merge-preview.json
