@@ -39,8 +39,8 @@
     },
     "apps/lea-standalone/Dockerfile": {
       "choice": "feature",
-      "feature_blob": "97ce90944df780a7a6ff1ce9d1feef1c9b3dba0a",
-      "reason": "Combine main\u2019s two-backend packaging with the canonical bound launcher, readiness, private-data exclusions and reviewed companion imports."
+      "feature_blob": "90747959e3111b5a475870c877efd2b2497990fe",
+      "reason": "Combine main\u2019s two-backend packaging with the canonical bound launcher, readiness, private-data exclusions and reviewed companion imports; build browser assets on BUILDPLATFORM, use target-platform Node, and retry Mathlib downloads before mandatory complete builds."
     },
     "apps/lea-standalone/adapter/app/artifacts.py": {
       "choice": "feature",

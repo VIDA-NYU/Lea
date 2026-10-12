@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,6 +41,22 @@ def ready(base, previous=None, timeout=180):
     raise AssertionError('Container failed readiness')
 
 
+def replace_source(container, home, path, content):
+    """Assert the host edit is visible through Docker's mount before checking it.
+
+    Docker Desktop mount propagation is asynchronous. Waiting for the actual
+    source bytes (never for an API verdict) keeps the freshness assertion strict.
+    """
+    path.write_text(content)
+    mounted = Path('/app/prover/workspace') / path.relative_to(home)
+    docker('exec', container, '/app/adapter/.venv/bin/python', '-c',
+           'import sys,time; from pathlib import Path; '
+           'p=Path(sys.argv[1]); expected=sys.argv[2]; deadline=time.monotonic()+5; '
+           '\nwhile p.read_text()!=expected and time.monotonic()<deadline: time.sleep(.05)'
+           '\nassert p.read_text()==expected, "Host edit did not reach the mounted source"',
+           str(mounted), content)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--image', required=True)
@@ -47,7 +64,20 @@ def main():
     args = parser.parse_args()
     results = []
     containers = []
+    runtime = None
     try:
+        architecture = docker('image', 'inspect', args.image, '--format', '{{.Architecture}}')
+        node = json.loads(docker('run', '--rm', '--entrypoint', '/usr/local/bin/node',
+            args.image, '--print', 'JSON.stringify({architecture:process.arch,version:process.version})'))
+        assert node['architecture'] == {'arm64':'arm64', 'amd64':'x64'}[architecture], node
+        lean = docker('run', '--rm', '--workdir', '/app/prover/workspace',
+            '--entrypoint', '/root/.elan/bin/lake', args.image, 'env', 'lean', '--version')
+        assert '4.29.0' in lean and {'arm64':'aarch64', 'amd64':'x86_64'}[architecture] in lean, lean
+        python = docker('run', '--rm', '--entrypoint', '/app/adapter/.venv/bin/python',
+            args.image, '-c', 'import sys; print(sys.version.split()[0])')
+        assert python.startswith('3.13.'), python
+        runtime = {'image_architecture':architecture, 'node':node, 'lean':lean, 'python':python}
+        print(json.dumps(runtime), flush=True)
         with tempfile.TemporaryDirectory(prefix='lea-production-container-') as tmp:
             for revision in ('0019_custom_tools', '0031_usage_details'):
                 home = Path(tmp) / revision
@@ -80,19 +110,32 @@ def main():
                 assert verified['status'] == 'ok' and verified['current'] is True, verified
                 helper = home / 'proofs/Lea/Readiness/Helper.lean'
                 original = helper.read_text()
-                helper.write_text(original.replace('by trivial','by bad_tactic'))
-                assert request(base,'/api/sessions/s')['code_steps'][-1]['check_current'] is False
+                replace_source(container, home, helper, original.replace('by trivial','by bad_tactic'))
+                stale = request(base,'/api/sessions/s')['code_steps'][-1]
+                assert stale['check_current'] is False, stale
                 broken = request(base,'/api/sessions/s/lean-check',{'path':'Proof.lean'})
                 assert broken['status'] == 'error', broken
-                helper.write_text(original)
+                replace_source(container, home, helper, original)
                 assert request(base,'/api/sessions/s/lean-check',{'path':'Proof.lean'})['status'] == 'ok'
                 assert request(base,'/api/sessions/s')['code_steps'][-1]['check_current'] is True
                 proof = home / 'proofs/Lea/Readiness/Proof.lean'
                 checked_source = proof.read_text()
-                proof.write_text('theorem overwritten : False := by trivial\n')
+                invalid_source = 'theorem overwritten : False := by trivial\n'
+                replace_source(container, home, proof, invalid_source)
                 assert request(base,'/api/sessions/s')['code_steps'][-1]['check_current'] is False
+                try:
+                    request(base,'/api/sessions/s/lean-check',{'path':'Proof.lean'})
+                except HTTPError as exc:
+                    assert exc.code == 409
+                    assert json.load(exc)['detail']['code'] == 'proof_revision_changed'
+                else:
+                    raise AssertionError('External overwrite bypassed the revision guard')
+                assert request(base,'/api/sessions/s')['code_steps'][-1]['code'] == checked_source
+                # Save the explicit replacement as its own immutable revision,
+                # then require a real compiler failure rather than old success.
+                request(base,'/api/sessions/s/file',{'path':'Proof.lean','content':invalid_source})
                 assert request(base,'/api/sessions/s/lean-check',{'path':'Proof.lean'})['status'] == 'error'
-                proof.write_text(checked_source)
+                request(base,'/api/sessions/s/file',{'path':'Proof.lean','content':checked_source})
                 assert request(base,'/api/sessions/s/lean-check',{'path':'Proof.lean'})['status'] == 'ok'
                 assert request(base,'/api/sessions/s')['code_steps'][-1]['check_current'] is True
                 request(base,'/api/runtime/restart',{})
@@ -102,7 +145,8 @@ def main():
                 request(base,'/api/runtime/restart',{'shutdown':True})
                 assert docker('wait',container) == '0'
                 results.append({'from_revision':revision, 'both_backends':True, 'real_compiler':True,
-                    'safe_verify':True,'source_overwrite_invalidates':True,'dependency_rebuild_failure':True,'history_preserved':True,
+                    'safe_verify':True,'source_overwrite_invalidates':True,'external_source_conflict_http_status':409,
+                    'saved_invalid_revision_fails_compiler':True,'dependency_rebuild_failure':True,'history_preserved':True,
                     'restart_ready':second['runtime_id'] != first['runtime_id'], 'shutdown_exit_code':0})
             # Break one broad Mathlib artifact in a disposable container layer.
             # Startup must repair it before either backend starts accepting work.
@@ -125,7 +169,8 @@ def main():
         for container in containers:
             docker('rm','-f',container)
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps({'image':args.image,'completed_scenarios':results},indent=2)+'\n')
+        args.output.write_text(json.dumps({'image':args.image,'runtime':runtime,
+                                          'completed_scenarios':results},indent=2)+'\n')
     print(json.dumps(results))
 
 
