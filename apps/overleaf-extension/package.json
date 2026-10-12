@@ -15,7 +15,7 @@
     "test": "npm run check:katex-assets && node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "katex": "^0.17.0"
+    "katex": "0.18.2"
   },
   "engines": {
     "node": ">=20"

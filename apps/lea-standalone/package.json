@@ -58,7 +58,7 @@
     "date-fns": "3.6.0",
     "embla-carousel-react": "8.6.0",
     "input-otp": "1.4.2",
-    "katex": "^0.17.0",
+    "katex": "0.18.2",
     "lean4monaco": "^1.1.14",
     "lucide-react": "0.487.0",
     "motion": "12.23.24",
@@ -70,7 +70,6 @@
     "react-popper": "2.3.0",
     "react-resizable-panels": "2.1.7",
     "react-responsive-masonry": "2.7.1",
-    "react-router": "7.13.0",
     "react-slick": "0.31.0",
     "recharts": "2.15.2",
     "shiki": "^4.3.0",
@@ -89,9 +88,8 @@
     "memfs": "^4.51.1",
     "tailwindcss": "4.1.12",
     "typescript": "^5.9.3",
-    "vite": "6.3.5",
-    "vite-plugin-node-polyfills": "^0.24.0",
-    "vite-plugin-static-copy": "^3.1.4"
+    "vite": "6.4.4",
+    "vite-plugin-node-polyfills": "^0.24.0"
   },
   "peerDependencies": {
     "react": "18.3.1",
@@ -107,7 +105,7 @@
   },
   "pnpm": {
     "overrides": {
-      "vite": "6.3.5"
+      "vite": "6.4.4"
     }
   }
 }
