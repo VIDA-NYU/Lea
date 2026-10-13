@@ -1,19 +1,22 @@
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import http from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { createProcessSupervisor } from "../../../scripts/process-supervisor.mjs";
 
 // Dev orchestration. The prover is no longer a separate process — the adapter
 // imports it as a library and drives it in-process (architecture D1/D20), and it
-// exports its own provider keys from config (D1·cfg). So dev runs just two
-// processes: the FastAPI adapter (:8001) and the Vite web dev server (:5173).
-const root = process.cwd();
+// exports its own provider keys from config (D1·cfg). One owner runs the adapter
+// (:8001), Vite (:5173), and optionally the Overleaf companion (:31245).
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // In the monorepo, npm hoists workspace deps to the repo-root node_modules, so
 // this app may have no local node_modules. Resolve hoisted tools from either
 // place (local checkout first, then the monorepo root).
 const MONOREPO_ROOT = path.resolve(root, "..", "..");
-const children = [];
+const supervisor = createProcessSupervisor();
+const withOverleaf = process.argv.includes("--overleaf");
+const adapterOnly = process.argv.includes("--adapter-only");
 
 function resolveHoisted(...segments) {
   const local = path.join(root, "node_modules", ...segments);
@@ -22,8 +25,7 @@ function resolveHoisted(...segments) {
 }
 
 function fail(message) {
-  console.error(`\n[dev] ${message}`);
-  process.exit(1);
+  throw new Error(message);
 }
 
 function ensure(pathname, message) {
@@ -32,27 +34,24 @@ function ensure(pathname, message) {
   }
 }
 
-function waitFor(url, label, timeoutMs = 20000) {
+async function waitFor(url, label, timeoutMs = 20000) {
   const started = Date.now();
-  return new Promise((resolve, reject) => {
-    const tick = () => {
-      const request = http.get(url, (response) => {
-        response.resume();
-        resolve();
+  while (!supervisor.stopping) {
+    try {
+      const response = await fetch(url, {
+        signal: AbortSignal.any([supervisor.signal, AbortSignal.timeout(1000)]),
       });
-      request.setTimeout(1000, () => {
-        request.destroy();
-      });
-      request.on("error", () => {
-        if (Date.now() - started > timeoutMs) {
-          reject(new Error(`${label} did not become ready at ${url}`));
-          return;
-        }
-        setTimeout(tick, 400);
-      });
-    };
-    tick();
-  });
+      await response.body?.cancel();
+      if (response.ok) return;
+    } catch (error) {
+      if (supervisor.stopping) throw error;
+    }
+    if (Date.now() - started > timeoutMs) {
+      fail(`${label} did not become ready at ${url}`);
+    }
+    await delay(400, undefined, { signal: supervisor.signal });
+  }
+  supervisor.signal.throwIfAborted();
 }
 
 function portOpen(port, host = "127.0.0.1") {
@@ -78,71 +77,54 @@ async function ensurePortAvailable(port, label) {
 }
 
 function start(label, command, args, options = {}) {
-  const child = spawn(command, args, {
+  const child = supervisor.spawn(label, command, args, {
     cwd: root,
     stdio: ["ignore", "pipe", "pipe"],
     env: process.env,
     ...options,
   });
-  children.push(child);
-
   child.stdout.on("data", (chunk) => process.stdout.write(`[${label}] ${chunk}`));
   child.stderr.on("data", (chunk) => process.stderr.write(`[${label}] ${chunk}`));
-  child.on("exit", (code) => {
-    if (code !== 0 && !shuttingDown) {
-      console.error(`[dev] ${label} exited with ${code}`);
-      shutdown(1);
-    }
-  });
   return child;
 }
 
-let shuttingDown = false;
-function shutdown(code = 0) {
-  shuttingDown = true;
-  for (const child of children) {
-    child.kill("SIGINT");
-  }
-  setTimeout(() => process.exit(code), 200);
-}
-
-process.on("SIGINT", () => shutdown());
-process.on("SIGTERM", () => shutdown());
-
-if (!existsSync(path.join(root, "node_modules")) && !existsSync(path.join(MONOREPO_ROOT, "node_modules"))) {
-  fail("node_modules is missing. Run npm install from the monorepo root.");
-}
-ensure("config/lea.local.toml", "config/lea.local.toml is missing. Copy config/lea.local.example.toml.");
-ensure("adapter/.venv/bin/python", "adapter virtualenv is missing. Run npm run setup:api.");
-ensure("prover/pyproject.toml", "prover/ is missing — this is a broken checkout.");
-
-const nodeMajor = Number(process.versions.node.split(".")[0]);
-if (nodeMajor !== 22 && nodeMajor !== 20) {
-  console.warn(`[dev] Node ${process.versions.node} detected. Node 22 LTS is recommended.`);
-}
-
-// The adapter drives the prover in-process; it reads config/lea.local.toml and
-// exports provider keys to its own environment (D1·cfg), so there is nothing to
-// inject here.
-await ensurePortAvailable(8001, "UI adapter API");
-start("adapter", "./.venv/bin/python", ["run_api.py"], { cwd: path.join(root, "adapter") });
-
 try {
+  if (!adapterOnly && !existsSync(path.join(root, "node_modules")) && !existsSync(path.join(MONOREPO_ROOT, "node_modules"))) {
+    fail("node_modules is missing. Run npm install from the monorepo root.");
+  }
+  if (!adapterOnly) ensure("config/lea.local.toml", "config/lea.local.toml is missing. Copy config/lea.local.example.toml.");
+  ensure("adapter/.venv/bin/python", "adapter virtualenv is missing. Run npm run setup:api.");
+  ensure("prover/pyproject.toml", "prover/ is missing — this is a broken checkout.");
+
+  const nodeMajor = Number(process.versions.node.split(".")[0]);
+  if (nodeMajor !== 22 && nodeMajor !== 20) {
+    console.warn(`[dev] Node ${process.versions.node} detected. Node 22 LTS is recommended.`);
+  }
+
+  // The adapter reads the shared configuration and drives the prover in-process.
+  await ensurePortAvailable(8001, "UI adapter API");
+  if (!adapterOnly) await ensurePortAvailable(5173, "frontend");
+  if (withOverleaf) await ensurePortAvailable(31245, "Overleaf companion");
+  start("adapter", "./.venv/bin/python", ["run_api.py"], { cwd: path.join(root, "adapter") });
+
   await waitFor("http://127.0.0.1:8001/api/health", "UI adapter API");
   console.log("[dev] UI adapter API ready at http://127.0.0.1:8001");
-} catch (error) {
-  console.error(`[dev] ${error.message}`);
-  shutdown(1);
-}
 
-await ensurePortAvailable(5173, "frontend");
-start("web", resolveHoisted(".bin", "vite"), ["--host", "0.0.0.0", "--strictPort"]);
+  if (!adapterOnly) start("web", resolveHoisted(".bin", "vite"), ["--host", "0.0.0.0", "--strictPort"]);
+  if (withOverleaf) {
+    start("companion", process.execPath, ["companion/server.mjs"], {
+      cwd: path.join(MONOREPO_ROOT, "apps/overleaf-extension"),
+    });
+  }
 
-try {
-  await waitFor("http://127.0.0.1:5173", "frontend");
-  console.log("[dev] Frontend ready at http://localhost:5173");
-  console.log("[dev] Press Ctrl+C to stop both servers.");
+  if (!adapterOnly) {
+    await waitFor("http://127.0.0.1:5173", "frontend");
+    console.log("[dev] Frontend ready at http://localhost:5173");
+  }
+  console.log("[dev] Press Ctrl+C to stop the stack; press it again to force quit.");
 } catch (error) {
-  console.error(`[dev] ${error.message}`);
-  shutdown(1);
+  if (!supervisor.stopping) {
+    console.error(`[dev] ${error.message}`);
+    supervisor.stop(1);
+  }
 }

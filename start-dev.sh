@@ -13,7 +13,7 @@
 #
 # --keep-data (-k) is accepted for backward compatibility; it is now the default.
 #
-# Stop everything with Ctrl+C.
+# Stop everything with Ctrl+C; press it again to force quit.
 
 set -euo pipefail
 
@@ -50,38 +50,7 @@ else
   echo "[start] Keeping previous session data (pass --fresh to start from a clean slate)."
 fi
 
-pids=()
-cleaned_up=0
-cleanup() {
-  [[ "$cleaned_up" -eq 1 ]] && return
-  cleaned_up=1
-  echo
-  echo "[start] Shutting down..."
-  for pid in "${pids[@]}"; do
-    kill "$pid" 2>/dev/null || true
-  done
-  wait 2>/dev/null || true
-}
-trap cleanup INT TERM
-
-echo "[start] Starting UI (adapter :8001 + frontend :5173)..."
-npm run dev:ui &
-pids+=($!)
-
-echo "[start] Starting Overleaf companion (:31245)..."
-npm run dev:overleaf &
-pids+=($!)
-
-echo "[start] All processes launched. Press Ctrl+C to stop."
-
-# If any child exits, tear the rest down too. (Portable poll — avoids `wait -n`,
-# which needs bash 4+, while macOS still ships bash 3.2.)
-while :; do
-  for pid in "${pids[@]}"; do
-    if ! kill -0 "$pid" 2>/dev/null; then
-      cleanup
-      exit 0
-    fi
-  done
-  sleep 1
-done
+echo "[start] Starting adapter, frontend, and Overleaf companion."
+# One owner launches the actual services and reaps their process groups. Using
+# exec also delivers both Ctrl+C presses directly to that owner.
+exec node apps/lea-standalone/scripts/dev.mjs --overleaf

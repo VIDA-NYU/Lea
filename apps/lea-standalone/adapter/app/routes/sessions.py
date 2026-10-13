@@ -17,7 +17,7 @@ import logging
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -97,7 +97,7 @@ _SESSIONS_DIGEST_EVERY = 30
 
 
 @router.get("/api/sessions/events")
-async def session_list_events() -> StreamingResponse:
+async def session_list_events(request: Request) -> StreamingResponse:
     """SSE feed that fires `sessions_changed` whenever the session list changes —
     a session is created/touched or a run enters/leaves the active set. The UI
     subscribes once and re-fetches `/api/sessions` on each event, so a run started
@@ -116,6 +116,8 @@ async def session_list_events() -> StreamingResponse:
         last_token: int | None = None
         ticks_since_digest = 0
         for _ in range(_SESSIONS_MAX_TICKS):
+            if getattr(request.app.state, "shutting_down", False) or await request.is_disconnected():
+                return
             # The in-memory change token first (AUDIT-2026-07-24 P4). This loop ran a
             # real query every second, per connected client, for up to three hours,
             # against the single-writer database the runs are writing to. Every write

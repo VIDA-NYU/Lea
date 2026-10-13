@@ -24,5 +24,4 @@ if curl -fsS http://127.0.0.1:8001/api/health >/dev/null 2>&1; then
 fi
 
 echo "Starting adapter on http://127.0.0.1:8001 ... (Ctrl+C to stop)"
-cd adapter
-exec ./.venv/bin/python run_api.py
+exec node scripts/dev.mjs --adapter-only

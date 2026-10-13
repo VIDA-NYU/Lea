@@ -16,7 +16,7 @@ import asyncio
 import shutil
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from lea.interface import CheckResult, VerifyResult
 
 from app import db, store
@@ -405,7 +405,11 @@ def test_session_list_events_emits_initial_sessions_changed(tmp_path, monkeypatc
     db.init_db()
 
     async def first_frame():
-        response = await sessions_route.session_list_events()
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        request = Request({"type": "http", "app": FastAPI()}, receive=receive)
+        response = await sessions_route.session_list_events(request)
         return await response.body_iterator.__anext__()
 
     first = asyncio.run(first_frame())
