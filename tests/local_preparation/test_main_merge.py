@@ -150,6 +150,20 @@ class MainIntegrationTests(unittest.TestCase):
         self.assertFalse(prepare_integration(self.repository, self.manifest, approved)['applied'])
         self.assert_rejected_without_mutation(approved, 'already integrated')
 
+    def test_integrated_candidate_can_change_or_untrack_historical_resolutions(self):
+        prepare_integration(self.repository, self.manifest, self.approved(), apply=True)
+        self.git('commit', '-q', '-m', 'fixture integration')
+        (self.root / 'conflict.txt').write_text('new feature work after integration\n')
+        (self.root / '.gitignore').write_text('private-data/\nhistory.md\n')
+        self.git('rm', '--cached', '--', 'history.md')
+        self.commit('update feature and untrack agent documentation')
+        before = self.snapshot()
+        result = self.approved()
+        self.assertEqual(result['resolution_paths'], [])
+        self.assertEqual(result['resolved_tree'], self.git('rev-parse', 'HEAD^{tree}'))
+        self.assertEqual(self.snapshot(), before)
+        self.assertTrue((self.root / 'history.md').exists())
+
     def test_ignored_local_file_cannot_be_overwritten_by_main(self):
         self.git('checkout', '-q', 'main')
         (self.root / 'private-data/proof.lean').write_text('new main file\n')

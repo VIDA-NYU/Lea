@@ -4,7 +4,9 @@ Each container and mount belongs to this test. There are no model calls, fixed
 host ports, production-volume writes, registry writes, or Docker-wide cleanup.
 """
 import argparse
+from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -42,19 +44,37 @@ def ready(base, previous=None, timeout=180):
 
 
 def replace_source(container, home, path, content):
-    """Assert the host edit is visible through Docker's mount before checking it.
-
-    Docker Desktop mount propagation is asynchronous. Waiting for the actual
-    source bytes (never for an API verdict) keeps the freshness assertion strict.
-    """
-    path.write_text(content)
+    """Edit outside the API, using the owner of Linux bind-mounted source files."""
     mounted = Path('/app/prover/workspace') / path.relative_to(home)
     docker('exec', container, '/app/adapter/.venv/bin/python', '-c',
-           'import sys,time; from pathlib import Path; '
-           'p=Path(sys.argv[1]); expected=sys.argv[2]; deadline=time.monotonic()+5; '
-           '\nwhile p.read_text()!=expected and time.monotonic()<deadline: time.sleep(.05)'
-           '\nassert p.read_text()==expected, "Host edit did not reach the mounted source"',
+           'import sys; from pathlib import Path; '
+           'p=Path(sys.argv[1]); expected=sys.argv[2]; p.write_text(expected); '
+           'assert p.read_text()==expected, "External edit did not reach the source"',
            str(mounted), content)
+
+
+def restore_fixture_ownership(image, home):
+    """Keep Docker's root-owned fixture files editable by the test runner."""
+    docker('run', '--rm', '--user', '0:0', '-v', f'{home}:/validation-fixture',
+           '--entrypoint', 'chown', image, '-R', f'{os.getuid()}:{os.getgid()}',
+           '/validation-fixture')
+
+
+@contextmanager
+def production_fixture(image):
+    containers = []
+    with tempfile.TemporaryDirectory(prefix='lea-production-container-') as tmp:
+        try:
+            yield Path(tmp), containers
+        except BaseException:
+            for container in containers:
+                print(docker('logs', container))
+            raise
+        finally:
+            # Stop all writers before restoring ownership for host-side cleanup.
+            for container in containers:
+                docker('rm', '-f', container)
+            restore_fixture_ownership(image, Path(tmp))
 
 
 def main():
@@ -63,7 +83,6 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     results = []
-    containers = []
     runtime = None
     try:
         architecture = docker('image', 'inspect', args.image, '--format', '{{.Architecture}}')
@@ -78,7 +97,7 @@ def main():
         assert python.startswith('3.13.'), python
         runtime = {'image_architecture':architecture, 'node':node, 'lean':lean, 'python':python}
         print(json.dumps(runtime), flush=True)
-        with tempfile.TemporaryDirectory(prefix='lea-production-container-') as tmp:
+        with production_fixture(args.image) as (tmp, containers):
             for revision in ('0019_custom_tools', '0031_usage_details'):
                 home = Path(tmp) / revision
                 home.mkdir()
@@ -161,13 +180,7 @@ def main():
             request(base,'/api/runtime/restart',{'shutdown':True})
             assert docker('wait',broken) == '0'
             results.append({'partial_mathlib_cache_repaired_before_admission':True})
-    except BaseException:
-        for container in containers:
-            print(docker('logs',container))
-        raise
     finally:
-        for container in containers:
-            docker('rm','-f',container)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps({'image':args.image,'runtime':runtime,
                                           'completed_scenarios':results},indent=2)+'\n')

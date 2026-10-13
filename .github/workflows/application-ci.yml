@@ -109,7 +109,9 @@ jobs:
       - name: Build actual production image without publishing
         run: docker build --platform linux/${{ matrix.arch }} -t lea-validation:${{ matrix.arch }} -f apps/lea-standalone/Dockerfile .
       - name: Production entrypoint, both backends, compiler and persistence
-        run: python3 tests/integration/production_container.py --image lea-validation:${{ matrix.arch }} --output validation/container-${{ matrix.arch }}.json
+        run: |
+          python3 tests/integration/container_fixture_permissions.py --image lea-validation:${{ matrix.arch }}
+          python3 tests/integration/production_container.py --image lea-validation:${{ matrix.arch }} --output validation/container-${{ matrix.arch }}.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

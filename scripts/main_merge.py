@@ -180,7 +180,10 @@ def preview(repository, manifest_path, main_ref='vida/main', record=False):
         unknown = required - manifest['resolutions'].keys()
         if unknown:
             raise MergePreparationError('Unreviewed conflicts: ' + ', '.join(sorted(unknown)))
-        for path, rule in manifest['resolutions'].items():
+        # Historical resolutions stop pinning feature bytes once main is
+        # integrated. Only paths this merge would change need those choices.
+        for path in sorted(required):
+            rule = manifest['resolutions'][path]
             entry = repository.entry(source_tree, path, env=env)
             if rule['feature_blob'] != (entry['blob'] if entry else None):
                 raise MergePreparationError('Resolution bytes changed since review: ' + path)
