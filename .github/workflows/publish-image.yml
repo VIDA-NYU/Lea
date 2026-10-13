@@ -4,23 +4,11 @@
 name: Publish container image
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
-    paths:
-      - ".dockerignore"
-      - ".github/workflows/publish-image.yml"
-      - "package.json"
-      - "package-lock.json"
-      - "packages/**"
-      - "scripts/**"
-      - "apps/lea-standalone/**"
-      - "apps/overleaf-extension/**"
+  # Merging and tagging must not publish. Dispatch only for an approved release.
   workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: publish-image-${{ github.ref }}
@@ -30,7 +18,16 @@ env:
   IMAGE: ghcr.io/vida-nyu/leaui
 
 jobs:
+  validation:
+    uses: ./.github/workflows/application-ci.yml
+    permissions:
+      contents: read
+
   build:
+    needs: validation
+    permissions:
+      contents: read
+      packages: write
     timeout-minutes: 180
     strategy:
       fail-fast: true
@@ -86,6 +83,9 @@ jobs:
           retention-days: 1
 
   merge:
+    permissions:
+      contents: read
+      packages: write
     timeout-minutes: 30
     runs-on: ubuntu-latest
     needs: build

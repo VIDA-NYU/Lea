@@ -1,0 +1,95 @@
+# Lea Standalone — System Architecture (classical view)
+# Render:  d2 --layout dagre --theme 1 --pad 40 architecture.d2 architecture-figure-d2.svg
+# Source of truth for the D2 figure; arrows are auto-routed (no manual coordinates).
+# Layout note: dagre + `direction: down` gives the compact ~square box layout (elk/right sprawls horizontally).
+
+direction: down
+
+# ===================== EXTERNAL (left) =====================
+user: "Users\n(mathematician)" {
+  shape: person
+  style: { fill: "#eef0f2"; stroke: "#5f6b7a"; font-color: "#3a3f47" }
+}
+
+ui: "Web UI\nReact + Vite · :5173" {
+  shape: rectangle
+  style: { fill: "#fbeee9"; stroke: "#c96442"; font-color: "#7a3320"; border-radius: 10 }
+}
+
+# ===================== EXTERNAL (right) =====================
+providers: "Model providers\nGemini · Anthropic · OpenAI\n(external cloud)" {
+  shape: cloud
+  style: { fill: "#e3f1ee"; stroke: "#2f8f83"; font-color: "#1f5c54" }
+}
+
+# ===================== THE LOCAL PROCESS =====================
+process: "single OS process · no internal HTTP boundary" {
+  label.near: bottom-left
+  style: { fill: "#fbfcfd"; stroke: "#9aa3ad"; font-color: "#5a554d"; stroke-width: 2 }
+
+  adapter: "Adapter API\nFastAPI" {
+    style: { fill: "#e8eef6"; stroke: "#4a6fa5"; font-color: "#26415f"; border-radius: 10 }
+  }
+  bridge: "Bridge\nprover seam · SSE map" {
+    style: { fill: "#dde6f1"; stroke: "#3d5d8a"; font-color: "#21344e"; border-radius: 10 }
+  }
+
+  prover: "Vendored prover · in-process library (prover/lea)" {
+    style: { fill: "#faf7fc"; stroke: "#7a5a9a"; font-color: "#5a3f73"; stroke-dash: 4 }
+    agent: "Agent loop\n6 tools" {
+      style: { fill: "#efe7f4"; stroke: "#7a5a9a"; font-color: "#4a2f63"; border-radius: 10 }
+    }
+    lsp: "LSP daemon\nlean_check" {
+      style: { fill: "#e6f1e9"; stroke: "#4f8a5b"; font-color: "#2f5c3a"; border-radius: 10 }
+    }
+    verify: "SafeVerify\nverify · kernel replay" {
+      style: { fill: "#e6f1e9"; stroke: "#4f8a5b"; font-color: "#2f5c3a"; border-radius: 10 }
+    }
+    search: "Mathlib search\nsearch_mathlib" {
+      style: { fill: "#e6f1e9"; stroke: "#4f8a5b"; font-color: "#2f5c3a"; border-radius: 10 }
+    }
+  }
+
+  resources: "Resources (local)" {
+    style: { fill: "#fdfaf3"; stroke: "#b8842a"; font-color: "#7a5618"; stroke-dash: 4 }
+    lean: "Lean + Mathlib\nLake workspace" {
+      style: { fill: "#f6ecd6"; stroke: "#b8842a"; font-color: "#6b4d16"; border-radius: 10 }
+    }
+    catalog: "Model catalog\nmodels.json" {
+      style: { fill: "#f6ecd6"; stroke: "#a06a2a"; font-color: "#6b4516"; border-radius: 10 }
+    }
+  }
+
+  persistence: "Persistence · source of truth" {
+    style: { fill: "#f6f7f9"; stroke: "#5f6b7a"; font-color: "#3a424c"; stroke-dash: 4 }
+    git: "Git store\nproof content" {
+      style: { fill: "#e7eaee"; stroke: "#5f6b7a"; font-color: "#333a42"; border-radius: 10 }
+    }
+    sqlite: "SQLite index\nsessions · runs · steps" {
+      style: { fill: "#e7eaee"; stroke: "#5f6b7a"; font-color: "#333a42"; border-radius: 10 }
+    }
+  }
+}
+
+# ===================== EDGES (auto-routed) =====================
+user -> ui: uses
+ui -> process.adapter: "HTTPS · REST /api/*"
+process.adapter -> ui: "SSE event stream" { style: { stroke: "#4f8a5b"; font-color: "#3f7a52" } }
+
+process.adapter -> process.bridge: drive run
+process.bridge -> process.prover.agent: "run_events()  — in-process (no HTTP)" { style: { stroke: "#c0564a"; font-color: "#a8412f"; bold: true } }
+process.prover.agent -> process.bridge: "typed events" { style: { stroke: "#4f8a5b"; font-color: "#3f7a52" } }
+
+process.prover.agent -> process.prover.lsp: lean_check
+process.prover.agent -> process.prover.verify: verify
+process.prover.agent -> process.prover.search: search
+
+process.prover.lsp -> process.resources.lean: compile
+process.prover.verify -> process.resources.lean: kernel replay
+process.prover.search -> process.resources.lean: lookup
+
+process.prover.agent -> providers: "LLM API (HTTPS) · tokens"
+process.resources.catalog -> process.adapter: model list
+
+process.bridge -> process.persistence.git: "commit on FileChanged"
+process.bridge -> process.persistence.sqlite: "index rows (SHA + path)"

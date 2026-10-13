@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
+import { buildLeanPaneManifest } from "../shared/leanPaneManifest.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const contentScriptPath = path.join(repoRoot, "apps/overleaf-extension/extension/content.js");
@@ -41,6 +43,35 @@ for (const [name, statusInfo, shouldShow] of CASES) {
   });
 }
 
+test("a label-free editor badge resolves its job key and shows a readable source name", async () => {
+  const harness = createContentHarness(
+    { status: "unformalized" },
+    {
+      targetLabel: "lea_auto_theorem_candidate",
+      labelSource: "generated",
+      displayTitle: "thm:even-square",
+      latexLabel: "thm:even-square",
+      from: 0,
+      to: 70
+    },
+    {
+      resolveTargets: {
+        targets: [{ from: 0, to: 70, targetKind: "theorem", targetLabel: "lea_auto_theorem_stable", targetUses: [] }]
+      }
+    }
+  );
+  await harness.loadVisibleTheorems({
+    activeTex: "\\begin{theorem}\\label{thm:even-square}\n% lea: formalize\nA theorem.\n\\end{theorem}"
+  });
+  assert.equal(harness.target.targetLabel, "lea_auto_theorem_stable");
+  const statusCall = harness.fetchCalls.find((call) => call.url.endsWith("/statuses"));
+  assert.equal(JSON.parse(statusCall.options.body).targets[0].targetLabel, "lea_auto_theorem_stable");
+  harness.openTargetPopover();
+  await flushPromises();
+  assert.match(harness.bodyText(), /Source: thm:even-square/);
+  assert.equal(harness.hasButtonText("Formalize"), true);
+});
+
 test("diagnostic markers render a non-runnable fix badge and popover", async () => {
   const harness = createContentHarness({ status: "unformalized" });
   const diagnostic = {
@@ -74,6 +105,59 @@ test("targets without coordinates do not render floating status badges", async (
   assert.equal(harness.hasButtonText("unformalized"), false);
 });
 
+test("status refresh sends the canonical version-2 source identity", async () => {
+  const harness = createContentHarness({ status: "formalized", sourceFreshness: "current" });
+  await harness.loadStatusForVisibleTheorem();
+
+  const statusCall = harness.fetchCalls.find((call) => call.url.endsWith("/statuses"));
+  assert.ok(statusCall, "expected a status request");
+  const request = JSON.parse(statusCall.options.body);
+  assert.match(request.targets[0].sourceIdentityHash, /^[a-f0-9]{64}$/);
+});
+
+test("formalize requests and pane refresh hash unchanged targets identically across LaTeX environments", async () => {
+  const cases = [
+    { environment: "theorem", marker: "% lea: formalize label=sample", kind: "theorem" },
+    { environment: "lemma", marker: "% lea: formalize label=sample", kind: "theorem" },
+    { environment: "proposition", marker: "% lea: formalize label=sample", kind: "theorem" },
+    { environment: "corollary", marker: "% lea: formalize label=sample", kind: "theorem" },
+    { environment: "definition", marker: "% lea: define label=sample", kind: "definition" },
+    { environment: "claim", marker: "\\leatheorem{label=sample}", kind: "theorem" },
+    { environment: "theorem", marker: "% lea: formalize", latexLabel: "thm:generated", kind: "theorem" }
+  ];
+  for (const { environment, marker, latexLabel, kind } of cases) {
+    const source = [
+      `\\begin{${environment}}${latexLabel ? `\\label{${latexLabel}}` : ""}`,
+      marker,
+      "A sample statement.",
+      `\\end{${environment}}`,
+      ...(kind === "theorem" ? ["\\begin{proof}", "By inspection.", "\\end{proof}"] : [])
+    ].join("\n");
+    const manifest = buildLeanPaneManifest({
+      overleafProjectId: "unknown", files: [{ path: "main.tex", content: source }]
+    });
+    assert.equal(manifest.items.length, 1, environment);
+    const item = manifest.items[0];
+    assert.equal(item.targetKind, kind, environment);
+    const harness = createContentHarness({ status: "unformalized" }, {}, {
+      locationPath: "/project/unknown",
+      manifest: { ...manifest, items: [{ ...item, status: "missing-stub" }] }
+    });
+    await harness.loadVisibleTheorems({ activeTex: source });
+    harness.clickPaneTrigger();
+    await flushPromises();
+    harness.clickPaneTreeRowText("main.tex");
+    harness.clickFirstPaneItem();
+    harness.clickButtonText("Formalize");
+    await flushPromises();
+    const call = harness.fetchCalls.find((entry) => entry.url.endsWith("/formalize"));
+    assert.ok(call, `expected /formalize for ${environment}`);
+    const request = JSON.parse(call.options.body);
+    assert.equal(request.sourceBundle.targetKind, kind, environment);
+    assert.equal(request.sourceBundle.sourceIdentityHash, item.formalizationInputHash, environment);
+  }
+});
+
 test("a source-stale formalization is labeled out of date on the LaTeX badge and in its popover", async () => {
   const harness = createContentHarness({
     status: "formalized",
@@ -102,6 +186,8 @@ test("a current formalization still offers Re-formalize in its popover", async (
   assert.equal(harness.hasButtonText("Re-formalize"), true);
   assert.equal(harness.hasButtonText("Check status"), false);
   assert.equal(harness.hasViewInLeaUiButton(), true);
+  assert.equal(harness.buttonHelpText("Re-formalize"),
+    "Try again using the previous attempt and current LaTeX, keeping existing Lean work.");
 });
 
 test("definition targets use definition copy and do not show Stub", async () => {
@@ -224,6 +310,8 @@ test("the Lean pane shows the same stored approval as the in-source tag", async 
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
+  assert.equal(harness.countSelector(".ol-lean-human-approval-approved"), 1);
+  harness.clickFirstPaneItem();
 
   assert.equal(harness.countSelector(".ol-lean-human-approval-approved"), 2);
   assert.equal(harness.hasButtonLabel("Remove personal approval for demo_theorem"), true);
@@ -264,7 +352,8 @@ test("Lean pane trigger opens a project pane and renders manifest items", async 
   assert.match(harness.bodyText(), /Lean namespace: Lea\.TestProject/);
   harness.clickPaneTreeRowText("main.tex");
   assert.match(harness.bodyText(), /Main theorem/);
-  assert.match(harness.bodyText(), /missing stub/);
+  assert.match(harness.bodyText(), /Lean Check:unformalized/);
+  assert.match(harness.bodyText(), /Lea Status:Not assessed/);
 });
 
 test("Lean pane falls back to the live TeX file when the Overleaf archive is unavailable", async () => {
@@ -354,6 +443,148 @@ test("settings open over the Lean pane and closing them preserves the pane", asy
   harness.clickButtonLabel("Close Lea popover");
   assert.equal(harness.countSelector(".ol-lean-settings-popover"), 0);
   assert.equal(harness.countSelector(".ol-lean-project-pane"), 1);
+});
+
+test("a missing model API key shows a one-click settings nudge", async () => {
+  const harness = createContentHarness(
+    { status: "unformalized" },
+    {},
+    {
+      companionSettings: {
+        leaModel: "o4-mini",
+        leaModelRequirements: {
+          model: "o4-mini",
+          provider: "OpenAI",
+          satisfied: false,
+          required_keys: [{ env: "OPENAI_API_KEY", label: "OpenAI API key", configured: false }]
+        }
+      }
+    }
+  );
+  await flushPromises();
+
+  assert.equal(harness.countSelector(".ol-lean-api-key-nudge"), 1);
+  assert.equal(harness.countSelector(".ol-lean-settings-trigger-attention"), 1);
+  assert.match(harness.bodyText(), /To start proving, add an API key for your selected model/);
+  assert.equal(harness.hasButtonText("Open Settings"), true);
+
+  harness.clickButtonText("Open Settings");
+  await flushPromises();
+  assert.equal(harness.countSelector(".ol-lean-settings-popover"), 1);
+});
+
+test("the API-key nudge stays hidden when the selected model is configured", async () => {
+  const harness = createContentHarness(
+    { status: "unformalized" },
+    {},
+    {
+      companionSettings: {
+        leaModel: "o4-mini",
+        leaModelRequirements: {
+          model: "o4-mini",
+          provider: "OpenAI",
+          satisfied: true,
+          required_keys: [{ env: "OPENAI_API_KEY", label: "OpenAI API key", configured: true }]
+        }
+      }
+    }
+  );
+  await flushPromises();
+
+  assert.equal(harness.countSelector(".ol-lean-api-key-nudge"), 0);
+  assert.equal(harness.countSelector(".ol-lean-settings-trigger-attention"), 0);
+});
+
+test("settings popover defaults source pausing off and saves an explicit opt-in", async () => {
+  const harness = createContentHarness(
+    { status: "unformalized" },
+    {},
+    { companionSettings: { leaModel: "o4-mini", leaMaxTurns: 20, leaPauseOnSourceIssue: false } }
+  );
+  await harness.loadVisibleTheorems();
+  harness.clickButtonLabel("Open Lea settings and usage");
+  await flushPromises();
+  const popover = harness.settingsPopover();
+  const checkbox = popover.querySelector("[data-role='source-pause']");
+  assert.equal(checkbox.checked, false);
+  checkbox.checked = true;
+  checkbox.dispatchEvent({ type: "change" });
+  const save = popover.querySelector("[data-role='save-settings']");
+  assert.equal(save.disabled, false);
+  save.dispatchEvent({ type: "click" });
+  await flushPromises();
+  const request = harness.fetchCalls.find((call) => String(call.url).endsWith("/settings/lea") && call.options?.method === "POST");
+  assert.equal(JSON.parse(request.options.body).leaPauseOnSourceIssue, true);
+  assert.equal(harness.storageState.leaPauseOnSourceIssue, true);
+});
+
+test("settings populate before a slow model catalog and retain edits when it arrives", async () => {
+  let completeCatalog;
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    companionSettings: { leaModel: "gpt-5.6-sol", leaMaxTurns: 100, leaMaxSpendUsd: null },
+    storage: { leaMaxSpendUsd: 19 },
+    fetchOverride: async (url) => url.endsWith("/settings/models")
+      ? new Promise((resolve) => { completeCatalog = resolve; }) : undefined
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickButtonLabel("Open Lea settings and usage");
+  await flushPromises();
+  const popover = harness.settingsPopover();
+  assert.equal(popover.querySelector("[data-role='max-turns']").value, "100");
+  assert.equal(popover.querySelector("[data-role='max-spend']").value, "");
+  const input = popover.querySelector("[data-role='max-turns']");
+  input.value = "75";
+  input.dispatchEvent({ type: "input" });
+  completeCatalog({ ok: true, json: async () => ({ models: [{ id: "gpt-5.6-sol", family: "openai" }], degraded: false }) });
+  await flushPromises();
+  assert.equal(input.value, "75");
+  assert.equal(popover.querySelector("[data-role='save-settings']").disabled, false);
+});
+
+test("unavailable settings show cached values, block saves, and offer a working retry", async () => {
+  let unavailable = true;
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    storage: { leaMaxTurns: 77 },
+    companionSettings: { leaModel: "gpt-5.6-sol", leaMaxTurns: 100 },
+    fetchOverride: async (url) => {
+      if (url.endsWith("/settings") && unavailable) throw new Error("Connection refused");
+    }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickButtonLabel("Open Lea settings and usage");
+  await flushPromises();
+  const popover = harness.settingsPopover();
+  const input = popover.querySelector("[data-role='max-turns']");
+  assert.equal(input.value, "77");
+  assert.equal(input.disabled, true);
+  input.dispatchEvent({ type: "input" });
+  assert.equal(popover.querySelector("[data-role='save-settings']").disabled, true);
+  assert.match(popover.querySelector(".ol-lean-popover-status").textContent, /could not load|unable to load/i);
+  const retry = popover.querySelector("[data-role='retry-settings']");
+  assert.ok(retry && !retry.hidden);
+  unavailable = false;
+  retry.dispatchEvent({ type: "click" });
+  await flushPromises();
+  assert.equal(input.value, "100");
+  assert.equal(input.disabled, false);
+  assert.equal(retry.hidden, true);
+});
+
+test("a stalled settings request times out instead of leaving an editable empty form", async () => {
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    fetchOverride: async (url, options) => url.endsWith("/settings")
+      ? new Promise((_, reject) => options.signal?.addEventListener("abort", () => reject(new Error("Aborted"))))
+      : undefined
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickButtonLabel("Open Lea settings and usage");
+  await flushPromises();
+  const popover = harness.settingsPopover();
+  assert.equal(popover.querySelector("[data-role='max-turns']").disabled, true);
+  await harness.runTimersAt(10000);
+  await flushPromises();
+  assert.match(popover.querySelector(".ol-lean-popover-status").textContent, /timed out/i);
+  assert.equal(popover.querySelector("[data-role='retry-settings']").hidden, false);
 });
 
 test("settings popover renders an accessible persisted resize handle", async () => {
@@ -640,6 +871,7 @@ test("GitHub import closes after confirmation and locks matched theorems while c
     naturalLanguageLatex: "A theorem.",
     leanKind: "theorem",
     leanDeclarationName: "demo_theorem",
+    sourceBundle: { version: 2, targetKey: "demo_theorem", bundleHash: "bundle-demo" },
   };
   const queuedManifestItem = {
     ...manifestItem,
@@ -648,6 +880,7 @@ test("GitHub import closes after confirmation and locks matched theorems while c
     naturalLanguageRendered: "Another theorem.",
     naturalLanguageLatex: "Another theorem.",
     leanDeclarationName: "queued_theorem",
+    sourceBundle: { version: 2, targetKey: "queued_theorem", bundleHash: "bundle-queued" },
   };
   const harness = createContentHarness(
     { status: "unformalized" },
@@ -738,6 +971,10 @@ test("GitHub import closes after confirmation and locks matched theorems while c
   harness.setGithubImportUrl("https://github.com/example/formalizations");
   harness.clickButtonText("Analyze");
   await flushPromises();
+  const previewCall = harness.fetchCalls.find((call) => call.url.includes("/project/github-import/preview"));
+  const previewRequest = JSON.parse(previewCall.options.body);
+  assert.equal(previewRequest.targets[0].sourceBundle.bundleHash, "bundle-demo");
+  assert.equal(previewRequest.targets[1].sourceBundle.bundleHash, "bundle-queued");
   harness.clickButtonText("Add 2 Lean files");
   await flushPromises();
 
@@ -774,7 +1011,7 @@ test("GitHub import closes after confirmation and locks matched theorems while c
     minimizeHidden: true,
   });
   assert.equal(harness.countSelector(".ol-lean-github-import-notice"), 1);
-  assert.equal(harness.countSelector(".ol-lean-project-status-in-progress"), 2);
+  assert.equal(harness.countSelector(".ol-lean-project-check-chip-in-progress"), 2);
   harness.openTargetPopover();
   assert.equal(harness.hasButtonText("Checking import…"), true);
 
@@ -1156,11 +1393,11 @@ test("Lean pane file rows render proportional progress segments", async () => {
         items: [
           { id: "t1", kind: "theorem", label: "t1", status: "valid", sourceFile: "main.tex", documentOrder: 0, naturalLanguageLatex: "A.", leanKind: "theorem" },
           { id: "t2", kind: "theorem", label: "t2", status: "defined", sourceFile: "main.tex", documentOrder: 1, naturalLanguageLatex: "B.", leanKind: "def" },
-          { id: "t3", kind: "theorem", label: "t3", status: "disproved", sourceFile: "main.tex", documentOrder: 2, naturalLanguageLatex: "C.", leanKind: "theorem" },
+          { id: "t3", kind: "theorem", label: "t3", status: "disproved", leanCheck: { status: "checked" }, sourceFile: "main.tex", documentOrder: 2, naturalLanguageLatex: "C.", leanKind: "theorem" },
           { id: "t4", kind: "theorem", label: "t4", status: "stub-generated", sourceFile: "main.tex", documentOrder: 3, naturalLanguageLatex: "D.", leanKind: "theorem" },
           { id: "t5", kind: "theorem", label: "t5", status: "invalid", sourceFile: "main.tex", documentOrder: 4, naturalLanguageLatex: "E.", leanKind: "theorem" },
           { id: "t6", kind: "theorem", label: "t6", status: "missing-stub", sourceFile: "main.tex", documentOrder: 5, naturalLanguageLatex: "F.", leanKind: "theorem", inProgress: true },
-          { id: "t7", kind: "theorem", label: "t7", status: "stale", sourceFile: "main.tex", documentOrder: 6, naturalLanguageLatex: "G.", leanKind: "theorem" },
+          { id: "t7", kind: "theorem", label: "t7", status: "stale", resultKind: "disproved", leanCheck: { status: "checked" }, sourceFile: "main.tex", documentOrder: 6, naturalLanguageLatex: "G.", leanKind: "theorem" },
           { id: "t8", kind: "theorem", label: "t8", status: "unknown", sourceFile: "main.tex", documentOrder: 7, naturalLanguageLatex: "H.", leanKind: "theorem" }
         ],
         diagnostics: []
@@ -1173,10 +1410,11 @@ test("Lean pane file rows render proportional progress segments", async () => {
 
   const [progress] = harness.paneProgresses();
   assert.equal(progress.role, "img");
-  assert.equal(progress.label, "main.tex: 8 Lea items, 3 successful, 1 sorry-stubbed, 1 failed, 1 out of date, 2 unformalized, 1 in progress.");
+  assert.equal(progress.label, "main.tex: 8 Lea items, 2 verified, 1 disproved, 1 sorry-stubbed, 1 failed, 1 out of date, 2 unformalized, 1 in progress.");
   assert.equal(progress.inProgress, true);
   assert.deepEqual(progress.segments.map((segment) => [segment.bucket, segment.count, segment.width]), [
-    ["success", "3", "37.5%"],
+    ["success", "2", "25%"],
+    ["disproved", "1", "12.5%"],
     ["sorry-stubbed", "1", "12.5%"],
     ["failed", "1", "12.5%"],
     ["out-of-date", "1", "12.5%"],
@@ -1184,8 +1422,172 @@ test("Lean pane file rows render proportional progress segments", async () => {
   ]);
 
   harness.clickPaneTreeRowText("main.tex");
+  assert.match(harness.bodyText(), /2 verified · 1 disproved/);
+  assert.match(harness.bodyText(), /Counterexample verified · Claim disproved/);
+  assert.equal(harness.countSelector(".ol-lean-project-check-chip-disproved"), 1);
+  assert.equal(harness.countSelector(".ol-lean-project-item.is-expanded"), 0);
+  harness.clickPaneItemHeaderText("t7");
   assert.match(harness.bodyText(), /Out of date.*LaTeX changed after this Lean artifact was generated/i);
 });
+
+for (const failure of ["timeout", "server", "network"]) {
+  test(`Lean pane ${failure} refresh preserves the loaded tree, edit draft and retries`, async () => {
+    let fail = false;
+    const harness = createContentHarness({ status: "unformalized" }, {}, {
+      locationPath: "/project/unknown",
+      manifest: { ok: true, rootFile: "main.tex", items: [editableItem({ inProgress: true })], diagnostics: [] },
+      fetchOverride: async (url, options) => {
+        if (!url.includes("/lean-pane/manifest") || !fail) return;
+        if (failure === "timeout") return new Promise((_, reject) => options.signal.addEventListener("abort", () => reject(new Error("Aborted"))));
+        if (failure === "network") throw new Error("Network unavailable");
+        return { ok: false, status: 503, json: async () => ({ message: "Inventory busy" }) };
+      }
+    });
+    await harness.loadVisibleTheorems();
+    harness.clickPaneTrigger();
+    await flushPromises();
+    harness.clickPaneTreeRowText("main.tex");
+    harness.clickFirstPaneItem();
+    harness.clickButtonText("Edit");
+    await flushPromises();
+    harness.setEditTextareaValue("theorem unsaved : True := by trivial");
+    const textarea = harness.editTextarea();
+    textarea.dispatchEvent({ type: "input" });
+    const tree = harness.document.body.querySelector(".ol-lean-project-tree");
+    const body = harness.document.body.querySelector(".ol-lean-project-pane-body");
+    body.scrollTop = 140;
+
+    fail = true;
+    await harness.runTimersAt(5000);
+    if (failure === "timeout") await harness.runTimersAt(10000);
+    assert.ok(harness.document.body.querySelector(".ol-lean-project-tree") === tree, "refresh must preserve tree DOM");
+    assert.ok(harness.editTextarea() === textarea, "refresh must preserve edit DOM");
+    assert.equal(textarea.value, "theorem unsaved : True := by trivial");
+    assert.equal(body.scrollTop, 140);
+    assert.match(harness.bodyText(), /last loaded inventory.*out of date/i);
+    assert.equal(harness.countSelector(".ol-lean-project-pane-refresh-warning"), 1);
+    assert.equal(harness.pendingTimers().filter((delay) => delay === 5000).length, 1);
+
+    fail = false;
+    await harness.runTimersAt(5000);
+    assert.equal(harness.countSelector(".ol-lean-project-pane-refresh-warning"), 0);
+    assert.ok(harness.document.body.querySelector(".ol-lean-project-tree"));
+    assert.equal(harness.editTextarea()?.value, "theorem unsaved : True := by trivial");
+  });
+}
+
+test("Lean pane initial inventory failure retries without a running item and stops when closed", async () => {
+  let fail = true;
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/unknown",
+    manifest: { ok: true, rootFile: "main.tex", items: [editableItem()], diagnostics: [] },
+    fetchOverride: async (url) => {
+      if (url.includes("/lean-pane/manifest") && fail) return { ok: false, status: 503, json: async () => ({ message: "Inventory busy" }) };
+    }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  assert.match(harness.bodyText(), /Inventory busy.*Retrying/i);
+  fail = false;
+  await harness.runTimersAt(5000);
+  assert.equal(harness.countSelector(".ol-lean-project-pane-refresh-warning"), 0);
+  assert.ok(harness.document.body.querySelector(".ol-lean-project-tree"));
+  fail = true;
+  harness.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  const count = harness.fetchCalls.filter((call) => call.url.includes("/lean-pane/manifest")).length;
+  harness.clickButtonLabel("Close Lean pane");
+  await harness.runTimersAt(5000);
+  assert.equal(harness.fetchCalls.filter((call) => call.url.includes("/lean-pane/manifest")).length, count);
+});
+
+test("inventory retries back off, pause while hidden, and recover on visibility", async () => {
+  let fail = true;
+  const harness = createContentHarness({}, {}, {
+    locationPath: "/project/unknown",
+    manifest: { ok: true, items: [], diagnostics: [] },
+    fetchOverride: async (url) => {
+      if (url.includes("/lean-pane/manifest") && fail) throw new Error("Connection refused");
+    }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  for (const delay of [5000, 10000, 20000, 30000]) {
+    assert.ok(harness.pendingTimers().includes(delay));
+    await harness.runTimersAt(delay);
+  }
+  assert.equal(harness.countSelector(".ol-lean-project-pane-refresh-warning"), 1);
+  await harness.setVisibility(true);
+  const count = harness.fetchCalls.filter((call) => call.url.includes("/lean-pane/manifest")).length;
+  await harness.runTimersAt(30000);
+  assert.equal(harness.fetchCalls.filter((call) => call.url.includes("/lean-pane/manifest")).length, count);
+  fail = false;
+  await harness.setVisibility(false);
+  assert.equal(harness.countSelector(".ol-lean-project-pane-refresh-warning"), 0);
+});
+
+test("a refresh failure suspends personal approval until a fresh inventory arrives", async () => {
+  let fail = false;
+  const harness = createContentHarness({}, {}, {
+    locationPath: "/project/unknown",
+    manifest: { ok: true, items: [editableItem({ approvalEligible: true, approvalRevision: "revision-1" })], diagnostics: [] },
+    fetchOverride: async (url) => {
+      if (url.includes("/lean-pane/manifest") && fail) throw new Error("Connection refused");
+    }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickPaneTreeRowText("main.tex");
+  harness.clickFirstPaneItem();
+  assert.equal(harness.document.body.querySelector(".ol-lean-human-approval-pane").disabled, false);
+  fail = true;
+  harness.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  const button = harness.document.body.querySelector(".ol-lean-human-approval-pane");
+  assert.equal(button.disabled, true);
+  button.dispatchEvent({ type: "click" });
+  await flushPromises();
+  assert.equal(harness.storageSetCalls.length, 0);
+  fail = false;
+  await harness.runTimersAt(5000);
+  assert.equal(harness.document.body.querySelector(".ol-lean-human-approval-pane").disabled, false);
+});
+
+for (const superseding of ["refresh", "close", "navigation"]) {
+  test(`a delayed failed inventory cannot overwrite a newer ${superseding}`, async () => {
+    let delayed = false, rejectDelayed;
+    const harness = createContentHarness({}, {}, {
+      locationPath: "/project/unknown",
+      manifest: { ok: true, items: [editableItem()], diagnostics: [] },
+      fetchOverride: async (url) => {
+        if (url.includes("/lean-pane/manifest") && delayed) {
+          delayed = false;
+          return new Promise((_, reject) => { rejectDelayed = reject; });
+        }
+      }
+    });
+    await harness.loadVisibleTheorems();
+    harness.clickPaneTrigger();
+    await flushPromises();
+    delayed = true;
+    harness.clickButtonLabel("Refresh Lean pane");
+    await flushPromises();
+    assert.ok(rejectDelayed);
+    if (superseding === "refresh") harness.clickButtonLabel("Refresh Lean pane");
+    if (superseding === "close") harness.clickButtonLabel("Close Lean pane");
+    if (superseding === "navigation") harness.window.location.pathname = "/project/another-project";
+    await flushPromises();
+    const before = harness.paneText();
+    rejectDelayed(new Error("Old request failed"));
+    await flushPromises();
+    assert.equal(harness.paneText(), before);
+    assert.equal(harness.countSelector(".ol-lean-project-pane-refresh-warning"), 0);
+    assert.doesNotMatch(harness.bodyText(), /Old request failed/);
+  });
+}
 
 test("Lean pane polling refresh preserves expanded folder and file rows", async () => {
   let manifestCalls = 0;
@@ -1276,11 +1678,44 @@ test("Lean pane expanded detail shows copy actions only for generated content", 
   await flushPromises();
 
   harness.clickPaneTreeRowText("main.tex");
+  assert.match(harness.bodyText(), /Theorem: main_theorem.*thm:main/);
+  assert.match(harness.bodyText(), /Lean Check:unformalized/);
+  assert.match(harness.bodyText(), /Lea Status:Not assessed/);
+  assert.equal(harness.hasButtonText("Re-formalize"), true);
+  assert.equal(harness.hasButtonLabel("Go to source"), true);
+  assert.equal(harness.countSelector(".ol-lean-project-natural"), 0);
+  assert.equal(harness.countSelector(".ol-lean-live-status"), 0);
+  assert.equal(harness.hasButtonLabel("Copy stub"), false);
   harness.clickFirstPaneItem();
 
+  assert.equal(harness.countSelector(".ol-lean-project-natural"), 1);
+  assert.equal(harness.countSelector(".ol-lean-live-status"), 1);
   assert.equal(harness.hasButtonLabel("Copy stub"), true);
   assert.equal(harness.hasButtonLabel("Copy artifact"), true);
   assert.match(harness.bodyText(), /workspace\/proofs\/Main\.lean/);
+});
+
+test("Lean pane keeps a visible LeaChat button for a saved session whose status is unknown", async () => {
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    manifest: { ok: true, rootFile: "main.tex", diagnostics: [], items: [{
+      id: "definition:CapacityEncoding", label: "CapacityEncoding", kind: "definition",
+      status: "unknown", sourceFile: "main.tex", leanKind: "def",
+      leanDeclarationName: "CapacityEncoding", leaSessionId: "saved-session",
+      leanCheck: { status: "checked" }
+    }] }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickPaneTreeRowText("main.tex");
+  harness.clickFirstPaneItem();
+  assert.equal(harness.hasButtonText("Open in LeaChat"), true);
+  assert.equal(harness.hasButtonLabel("Open in LeaChat"), true);
+  harness.clickButtonText("Open in LeaChat");
+  await flushPromises();
+  const opened = harness.runtimeMessages.find((message) => message.type === "OPEN_LEA_SESSION");
+  assert.equal(new URL(opened.url).searchParams.get("session"), "saved-session");
+  assert.ok(!harness.fetchCalls.some((call) => call.url.endsWith("/lean-pane/chat/session")));
 });
 
 test("Lean pane shows navigable uses and used-by relationships across project files", async () => {
@@ -1335,6 +1770,8 @@ test("Lean pane shows navigable uses and used-by relationships across project fi
   await flushPromises();
   harness.clickPaneTreeRowText("sections/");
   harness.clickPaneTreeRowText("result.tex");
+  assert.equal(harness.countSelector(".ol-lean-project-relationships"), 0);
+  harness.clickPaneItemHeaderText("result");
 
   assert.equal(harness.countSelector(".ol-lean-project-relationships"), 1);
   assert.deepEqual(
@@ -1417,6 +1854,7 @@ test("Lean pane relationship chips survive polling and reflect refreshed target 
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
+  harness.clickPaneItemHeaderText("result");
 
   assert.ok(harness.relationshipChips().some((chip) => (
     chip.text === "support" && /relationship-chip-valid/.test(chip.className)
@@ -1464,14 +1902,14 @@ test("Lean pane renders lightweight math and highlighted Lean code", async () =>
   await flushPromises();
 
   harness.clickPaneTreeRowText("main.tex");
+  assert.equal(harness.countSelector(".ol-lean-project-math"), 0);
+  harness.clickFirstPaneItem();
   assert.ok(harness.countSelector(".ol-lean-project-math") >= 2);
   assert.equal(harness.countSelector(".ol-lean-project-math-sup"), 1);
   assert.ok(harness.countSelector(".ol-lean-project-lean-kw") >= 1);
   assert.ok(harness.countSelector(".ol-lean-project-lean-ty") >= 1);
   assert.ok(harness.countSelector(".ol-lean-project-lean-num") >= 1);
   assert.match(harness.bodyText(), /For every x ∈ ℝ, x2 ≥ 0\./);
-
-  harness.clickFirstPaneItem();
 
   assert.equal(harness.hasButtonLabel("Copy stub"), true);
   assert.equal(harness.hasButtonLabel("Copy artifact"), true);
@@ -1517,6 +1955,7 @@ test("Lean pane uses KaTeX for standard notation and styles surrounding LaTeX pr
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
+  harness.clickFirstPaneItem();
 
   assert.equal(renderCalls.length, 1);
   assert.equal(renderCalls[0].source, "f(x) \\triangleq x^2");
@@ -1562,6 +2001,7 @@ test("Lean pane preserves readable math when KaTeX rejects an expression", async
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
+  harness.clickFirstPaneItem();
 
   assert.equal(harness.countSelector(".ol-lean-project-math-fallback"), 1);
   assert.match(harness.bodyText(), /\\ProjectSpecific x ⊆ X/);
@@ -1600,7 +2040,6 @@ test("Lean pane 'Go to source' posts a navigate message with the item's offsets"
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
-  harness.clickFirstPaneItem();
   harness.clickButtonLabel("Go to source");
 
   const navigate = harness.postedMessages.find((message) => message.type === "OL_LEAN_NAVIGATE");
@@ -1769,7 +2208,6 @@ test("Lean pane 'Formalize' starts a run via the /formalize endpoint", async () 
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
-  harness.clickFirstPaneItem();
   harness.clickButtonText("Formalize");
   await flushPromises();
 
@@ -1788,6 +2226,110 @@ test("Lean pane 'Formalize' starts a run via the /formalize endpoint", async () 
   assert.equal(body.sourceEndLine, 4);
   assert.equal(body.mirroredSourcePath, ".lea/files/overleaf/main.tex");
   assert.match(body.sourceExcerpt, /A theorem\./);
+});
+
+test("Lean pane 'Continue best effort' resumes an eligible source obstruction with an explicit override", async () => {
+  const harness = createContentHarness(
+    { status: "unformalized" },
+    {},
+    {
+      locationPath: "/project/unknown",
+      manifest: {
+        ok: true,
+        rootFile: "main.tex",
+        items: [{
+          id: "theorem:compactness_criterion:0",
+          kind: "theorem",
+          label: "compactness_criterion",
+          status: "paused",
+          sourceFile: "main.tex",
+          sourceStartLine: 1,
+          sourceEndLine: 4,
+          sourceStartOffset: 0,
+          sourceEndOffset: 42,
+          naturalLanguageRendered: "Every open cover has a finite subcover.",
+          naturalLanguageLatex: "Every open cover has a finite subcover.",
+          leanKind: "theorem",
+          leanDeclarationName: "compactness_criterion",
+          formalizable: true,
+          leanCheck: { status: "paused", stopReason: "source_obstruction" },
+          sourceBundle: { proof: "", proofAssociation: { status: "missing" } }
+        }],
+        diagnostics: []
+      }
+    }
+  );
+  await harness.loadVisibleTheorems({ activeTex: "\\begin{theorem}\n% lea: formalize label=compactness_criterion\nEvery open cover has a finite subcover.\n\\end{theorem}" });
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickPaneTreeRowText("main.tex");
+  harness.clickFirstPaneItem();
+  harness.clickButtonText("Continue best effort");
+  await flushPromises();
+
+  const call = harness.fetchCalls.find((entry) => entry.url.endsWith("/formalize"));
+  assert.ok(call, "expected a POST to /formalize");
+  const body = JSON.parse(call.options.body);
+  assert.equal(body.targetLabel, "compactness_criterion");
+  assert.equal(body.resume, true);
+  assert.equal(body.bestEffort, true);
+});
+
+function pausedSourceManifest() {
+  return { ok: true, rootFile: "main.tex", diagnostics: [], items: [{
+    id: "theorem:demo_theorem:0", kind: "theorem", label: "demo_theorem", status: "paused",
+    sourceFile: "main.tex", sourceStartLine: 1, sourceEndLine: 4,
+    naturalLanguageLatex: "Old statement.", leanKind: "theorem", formalizable: true,
+    apiRunId: "saved-run", leanCheck: { status: "paused", stopReason: "turn_cap" }
+  }] };
+}
+
+test("Resume reparses live statement, proof and source hashes instead of cached pane text", async () => {
+  const harness = createContentHarness({ status: "paused" }, {}, {
+    locationPath: "/project/unknown", manifest: pausedSourceManifest()
+  });
+  await harness.loadVisibleTheorems({ activeTex: "\\begin{theorem}\n% lea: formalize label=demo_theorem\nNew statement.\n\\end{theorem}\n\\begin{proof}\nNew author proof.\n\\end{proof}" });
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickPaneTreeRowText("main.tex");
+  harness.clickFirstPaneItem();
+  harness.clickButtonText("Resume");
+  assert.ok(harness.hasButtonText("Resuming…"));
+  await flushPromises();
+  const call = harness.fetchCalls.find((entry) => entry.url.endsWith("/formalize"));
+  assert.ok(call);
+  const body = JSON.parse(call.options.body);
+  assert.equal(body.resume, true);
+  assert.equal(body.resumeRunId, "saved-run");
+  assert.match(body.targetText, /New statement\./);
+  assert.doesNotMatch(body.targetText, /Old statement/);
+  assert.match(body.sourceBundle.proof, /New author proof\./);
+  assert.equal(body.sourceBundle.proofAssociation.status, "associated");
+  assert.equal(body.sourceHash, createHash("sha256").update(body.targetText.trim()).digest("hex"));
+});
+
+test("checkpoint failure stays inline and Re-formalize remains an explicit fresh action", async () => {
+  const harness = createContentHarness({ status: "paused" }, {}, {
+    locationPath: "/project/unknown", manifest: pausedSourceManifest(),
+    formalizeFailure: { status: 409, error: "checkpoint_continuation_rejected",
+      message: "Saved agent state is unavailable. Use Re-formalize." }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickPaneTreeRowText("main.tex");
+  harness.clickFirstPaneItem();
+  harness.clickButtonText("Resume");
+  await flushPromises();
+  assert.match(harness.paneText(), /Saved agent state is unavailable/);
+  assert.ok(harness.hasButtonText("Resume"));
+  assert.ok(harness.hasButtonText("Re-formalize"));
+  harness.clickButtonText("Re-formalize");
+  await flushPromises();
+  const calls = harness.fetchCalls.filter((entry) => entry.url.endsWith("/formalize"));
+  assert.equal(calls.length, 2);
+  assert.equal(JSON.parse(calls[0].options.body).resume, true);
+  assert.equal(JSON.parse(calls[1].options.body).resume, false);
 });
 
 test("Lean pane keeps Formalize after an upstream dependency blocks startup", async () => {
@@ -1821,11 +2363,12 @@ test("Lean pane keeps Formalize after an upstream dependency blocks startup", as
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
-  harness.clickFirstPaneItem();
+  assert.equal(harness.countSelector(".ol-lean-project-detail"), 0);
 
   harness.clickButtonText("Formalize");
   await flushPromises();
 
+  assert.equal(harness.countSelector(".ol-lean-project-detail"), 1);
   assert.equal(harness.hasButtonText("Formalize"), true);
   assert.equal(harness.hasButtonText("Retry formalize"), false);
   assert.deepEqual(harness.paneActionError(), {
@@ -1859,6 +2402,35 @@ test("source popover explains when an upstream dependency blocks formalization s
     text: "Formalization blockedFormalize referenced theorem first: helper_lemma. No Lea run was started."
   });
   assert.equal(harness.hasButtonText("Formalize"), true);
+});
+
+test("a missing-key formalization error links directly to credential settings", async () => {
+  const harness = createContentHarness(
+    { status: "unformalized" },
+    {},
+    {
+      locationPath: "/project/unknown",
+      formalizeFailure: {
+        status: 400,
+        error: "missing_openai_key",
+        message: "OpenAI API key must be set before formalizing."
+      }
+    }
+  );
+  await harness.loadStatusForVisibleTheorem();
+  harness.openTargetPopover();
+
+  harness.clickButtonText("Formalize");
+  await flushPromises();
+
+  assert.deepEqual(harness.popoverActionError(), {
+    role: "alert",
+    live: "assertive",
+    text: "API key requiredOpenAI API key must be set before formalizing.Add API key"
+  });
+  harness.clickButtonText("Add API key");
+  await flushPromises();
+  assert.equal(harness.countSelector(".ol-lean-settings-popover"), 1);
 });
 
 test("source popover reports a cost cap inline without a separate floating notice", async () => {
@@ -2048,7 +2620,7 @@ test("Formalize all renders an accessible, collapsible queue with active turn pr
   assert.ok(queue, "expected a batch queue card");
   assert.deepEqual(queue.progress, {
     role: "progressbar",
-    label: "Formalize all: 3 of 8 completed.",
+    label: "Formalize all: 3 of 8 processed. 3 verified · 0 disproved · 0 incomplete · 0 failed · 0 skipped",
     min: "0",
     max: "8",
     now: "3"
@@ -2070,6 +2642,183 @@ test("Formalize all renders an accessible, collapsible queue with active turn pr
   assert.equal(queue.completedCount, 3);
   assert.match(queue.text, /t1formalized and verified\./);
   assert.match(queue.text, /Hide 3 completed/);
+});
+
+test("Formalize all limits cost-cap failures to five statements until expanded", async () => {
+  const items = Array.from({ length: 9 }, (_unused, index) => ({
+    id: `theorem:cap_t${index + 1}:${index}`,
+    kind: "theorem",
+    label: `cap_t${index + 1}`,
+    status: "missing-stub",
+    sourceFile: "main.tex",
+    sourceStartLine: index + 1,
+    sourceEndLine: index + 1,
+    naturalLanguageLatex: `Theorem ${index + 1}.`,
+    leanKind: "theorem",
+    leanDeclarationName: `cap_t${index + 1}`,
+    formalizable: true
+  }));
+  const harness = createContentHarness(
+    { status: "unformalized" },
+    {},
+    {
+      locationPath: "/project/unknown",
+      manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
+      targetBatch: {
+        ok: true,
+        batchId: "formalize-cost-cap",
+        operation: "formalize",
+        done: true,
+        running: false,
+        pausedOn: null,
+        items: items.map((item, index) => ({
+          targetKind: "theorem",
+          targetLabel: item.label,
+          state: index === 0 ? "failed" : "skipped",
+          reason: index === 0 ? "global_spend_cap" : "max_spend"
+        }))
+      }
+    }
+  );
+
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickButtonText("Formalize all (9)");
+  await flushPromises();
+
+  let queue = harness.batchQueue();
+  assert.equal(queue.attentionItemCount, 5);
+  assert.equal(queue.attentionExpanded, "false");
+  assert.match(queue.text, /\+4 more unformalized statements/);
+  assert.doesNotMatch(queue.text, /cap_t9/);
+
+  harness.clickButtonText("+4 more unformalized statements");
+  queue = harness.batchQueue();
+  assert.equal(queue.attentionItemCount, 9);
+  assert.equal(queue.attentionExpanded, "true");
+  assert.match(queue.text, /cap_t9/);
+
+  harness.clickButtonText("Show fewer unformalized statements");
+  queue = harness.batchQueue();
+  assert.equal(queue.attentionItemCount, 5);
+  assert.equal(queue.attentionExpanded, "false");
+  assert.doesNotMatch(queue.text, /cap_t9/);
+});
+
+test("completed Formalize all shows its saved synthesis", async () => {
+  const report = {
+    batch_id: "formalize-batch-report",
+    finished_at: "2026-01-01T00:01:00Z",
+    state: "ready",
+    narrative: "t1 was verified. Review the source gap in t2.",
+    facts: {
+      summary: "1 verified, 0 disproved, 1 failed, 0 skipped, 0 already verified, 0 stopped.",
+      items: [
+        { targetLabel: "t1", state: "formalized", reason: null, reportingIncomplete: false },
+        { targetLabel: "t2", state: "failed", reason: "source_gap", reportingIncomplete: true }
+      ]
+    }
+  };
+  const items = ["t1", "t2"].map((label, index) => ({
+    id: `theorem:${label}:${index}`, kind: "theorem", label, status: "missing-stub",
+    sourceFile: "main.tex", sourceStartLine: index + 1, sourceEndLine: index + 1,
+    naturalLanguageLatex: `Theorem ${label}.`, leanKind: "theorem",
+    leanDeclarationName: label, formalizable: true
+  }));
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/unknown",
+    manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
+    targetBatch: {
+      ok: true, batchId: report.batch_id, operation: "formalize", done: true,
+      running: false, pausedOn: null, reportId: report.batch_id, reportState: "ready", report,
+      items: [
+        { targetKind: "theorem", targetLabel: "t1", state: "formalized" },
+        { targetKind: "theorem", targetLabel: "t2", state: "failed", reason: "source_gap" }
+      ]
+    },
+    repairStatus: {
+      ok: true, batchId: report.batch_id, operation: "formalize", done: true,
+      running: false, pausedOn: null, reportId: report.batch_id, reportState: "ready", report,
+      items: [
+        { targetKind: "theorem", targetLabel: "t1", state: "formalized" },
+        { targetKind: "theorem", targetLabel: "t2", state: "failed", reason: "source_gap" }
+      ]
+    }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickButtonText("Formalize all (2)");
+  await flushPromises();
+  assert.ok(harness.batchQueue(), harness.paneText());
+  assert.match(harness.batchQueue().text, /Formalize all report1 verified/);
+  assert.match(harness.batchQueue().text, /t1 was verified\. Review the source gap in t2\./);
+});
+
+test("saved Formalize all reports reopen from project history", async () => {
+  const report = {
+    batch_id: "formalize-batch-report", finished_at: "2026-01-01T00:01:00Z",
+    state: "ready", narrative: "Review the source gap in t2.",
+    facts: { summary: "1 failed.", items: [
+      { targetLabel: "t2", state: "failed", reason: "source_gap", reportingIncomplete: true }
+    ] }
+  };
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/project-1",
+    manifest: { ok: true, rootFile: "main.tex", items: [{
+      id: "theorem:t2", kind: "theorem", label: "t2", status: "invalid",
+      sourceFile: "main.tex", sourceStartLine: 1, sourceEndLine: 1,
+      naturalLanguageLatex: "Theorem t2.", leanKind: "theorem"
+    }], diagnostics: [] },
+    batchReports: { reports: [{ batch_id: report.batch_id, finished_at: report.finished_at, state: "ready" }] },
+    batchReportDetail: report
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  const disclosure = harness.leanPane().querySelector(".ol-lean-batch-report-history").querySelector("button");
+  assert.equal(disclosure.tagName, "BUTTON");
+  assert.equal(disclosure.attributes["aria-expanded"], "false");
+  harness.clickButtonText("Past Formalize all reports");
+  assert.equal(harness.leanPane().querySelector(".ol-lean-batch-report-history").querySelector("button").attributes["aria-expanded"], "true");
+  assert.match(harness.paneText(), /Summary ready/);
+  harness.clickButtonContaining("Summary ready");
+  await flushPromises();
+  assert.match(harness.paneText(), /no final Lea Status assessment/);
+  assert.equal(harness.hasButtonLabel("Show t2 in Lean pane"), true);
+  harness.clickButtonLabel("Show t2 in Lean pane");
+  assert.match(harness.paneText(), /Theorem t2/);
+});
+
+test("report history exposes loading, empty, and retryable error states", async () => {
+  let finishLoading;
+  const pending = new Promise((resolve) => { finishLoading = resolve; });
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/project-1",
+    manifest: { ok: true, rootFile: "main.tex", items: [], diagnostics: [] },
+    batchReports: () => pending
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickButtonText("Past Formalize all reports");
+  assert.match(harness.paneText(), /Loading reports/);
+  finishLoading({ reports: [] });
+  await flushPromises();
+  assert.match(harness.paneText(), /No past Formalize all reports yet/);
+
+  const errorHarness = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/project-1",
+    manifest: { ok: true, rootFile: "main.tex", items: [], diagnostics: [] },
+    reportListError: "Report service unavailable"
+  });
+  await errorHarness.loadVisibleTheorems();
+  errorHarness.clickPaneTrigger();
+  await flushPromises();
+  errorHarness.clickButtonText("Past Formalize all reports");
+  assert.match(errorHarness.paneText(), /Report service unavailable/);
+  assert.equal(errorHarness.hasButtonText("Reload reports"), true);
 });
 
 test("stopping a batch preserves a completed race winner and reports stopped items separately", async () => {
@@ -2136,13 +2885,13 @@ test("stopping a batch preserves a completed race winner and reports stopped ite
   await flushPromises();
 
   let queue = harness.batchQueue();
-  assert.match(queue.text, /Formalize allStopped1 complete · 3 stopped/);
+  assert.match(queue.text, /Formalize allStopped1 verified · 0 disproved · 0 incomplete · 0 failed · 0 skipped · 3 stopped/);
   assert.deepEqual(queue.progress, {
     role: "progressbar",
-    label: "Formalize all: 1 of 4 completed, 3 stopped.",
+    label: "Formalize all: 4 of 4 processed. 1 verified · 0 disproved · 0 incomplete · 0 failed · 0 skipped · 3 stopped",
     min: "0",
     max: "4",
-    now: "1"
+    now: "4"
   });
   assert.deepEqual(queue.progressSegments, ["success", "canceled", "canceled", "canceled"]);
   assert.match(queue.text, /stop_t2stopped\./);
@@ -2306,6 +3055,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
   const document = new FakeDocument();
   const timers = [];
   const fetchCalls = [];
+  const runtimeMessages = [];
   const postedMessages = [];
   const promptCalls = [];
   const confirmCalls = [];
@@ -2376,7 +3126,9 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
 
   const context = {
     AbortController,
+    EventSource: options.EventSource,
     URL,
+    URLSearchParams,
     TextEncoder,
     katex: options.katex,
     clearTimeout(id) {
@@ -2384,15 +3136,19 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
       if (index !== -1) timers.splice(index, 1);
     },
     crypto: {
+      randomUUID: () => "test-source-client",
       subtle: {
-        async digest() {
-          return new ArrayBuffer(0);
+        async digest(_algorithm, input) {
+          const digest = createHash("sha256").update(Buffer.from(input)).digest();
+          return digest.buffer.slice(digest.byteOffset, digest.byteOffset + digest.byteLength);
         }
       }
     },
     document,
     fetch: async (url, fetchOptions) => {
       fetchCalls.push({ url: String(url), options: fetchOptions });
+      const override = await options.fetchOverride?.(String(url), fetchOptions, fetchCalls);
+      if (override !== undefined) return override;
       if (options.hangProjectIdentity && String(url).includes("/project/identity?")) {
         return new Promise((_resolve, reject) => {
           const rejectOnAbort = () => reject(new Error("Project identity request aborted."));
@@ -2425,10 +3181,15 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
             : null)
         : null;
       const failingFormalize = Boolean(formalizeFailure);
+      const failingReportList = Boolean(options.reportListError)
+        && String(url).includes("/formalize/all/reports?");
       return {
-        ok: !failingRepairStart && !failingFormalize,
-        status: failingRepairStart ? 400 : failingFormalize ? formalizeFailure.status || 400 : 200,
+        ok: !failingRepairStart && !failingFormalize && !failingReportList,
+        status: failingRepairStart ? 400 : failingFormalize ? formalizeFailure.status || 400 : failingReportList ? 503 : 200,
         async json() {
+          if (failingReportList) return { message: options.reportListError };
+          if (String(url).includes("/lea-status/updates")) return options.leaStatusHistory || { updates: [], has_more: false };
+          if (String(url).endsWith("/targets/resolve")) return options.resolveTargets || { targets: [] };
           if (failingRepairStart) {
             return { ok: false, error: "repair_start_failed", message: options.failRepairStart };
           }
@@ -2473,6 +3234,9 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
           if (String(url).endsWith("/settings") && options.companionSettings) {
             return options.companionSettings;
           }
+          if (String(url).endsWith("/settings/lea") && fetchOptions?.method === "POST") {
+            return { ...options.companionSettings, ...JSON.parse(fetchOptions.body || "{}") };
+          }
           if (String(url).endsWith("/settings/github-token")) {
             return options.githubTokenUpdate || { ok: true };
           }
@@ -2507,6 +3271,16 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
             return typeof options.manifest === "function"
               ? options.manifest(fetchCalls)
               : options.manifest || { ok: true, rootFile: "main.tex", items: [], diagnostics: [] };
+          }
+          if (String(url).includes("/formalize/all/reports/") && String(url).endsWith("/retry")) {
+            return options.batchReportRetry || options.batchReportDetail || {};
+          }
+          if (String(url).includes("/formalize/all/reports/")) {
+            return options.batchReportDetail || {};
+          }
+          if (String(url).includes("/formalize/all/reports")) {
+            return typeof options.batchReports === "function"
+              ? options.batchReports(fetchCalls) : options.batchReports || { reports: [] };
           }
           if (String(url).includes("/formalize/all") || String(url).includes("/stub/all")) {
             return options.targetBatch || {
@@ -2562,9 +3336,9 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
       };
     },
     globalThis: null,
-    setTimeout(callback) {
+    setTimeout(callback, delay) {
       const id = nextTimerId++;
-      timers.push({ id, callback });
+      timers.push({ id, callback, delay });
       return id;
     },
     window,
@@ -2576,7 +3350,8 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
         getURL: (file) => file.endsWith(".mjs")
           ? path.join(repoRoot, "apps/overleaf-extension/extension", file)
           : `chrome-extension://test/${file}`,
-        sendMessage(_message, callback) {
+        sendMessage(message, callback) {
+          runtimeMessages.push(message);
           callback?.({ ok: true });
         },
         lastError: null
@@ -2632,6 +3407,14 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
   return {
     target,
     window,
+    document,
+    runtimeMessages,
+    pendingTimers() { return timers.map(({ delay }) => delay); },
+    async setVisibility(hidden) {
+      document.hidden = hidden;
+      document.dispatchEvent({ type: "visibilitychange" });
+      await flushPromises();
+    },
     async loadStatusForVisibleTheorem() {
       await this.loadVisibleTheorems();
     },
@@ -2662,6 +3445,10 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
       return document.body
         .querySelectorAll("button")
         .some((button) => button.textContent === text);
+    },
+    buttonHelpText(text) {
+      return document.body.querySelectorAll("button")
+        .find((button) => button.textContent === text)?.title || "";
     },
     hasButtonLabel(label) {
       return document.body
@@ -2719,6 +3506,15 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
         .find((candidate) => candidate.textContent === text);
       assert.ok(button, `expected a button labeled "${text}"`);
       button.click();
+    },
+    clickButtonContaining(text) {
+      const button = document.body.querySelectorAll("button")
+        .find((candidate) => candidate.textContent.includes(text));
+      assert.ok(button, `expected a button containing "${text}"`);
+      button.click();
+    },
+    paneText() {
+      return document.body.querySelector(".ol-lean-project-pane-body")?.textContent || "";
     },
     clickButtonRole(role) {
       const button = document.body.querySelector(`[data-role='${role}']`);
@@ -2874,6 +3670,12 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
       }
       await flushPromises();
     },
+    async runTimersAt(delay) {
+      const ready = timers.filter((timer) => timer.delay === delay);
+      for (const timer of ready) timers.splice(timers.indexOf(timer), 1);
+      for (const timer of ready) timer.callback();
+      await flushPromises();
+    },
     fetchCalls,
     promptCalls,
     confirmCalls,
@@ -3014,7 +3816,12 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
           : [],
         pendingCount: queue.querySelectorAll(".ol-lean-batch-queue-item-pending").length,
         completedCount: queue.querySelectorAll(".ol-lean-batch-queue-item-completed").length,
-        attentionCount: queue.querySelectorAll(".ol-lean-batch-queue-attention").length
+        attentionCount: queue.querySelectorAll(".ol-lean-batch-queue-attention").length,
+        attentionItemCount: queue.querySelector(".ol-lean-batch-queue-attention")
+          ?.querySelectorAll(".ol-lean-batch-queue-item").length || 0,
+        attentionExpanded: queue.querySelector(".ol-lean-batch-queue-attention")
+          ?.querySelector(".ol-lean-batch-queue-disclosure")
+          ?.attributes["aria-expanded"] || null
       };
     },
     firstFocusedPaneItemScrolled() {
@@ -3065,6 +3872,10 @@ class FakeDocument {
 
   createElement(tagName) {
     return new FakeElement(tagName);
+  }
+
+  createElementNS(_namespace, tagName) {
+    return this.createElement(tagName);
   }
 
   createTextNode(text) {
@@ -3221,7 +4032,7 @@ class FakeElement {
       results.className = "lea-model-picker-results";
       return;
     }
-    if (html.includes("Extension Settings")) {
+    if (html.includes("ol-lean-settings-group")) {
       const close = this.appendChild(new FakeElement("button"));
       close.dataset.role = "close";
       close.setAttribute("aria-label", "Close Lea popover");
@@ -3235,8 +4046,14 @@ class FakeElement {
       maxSpend.dataset.role = "max-spend";
       const texMirror = this.appendChild(new FakeElement("input"));
       texMirror.dataset.role = "tex-mirror";
+      const sourcePause = this.appendChild(new FakeElement("input"));
+      sourcePause.dataset.role = "source-pause";
       const save = this.appendChild(new FakeElement("button"));
       save.dataset.role = "save-settings";
+      const retry = this.appendChild(new FakeElement("button"));
+      retry.dataset.role = "retry-settings";
+      retry.hidden = true;
+      retry.textContent = "Retry loading";
       const githubPanel = this.appendChild(new FakeElement("section"));
       githubPanel.dataset.role = "github-token-panel";
       const githubCard = githubPanel.appendChild(new FakeElement("div"));
@@ -3300,13 +4117,14 @@ class FakeElement {
   }
 
   appendChild(child) {
+    child.remove?.();
     child.parentNode = this;
     this.children.push(child);
     return child;
   }
 
   append(...children) {
-    for (const child of children) this.appendChild(child);
+    for (const child of children) this.appendChild(typeof child === "string" ? new FakeText(child) : child);
   }
 
   insertBefore(child, reference) {
@@ -3415,6 +4233,7 @@ function walk(node, visit) {
 
 function matchesSelector(node, selector) {
   if (!(node instanceof FakeElement)) return false;
+  if (selector.includes(",")) return selector.split(",").some((part) => matchesSelector(node, part.trim()));
   const dataRoleMatch = selector.match(/^\[data-role=['"]?([^'"\]]+)['"]?\]$/);
   if (dataRoleMatch) {
     return node.dataset.role === dataRoleMatch[1];
@@ -3764,4 +4583,376 @@ test("round 2: a dependent skipped as busy during the save joins 'Repair all' on
   assert.match(harness.bodyText(), /1 downstream item affected: 1 broken\./);
   assert.match(harness.bodyText(), /corollary_a: was busy during this edit's re-check -- now broken\./);
   assert.equal(harness.hasButtonText("Repair all (1)"), true);
+});
+
+
+test("dependency wait explains the named blocker before expansion and exposes working recovery controls", async () => {
+  const item = { id: "waiting-target", formalizationId: "waiting-form", kind: "theorem", label: "target", title: "Target theorem",
+    status: "paused", sourceFile: "main.tex", sourceStartLine: 1, sourceEndLine: 3, naturalLanguageLatex: "True.",
+    leanKind: "theorem", apiRunId: "waiting-run", stopReason: "dependency_wait", waitingForDependencies: ["L"],
+    dependencies: [{ id: "L", ready: false, state: "failed", specification: { name: "Separation lemma", signature: ": True" },
+      blocker: { detail: "An assumption is missing." } }],
+    leaStatus: { assessment: null, freshness: "unknown", reporting_incomplete: true,
+      activity: { status: "cancelled", stop_reason: "dependency_wait" }, run_id: "waiting-run" } };
+  const harness = createContentHarness({ status: "paused", ...item }, {}, {
+    manifest: { ok: true, rootFile: "main.tex", items: [item], diagnostics: [] }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickPaneTreeRowText("main.tex");
+  assert.match(harness.bodyText(), /Separation lemma needs attention.*An assumption is missing/);
+  assert.equal(harness.hasButtonText("Resume"), false);
+  harness.clickButtonText("View supporting result");
+  await flushPromises();
+  assert.equal(harness.countSelector(".ol-lean-live-status"), 1);
+  assert.equal(harness.hasButtonText("Retry shared result"), true);
+  assert.match(harness.bodyText(), /Assessment pending while supporting results are resolved/);
+  assert.doesNotMatch(harness.bodyText(), /last published update.*retained|Source evidence changed|dependency wait/);
+  harness.clickButtonText("Stop waiting");
+  await flushPromises();
+  const request = harness.fetchCalls.find(call => call.url.endsWith("/lean-pane/dependencies/wait"));
+  assert.deepEqual(JSON.parse(request.options.body), { overleafProjectId: "project-1", runId: "waiting-run", action: "stop" });
+});
+
+test("a stopped dependency wait offers Continue when ready in the pane and editor popup", async () => {
+  const status = { status: "paused", apiRunId: "waiting-run", stopReason: "dependency_wait",
+    waitingForDependencies: ["L"], autoResumeEnabled: false,
+    dependencyWait: { state: "stopped", autoResume: false, message: "Automatic continuation is stopped." } };
+  const harness = createContentHarness(status, {}, { manifest: { ok: true, rootFile: "main.tex", diagnostics: [], items: [{
+    ...status, id: "waiting-target", kind: "theorem", label: "target", sourceFile: "main.tex", naturalLanguageLatex: "True." }] } });
+  await harness.loadStatusForVisibleTheorem();
+  harness.openTargetPopover();
+  await flushPromises();
+  assert.equal(harness.hasButtonText("Continue when ready"), true);
+  assert.equal(harness.hasButtonText("Resume"), false);
+  harness.clickButtonText("Continue when ready");
+  await flushPromises();
+  const request = harness.fetchCalls.find(call => call.url.endsWith("/lean-pane/dependencies/wait"));
+  assert.equal(JSON.parse(request.options.body).action, "continue");
+});
+
+test("live Lea Status renders ongoing findings, history and Pause even for stale source", async () => {
+  const assessment = { confidence: "high", scope: "partial_artifact", summary: "Main step checked; boundary case remains.",
+    confidence_reason: "The approach is preserved.", findings: [{ key: "boundary", severity: "warning", title: "Omitted boundary case",
+      detail: "The LaTeX omits the endpoint.", lean_resolution: "applied", source_resolution: "open", correction: "Handled the endpoint explicitly." }],
+    remaining_obligations: ["Author should update the LaTeX."] };
+  const update = { id: "status-1", created_at: new Date().toISOString(), assessment, artifact_snapshot: { revision_token: "artifact-1", files: [] } };
+  const item = { id: "status-target", formalizationId: "status-form", kind: "theorem", label: "target", title: "Target theorem", status: "stale",
+    sourceFile: "main.tex", sourceStartLine: 1, sourceEndLine: 3, naturalLanguageLatex: "True.", leanKind: "theorem",
+    leaStatus: { assessment, attention: "source_issue", freshness: "source_changed", activity: { status: "running" },
+      run_id: "active-status-run", sequence: 1, latest_update: update } };
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    manifest: { ok: true, rootFile: "main.tex", items: [item], diagnostics: [] },
+    leaStatusHistory: { updates: [update], has_more: false, next_cursor: "next" }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickPaneTreeRowText("main.tex");
+  assert.match(harness.bodyText(), /High confidence · Partial artifact · Source issue · Source changed · Last assessed version/);
+  harness.clickFirstPaneItem();
+  assert.match(harness.bodyText(), /Main step checked; boundary case remains/);
+  assert.match(harness.bodyText(), /Source issue: open/);
+  assert.match(harness.bodyText(), /Lean correction \(applied\): Handled the endpoint explicitly/);
+  harness.clickButtonText("Load updates");
+  await flushPromises();
+  assert.ok(harness.fetchCalls.some(call => call.url.includes("/lea-status/updates")));
+  harness.clickButtonText("Pause");
+  await flushPromises();
+  const pause = harness.fetchCalls.find(call => call.url.includes("/lean-pane/chat/interrupt"));
+  assert.equal(JSON.parse(pause.options.body).runId, "active-status-run");
+});
+
+function renameDisplayFixture() {
+  const state = { busy: false, revision: "old", namespace: "Lea.TestProject", status: "formalized" };
+  class EventSource {
+    static instances = [];
+    constructor() { this.listeners = new Map(); EventSource.instances.push(this); }
+    addEventListener(type, fn) { this.listeners.set(type, fn); }
+    close() {}
+    emit(phase, projectId = "unknown", namespaceChanged = true) {
+      this.listeners.get("project-identity-changed")?.({ data: JSON.stringify({ overleafProjectId: projectId, phase, namespaceChanged }) });
+    }
+  }
+  const response = (body, status = 200) => ({ ok: status === 200, status, async json() { return body; } });
+  const options = { locationPath: "/project/unknown", EventSource, fetchOverride: async (url) => {
+    if (!/\/project\/(identity\?|graph\?)|\/statuses$|\/lean-pane\/manifest$/.test(url)) return;
+    if (state.busy) return response({ error: "project_renaming", message: "Renaming project…" }, 409);
+    if (url.includes("/identity?")) return response({ identity: {
+      projectId: "p1", overleafProjectId: "unknown", slug: "unknown", projectName: "Test Project",
+      namespace: state.namespace, namespaceRevision: state.revision, exists: true, hasRecordedProofs: true
+    } });
+    if (url.includes("/graph?")) return response({ exists: true, namespaceRevision: state.revision,
+      nodes: [{ key: "demo", kind: "theorem", title: "Demo theorem", status: "proved", uses: [], lean_decl: `${state.namespace}.demo_theorem` }], edges: [] });
+    if (url.endsWith("/manifest")) return response({ ok: true, namespaceRevision: state.revision, rootFile: "main.tex", diagnostics: [], items: [{
+      id: "theorem:demo_theorem:0", kind: "theorem", label: "demo_theorem", title: "Demo theorem",
+      status: state.status === "formalized" ? "valid" : "unformalized", sourceFile: "main.tex", sourceStartLine: 1,
+      sourceEndLine: 4, documentOrder: 0, naturalLanguageLatex: "A theorem.", leanKind: "theorem",
+      leanDeclarationName: "demo_theorem", leanArtifactContent: `namespace ${state.namespace}\n\ntheorem demo_theorem : True := by trivial\n\nend ${state.namespace}`
+    }] });
+    return response({ namespaceRevision: state.revision, statuses: { "theorem:demo_theorem": { status: state.status } } });
+  } };
+  return { state, options, EventSource, response };
+}
+
+test("rename display retains confirmed badges, counts and code until reconciliation succeeds", async () => {
+  const f = renameDisplayFixture();
+  const h = createContentHarness({}, {}, f.options);
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  h.clickPaneTreeRowText("main.tex");
+  h.clickFirstPaneItem();
+  await flushPromises();
+  const before = h.paneText();
+  assert.match(before, /Lea.TestProject/);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+  f.state.busy = true;
+  f.EventSource.instances[0].emit("started");
+  await h.runTimersAt(1000);
+  assert.match(h.bodyText(), /Renaming project…/);
+  assert.equal(h.paneText(), before);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+  assert.equal(h.pendingTimers().filter((delay) => delay === 1000).length, 1);
+  f.state.busy = false;
+  f.state.revision = "new";
+  f.state.namespace = "Lea.NewNotes";
+  f.EventSource.instances[0].emit("finished");
+  await h.runTimersAt(1000);
+  await h.runTimersAt(1000);
+  assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+  assert.match(h.paneText(), /Lea.NewNotes/);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+});
+
+test("rename display shows loading on first load and pauses retries while hidden", async () => {
+  const f = renameDisplayFixture();
+  f.state.busy = true;
+  const h = createContentHarness({}, {}, f.options);
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  assert.match(h.bodyText(), /Renaming project…/);
+  assert.match(h.bodyText(), /Loading project inventory/);
+  assert.equal(h.countSelector(".ol-lean-status-unformalized"), 0);
+  await h.setVisibility(true);
+  const count = h.fetchCalls.length;
+  await h.runTimersAt(1000);
+  assert.equal(h.fetchCalls.length, count);
+  f.state.busy = false;
+  f.state.revision = "new";
+  await h.setVisibility(false);
+  await h.runTimersAt(0);
+  await h.runTimersAt(1000);
+  assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+});
+
+test("rename display recovers by polling after missed events and preserves real missing-file statuses", async () => {
+  const f = renameDisplayFixture();
+  const h = createContentHarness({}, {}, f.options);
+  await h.loadVisibleTheorems();
+  f.state.busy = true;
+  await h.loadVisibleTheorems();
+  assert.match(h.bodyText(), /Renaming project…/);
+  f.state.busy = false;
+  f.state.revision = "new";
+  f.state.status = "unformalized";
+  await h.runTimersAt(1000);
+  await h.runTimersAt(1000);
+  assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+  assert.equal(h.countSelector(".ol-lean-status-unformalized"), 1);
+});
+
+test("rename display discards delayed badge responses after rename events and navigation", async () => {
+  const f = renameDisplayFixture();
+  let release;
+  let delayed = false;
+  const normalFetch = f.options.fetchOverride;
+  f.options.fetchOverride = async (url, options, calls) => {
+    if (delayed && url.endsWith("/statuses")) return new Promise((resolve) => { release = () => resolve(f.response({
+      namespaceRevision: "old", statuses: { "theorem:demo_theorem": { status: "unformalized" } }
+    })); });
+    return normalFetch(url, options, calls);
+  };
+  const h = createContentHarness({}, {}, f.options);
+  await h.loadVisibleTheorems();
+  delayed = true;
+  await h.loadVisibleTheorems();
+  assert.ok(release);
+  f.EventSource.instances[0].emit("started");
+  release();
+  await flushPromises();
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+  delayed = false;
+  f.state.revision = "new";
+  f.EventSource.instances[0].emit("finished");
+  await h.runTimersAt(1000);
+  await h.runTimersAt(1000);
+  delayed = true;
+  await h.loadVisibleTheorems();
+  h.window.location.pathname = "/project/another-project";
+  release();
+  await flushPromises();
+  assert.equal(h.countSelector(".ol-lean-status-unformalized"), 0);
+});
+
+test("rename events synchronize two tabs and ignore unrelated projects", async () => {
+  const f = renameDisplayFixture();
+  const first = createContentHarness({}, {}, f.options);
+  const second = createContentHarness({}, {}, f.options);
+  await first.loadVisibleTheorems();
+  await second.loadVisibleTheorems();
+  for (const source of f.EventSource.instances) source.emit("started", "another-project");
+  assert.doesNotMatch(first.bodyText() + second.bodyText(), /Renaming project…/);
+  f.state.busy = true;
+  for (const source of f.EventSource.instances) source.emit("started");
+  assert.match(first.bodyText(), /Renaming project…/);
+  assert.match(second.bodyText(), /Renaming project…/);
+  f.state.busy = false;
+  f.state.revision = "new";
+  for (const source of f.EventSource.instances) source.emit("finished");
+  for (const h of [first, second]) {
+    await h.runTimersAt(1000);
+    await h.runTimersAt(1000);
+    assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+    assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+  }
+});
+
+test("rename display retains the populated Blueprint during retryable reads", async () => {
+  const f = renameDisplayFixture();
+  const h = createContentHarness({}, {}, f.options);
+  const oldDocument = globalThis.document;
+  globalThis.document = h.document;
+  try {
+    await h.loadVisibleTheorems();
+    h.clickPaneTrigger();
+    await flushPromises();
+    h.clickButtonText("Blueprint");
+    await flushPromises();
+    assert.match(h.paneText(), /demotheorem/);
+    const before = h.paneText();
+    f.state.busy = true;
+    f.EventSource.instances[0].emit("started");
+    await h.runTimersAt(1000);
+    assert.equal(h.paneText(), before);
+    f.state.busy = false;
+    f.state.revision = "new";
+    f.EventSource.instances[0].emit("finished");
+    await h.runTimersAt(1000);
+    await h.runTimersAt(1000);
+    assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+    assert.match(h.paneText(), /demotheorem/);
+  } finally { globalThis.document = oldDocument; }
+});
+
+for (const failed of [false, true]) {
+  test(`a delayed inventory ${failed ? "failure" : "response"} cannot replace the Blueprint view`, async () => {
+    const fixture = renameDisplayFixture();
+    const fetchNormal = fixture.options.fetchOverride;
+    let delayed = false, release;
+    fixture.options.fetchOverride = async (url, ...args) => {
+      if (delayed && url.includes("/lean-pane/manifest")) {
+        return new Promise((resolve, reject) => { release = () => failed
+          ? reject(new Error("Old inventory unavailable"))
+          : resolve(fixture.response({ items: [], namespaceRevision: "old" })); });
+      }
+      return fetchNormal(url, ...args);
+    };
+    const harness = createContentHarness({}, {}, fixture.options);
+    const oldDocument = globalThis.document;
+    globalThis.document = harness.document;
+    try {
+      await harness.loadVisibleTheorems();
+      harness.clickPaneTrigger();
+      await flushPromises();
+      delayed = true;
+      harness.clickButtonLabel("Refresh Lean pane");
+      await flushPromises();
+      assert.ok(release);
+      harness.clickButtonText("Blueprint");
+      await flushPromises();
+      const before = harness.paneText();
+      assert.match(before, /demotheorem/);
+      release();
+      await flushPromises();
+      assert.equal(harness.paneText(), before);
+      assert.equal(harness.countSelector(".ol-lean-project-pane-refresh-warning"), 0);
+    } finally { globalThis.document = oldDocument; }
+  });
+}
+
+for (const surface of ["manifest", "graph"]) {
+  test(`rename display discards a delayed ${surface} instead of clearing the confirmed pane`, async () => {
+    const f = renameDisplayFixture();
+    const fetchNormal = f.options.fetchOverride;
+    let delayed = false, release;
+    f.options.fetchOverride = async (url, ...args) => {
+      if (delayed && url.includes(surface === "manifest" ? "/lean-pane/manifest" : "/project/graph?")) {
+        return new Promise(resolve => { release = () => resolve(f.response({ namespaceRevision: "old", items: [], nodes: [], edges: [] })); });
+      }
+      return fetchNormal(url, ...args);
+    };
+    const h = createContentHarness({}, {}, f.options);
+    const oldDocument = globalThis.document;
+    globalThis.document = h.document;
+    try {
+      await h.loadVisibleTheorems();
+      h.clickPaneTrigger();
+      await flushPromises();
+      if (surface === "graph") { h.clickButtonText("Blueprint"); await flushPromises(); }
+      const before = h.paneText();
+      delayed = true;
+      if (surface === "graph") h.clickButtonText("Refresh");
+      else h.clickButtonLabel("Refresh Lean pane");
+      await flushPromises();
+      assert.ok(release);
+      f.EventSource.instances[0].emit("started");
+      release();
+      await flushPromises();
+      assert.equal(h.paneText(), before);
+      assert.match(h.bodyText(), /Renaming project…/);
+    } finally { globalThis.document = oldDocument; }
+  });
+}
+
+test("display-only identity events refresh without a rename notice", async () => {
+  const f = renameDisplayFixture();
+  const h = createContentHarness({}, {}, f.options);
+  await h.loadVisibleTheorems();
+  f.EventSource.instances[0].emit("finished", "unknown", false);
+  await h.runScheduledTimers();
+  assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+});
+
+test("rename reconciliation resumes immediately when the event stream reconnects", async () => {
+  const f = renameDisplayFixture();
+  const h = createContentHarness({}, {}, f.options);
+  await h.loadVisibleTheorems();
+  f.state.busy = true;
+  await h.loadVisibleTheorems();
+  f.state.busy = false;
+  f.state.revision = "new";
+  f.EventSource.instances[0].onopen();
+  await h.runTimersAt(0);
+  await h.runTimersAt(1000);
+  assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+});
+
+test("settled badges detect a complete rename when both push events were missed", async () => {
+  const f = renameDisplayFixture();
+  const h = createContentHarness({}, {}, f.options);
+  await h.loadVisibleTheorems();
+  f.state.revision = "new";
+  f.state.namespace = "Lea.NewNotes";
+  await h.runTimersAt(30000);
+  assert.match(h.bodyText(), /Renaming project…/);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+  await h.runTimersAt(1000);
+  assert.doesNotMatch(h.bodyText(), /Renaming project…/);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
 });

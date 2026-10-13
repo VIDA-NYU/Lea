@@ -1,0 +1,20 @@
+{
+  "tested_code_commit": "3ff5bfe3ab21ff21a271834815a16f98d6d47502",
+  "tree": "d0de7585978f6af5fb7e90e92af980d9178dbced",
+  "remote_main": "8fc9a74bb7de07b655105e46fe661eb3473482b2",
+  "main_is_ancestor": true,
+  "raw_conflicts": 0,
+  "candidate_changes_from_feature": [],
+  "ref_index_worktree_unchanged": true,
+  "manifest_sha256": "9e066c0bc3098491c260fd6fdfed97a608c7e4e1f31d8e2dfe198fc543f00eb8",
+  "application_runtime_changes_since_merge": [],
+  "validation_setup_changes_since_merge": [
+    ".github/workflows/application-ci.yml",
+    "apps/overleaf-extension/tests/companion.test.mjs",
+    "apps/overleaf-extension/tests/leanPaneEdit.test.mjs",
+    "apps/overleaf-extension/tests/leanPaneRepair.test.mjs",
+    "docs/main-readiness/merge-resolutions.json",
+    "scripts/prepare-ci-lean.sh",
+    "tests/local_preparation/test_ci_preparation.py"
+  ]
+}

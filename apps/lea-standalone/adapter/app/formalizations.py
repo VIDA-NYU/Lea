@@ -10,9 +10,61 @@ import hashlib
 import json
 from collections import Counter
 
-from .artifacts import contains_sorry_marker, declaration_contains_sorry, declaration_present
+from .artifacts import contains_sorry_marker
+from .target_completion import checked_target, target_declaration
 from .db import connect, row_to_dict
 from . import store
+from .public_errors import run_detail
+from .read_projections import read_projection
+
+
+def _certified_namespace_revision(formalization: dict, certified: dict, current: dict) -> bool:
+    """Accept only recorded, checked namespace replacements of certified bytes.
+
+    Manual checks of identical bytes and successive renames are allowed. A
+    semantic edit, unverified migration, or unrelated project cannot inherit a
+    successful run's certification.
+    """
+    from .projects import rewrite_namespace_text
+
+    if certified.get("path") != current.get("path"):
+        return False
+    if certified.get("code") == current.get("code"):
+        return True
+    project_id = formalization.get("project_id")
+    if not project_id:
+        return False
+    with connect() as conn:
+        rows = conn.execute(
+            """select t.*, b.content as blob_content from timeline t
+               join sessions s on s.id = t.session_id
+               left join artifact_blobs b on b.id = t.after_blob_id
+               where s.project_id = ? and t.kind = 'code' and t.path = ?
+                 and t.id <= ? order by t.id desc""",
+            (project_id, current["path"], current["id"]),
+        ).fetchall()
+    by_id = {str(row["id"]): row for row in rows}
+    expected = current.get("code")
+    for row in rows:
+        if row["blob_content"] != expected or row["content_lost"]:
+            continue
+        if row["author"] != "environment" or row["run_id"] is not None or row["check_status"] != "ok":
+            continue
+        try:
+            migration = json.loads(row["data"] or "{}").get("namespace_migration") or {}
+            old = store.validate_project_namespace(migration["old_namespace"])
+            new = store.validate_project_namespace(migration["new_namespace"])
+            parent = by_id.get(str(migration["from_step_id"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not parent or parent["id"] >= row["id"] or parent["content_lost"]:
+            continue
+        if rewrite_namespace_text(parent["blob_content"] or "", old, new) != expected:
+            continue
+        expected = parent["blob_content"]
+        if expected == certified.get("code"):
+            return True
+    return False
 
 
 def _validity(
@@ -22,48 +74,103 @@ def _validity(
     artifact: dict | None,
     latest_step: dict | None,
     latest_run: dict | None,
-) -> str:
-    if not formalization.get("declaration_name") and primary is None:
-        return "draft"
-    if primary is None and artifact is None:
-        return "planned"
-    if latest_step is None:
-        return "unchecked"
-    declaration_name = formalization.get("declaration_name")
-    if declaration_name and not declaration_present(
-        latest_step.get("blob_content"), declaration_name
-    ):
-        return "unchecked"
-    if (
-        latest_step.get("check_status") == "error"
-        or (
-            declaration_contains_sorry(latest_step.get("blob_content"), declaration_name)
-            if declaration_name
-            else contains_sorry_marker(latest_step.get("blob_content"))
-        )
-    ):
-        return "failing"
-    if not latest_step.get("check_status"):
-        return "unchecked"
+    steps: list[dict] | None = None,
+) -> tuple[str, str, bool, str | None]:
+    """Current verdict, explanation, check freshness and declaration kind."""
+    result_kind = (latest_run or {}).get("result_kind")
+    classifier_detail = (latest_run or {}).get('result_detail')
+    if result_kind in {'proved', 'disproved'} and classifier_detail and classifier_detail.strip().upper() != result_kind.upper():
+        return 'needs_review', 'The earlier completion classification needs review.', False, None
+    if result_kind == "disproved":
+        current_steps = steps or []
+        if any(s.get('check_current') and s.get('check_status') == 'error' for s in current_steps):
+            return 'failing', 'The current disproof artifact failed its Lean check.', False, None
+        fresh = [s for s in current_steps if s.get('check_current') and s.get('check_status') == 'ok']
+        if not fresh:
+            return 'unchecked', 'The disproof needs a current Lean check.', False, None
+        if formalization.get('source_hash') and (artifact or {}).get('source_hash') and formalization['source_hash'] != artifact['source_hash']:
+            return 'stale', 'The source statement changed after this disproof was recorded.', False, None
+        with connect() as conn:
+            rows = conn.execute('''select t.*, b.content as blob_content from timeline t
+                left join artifact_blobs b on b.id=t.after_blob_id where t.kind='code'
+                and t.run_id=? order by t.id desc''', (latest_run['id'],)).fetchall()
+        seen = set()
+        for row in rows:
+            if row['path'] in seen:
+                continue
+            seen.add(row['path'])
+            if row['check_status'] != 'ok' or contains_sorry_marker(row['blob_content'] or ''):
+                continue
+            certified = {**dict(row), 'code': row['blob_content'] or ''}
+            if any(_certified_namespace_revision(formalization, certified, current) for current in fresh):
+                return 'disproved', 'A verified disproof was reported.', True, None
+        return 'needs_review', 'The successful disproof run did not check this artifact revision.', True, None
+    current_steps = steps or []
+    name = formalization.get("declaration_name")
+    declaration = next(
+        (decl for step in current_steps
+         if (decl := target_declaration(step.get("code"), name, formalization.get("kind") or "theorem"))),
+        None,
+    )
+    match, reason = checked_target(formalization, current_steps)
+    check_current = any(step.get("check_status") == "ok" and step.get("check_current") for step in current_steps)
+    kind = declaration.kind if declaration else None
+    # A review result is a verdict about this target. No later chat, file
+    # classification or manual check may promote it.
+    if result_kind == "needs_review":
+        return "needs_review", (latest_run or {}).get("result_detail") or reason or "Lea requested review.", check_current, kind
+    if not current_steps:
+        if result_kind in {"proved", "defined"}:
+            return "needs_review", "No current checked artifact contains the requested declaration.", False, kind
+        return ("draft" if not name and primary is None else "planned"), "No current artifact is linked to this target.", False, kind
+    if not declaration:
+        return "needs_review", f"The artifact does not declare the requested {name or 'target'}.", check_current, None
+    if any(step.get("check_status") == "error" and step.get("check_current") for step in current_steps):
+        return "failing", "The current artifact failed its Lean check.", False, kind
+    if contains_sorry_marker(next((step.get("code") or "" for step in current_steps if target_declaration(step.get("code"), name, formalization.get("kind") or "theorem")), "")):
+        return "failing", "The requested declaration still contains sorry or admit.", False, kind
     current_hash = formalization.get("source_hash")
     artifact_hash = (artifact or {}).get("source_hash")
     if current_hash and artifact_hash and current_hash != artifact_hash:
-        return "stale"
-    result_kind = (latest_run or {}).get("result_kind")
-    if result_kind == "disproved":
-        return "disproved"
-    step_artifact_kind = (
-        latest_step.get("artifact_kind")
-        if str(latest_step.get("formalization_id") or "")
-        == str(formalization.get("id") or "")
-        else None
-    )
-    artifact_kind = (artifact or {}).get("kind") or step_artifact_kind
-    if artifact_kind == "definition" or formalization.get("kind") == "definition":
-        return "defined"
-    if result_kind == "needs_review":
-        return "needs_review"
-    return "proved" if latest_step.get("check_status") == "ok" else "unchecked"
+        return "stale", "The source statement changed after this artifact was recorded.", False, kind
+    if not check_current:
+        if "ambiguous" in reason:
+            return "needs_review", reason, False, kind
+        return "unchecked", reason, False, kind
+    if match is None:
+        if "ambiguous" in reason:
+            return "needs_review", reason, check_current, kind
+        return "unchecked", reason, check_current, kind
+    if result_kind not in {"proved", "defined"}:
+        return "unchecked", "No successful target run has certified this artifact.", True, kind
+    if formalization.get("kind") != "definition" and result_kind != "proved":
+        return "needs_review", "The run reported a definition rather than proving this theorem.", True, kind
+    if match.get("run_id") != latest_run.get("id"):
+        # A manual check of identical bytes may become the latest timeline
+        # row. Verify the successful run's own checked snapshot by content (or
+        # a checked mechanical namespace migration), so a later check neither
+        # creates nor erases certification.
+        with connect() as conn:
+            rows = conn.execute(
+                """select t.*, b.content as blob_content from timeline t
+                   left join artifact_blobs b on b.id = t.after_blob_id
+                   where t.kind = 'code' and t.run_id = ?
+                   order by t.id desc""",
+                (latest_run["id"],),
+            ).fetchall()
+        seen_paths = set()
+        run_steps = []
+        for row in rows:
+            if row["path"] not in seen_paths:
+                seen_paths.add(row["path"])
+                run_steps.append(store._code_step_from_row(row))
+        certified, _ = checked_target(formalization, run_steps, require_current=False)
+        if not certified and '.' in (formalization.get('declaration_name') or ''):
+            certified, _ = checked_target({**formalization, 'declaration_name': formalization['declaration_name'].rsplit('.', 1)[-1]},
+                                         run_steps, require_current=False)
+        if not certified or not _certified_namespace_revision(formalization, certified, match):
+            return "needs_review", "The successful run did not check this target revision.", True, kind
+    return ("defined" if formalization.get("kind") == "definition" else "proved"), "The requested declaration passed Lean in a successful target run.", True, kind
 
 
 def _activity(run: dict | None) -> dict:
@@ -86,6 +193,7 @@ def _rows_for_ids(conn, sql: str, ids: list[str]) -> list[dict]:
     return [row_to_dict(row) for row in rows]
 
 
+@read_projection
 def decorate(rows: list[dict]) -> list[dict]:
     ids = [str(row["id"]) for row in rows]
     if not ids:
@@ -177,6 +285,21 @@ def decorate(rows: list[dict]) -> list[dict]:
             """,
             ids,
         )
+        completion_runs = _rows_for_ids(
+            conn,
+            """
+            select * from (
+                select r.*, row_number() over (
+                    partition by r.focus_formalization_id
+                    order by r.created_at desc, r.id desc
+                ) as rn
+                from runs r
+                where r.focus_formalization_id in ({marks})
+                  and r.result_kind in ('proved', 'defined', 'needs_review', 'disproved')
+            ) where rn = 1
+            """,
+            ids,
+        )
         verifications = _rows_for_ids(
             conn,
             """
@@ -230,7 +353,8 @@ def decorate(rows: list[dict]) -> list[dict]:
         str(item["resolved_formalization_id"]): item for item in latest_steps
     }
     active_by_id = {str(item["focus_formalization_id"]): item for item in active_runs}
-    run_by_id = {str(item["focus_formalization_id"]): item for item in latest_runs}
+    run_by_id = {str(item["focus_formalization_id"]): run_detail(item) for item in latest_runs}
+    completion_by_id = {str(item["focus_formalization_id"]): run_detail(item) for item in completion_runs}
     verify_by_id = {str(item["formalization_id"]): item for item in verifications}
 
     result = []
@@ -243,7 +367,38 @@ def decorate(rows: list[dict]) -> list[dict]:
         step = step_by_id.get(fid)
         active = active_by_id.get(fid)
         latest_run = run_by_id.get(fid)
+        completion_run = completion_by_id.get(fid)
+        current_steps = store.current_code_steps_for_formalization(fid)
+        # A partial run may only have support files and no artifact-index entry.
+        # Its own snapshots still provide evidence for Needs review.
+        if not current_steps and completion_run:
+            with connect() as conn:
+                raw_steps = conn.execute(
+                    """select t.*, b.content as blob_content from timeline t
+                       left join artifact_blobs b on b.id = t.after_blob_id
+                       where t.kind = 'code' and t.run_id = ?
+                       order by t.created_at desc, t.id desc""",
+                    (completion_run["id"],),
+                ).fetchall()
+            seen_paths = set()
+            for raw_step in raw_steps:
+                if raw_step["path"] not in seen_paths:
+                    seen_paths.add(raw_step["path"])
+                    current_steps.append(store._code_step_from_row(raw_step))
+        validity, validity_reason, check_current, declaration_kind = _validity(
+            item, primary=primary, artifact=artifact,
+            latest_step=step, latest_run=completion_run, steps=current_steps,
+        )
         verification = verify_by_id.get(fid)
+        if item.get("origin") == "project_dependency":
+            from . import project_dependencies
+            with connect() as conn:
+                dependency = conn.execute("select id from project_dependencies where formalization_id=?", (fid,)).fetchone()
+            shared = project_dependencies.get(dependency[0], validate=False) if dependency else None
+            if shared and shared.get("ready"):
+                validity = "defined" if item.get("kind") == "definition" else "proved"
+                validity_reason = "The pinned shared declaration passed its current module build and kernel audit."
+                check_current = True
         if active and isinstance(active.get("pending_approval"), str):
             try:
                 active["pending_approval"] = json.loads(active["pending_approval"])
@@ -251,6 +406,7 @@ def decorate(rows: list[dict]) -> list[dict]:
                 active["pending_approval"] = None
         safe_verify = None
         if verification:
+            from .proof_evidence import verification_current
             safe_verify = {
                 "id": verification["id"],
                 "status": verification["status"],
@@ -260,19 +416,16 @@ def decorate(rows: list[dict]) -> list[dict]:
                     str(verification["code_step_id"])
                     if verification.get("code_step_id") is not None else None
                 ),
-                "current": bool(
-                    step
-                    and verification.get("code_step_id") is not None
-                    and str(verification["code_step_id"]) == str(step["id"])
-                ),
+                "current": verification_current(verification, step),
                 "created_at": verification["created_at"],
             }
         item.update(
             {
-                "validity_status": _validity(
-                    item, primary=primary, artifact=artifact,
-                    latest_step=step, latest_run=latest_run,
-                ),
+                "validity_status": validity,
+                "validity_reason": validity_reason,
+                "completion_run_id": completion_run["id"] if completion_run else None,
+                "declaration_kind": declaration_kind,
+                "check_current": check_current,
                 "activity": _activity(active),
                 "primary_path": (
                     primary["path"] if primary else (artifact or {}).get("path")

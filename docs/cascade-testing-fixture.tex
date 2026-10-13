@@ -1,0 +1,43 @@
+\documentclass{article}
+\usepackage{amsthm}
+\newtheorem{theorem}{Theorem}
+\newtheorem{corollary}{Corollary}
+\newtheorem{definition}{Definition}
+
+\begin{document}
+
+% Do not paste Lean code into this file -- the pane's Formalize/Define/Edit
+% actions own the .lean content, this .tex only holds the prose + `% lea:`
+% directives. See docs/cascade-testing-guide.tex, "One-Time Setup", for the
+% exact stub each item below should get via Edit after its first
+% Formalize/Define pass (the four labels here match that step 1-for-1).
+
+% Setup stub (guide step 3a): theorem compactness_criterion : True := by trivial
+\begin{theorem}\label{thm:compactness-criterion}
+% lea: formalize label=compactness_criterion
+Every open cover has a finite subcover.
+\end{theorem}
+
+% Setup stub (guide step 3b) -- deliberately vague prose below: it names the
+% dependency shape, not real math, so don't expect a cold Formalize to
+% type-check on its own; paste the guide's stub via Edit instead.
+\begin{theorem}\label{thm:compactness-corollary}
+% lea: formalize label=compactness_corollary uses={compactness_criterion}
+A consequence that should follow from compactness\_criterion.
+\end{theorem}
+
+% Setup stub (guide step 3c): def locally_finite_family : Prop := True
+\begin{definition}\label{def:locally-finite}
+% lea: define label=locally_finite_family
+A family of sets is locally finite if every point has a neighborhood
+meeting only finitely many members of the family.
+\end{definition}
+
+% Setup stub (guide step 3d) -- same caveat as compactness_corollary above:
+% vague-on-purpose prose, paste the guide's stub via Edit.
+\begin{corollary}\label{thm:heine-borel-application}
+% lea: formalize label=heine_borel_application uses={compactness_corollary}
+Built on top of compactness\_corollary (transitive chain: C -> B -> A).
+\end{corollary}
+
+\end{document}

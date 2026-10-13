@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="refresh" content="8" />
+<title>LeaUI v2.2 — Live Lean Editor Progress (canvas + LSP)</title>
+<style>
+  :root {
+    --bg: #f5f4ef; --panel: #fffefb; --ink: #2a2724; --muted: #8a847c;
+    --line: #e6e2da; --accent: #c96442; --green: #4f8a5b; --red: #c0564a;
+    --amber: #b8842a; --blue: #4a6fa5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    padding: 32px 0 80px;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+  header { margin-bottom: 8px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .intro { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 13px 16px; margin: 18px 0 8px; font-size: 13px; color: #4a463f; }
+  .intro b { color: var(--ink); }
+  .gaps { background: #fbf4e6; border: 1px solid #ecdcbb; border-left: 3px solid var(--amber);
+    border-radius: 10px; padding: 12px 16px; margin: 14px 0 26px; font-size: 12.5px; color: #5a4a2a; }
+  .gaps h3 { margin: 0 0 7px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--amber); }
+  .gaps b { color: var(--ink); }
+  .gaps .fix { color: #7a6a44; }
+  .bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 18px 0 6px; }
+  .bar > i { display: block; height: 100%; background: var(--green); }
+  .counts { color: var(--muted); font-size: 12.5px; margin-bottom: 26px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 14px 0 28px; font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 99px; display: inline-block; }
+  .d-queued { background: #cdc8be; } .d-planned { background: var(--amber); }
+  .d-prog { background: var(--blue); } .d-tested { background: #7aa37f; } .d-done { background: var(--green); }
+  .d-unplanned { background: #b79ad0; }
+
+  .group { margin-bottom: 30px; }
+  .group > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+    margin: 0 0 4px; font-weight: 600; }
+  .group > .ghint { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+
+  .todo { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 13px 15px; margin-bottom: 9px; }
+  .todo.is-planned { border-color: var(--amber); box-shadow: 0 0 0 1px rgba(184,132,42,.15); }
+  .todo.is-done { opacity: .62; }
+  .todo .top { display: flex; align-items: center; gap: 10px; }
+  .id { font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+  .id.fe { color: var(--accent); border-color: #e7cabd; background: #fbf1ec; }
+  .title { font-weight: 550; flex: 1; }
+  .tag { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+    padding: 1px 7px; border-radius: 99px; }
+  .tag.be { background: #eef0ec; color: #6a7d63; }
+  .tag.fe { background: #fbf1ec; color: var(--accent); }
+  .dec { color: var(--muted); font-size: 11.5px; font-family: ui-monospace, monospace; }
+  .badge { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 99px; white-space: nowrap; }
+  .b-queued { background: #efece6; color: #8a847c; }
+  .b-planned { background: #f7ecd6; color: var(--amber); }
+  .b-prog { background: #e4ecf6; color: var(--blue); }
+  .b-built { background: #e4ecf6; color: var(--blue); }
+  .b-tested { background: #e2efe4; color: #5a8a62; }
+  .b-done { background: #dcefe1; color: var(--green); }
+  .b-unplanned { background: #efe7f3; color: #7a5a9a; }
+  .id.issue { color: #7a5a9a; border-color: #d8c8e6; background: #f5eef9; }
+  .scope { color: var(--muted); font-size: 13px; margin: 6px 0 0 0; }
+  code { background: #f0ede6; border-radius: 4px; padding: 1px 5px; font: 12px ui-monospace, monospace; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 40px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>LeaUI v2.2 — Live Lean Editor in the Canvas</h1>
+    <div class="sub">Live progress · <b>backend + frontend interleaved</b>, built in vertical slices · design
+      <code>v2.2-live-editor-architecture.md</code> (D59–D68) · take <code>lean4monaco</code> + <b>own the
+      LSP-over-WebSocket proxy in FastAPI</b> — no sidecar · auto-refreshes every 8s</div>
+  </header>
+
+  <div class="intro">
+    <b>The idea:</b> a human can <b>edit Lean directly in the Canvas</b> (real Monaco: goal state, hover,
+    completion, diagnostics-as-you-type, <code>\to</code> abbreviations) and then <b>hand the file to the
+    agent</b>. We take <b>two</b> parts of <a href="https://github.com/leanprover-community/lean4web">lean4web</a> —
+    the <code>lean4monaco</code> client and the <i>shape</i> of its LSP proxy — and <b>own them</b>:
+    <code>lean4monaco</code> mounted in the Canvas, the proxy <b>re-implemented as a FastAPI WebSocket endpoint on
+    :8001</b> (D59/D60). Its Node server, Yjs collab, <code>Projects/</code> model, URL-hash, and Bubblewrap are
+    <b>dropped</b>. The agent's warm batch daemon (<code>lsp_daemon.py</code>) is <b>left untouched</b> — the live
+    editor gets its <b>own</b> per-session <code>lake serve</code> (D61). Git still owns proof bytes; save routes
+    through the existing <code>POST /file</code> (D62). <b>Build rhythm:</b> plan → your input → build + tests →
+    tested → done; <b>you test on the UI</b>.
+  </div>
+
+  <div class="bar"><i style="width:100%"></i></div>
+  <div class="counts"><b>2 / 7 tested · 7 / 7 built · Phases 1–2 complete</b> · 3 backend + 4 frontend ·
+    Follow-ups landed: the <b>modal lock is now enforced server-side</b> (<code>POST /file</code> 409s during an
+    active run) and rapid <b>auto-saves coalesce</b> into one History step (both <b>+3 tests</b>, <b>L3 tested</b>);
+    <b>SafeVerify in Edit mode</b> + unicode abbreviations (<code>\to→→</code>, inherent) round out <b>LF4</b>.
+    Adapter <b>267 passed</b>; frontend <b>42 passed</b>; <code>tsc</code> clean; build green. Only <b>Phase 3</b>
+    (below) remains. · 3 backend + 4 frontend across 2 phases ·
+    <b>Phase 1 confirmed live in the browser</b> (real goals/hover/diagnostics through the WS proxy) ·
+    <b>Phase 2 merged the modes</b>: per your call, "Live" <b>became "Edit"</b> — one editable Monaco mode where the
+    LSP checks every keystroke — and the old contentEditable "✎ Edit → Run lean_check" hack was <b>retired</b>
+    (<b>LF3 built</b>). <b>Save &amp; check</b> persists the buffer through the existing <code>POST /file</code> → git +
+    back-filled verdict (a code_step the agent picks up), with a <b>Reload</b> to pull the agent's latest and a
+    read-only <b>modal lock</b> while a run streams (<b>L3 built</b>, frontend lock; a backend write-guard during
+    active runs is the remaining hardening). InfoView now fills the panel (the bare iframe was defaulting to
+    300×150). Adapter <b>264 passed</b>; frontend <b>42 passed</b>; <code>tsc</code> clean; build green.
+    <b>Remaining:</b> LF4 polish (abbreviations come free; SafeVerify-on-live-buffer + keybindings).
+    <br><br><span style="opacity:.75"><b>Was Phase 1:</b></span> The FastAPI WS proxy (<b>L1 ✓ tested</b> — 10 unit tests for
+    URI-rewrite + framing + Lake-root resolution, <b>plus a live handshake smoke</b>: the proxy drove a real
+    <code>lake serve</code> and got back the <code>initialize</code> capabilities) + the per-connection
+    <code>lake serve</code> lifecycle (<b>L2 built</b>). Frontend: <code>lean4monaco</code> Vite integration —
+    node polyfills, esbuild import-meta shim, InfoView static-copy — <b>builds green and code-splits</b> (the 8.3 MB
+    Monaco chunk lazy-loads; the main bundle is unchanged, <b>LF1 built</b>), and a read-only "Live" Canvas mode +
+    InfoView panel (<b>LF2 built</b>). Adapter suite <b>264 passed</b>; <code>tsc</code> clean; production build green.
+    <b>Next:</b> you open Live mode on a session in the UI → confirm goals/hover/diagnostics, then Phase 2 (editable).
+    <br><br>Side fix: a pre-existing latent type error in <code>ModelCombobox.tsx</code> (<code>provider: m.family</code>,
+    where <code>family</code> is optional) surfaced when the install refreshed <code>@types</code>; coalesced to keep
+    <code>tsc</code> green.</div>
+
+  <div class="legend">
+    <span><i class="dot d-unplanned"></i> Unplanned (plan first)</span>
+    <span><i class="dot d-queued"></i> Queued</span>
+    <span><i class="dot d-planned"></i> Planned (next)</span>
+    <span><i class="dot d-prog"></i> Built (not yet confirmed)</span>
+    <span><i class="dot d-tested"></i> Tested ✓</span>
+    <span style="margin-left:auto"><span class="tag be">backend</span> &nbsp; <span class="tag fe">frontend</span></span>
+  </div>
+
+  <div class="gaps">
+    <h3>Design assumptions &amp; open calls</h3>
+    <b>Editing is modal in v1 (D62)</b> — a session is either human-editing <i>or</i> has an active agent run,
+    never both writing at once. <span class="fix">This makes concurrent-write conflicts impossible rather than
+    rare; a real human⇄agent merge model is Phase 3.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>No Bubblewrap sandbox (D63)</b> — local, single-user, and the agent already runs arbitrary Lean + bash, so
+    a sandbox adds no coverage. <span class="fix">⚠️ Revisit trigger: if the adapter is ever exposed to untrusted
+    remote users, re-introduce a container per session.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Biggest risk is the <code>lean4monaco</code> build, not the proxy (D68).</b> It drags in Monaco +
+    <code>@codingame/monaco-vscode-*</code> and needs Vite surgery (node polyfills, esbuild import-meta-url,
+    worker static-copy, maybe COOP/COEP). <span class="fix">Phase 1 (LF1) exists specifically to retire this early;
+    the chunk is lazy-loaded so History-only users don't pay for it (mirrors #11's lazy Shiki).</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>One interactive <code>lake serve</code> per editing session is memory-heavy (D61).</b>
+    <span class="fix">Fine for local single-user; mitigated by lazy start + idle reap. Pooling/sharing is a future
+    optimization if pressure appears.</span>
+  </div>
+
+  <!-- ============ PHASE 1 ============ -->
+  <div class="group">
+    <h2>Phase 1 · Prove the pipe — read-only live insights</h2>
+    <div class="ghint">The highest-risk piece (the <code>lean4monaco</code> build + a working WS→Lean pipe) with
+      <b>zero</b> changes to the agent or persistence. Ends with: a "Live" mode toggle in the Canvas showing real
+      goal state, hover, and diagnostics-as-you-type on the agent's current file — read-only for now.</div>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id">L1</span><span class="title">FastAPI LSP-over-WebSocket proxy</span>
+        <span class="tag be">backend</span><span class="dec">D60/D61/D64</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope">New <code>adapter/app/lsp_proxy.py</code> + WS route <code>/api/sessions/{id}/lsp</code>
+        (<code>routes/sessions.py</code>). Bidirectional <b>Content-Length-framed JSON-RPC pump</b> between the
+        browser socket and a Lean server process's stdio, with <code>file://</code> <b>URI rewriting</b> between the
+        browser's virtual document URI and the session's real on-disk proof path (mirrors lean4web's
+        <code>urisToFilenames</code>/<code>FilenamesToUri</code>). <b>Reuses <code>lsp_daemon.py</code>'s spawn +
+        framing helpers</b> but is a <b>pass-through</b>, not the batch <code>check()</code>. Tests: framing
+        round-trip + URI rewrite.</div>
+    </div>
+    <div class="todo">
+      <div class="top"><span class="id">L2</span><span class="title">Per-session lake-serve lifecycle + root resolution</span>
+        <span class="tag be">backend</span><span class="dec">D61/D64</span><span class="badge b-built">Built</span></div>
+      <div class="scope"><b>Lazy start</b> a dedicated <code>lake serve</code> on WS connect, <code>cwd</code> = the
+        session's own Lake root (loose → <code>workspace/proofs/&lt;id&gt;</code>; project → its root) via the
+        existing <code>_resolve_proof_path</code>; <b>idle-reap</b> on disconnect/timeout; cleanup on session end.
+        The agent's <code>lsp_daemon</code> is <b>untouched</b> (D61). Tests: start/reuse/reap lifecycle.</div>
+    </div>
+    <div class="todo">
+      <div class="top"><span class="id fe">LF1</span><span class="title">lean4monaco Vite/build integration + lazy chunk</span>
+        <span class="tag fe">frontend</span><span class="dec">D68</span><span class="badge b-built">Built</span></div>
+      <div class="scope">Install <code>lean4monaco</code>; adopt its required Vite setup — node polyfills,
+        <code>@codingame/esbuild-import-meta-url-plugin</code>, static-copy of the language workers, and COOP/COEP
+        headers if <code>SharedArrayBuffer</code> features need them (copy lean4web's <code>client/vite.config</code>
+        + devDeps as reference). <b>Dynamically import</b> the Monaco/editor chunk so Live mode code-splits out of
+        the main bundle (mirrors #11's lazy Shiki). Success: a bare Monaco+LSP smoke mount builds green.</div>
+    </div>
+    <div class="todo">
+      <div class="top"><span class="id fe">LF2</span><span class="title">Read-only "Live" Canvas mode + InfoView</span>
+        <span class="tag fe">frontend</span><span class="dec">D66/D67</span><span class="badge b-built">Built</span></div>
+      <div class="scope">New <code>LiveEditor.tsx</code> (+ <code>lib/leanMonaco.mjs</code>): mount
+        <code>LeanMonacoEditor</code> <b>read-only</b>, <code>websocket.url</code> → the WS proxy, on the session's
+        current file. A <b>mode toggle</b> in <code>Canvas.tsx</code> — <b>History</b> (existing Shiki stepper +
+        SafeVerify, unchanged) | <b>Live</b>. Two-pane layout with the Lean <b>InfoView</b> panel (goals). You
+        test: open Live, see live diagnostics + hover + goal state on the agent's proof.</div>
+    </div>
+  </div>
+
+  <!-- ============ PHASE 2 ============ -->
+  <div class="group">
+    <h2>Phase 2 · Make it editable</h2>
+    <div class="ghint">Turn on editing and reconcile the live buffer with git. Ends with: the human edits Lean in
+      Monaco with live feedback, saves (→ git commit, <code>author=user</code>), then hands the file to the agent.
+      The <code>contentEditable</code> escape hatch is retired.</div>
+
+    <div class="todo">
+      <div class="top"><span class="id">L3</span><span class="title">Save flow (buffer→git) + modal lock vs. runs</span>
+        <span class="tag be">backend</span><span class="dec">D62</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope">Save persists the Monaco buffer through the <b>existing</b>
+        <code>POST /sessions/{id}/file</code> → git commit (<code>author=user</code>, invalidates stale SafeVerify —
+        already implemented). <b>Modal lock</b>: a session is human-editing <b>xor</b> has an active agent run —
+        entering Live edit is disabled while a run streams, and vice-versa. Agent file change → new bytes pushed
+        into the buffer + re-elaborate. No new persistence model; git still owns proof bytes (D7/D8). Tests:
+        save→commit; lock rejects concurrent write.</div>
+    </div>
+    <div class="todo">
+      <div class="top"><span class="id fe">LF3</span><span class="title">Enable editing + save wiring; retire contentEditable</span>
+        <span class="tag fe">frontend</span><span class="dec">D62/D66</span><span class="badge b-built">Built</span></div>
+      <div class="scope">Make Monaco editable in Live mode; wire save (explicit button and/or blur) →
+        <code>writeSessionFile</code> → <code>reconcile</code> → refresh (reusing <code>App.tsx</code>'s
+        <code>handleSaveAndCheck</code> plumbing). Mode/lock indicator + Save affordance. Remove the old
+        <code>contentEditable</code> "✎ Edit" path from <code>Canvas.tsx</code>. You test: edit, save, see the new
+        <code>code_step</code>, then run the agent on it.</div>
+    </div>
+    <div class="todo">
+      <div class="top"><span class="id fe">LF4</span><span class="title">Abbreviations / keybindings / SafeVerify on live buffer</span>
+        <span class="tag fe">frontend</span><span class="dec">D66</span><span class="badge b-built">Built</span></div>
+      <div class="scope">Confirm unicode abbreviations (<code>\to → →</code>) + LSP keybindings from
+        <code>lean4monaco</code>; make the <b>Run lean_check</b> / <b>Run SafeVerify</b> buttons act on the live
+        buffer's <b>saved</b> file (they already take a <code>path</code> — no server change). Polish: layout,
+        loading/reconnect states for the WS, error surfacing.</div>
+    </div>
+  </div>
+
+  <!-- ============ PHASE 3 (DEFERRED) ============ -->
+  <div class="group">
+    <h2>Phase 3 · Beyond lean4web &nbsp;·&nbsp; 🟣 Unplanned (plan-first)</h2>
+    <div class="ghint">The payoff of <b>owning</b> the proxy + buffer — things a stock lean4web sidecar can't do.
+      Designed in the arch doc §5 and kept as the record; each needs a design pass (decisions + slices) before it
+      becomes buildable.</div>
+
+    <div class="todo">
+      <div class="top"><span class="id issue">P3</span><span class="title">Agent-suggested edits as Monaco inline diffs / code-lens</span>
+        <span class="tag fe">frontend</span><span class="dec">arch §5</span><span class="badge b-unplanned">Unplanned</span></div>
+      <div class="scope">Render an agent <code>write_file</code>/<code>edit_file</code> proposal as an accept/reject
+        <b>inline diff</b> in the live editor instead of a snapshot the human re-types. <b>Plan first:</b> where the
+        proposal is intercepted (bridge approval gate?), the diff-apply UX, how accept commits.</div>
+    </div>
+    <div class="todo">
+      <div class="top"><span class="id issue">P3</span><span class="title">Shared InfoView (agent + human see the same goal state)</span>
+        <span class="tag be">backend</span><span class="tag fe">frontend</span><span class="dec">arch §5</span><span class="badge b-unplanned">Unplanned</span></div>
+      <div class="scope">Surface the live goal state to the agent (and vice-versa) as common ground for
+        "explain this goal" / "why did this tactic fail here." <b>Plan first:</b> how goal state reaches the agent
+        (tool? injected context?), scope/size.</div>
+    </div>
+    <div class="todo">
+      <div class="top"><span class="id issue">P3</span><span class="title">Per-line SafeVerify / lean_check gutter markers</span>
+        <span class="tag fe">frontend</span><span class="dec">arch §5</span><span class="badge b-unplanned">Unplanned</span></div>
+      <div class="scope">Show the SafeVerify verdict + <code>lean_check</code> diagnostics as Monaco <b>gutter
+        decorations</b> on the live buffer, not just a header badge. Builds on #10 (SafeVerify logs → Lea).</div>
+    </div>
+    <div class="todo">
+      <div class="top"><span class="id issue">P3</span><span class="title">Relax the modal lock — human⇄agent merge model</span>
+        <span class="tag be">backend</span><span class="dec">D62-future</span><span class="badge b-unplanned">Unplanned</span></div>
+      <div class="scope">Allow the agent to edit a region the human isn't in, once a real conflict/merge story is
+        designed. Removes the v1 modal restriction (D62). <b>Plan first:</b> the merge model.</div>
+    </div>
+  </div>
+
+  <footer>LeaUI v2.2 · take lean4monaco + own the LSP-over-WebSocket proxy in FastAPI · one backend on :8001 ·
+    git still owns proof bytes · the agent's batch daemon stays untouched</footer>
+</div>
+</body>
+</html>

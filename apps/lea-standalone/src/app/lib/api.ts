@@ -6,6 +6,9 @@
 
 import type {
   ApprovalDecision,
+  LeanCheckExecution,
+  LeanCheckRuntime,
+  Diagnostic,
   SessionSummary,
   SessionStatus,
   ChatMessage,
@@ -55,8 +58,8 @@ export async function listSessions(): Promise<SessionSummary[]> {
   return Array.isArray(data.sessions) ? data.sessions : [];
 }
 
-export async function getSession(sessionId: string): Promise<SessionDetail> {
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+export async function getSession(sessionId: string, signal?: AbortSignal): Promise<SessionDetail> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { signal });
   if (!response.ok) throw new Error(`Failed to load session: ${response.statusText}`);
   return response.json();
 }
@@ -80,6 +83,8 @@ export async function createRun(
       origin_key?: string;
       source_hash?: string;
     };
+    source_context_ref?: string;
+    idempotency_key?: string;
   },
 ): Promise<{
   session_id: string;
@@ -95,8 +100,32 @@ export async function createRun(
     body: JSON.stringify({ message, session_id: sessionId, model, ...scope }),
   });
   if (!response.ok) {
-    throw new Error(await detailMessage(response, `Failed to start run: ${response.statusText}`));
+    throw Object.assign(new Error(await detailMessage(response, `Failed to start run: ${response.statusText}`)), { status: response.status });
   }
+  return response.json();
+}
+
+export async function resumeInterruptedRun(runId: string): Promise<{ run_id: string; session_id: string }> {
+  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/resume`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ acknowledge_uncertainty: true, idempotency_key: `resume:${runId}` }),
+  });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Could not resume the interrupted run.'));
+  return response.json();
+}
+
+export async function prepareOverleafSource(formalizationId: string): Promise<{ source_context_ref: string; captured_at: string }> {
+  const response = await fetch(`/api/formalizations/${encodeURIComponent(formalizationId)}/overleaf-source/prepare`, { method: 'POST' });
+  if (!response.ok) throw Object.assign(new Error(await detailMessage(response, 'Could not connect to the Overleaf document.')), { status: response.status });
+  return response.json();
+}
+
+export async function continueOverleafRun(runId: string, reference: string, idempotencyKey: string): Promise<{ run_id: string; session_id: string }> {
+  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/continue`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_context_ref: reference, idempotency_key: idempotencyKey })
+  });
+  if (!response.ok) throw Object.assign(new Error(await detailMessage(response, 'Could not continue the saved Overleaf formalization.')), { status: response.status });
   return response.json();
 }
 
@@ -938,7 +967,7 @@ export async function writeSessionFile(
   });
   if (!response.ok) {
     if (response.status === 409) {
-      const body = await response.json().catch(() => ({} as any));
+      const body = await response.clone().json().catch(() => ({} as any));
       if (body.detail?.code === 'revision_conflict') {
         throw new RevisionConflictError(
           body.detail.message || 'This formalization changed in another conversation.',
@@ -951,11 +980,17 @@ export async function writeSessionFile(
   return response.json();
 }
 
+export async function fetchLeanCheckRuntime(sessionId: string, signal?: AbortSignal): Promise<LeanCheckRuntime> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/lean-check-runtime`, { signal });
+  if (!response.ok) return { state: 'unavailable' };
+  return response.json();
+}
+
 export async function leanCheckSession(
   sessionId: string,
   path?: string,
   formalizationId?: string,
-): Promise<{ path: string; status: 'ok' | 'error'; detail?: string | null }> {
+): Promise<{ path: string; status: 'ok' | 'error'; check_current: boolean; check_stale_reason?: string | null; detail?: string | null; execution?: LeanCheckExecution; diagnostics?: Diagnostic[]; lean_check_runtime?: LeanCheckRuntime }> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/lean-check`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -971,7 +1006,7 @@ export async function verifySession(
   sessionId: string,
   path?: string,
   formalizationId?: string,
-): Promise<{ path: string; status: SafeVerifyStatus; detail?: string | null }> {
+): Promise<{ path: string; status: SafeVerifyStatus; current: boolean; detail?: string | null }> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1060,7 +1095,10 @@ interface UsageGlobals {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  usage_details?: import("./types").UsageDetails | null;
   cost_usd: number;
+  incomplete_usage_runs?: number;
+  unconfirmed_usage_runs?: number;
   average_tokens_per_session: number;
   average_cost_per_session: number;
   average_messages_per_session: number;
@@ -1072,6 +1110,7 @@ interface UsageDay {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  usage_details?: import("./types").UsageDetails | null;
   cost_usd: number;
   run_count: number;
   session_count: number;
@@ -1083,6 +1122,7 @@ interface UsageModelRow {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  usage_details?: import("./types").UsageDetails | null;
   cost_usd: number;
   run_count: number;
   session_count: number;
@@ -1096,6 +1136,7 @@ interface UsageOriginRow {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  usage_details?: import("./types").UsageDetails | null;
   cost_usd: number;
 }
 

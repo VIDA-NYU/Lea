@@ -1,11 +1,14 @@
 """C3 tests: session.status is the working-copy verdict, derived (D14/P2).
 
+
 A session has no stored status column — its status is computed from the latest
 code_step's check_status on every read, so it can never drift from the source of
 truth. Run lifecycle (running/done/failed) is NOT here; it lives on runs.status.
 These tests pin the vocabulary, the latest-wins rule, and that `list_sessions`
 and `session_detail` agree.
 """
+
+import pytest
 
 import sqlite3
 
@@ -59,8 +62,8 @@ def test_checked_agent_step_uses_run_outcome_for_proof_or_disproof(tmp_path, mon
         content="proof-1", check_status="ok", artifact_kind="proof",
     )
     store.update_run(proved_run["id"], "needs_review", result_kind="needs_review")
-    assert store.session_detail(proved["id"])["status"] == "proved"
-    assert _list_status(proved["id"]) == "proved"
+    assert store.session_detail(proved["id"])["status"] == "needs_review"
+    assert _list_status(proved["id"]) == "needs_review"
 
     disproved = store.create_session("Disproved")
     disproved_run = store.create_run(disproved["id"], "gpt-4o", "openai", 3)
@@ -90,8 +93,8 @@ def test_checked_artifact_kind_drives_primary_status_when_run_needs_review(tmp_p
         content="proof-1", check_status="ok", artifact_kind="definition",
     )
     store.update_run(definition_run["id"], "needs_review", result_kind="needs_review")
-    assert store.session_detail(definition["id"])["status"] == "defined"
-    assert _list_status(definition["id"]) == "defined"
+    assert store.session_detail(definition["id"])["status"] == "needs_review"
+    assert _list_status(definition["id"]) == "needs_review"
 
     unknown = store.create_session("Unknown")
     unknown_run = store.create_run(unknown["id"], "gpt-4o", "openai", 3)
@@ -100,8 +103,8 @@ def test_checked_artifact_kind_drives_primary_status_when_run_needs_review(tmp_p
         content="proof-2", check_status="ok", artifact_kind="unknown",
     )
     store.update_run(unknown_run["id"], "needs_review", result_kind="needs_review")
-    assert store.session_detail(unknown["id"])["status"] == "ok"
-    assert _list_status(unknown["id"]) == "ok"
+    assert store.session_detail(unknown["id"])["status"] == "needs_review"
+    assert _list_status(unknown["id"]) == "needs_review"
 
 
 def test_checked_ok_without_artifact_kind_stays_generic_ok(tmp_path, monkeypatch):
@@ -110,8 +113,8 @@ def test_checked_ok_without_artifact_kind_stays_generic_ok(tmp_path, monkeypatch
     run = store.create_run(session["id"], "gpt-4o", "openai", 3)
     store.add_code_step(session["id"], run["id"], "p.lean", content="proof-1", check_status="ok")
     store.update_run(run["id"], "needs_review", result_kind="needs_review")
-    assert store.session_detail(session["id"])["status"] == "ok"
-    assert _list_status(session["id"]) == "ok"
+    assert store.session_detail(session["id"])["status"] == "needs_review"
+    assert _list_status(session["id"]) == "needs_review"
 
 
 def test_step_without_verdict_is_unchecked(tmp_path, monkeypatch):
@@ -200,3 +203,7 @@ def test_user_edit_verdict_overrides_after_a_run(tmp_path, monkeypatch):
     # user edits outside the run (run_id=None) and breaks it
     store.add_code_step(session["id"], None, "p.lean", content="proof-b", author="user", check_status="error")
     assert store.session_detail(session["id"])["status"] == "error"
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

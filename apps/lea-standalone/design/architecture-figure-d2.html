@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lea Standalone — Architecture (D2 + notes)</title>
+<style>
+  :root { --ink:#2a2724; --muted:#8a847c; --line:#e2e0d8; --accent:#c96442;
+          --blue:#4a6fa5; --green:#4f8a5b; --violet:#7a5a9a; --amber:#b8842a; --slate:#5f6b7a; }
+  body { margin:0; background:#eef0f2; color:var(--ink);
+         font:15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; padding:26px 0 80px; }
+  .wrap { max-width:1080px; margin:0 auto; padding:0 22px; }
+  h1 { font-size:22px; margin:0 0 3px; letter-spacing:-.01em; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:18px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+       margin:34px 0 12px; font-weight:600; border-bottom:1px solid var(--line); padding-bottom:6px; }
+  code { font:12.5px ui-monospace, Menlo, monospace; background:#f1f0ec; border:1px solid var(--line);
+         border-radius:4px; padding:.5px 5px; }
+
+  /* diagram card */
+  .figcard { background:#fff; border:1px solid #dfe3e8; border-radius:12px; padding:14px;
+             box-shadow:0 1px 3px rgba(0,0,0,.05); }
+  .figcard img { width:100%; height:auto; display:block; }
+
+  /* editable detail sections */
+  details { background:#fffefb; border:1px solid var(--line); border-radius:9px; margin:0 0 9px; padding:0 14px; }
+  details[open] { padding-bottom:10px; }
+  summary { cursor:pointer; padding:11px 0; font-weight:600; list-style:none; display:flex; align-items:center; gap:9px; }
+  summary::-webkit-details-marker { display:none; }
+  summary::before { content:"▸"; color:var(--muted); font-size:11px; transition:transform .15s; }
+  details[open] summary::before { transform:rotate(90deg); }
+  .pill { font:600 10.5px ui-monospace, monospace; color:#fff; border-radius:5px; padding:1px 7px; }
+  .p-ui{background:var(--accent)} .p-api{background:var(--blue)} .p-prover{background:var(--violet)}
+  .p-verify{background:var(--green)} .p-res{background:var(--amber)} .p-store{background:var(--slate)}
+  details p { margin:4px 0 8px; font-size:13.5px; color:#4a463f; }
+  details .io { font-size:13px; color:#4a463f; margin:3px 0; }
+  details .io b.in { color:var(--blue); } details .io b.out { color:var(--green); }
+  .edit { color:var(--muted); font-size:11.5px; font-style:italic; }
+
+  table { width:100%; border-collapse:collapse; font-size:12.5px; background:#fffefb;
+          border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { background:#faf8f3; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  tr:last-child td { border-bottom:none; } td.c0 { font-weight:600; white-space:nowrap; }
+
+  .notes { background:#fbf4e6; border:1px solid #ecdcbb; border-left:3px solid var(--amber);
+           border-radius:10px; padding:13px 16px; font-size:13px; color:#5a4a2a; }
+  .notes h3 { margin:0 0 7px; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--amber); }
+  footer { margin-top:36px; color:var(--muted); font-size:12px; border-top:1px solid var(--line); padding-top:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Lea Standalone — System Architecture</h1>
+  <div class="sub">Compact box layout, arrows auto-routed with <b>D2</b> (dagre) · <code style="font-family:ui-monospace">apps/lea-standalone</code> · current snapshot, 2026-06-29</div>
+
+  <!-- ============ THE FIGURE ============ -->
+  <div class="figcard">
+    <img src="architecture-figure-d2.svg" alt="Lea standalone architecture diagram (D2, dagre layout)" />
+  </div>
+
+  <!-- ============ EDITABLE COMPONENT DETAIL ============ -->
+  <h2>Component details <span style="text-transform:none;letter-spacing:0;font-weight:400">— click to expand; edit freely</span></h2>
+
+  <details open>
+    <summary><span class="pill p-ui">Web UI</span> React + Vite · :5173 <span style="flex:1"></span><span class="edit">external (browser)</span></summary>
+    <p>The collaborator-facing interface: chat, the writeable Lean canvas, the project window (instructions / memory / files / blueprint graph), and Settings.</p>
+    <div class="io"><b class="in">in ▸</b> user actions; the adapter's SSE stream; REST responses.</div>
+    <div class="io"><b class="out">out ◂</b> REST requests to the adapter; rendered canvas / graph / chat.</div>
+  </details>
+
+  <details>
+    <summary><span class="pill p-api">Adapter API</span> FastAPI <span style="flex:1"></span><span class="edit">the one backend</span></summary>
+    <p>The single backend. Routes under <code>/api/*</code> (runs, sessions, projects, settings, search, models, stats). Owns supervision/approval policy and the SSE response for <code>…/events</code>.</p>
+    <div class="io"><b class="in">in ▸</b> HTTP requests from the UI.</div>
+    <div class="io"><b class="out">out ◂</b> JSON responses + an SSE event stream; drives the prover via the Bridge.</div>
+  </details>
+
+  <details>
+    <summary><span class="pill p-api">Bridge</span> prover seam · SSE map <span style="flex:1"></span><span class="edit">the in-process seam</span></summary>
+    <p>Composes project context into <code>messages</code>, builds <code>LeaConfig</code>, calls <code>run_events(cfg, …)</code> <b>in-process</b>, maps the prover's typed events onto SSE, and runs the per-tool approval gate.</p>
+    <div class="io"><b class="in">in ▸</b> session/project from DB+git; prover typed events.</div>
+    <div class="io"><b class="out">out ◂</b> SSE events to the UI; git commits + SQLite index rows.</div>
+  </details>
+
+  <details>
+    <summary><span class="pill p-prover">Agent loop</span> 6 tools <span style="flex:1"></span><span class="edit">vendored prover</span></summary>
+    <p>The proving loop: write → compile → read errors → edit, repeat. Tools: <code>read_file · write_file · edit_file · lean_check · bash · search_mathlib</code>. Streams model tokens from the providers.</p>
+    <div class="io"><b class="in">in ▸</b> composed <code>messages</code> + config; tool results; model tokens.</div>
+    <div class="io"><b class="out">out ◂</b> tool calls; file writes; the typed event stream.</div>
+  </details>
+
+  <details>
+    <summary><span class="pill p-verify">LSP daemon · SafeVerify · Mathlib search</span> <span style="flex:1"></span><span class="edit">prover services</span></summary>
+    <p><b>LSP daemon</b> — warm <code>lean_check</code> (~0.2s edits). <b>SafeVerify</b> — kernel replay + axiom whitelist (the honest "verified" verdict; catches structural cheats). <b>Mathlib search</b> — lemma lookup (budget 20/problem).</p>
+    <div class="io"><b class="in">in ▸</b> a <code>.lean</code> file path / a search query.</div>
+    <div class="io"><b class="out">out ◂</b> compile diagnostics · kernel-replay verdict · lemma matches.</div>
+  </details>
+
+  <details>
+    <summary><span class="pill p-res">Lean + Mathlib · Model catalog</span> <span style="flex:1"></span><span class="edit">local resources</span></summary>
+    <p><b>Lean + Mathlib</b> — the Lake workspace (Lean v4.29, pinned Mathlib); proofs at <code>proofs/</code>. <b>Model catalog</b> — <code>models.json</code>, the provider/model list read by both the UI and the adapter.</p>
+  </details>
+
+  <details>
+    <summary><span class="pill p-store">Git store · SQLite index</span> <span style="flex:1"></span><span class="edit">persistence · source of truth</span></summary>
+    <p><b>Git</b> owns proof <i>content</i> (commit on every <code>FileChanged</code>). <b>SQLite</b> is a rebuildable <i>index</i> (sessions · runs · code_steps · messages · projects · usage) — never proof bytes. Session status is <b>derived</b> from the latest code-step verdict, so it can't drift.</p>
+  </details>
+
+  <details>
+    <summary><span class="pill" style="background:#2f8f83">Model providers</span> <span style="flex:1"></span><span class="edit">external · cloud</span></summary>
+    <p>Gemini · Anthropic · OpenAI, reached over HTTPS. Keys come from the root <code>.env</code> / Settings (redacted, presence-only to the client).</p>
+  </details>
+
+  <!-- ============ I/O TABLE ============ -->
+  <h2>Inputs &amp; outputs — system boundary</h2>
+  <table>
+    <thead><tr><th style="width:130px">Boundary</th><th>Input ▸</th><th>Output ◂</th></tr></thead>
+    <tbody>
+      <tr><td class="c0">User ⇄ App</td>
+        <td>NL statement; model + API keys; project context; canvas edits; tool approvals</td>
+        <td>Compiling proof (0 errors / 0 <code>sorry</code>); live progress; check + SafeVerify verdicts; blueprint graph; usage/cost; downloadable repo</td></tr>
+      <tr><td class="c0">UI ⇄ Adapter</td>
+        <td>REST <code>/api/*</code></td>
+        <td>SSE stream: file snapshots, verdicts, usage, approval prompts</td></tr>
+      <tr><td class="c0">Adapter ⇄ Prover</td>
+        <td>in-process <code>run_events(cfg, messages)</code></td>
+        <td>typed events (FileChanged, CheckResult, VerifyResult, UsageUpdated, ToolApprovalRequested, Finished, …)</td></tr>
+      <tr><td class="c0">Prover ⇄ Resources</td>
+        <td>Lean source; Mathlib queries; model prompts</td>
+        <td>diagnostics; lemma matches; streamed tokens</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ============ FREE NOTES (edit me) ============ -->
+  <h2>Notes</h2>
+  <div class="notes">
+    <h3>Add detail here</h3>
+    This box is a free-text area — drop in open questions, decisions, or caveats as the design evolves.
+    e.g. <i>“The Model-catalog → Adapter edge is the model list; the UI also reads it directly.”</i>
+  </div>
+
+  <footer>
+    Diagram generated from <code>architecture.d2</code> — edit that file, then regenerate:
+    <code>d2 --layout dagre --theme 1 --pad 40 architecture.d2 architecture-figure-d2.svg</code>.
+    The HTML references the SVG, so the figure updates on regenerate; the text sections above are edited here in the HTML.
+    Keep <code>architecture-figure-d2.svg</code> next to this file.
+  </footer>
+</div>
+</body>
+</html>

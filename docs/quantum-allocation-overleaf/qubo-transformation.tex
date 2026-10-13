@@ -1,0 +1,278 @@
+% Section 5 targets. This file is included by main.tex.
+
+\setcounter{section}{4}
+\section{QUBO Transformation}
+
+Section 4 of the paper is an informal overview, so it introduces no Lea target.
+This section formalizes the transformation itself. Its objective is first
+defined directly and then represented by a QUBO weight matrix. This separation
+makes the correctness proof independent of coefficient-collection details.
+
+\subsection{Capacity encoding}
+
+The paper requires storage bits whose selected weights can represent every
+amount from zero through a node's capacity. The following abstraction records
+exactly that property.
+
+\begin{definition}[Capacity encoding]\label{def:capacity-encoding}
+% lea: define
+% lea: label=CapacityEncoding
+% lea: context={Create a structure CapacityEncoding (C : Nat). It should contain a finite linearly ordered chunk type, a weight : Chunk -> Nat, a proof that the sum of all weights is C, an encode function taking t : Nat and h : t <= C to Chunk -> Fin 2, and a proof that the weighted value of encode t h equals t. Also define a weightedValue helper.}
+For $C\in\mathbb{N}$, a \emph{capacity encoding} consists of a finite linearly
+ordered chunk type $J_C$, weights $\omega_C:J_C\to\mathbb{N}$ satisfying
+\[
+  \sum_{i\in J_C}\omega_C(i)=C,
+\]
+and, for every $t\leq C$, a binary vector
+$\operatorname{encode}_C(t):J_C\to\{0,1\}$ satisfying
+\[
+  \sum_{i\in J_C}\omega_C(i)\operatorname{encode}_C(t)(i)=t.
+\]
+Because the weights are natural numbers and sum to $C$, every binary vector
+over $J_C$ represents a value at most $C$.
+\end{definition}
+
+\begin{definition}[Corrected binary capacity encoding]
+  \label{def:binary-capacity-encoding}
+% lea: define
+% lea: label=binaryCapacityEncoding
+% lea: uses={CapacityEncoding}
+% lea: context={Define binaryCapacityEncoding (C : Nat) : CapacityEncoding C. For C = 0 use no chunks. For C > 0 let m = Nat.log2 C, use weights 2^j for j < m, and use final weight C - (2^m - 1). Prove the weights sum to C and every t <= C is representable. This gives Nat.log2 C + 1 chunks when C > 0 and reproduces weights 1,2,4 for C=7 and 1,2 for C=3.}
+For $C=0$, use no chunks. For $C>0$, let
+$m=\lfloor\log_2 C\rfloor$ and use one weight $2^j$ for every $0\leq j<m$,
+together with the final weight
+\[
+  C-(2^m-1).
+\]
+The lower powers represent every value from $0$ through $2^m-1$. The final
+weight is at most $2^m$, so adding it produces the remaining values without a
+gap. The weights sum to $C$, giving a valid capacity encoding with $m+1$
+chunks. In particular, capacities $7$ and $3$ yield $(1,2,4)$ and $(1,2)$.
+\end{definition}
+
+\subsection{Variables and decoding}
+
+\begin{definition}[Allocation QUBO variables]\label{def:allocation-variables}
+% lea: define
+% lea: label=AllocationQUBOVariable
+% lea: uses={AllocationInstance, binaryCapacityEncoding}
+% lea: context={Define a finite linearly ordered type AllocationQUBOVariable (I : AllocationInstance) with two disjoint constructors: assignment p n for p : I.Partition and n : I.Node, and storage n i where i is a chunk of binaryCapacityEncoding (I.capacity n). Provide the Fintype, DecidableEq, and LinearOrder instances needed by QUBO.}
+For an allocation instance $I$, the variable type $V_I$ is the disjoint union
+of assignment variables and storage variables:
+\[
+  V_I=(P_I\times N_I)\ \sqcup\
+  \{(n,i)\mid n\in N_I,\ i\in J_{\operatorname{capacity}_I(n)}\}.
+\]
+We write $A_{pn}$ for the assignment variable associated with $(p,n)$ and
+$S_{in}$ for the storage variable associated with chunk $i$ of node $n$.
+\end{definition}
+
+\begin{definition}[Decoding an assignment]\label{def:decode-assignment}
+% lea: define
+% lea: label=DecodeAssignment
+% lea: uses={AllocationInstance, DataAssignment, AllocationQUBOVariable}
+% lea: context={Define AssignmentBit and StorageBit accessors for a configuration x : AllocationQUBOVariable I -> Fin 2. Define DecodeAssignment I x : DataAssignment I by putting n in the Finset for p exactly when AssignmentBit x p n is 1. Keep all three declarations in this target artifact, with DecodeAssignment as the primary declaration.}
+For a binary configuration $x:V_I\to\{0,1\}$, write $A_x(p,n)$ and $S_x(n,i)$
+for the corresponding bit values. Decode $x$ into the data assignment
+\[
+  D_x(p)=\{n\in N_I\mid A_x(p,n)=1\}.
+\]
+Storage bits do not affect the decoded data assignment; they witness storage
+consumption in the penalty formula.
+\end{definition}
+
+\subsection{Objective components}
+
+All objective components are real-valued. Differences are formed in
+$\mathbb{Z}$ or $\mathbb{R}$ rather than in $\mathbb{N}$, so subtraction does
+not truncate.
+
+\begin{definition}[Safety penalty]\label{def:safety-penalty}
+% lea: define
+% lea: label=SafetyPenalty
+% lea: uses={AllocationInstance, AllocationQUBOVariable, DecodeAssignment}
+% lea: context={Define SafetyPenalty (I : AllocationInstance) (x : AllocationQUBOVariable I -> Fin 2) : Real using the paper's formula. Cast the assignment-bit sum and I.k to Int or Real before subtraction, then square and sum over partitions. Prove or expose nonnegativity for later use.}
+The safety penalty is
+\[
+  Q_R(x)=\sum_{p\in P_I}
+    \left(\sum_{n\in N_I} A_x(p,n)-k_I\right)^2.
+\]
+It is zero exactly when every partition is assigned to exactly $k_I$ nodes.
+\end{definition}
+
+\begin{definition}[Storage penalty]\label{def:storage-penalty}
+% lea: define
+% lea: label=StoragePenalty
+% lea: uses={AllocationInstance, AllocationQUBOVariable, DecodeAssignment, binaryCapacityEncoding}
+% lea: context={Define StoragePenalty (I : AllocationInstance) (x : AllocationQUBOVariable I -> Fin 2) : Real. For each node square the difference between assigned partition size and the weighted value of its selected storage chunks, then sum over nodes. Cast before subtraction and expose nonnegativity.}
+The storage penalty is
+\[
+  Q_S(x)=\sum_{n\in N_I}
+  \left(
+    \sum_{p\in P_I} A_x(p,n)\operatorname{size}_I(p)
+    -\sum_{i\in J_{\operatorname{capacity}_I(n)}}
+       \omega_{I,n}(i)S_x(n,i)
+  \right)^2.
+\]
+If this penalty is zero, assigned storage equals a representable value and is
+therefore at most the node's capacity. Conversely, every storage-feasible
+assignment admits storage bits that make the penalty zero.
+\end{definition}
+
+\begin{definition}[Processing objective]\label{def:processing-objective}
+% lea: define
+% lea: label=ProcessingObjective
+% lea: uses={AllocationInstance, AllocationQUBOVariable, DecodeAssignment}
+% lea: context={Define ProcessingObjective (I : AllocationInstance) (x : AllocationQUBOVariable I -> Fin 2) : Real as the finite double sum of requests times communicationCost times (1 - AssignmentBit). Cast the natural coefficients and bit values to Real.}
+The processing objective is
+\[
+  Q_C(x)=\sum_{p\in P_I}\sum_{n\in N_I}
+    \operatorname{communicationCost}_I(p)
+    \operatorname{requests}_I(p,n)
+    \bigl(1-A_x(p,n)\bigr).
+\]
+\end{definition}
+
+\begin{definition}[Remote-cost bound]\label{def:remote-cost-bound}
+% lea: define
+% lea: label=RemoteCostBound
+% lea: uses={AllocationInstance}
+% lea: context={Define RemoteCostBound (I : AllocationInstance) : Real as the sum over every partition and node of I.communicationCost p times I.requests p n, cast to Real. Prove or expose that every ProcessingObjective lies between zero and this bound.}
+The cost of serving every request remotely is
+\[
+  B_I=\sum_{p\in P_I}\sum_{n\in N_I}
+    \operatorname{communicationCost}_I(p)
+    \operatorname{requests}_I(p,n).
+\]
+For every configuration $x$, $0\leq Q_C(x)\leq B_I$.
+\end{definition}
+
+\begin{definition}[Valid penalty weight]\label{def:valid-penalty-weight}
+% lea: define
+% lea: label=ValidPenaltyWeight
+% lea: uses={RemoteCostBound}
+% lea: context={Define ValidPenaltyWeight (I : AllocationInstance) (h : Real) : Prop to mean RemoteCostBound I < h.}
+A real penalty weight $h$ is \emph{valid} for $I$ when
+\[
+  B_I<h.
+\]
+\end{definition}
+
+\begin{definition}[Penalized allocation objective]\label{def:allocation-objective}
+% lea: define
+% lea: label=AllocationObjective
+% lea: uses={SafetyPenalty, StoragePenalty, ProcessingObjective}
+% lea: context={Define AllocationObjective (I : AllocationInstance) (h : Real) (x : AllocationQUBOVariable I -> Fin 2) : Real by h * (SafetyPenalty I x + StoragePenalty I x) + ProcessingObjective I x.}
+The complete penalized objective is
+\[
+  Q_{I,h}(x)=h\bigl(Q_R(x)+Q_S(x)\bigr)+Q_C(x).
+\]
+\end{definition}
+
+\subsection{Representation as QUBO}
+
+Expanding the squared linear expressions produces only constant, linear, and
+quadratic terms. Linear terms are represented by diagonal QUBO weights because
+$x(i)^2=x(i)$ for binary variables. The constant terms do not affect minimizers,
+but we track them explicitly to obtain an exact energy identity.
+
+\begin{definition}[Objective offset]\label{def:objective-offset}
+% lea: define
+% lea: label=AllocationObjectiveOffset
+% lea: uses={AllocationInstance, RemoteCostBound}
+% lea: context={Define AllocationObjectiveOffset (I : AllocationInstance) (h : Real) : Real as h * Fintype.card I.Partition * (I.k)^2 + RemoteCostBound I, with all natural values cast to Real. This is the constant term of the expanded AllocationObjective.}
+The constant part of the expanded objective is
+\[
+  K_{I,h}=h\,|P_I|\,k_I^2+B_I.
+\]
+\end{definition}
+
+\begin{theorem}[The objective is representable as a QUBO]
+  \label{thm:objective-is-qubo}
+% lea: formalize
+% lea: label=allocationObjective_is_qubo
+% lea: uses={QUBO, AllocationQUBOVariable, AllocationObjective, AllocationObjectiveOffset}
+% lea: context={Prove that for every I and h there exists q : QUBO (AllocationQUBOVariable I) such that for every binary configuration x, q.energy x + AllocationObjectiveOffset I h = AllocationObjective I h x. Construct q by expanding the squares, using x^2 = x for Fin 2 values, and collecting coefficients under the variable LinearOrder.}
+For every allocation instance $I$ and real $h$, there exists a QUBO $q_{I,h}$
+on $V_I$ such that every binary configuration $x$ satisfies
+\[
+  E_{q_{I,h}}(x)+K_{I,h}=Q_{I,h}(x).
+\]
+\end{theorem}
+
+\begin{definition}[The allocation QUBO]\label{def:allocation-qubo}
+% lea: define
+% lea: label=AllocationQUBO
+% lea: uses={allocationObjective_is_qubo}
+% lea: context={Define AllocationQUBO (I : AllocationInstance) (h : Real) : QUBO (AllocationQUBOVariable I) by choosing the witness from allocationObjective_is_qubo. Also prove a named theorem allocationQUBO_energy_add_offset giving the witness identity for all x.}
+Fix one QUBO supplied by Theorem~\ref{thm:objective-is-qubo} and denote it by
+$\operatorname{AllocationQUBO}(I,h)$. Its energy satisfies
+\[
+  E_{\operatorname{AllocationQUBO}(I,h)}(x)+K_{I,h}=Q_{I,h}(x)
+\]
+for every configuration $x$.
+\end{definition}
+
+\subsection{Correctness of the transformation}
+
+\begin{lemma}[Zero penalty implies feasibility]
+  \label{lem:zero-penalty-feasible}
+% lea: formalize
+% lea: label=zeroPenaltyImpliesFeasible
+% lea: uses={SafetyPenalty, StoragePenalty, DecodeAssignment, FeasibleAssignment, binaryCapacityEncoding}
+% lea: context={Prove that if SafetyPenalty I x = 0 and StoragePenalty I x = 0, then FeasibleAssignment I (DecodeAssignment I x). Use the exact-cardinality consequence of Q_R = 0 and the fact that every selected chunk sum is at most capacity.}
+If $Q_R(x)=0$ and $Q_S(x)=0$, then the decoded assignment $D_x$ is feasible.
+\end{lemma}
+
+\begin{lemma}[Feasible assignments have zero-penalty encodings]
+  \label{lem:feasible-zero-penalty}
+% lea: formalize
+% lea: label=feasibleAssignmentHasZeroPenaltyEncoding
+% lea: uses={FeasibleAssignment, DecodeAssignment, SafetyPenalty, StoragePenalty, binaryCapacityEncoding}
+% lea: context={Prove that every feasible D : DataAssignment I has a binary configuration x with DecodeAssignment I x = D, SafetyPenalty I x = 0, and StoragePenalty I x = 0. Set assignment bits from D and obtain each node's storage bits from binaryCapacityEncoding.encode using the storage-feasibility proof.}
+For every feasible data assignment $D$, there exists a binary configuration $x$
+such that
+\[
+  D_x=D,\qquad Q_R(x)=0,\qquad Q_S(x)=0.
+\]
+\end{lemma}
+
+\begin{lemma}[The processing objectives agree]
+  \label{lem:processing-objectives-agree}
+% lea: formalize
+% lea: label=processingObjective_eq_processingCost
+% lea: uses={ProcessingObjective, DecodeAssignment, ProcessingCost}
+% lea: context={Prove that ProcessingObjective I x equals the real cast of ProcessingCost I (DecodeAssignment I x). Unfold the decoded Finset membership condition and the two finite sums.}
+For every binary configuration $x$,
+\[
+  Q_C(x)=\operatorname{ProcessingCost}_I(D_x),
+\]
+where the natural-valued processing cost is viewed as a real number.
+\end{lemma}
+
+\begin{theorem}[Correctness of the QUBO transformation]
+  \label{thm:qubo-encoding-correct}
+% lea: formalize
+% lea: label=quboEncodingCorrect
+% lea: uses={AllocationQUBO, ValidPenaltyWeight, zeroPenaltyImpliesFeasible, feasibleAssignmentHasZeroPenaltyEncoding, processingObjective_eq_processingCost, IsOptimalAssignment}
+% lea: context={Assume ValidPenaltyWeight I h and that at least one FeasibleAssignment exists. Prove both directions: every QUBO.IsOptimal (AllocationQUBO I h) x decodes to IsOptimalAssignment I (DecodeAssignment I x); and every IsOptimalAssignment I D has some encoding x that decodes to D and is QUBO.IsOptimal. Use the strict bound h > RemoteCostBound to exclude every positive integer constraint penalty, and use allocationQUBO_energy_add_offset to transfer minimizers between QUBO energy and AllocationObjective.}
+Let $h$ be a valid penalty weight and suppose at least one feasible assignment
+exists. Then:
+\begin{enumerate}
+  \item every global minimizer $x$ of $\operatorname{AllocationQUBO}(I,h)$
+    decodes to an optimal feasible data assignment $D_x$;
+  \item every optimal feasible data assignment $D$ has a binary encoding $x$
+    with $D_x=D$ that globally minimizes
+    $\operatorname{AllocationQUBO}(I,h)$.
+\end{enumerate}
+Thus the global minimizers of the QUBO correspond exactly, after decoding, to
+the optimal solutions of the data-assignment problem.
+\end{theorem}
+
+\section*{Next formalization milestone}
+
+After all targets above are checked, the next include file should cover the
+formal analysis from Section 6: the knapsack reduction, the number of logical
+variables, and dense- and sparse-topology bounds. The storage-connection count
+must be audited before stating its asymptotic theorem, because the paper's
+displayed bound omits the factor contributed by ranging over all nodes.

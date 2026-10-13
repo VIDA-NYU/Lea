@@ -20,6 +20,8 @@ Exits 0 if every check passes, 1 otherwise.
 """
 
 import sys
+import threading
+from uuid import uuid4
 
 import lea.lsp_daemon as lsp_daemon
 from lea.lsp_daemon import check_via_lsp, mark_stale
@@ -46,16 +48,19 @@ class _FakeDaemon:
         self._check_count = 0
         self._leases = 0
         self.shutdown_called = False
+        self.generation = uuid4().hex
+        self.closed = threading.Event()
 
-    def start(self):
+    def start(self, budget=None):
         return True
 
-    def check(self, file_path, content):
+    def check(self, file_path, content, *, budget=None):
         self._check_count += 1
         return "OK — no errors, no warnings."
 
     def shutdown(self):
         self.shutdown_called = True
+        self.closed.set()
 
     def _acquire_lease(self):
         self._leases += 1
@@ -70,6 +75,7 @@ class _FakeDaemon:
 
 def _reset():
     lsp_daemon._daemons.clear()
+    lsp_daemon._roots.clear()
 
 
 def test_mark_stale_flags_the_tracked_daemon():
@@ -235,6 +241,7 @@ def test_module_close_documents_under_fans_out_and_is_noop_when_empty():
     check("no daemons → closes nothing, no raise", lsp_daemon.close_documents_under("/root/x") == 0)
     a1 = _uri("/root/.lea/tmp/run/agentA/candidate.lean")
     d, _tr = _open_daemon_with({a1})
+    lsp_daemon._root("/root")
     lsp_daemon._daemons["/root"] = d
     try:
         n = lsp_daemon.close_documents_under("/root/.lea/tmp/run/agentA")

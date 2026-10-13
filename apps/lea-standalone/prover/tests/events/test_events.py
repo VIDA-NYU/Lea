@@ -75,8 +75,9 @@ def test_in_union():
 def test_file_changed_has_no_content():
     # D3/D8: path-only — content is read from disk / git, never carried in the event.
     names = {f.name for f in fields(FileChanged)}
-    check("FileChanged is path-only", names == {"path"})
-    check("FileChanged has no content field", "content" not in names and "code" not in names)
+    check("FileChanged keeps compatible path and optional snapshot", names == {"path", "content"})
+    check("legacy FileChanged omits snapshot", FileChanged("a.lean").content is None)
+    check("FileChanged captures immutable content", FileChanged("a.lean", "source").content == "source")
 
 
 def main():

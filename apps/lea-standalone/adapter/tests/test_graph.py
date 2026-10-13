@@ -6,6 +6,8 @@ since status reuses the stored verdict."""
 
 from __future__ import annotations
 
+import pytest
+
 from app import db, graph, projects, store
 
 
@@ -175,3 +177,7 @@ def test_edges_preserved_from_blueprint(tmp_path, monkeypatch):
     result = graph.build_graph(project, proofs)
     assert {"from": "main", "to": "helper"} in result["edges"]
     assert {"from": "todo", "to": "helper"} in result["edges"]
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

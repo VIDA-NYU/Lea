@@ -10,6 +10,7 @@ graph), so detail here is just meta + the project's sessions.
 from __future__ import annotations
 
 import re
+import hashlib
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
@@ -29,10 +30,26 @@ from .. import github_import_service
 from ..github_project_import import ImportPlanningError, TaggedTarget
 from ..github_source import GitHubSourceError
 from .. import projects as project_service
-from .. import store
+from .. import store, project_coordination, proof_files
 from .. import uploads
+from ..alignment_schemas import SourceBundle
+from ..read_projections import read_projection
 
 router = APIRouter()
+
+
+def _guard_project(*, by_slug=False, write=False, metadata=False, environment_write=True):
+    def resolve(arguments):
+        if by_slug:
+            try:
+                project = store.get_project_by_slug(arguments["slug"])
+            except ValueError:
+                return None  # Preserve the route's existing invalid-slug response.
+            return project["id"] if project else None
+        return arguments["project_id"]
+    return project_coordination.guarded(resolve, write=write, metadata=metadata,
+                                        environment_write=environment_write)
+
 
 
 class ProjectCreate(BaseModel):
@@ -98,6 +115,7 @@ class GithubImportTarget(BaseModel):
     display_title: str
     statement: str | None = None
     source_hash: str | None = None
+    source_bundle: SourceBundle | None = None
 
 
 class GithubImportPreviewRequest(BaseModel):
@@ -211,6 +229,7 @@ def get_project(project_id: str) -> dict:
 
 
 @router.put("/api/projects/{project_id}")
+@_guard_project(by_slug=False, write=True, metadata=False)
 def update_project(project_id: str, request: ProjectUpdate) -> dict:
     updated = store.update_project(
         project_id, title=request.title, description=request.description
@@ -259,6 +278,7 @@ def _get_doc(project_id: str, name: str) -> dict:
     return {"content": project_service.read_doc(project, _proofs_root(), name)}
 
 
+@_guard_project(by_slug=False, write=True, metadata=False)
 def _put_doc(project_id: str, name: str, content: str) -> dict:
     project = store.get_project(project_id)
     if project is None:
@@ -302,11 +322,13 @@ def _blueprint_payload(project: dict) -> dict:
 
 
 @router.get("/api/projects/{project_id}/blueprint")
+@_guard_project(by_slug=False, write=False, metadata=True)
 def get_blueprint(project_id: str) -> dict:
     return _blueprint_payload(_require_project(project_id))
 
 
 @router.put("/api/projects/{project_id}/blueprint")
+@_guard_project(by_slug=False, write=True, metadata=False)
 def put_blueprint(project_id: str, request: DocUpdate) -> dict:
     project = _require_project(project_id)
     sha = project_service.write_doc(project, _proofs_root(), "blueprint.md", request.content)
@@ -314,6 +336,7 @@ def put_blueprint(project_id: str, request: DocUpdate) -> dict:
 
 
 @router.get("/api/projects/{project_id}/graph")
+@_guard_project(by_slug=False, write=False, metadata=True)
 def get_graph(project_id: str) -> dict:
     # T2: parse the blueprint + derive each node's live status and session
     # attribution (D28/D29). Cheap — reuses stored verdicts, never recompiles.
@@ -322,6 +345,7 @@ def get_graph(project_id: str) -> dict:
 
 
 @router.post("/api/projects/{project_id}/blueprint/generate")
+@_guard_project(by_slug=False, write=True, metadata=True)
 def generate_blueprint(project_id: str) -> dict:
     # Populate the blueprint from formalized artifacts (additive, idempotent).
     # Writes + commits .lea/blueprint.md; returns {added, skipped, warnings, graph}.
@@ -343,6 +367,7 @@ _FS_ERROR_STATUS = {"bad_path": 400, "not_found": 404, "binary": 415}
 
 
 @router.get("/api/projects/{project_id}/tree")
+@_guard_project(by_slug=False, write=False, metadata=True)
 def get_tree(project_id: str) -> dict:
     project = _require_project(project_id)
     repo = project_service.project_repo_dir(project, _proofs_root())
@@ -350,6 +375,7 @@ def get_tree(project_id: str) -> dict:
 
 
 @router.get("/api/projects/{project_id}/file")
+@_guard_project(by_slug=False, write=False, metadata=True)
 def read_project_file(project_id: str, path: str) -> dict:
     project = _require_project(project_id)
     repo = project_service.project_repo_dir(project, _proofs_root())
@@ -361,6 +387,7 @@ def read_project_file(project_id: str, path: str) -> dict:
 
 
 @router.put("/api/projects/{project_id}/file")
+@_guard_project(by_slug=False, write=True, metadata=False)
 def write_project_file(project_id: str, request: FilePut) -> dict:
     """Write + commit any file under the project repo (path-guarded, author=user).
     Editing a `.lean` returns its standalone `check` verdict so the editor can flag
@@ -375,16 +402,38 @@ def write_project_file(project_id: str, request: FilePut) -> dict:
             },
         )
     proofs_root = _proofs_root()
+    repo = project_service.project_repo_dir(project, proofs_root)
     try:
-        sha = fs_service.write_text_file(project, proofs_root, request.path, request.content)
+        absolute = fs_service.safe_abs(repo, request.path)
     except fs_service.FilesystemError as exc:
-        raise HTTPException(status_code=_FS_ERROR_STATUS.get(exc.code, 400), detail=str(exc))
-    check = None
-    if request.path.endswith(".lean"):
-        repo = project_service.project_repo_dir(project, proofs_root)
-        result = interface_check(str(repo / request.path))
-        check = {"status": result.status, "detail": result.detail}
-    return {"path": request.path, "commit_sha": sha, "check": check}
+        raise HTTPException(status_code=_FS_ERROR_STATUS.get(exc.code, 400), detail=str(exc)) from None
+    rel = absolute.relative_to(repo.resolve()).as_posix()
+    records = store.code_steps_for_project_path(project_id, rel, include_content=False) if rel.endswith(".lean") else []
+    if records:
+        session_id = records[0]["session_id"]
+        formalization_id = records[0].get("formalization_id")
+        with project_coordination.file_edit(project_id), proof_files.file_guard(absolute):
+            proof_files.save(session_id, rel, absolute, request.content,
+                formalization_id=formalization_id, note="Edited in the project filesystem editor.")
+            expected = store.current_proof_step(session_id, rel)
+            try:
+                sha = GitStore(proofs_root).commit_all(repo, f"edit {rel}", paths=[rel])
+            except GitStoreError:
+                raise HTTPException(500, detail={"code": "content_saved_commit_failed",
+                    "message": "Your edit was saved in history, but its Git commit failed. Refresh and retry.",
+                    "code_step_id": expected["id"], "content_sha256": expected["blob_sha256"]}) from None
+        check = proof_files.check(session_id, rel, absolute, interface_check,
+            formalization_id=formalization_id, expected=expected)
+    else:
+        try:
+            sha = fs_service.write_text_file(project, proofs_root, rel, request.content)
+        except fs_service.FilesystemError as exc:
+            raise HTTPException(status_code=_FS_ERROR_STATUS.get(exc.code, 400), detail=str(exc)) from None
+        check = None
+        if rel.endswith(".lean"):
+            result = interface_check(str(absolute))
+            check = {"status": result.status, "detail": result.detail}
+    return {"path": rel, "commit_sha": sha, "check": check}
 
 
 def _export_project_response(project: dict) -> Response:
@@ -401,6 +450,7 @@ def _export_project_response(project: dict) -> Response:
 
 
 @router.get("/api/projects/{project_id}/export")
+@_guard_project(by_slug=False, write=False, metadata=True)
 def export_project(project_id: str) -> Response:
     """Stream a zip of the whole project repo (source + .lea assets; .git/.lake
     excluded) so the project is shareable as a single download (D34)."""
@@ -446,6 +496,7 @@ def preview_project_github_import(project_id: str, request: GithubImportPreviewR
 
 
 @router.post("/api/projects/{project_id}/github-imports", status_code=202)
+@_guard_project(by_slug=False, write=True, metadata=False)
 def confirm_project_github_import(project_id: str, request: GithubImportConfirmRequest) -> dict:
     return _confirm_github_import(_require_project(project_id), request)
 
@@ -479,6 +530,7 @@ def preview_project_github_import_by_slug(
 
 
 @router.post("/api/projects/by-slug/{slug}/github-imports", status_code=202)
+@_guard_project(by_slug=True, write=True, metadata=False)
 def confirm_project_github_import_by_slug(
     slug: str, request: GithubImportConfirmRequest
 ) -> dict:
@@ -491,10 +543,14 @@ def get_project_github_import_by_slug(slug: str, import_id: str) -> dict:
 
 
 @router.post("/api/projects/by-slug/{slug}/formalizations/sync")
+@_guard_project(by_slug=True, write=True, metadata=False, environment_write=False)
 def sync_project_formalizations_by_slug(
     slug: str, request: FormalizationTargetSyncRequest
 ) -> dict:
     project = _require_project_by_slug(slug)
+    # This updates target metadata and SQL import bindings only. It must still
+    # reserve the project against namespace changes, but cannot queue inventory
+    # refreshes behind Lean checks or dependency builds.
     return github_import_service.sync_targets(
         project,
         _import_targets(request.targets),
@@ -581,6 +637,7 @@ def _push_project(project: dict) -> dict:
 
 
 @router.put("/api/projects/{project_id}/git/remote")
+@_guard_project(by_slug=False, write=True)
 def set_project_remote(project_id: str, request: RemoteUpdate) -> dict:
     """Set the project's GitHub remote URL (D34). Stored on the project row; the
     token stays global in Settings. Returns the (token-free) remote."""
@@ -588,6 +645,7 @@ def set_project_remote(project_id: str, request: RemoteUpdate) -> dict:
 
 
 @router.post("/api/projects/{project_id}/git/push")
+@_guard_project(by_slug=False, write=True)
 def push_project(project_id: str) -> dict:
     """Push the project repo to its configured GitHub remote using the global token
     (D34). Explicit user action only. 400 if no remote or no token is configured;
@@ -613,6 +671,7 @@ def _require_project_by_slug(slug: str) -> dict:
 
 
 @router.get("/api/projects/by-slug/{slug}/identity")
+@_guard_project(by_slug=True, write=False, metadata=True)
 def get_project_identity_by_slug(slug: str) -> dict:
     return project_service.project_identity(_require_project_by_slug(slug))
 
@@ -646,9 +705,11 @@ def update_project_identity_by_slug(slug: str, request: ProjectIdentityUpdate) -
         raise HTTPException(status_code=400, detail="Project name is required")
 
     if request.mode == "display-only":
-        project_service.refresh_project_title_docs(project, _proofs_root(), title)
-        updated = store.update_project(project["id"], title=title)
-        return {"identity": project_service.project_identity(updated)}
+        with project_coordination.mutation(project["id"]):
+            project = store.get_project(project["id"])
+            project_service.refresh_project_title_docs(project, _proofs_root(), title)
+            updated = store.update_project(project["id"], title=title)
+            return {"identity": project_service.project_identity(updated)}
 
     try:
         result = project_service.migrate_project_namespace(
@@ -689,16 +750,19 @@ def get_share_status_by_slug(slug: str) -> dict:
 
 
 @router.get("/api/projects/by-slug/{slug}/blueprint")
+@_guard_project(by_slug=True, write=False, metadata=True)
 def get_blueprint_by_slug(slug: str) -> dict:
     return _blueprint_payload(_require_project_by_slug(slug))
 
 
 @router.get("/api/projects/by-slug/{slug}/graph")
+@_guard_project(by_slug=True, write=False, metadata=True)
 def get_graph_by_slug(slug: str) -> dict:
     return graph_service.build_graph(_require_project_by_slug(slug), _proofs_root())
 
 
 @router.post("/api/projects/by-slug/{slug}/blueprint/generate")
+@_guard_project(by_slug=True, write=True, metadata=True)
 def generate_blueprint_by_slug(slug: str) -> dict:
     # The Overleaf "Generate from formalized theorems" button lands here (slug-resolved,
     # never creates a project). Same additive synthesis as the by-id route, backfill included.
@@ -724,6 +788,7 @@ def _ensure_artifacts_backfilled(project: dict) -> None:
 
 
 @router.get("/api/projects/by-slug/{slug}/artifacts")
+@_guard_project(by_slug=True, write=False, metadata=True)
 def project_artifacts_by_slug(slug: str) -> dict:
     """Structured artifact index (PLAN-system-hardening 4.1): which declaration
     lives in which file, as recorded by the run finalizer. The Overleaf
@@ -745,8 +810,27 @@ def project_artifacts_by_slug(slug: str) -> dict:
 _TARGET_STATUS_CONTENT_CAP = 64 * 1024
 
 
+def _shared_artifact(project_id: str, proof_path: str, content: str, owners: list[dict]) -> bool:
+    from ..artifacts import has_unrelated_declarations
+    from ..db import connect
+
+    # Explicitly linked targets remain separate owners even when one happens
+    # to be declared inside another definition's namespace.
+    with connect() as conn:
+        linked = conn.execute(
+            """select count(distinct f.id) from formalization_files ff
+               join formalizations f on f.id = ff.formalization_id
+               where f.project_id = ? and ff.path = ?""",
+            (project_id, proof_path),
+        ).fetchone()[0]
+    owner_name = owners[0]["declaration_name"] if len(owners) == 1 else None
+    return len(owners) > 1 or linked > 1 or has_unrelated_declarations(content, owner_name)
+
+
 @router.get("/api/projects/by-slug/{slug}/target-status")
-def project_target_status_by_slug(slug: str, declarations: str = "") -> dict:
+@_guard_project(by_slug=True, write=False, metadata=True)
+@read_projection
+def project_target_status_by_slug(slug: str, declarations: str = "", formalization_ids: str = "") -> dict:
     """Ledger-side target evidence (PLAN-system-hardening 4.4): for each named
     declaration, what the adapter's own records say — the artifact row, whether
     the recorded file exists and still holds the declaration, whether it leans
@@ -756,47 +840,136 @@ def project_target_status_by_slug(slug: str, declarations: str = "") -> dict:
     `content` rides along (capped) purely for display extraction client-side —
     the verdict fields here are authoritative."""
     from .. import artifacts as artifacts_service
+    from .. import formalizations as formalization_service
+    from ..target_completion import target_declaration
 
     project = _require_project_by_slug(slug)
     _ensure_artifacts_backfilled(project)
+    from ..formalize_batch_reports import latest_target_outcomes
+    from ..db import connect
+    batch_outcomes = latest_target_outcomes(project["id"])
     names = [name for name in (part.strip() for part in declarations.split(",")) if name]
+    requested_ids = [fid for fid in (part.strip() for part in formalization_ids.split(",")) if fid]
     repo = project_service.project_repo_dir(project, _proofs_root())
     rows = {row["declaration_name"]: row for row in store.list_artifacts_for_scope(project["id"])}
+    formalizations_by_name = {}
+    for fid in requested_ids:
+        formalization = formalization_service.get(fid)
+        if formalization and formalization.get("project_id") == project["id"]:
+            identity_label = formalization.get("declaration_name") or formalization.get("display_title") or fid
+            formalizations_by_name[identity_label] = formalization
+            if identity_label not in names:
+                names.append(identity_label)
 
     targets = []
     for name in names:
+        last_batch_outcome = batch_outcomes.get(("theorem", name)) or batch_outcomes.get(("definition", name))
         row = rows.get(name)
-        if not row:
-            targets.append({"declaration_name": name, "recorded": False})
+        formalization = formalizations_by_name.get(name)
+        if not formalization and row and row.get("formalization_id"):
+            formalization = formalization_service.get(row["formalization_id"])
+        if not formalization:
+            identity = store.find_formalization_by_declaration(
+                project_id=project["id"], loose_session_id=None,
+                declaration_name=name,
+            )
+            if identity:
+                formalization = formalization_service.get(identity["id"])
+        if not row and not formalization:
+            targets.append({"declaration_name": name, "recorded": False,
+                            "validity_status": "unavailable", "validity_reason": "No formalization identity is available.",
+                            "completion_run_id": None, "declaration_kind": None, "check_current": False,
+                            "last_batch_outcome": last_batch_outcome})
             continue
-        absolute = repo / row["path"]
-        exists = absolute.is_file()
+        steps = store.current_code_steps_for_formalization(formalization["id"]) if formalization else []
+        proof_path = row["path"] if row else ((formalization or {}).get("primary_path") or (steps[0]["path"] if steps else None))
+        if formalization and formalization.get("completion_run_id") and (
+            not proof_path or formalization.get("validity_status") == "needs_review"
+        ):
+            from ..db import connect
+            with connect() as conn:
+                partial = conn.execute(
+                    """select path from timeline where kind = 'code' and run_id = ?
+                       and lower(path) like '%.lean' order by id desc limit 1""",
+                    (formalization["completion_run_id"],),
+                ).fetchone()
+            proof_path = partial["path"] if partial else proof_path
+        absolute = repo / proof_path if proof_path else None
+        exists = bool(absolute and absolute.is_file())
         content = ""
         if exists:
             try:
-                content = absolute.read_text()
+                content = absolute.read_bytes().decode('utf-8')
             except OSError:
                 exists = False
-        check = store.latest_check_for_project_path(project["id"], row["path"])
-        formalization = (
-            store.get_formalization(row["formalization_id"])
-            if row.get("formalization_id") else None
+        shared_file = exists and _shared_artifact(
+            project["id"], proof_path, content,
+            [candidate for candidate in rows.values() if candidate["path"] == proof_path],
         )
+        check = store.latest_check_for_project_path(project["id"], proof_path) if proof_path else None
+        current_step = None
+        editing_session_id = None
+        if formalization:
+            current_step = next((step for step in steps if step.get("path") == proof_path), None)
+            associated_sessions = store.session_ids_for_formalization(formalization["id"])
+            current_session_id = current_step.get("session_id") if current_step else None
+            editing_session_id = (
+                current_session_id
+                if current_session_id in associated_sessions
+                else (associated_sessions[0] if associated_sessions else None)
+            )
         current_source_hash = (formalization or {}).get("source_hash")
-        artifact_source_hash = row.get("source_hash")
+        if formalization:
+            origin_label = (formalization.get("origin_key") or "").rsplit(":", 1)[-1]
+            last_batch_outcome = batch_outcomes.get((formalization["kind"], origin_label)) or last_batch_outcome
+            if last_batch_outcome:
+                with connect() as conn:
+                    outcome_run = conn.execute("select created_at from runs where id=?",
+                        (last_batch_outcome.get("runId"),)).fetchone()
+                    # A retry may finish while independent batch items are
+                    # still running, before this report's final timestamp.
+                    since = outcome_run["created_at"] if outcome_run else last_batch_outcome["started_at"]
+                    newer = conn.execute("select id from runs where focus_formalization_id=? and created_at>? and id!=? limit 1",
+                        (formalization["id"], since, last_batch_outcome.get("runId") or "")).fetchone()
+                if newer:
+                    last_batch_outcome = None
+        artifact_source_hash = (row or {}).get("source_hash")
+        checked_sha = (check or {}).get("checked_sha256")
+        content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest() if exists else None
+        check_current = bool(checked_sha and checked_sha == content_sha and check.get("check_status") == "ok" and check.get("check_current"))
+        declared = target_declaration(content, name, (formalization or {}).get("kind") or "theorem") if exists else None
+        validity = (formalization or {}).get("validity_status") or "unavailable"
+        validity_reason = (formalization or {}).get("validity_reason") or "No authoritative target verdict is available."
+        if validity in {"proved", "defined"} and not check_current:
+            validity, validity_reason = "unchecked", "The current file contents do not match a passing Lean check."
+        if validity in {"proved", "defined"} and not declared:
+            validity, validity_reason = "needs_review", "The current file does not declare the requested target."
         targets.append({
             "declaration_name": name,
-            "recorded": True,
-            "path": row["path"],
-            "module_name": row["module_name"],
-            "kind": row["kind"],
+            "recorded": bool(row),
+            "path": proof_path,
+            "module_name": (row or {}).get("module_name") if row and row["path"] == proof_path else None,
+            "kind": (row or {}).get("kind"),
             "exists": exists,
-            "declaration_present": artifacts_service.declaration_present(content, name) if exists else False,
+            "shared_file": shared_file,
+            "declaration_present": bool(declared),
             "has_sorry": artifacts_service.declaration_contains_sorry(content, name) if exists else None,
             "check_status": check["check_status"] if check else None,
             "check_detail": check["check_detail"] if check else None,
             "check_author": check["author"] if check else None,
-            "formalization_id": row.get("formalization_id"),
+            "check_created_at": check["created_at"] if check else None,
+            "artifact_updated_at": current_step["created_at"] if current_step else None,
+            "formalization_id": (formalization or {}).get("id") or (row or {}).get("formalization_id"),
+            "validity_status": validity,
+            "validity_reason": validity_reason,
+            "completion_run_id": (formalization or {}).get("completion_run_id"),
+            "declaration_kind": declared.kind if declared else (formalization or {}).get("declaration_kind"),
+            "check_current": check_current,
+            "last_batch_outcome": last_batch_outcome,
+            # The session that wrote the current artifact revision is the
+            # durable editing context. Companion jobs are only a projection
+            # and may not exist for GitHub-imported formalizations.
+            "session_id": editing_session_id,
             "current_source_hash": current_source_hash,
             "artifact_source_hash": artifact_source_hash,
             "stale": bool(
@@ -854,6 +1027,7 @@ def _resolve_repo_file(project: dict, rel: str) -> tuple[Path, Path, str]:
 
 
 @router.post("/api/projects/by-slug/{slug}/artifacts/retire")
+@_guard_project(by_slug=True, write=True, metadata=False)
 def retire_project_artifact_by_slug(slug: str, request: ArtifactRetireRequest) -> dict:
     """Single-writer retirement (PLAN-system-hardening 4.5): a retry deletes the
     previous proof file through the adapter, then records that filesystem change
@@ -875,15 +1049,39 @@ def retire_project_artifact_by_slug(slug: str, request: ArtifactRetireRequest) -
             status_code=422,
             detail="That path is not a recorded proof artifact for this project.",
         )
-    absolute.unlink()
+    # A definition may include its own namespace helpers. Separate target
+    # owners or unrelated declarations still prevent a whole-file retry.
+    owners = [
+        row for row in store.list_artifacts_for_scope(project["id"])
+        if row["path"] == rel
+    ]
     try:
-        sha = GitStore(repo.parent).commit_all(repo, f"retire {rel} for retry", paths=[rel])
+        shared = _shared_artifact(project["id"], rel, absolute.read_text(), owners)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not inspect {rel}: {exc}") from exc
+    if shared:
+        raise HTTPException(
+            status_code=409,
+            detail="This Lean file contains multiple declarations; it cannot be retired for one formalization.",
+        )
+    # A code step can be SQL-owned while its materialized project file is still
+    # untracked (for example after importing legacy state or a tool that wrote
+    # outside the normal FileChanged commit path). Commit the exact bytes at this
+    # path before deleting them. This is a no-op for an already tracked, clean
+    # artifact, is path-scoped for concurrent project writers, and guarantees the
+    # following deletion has a Git object to stage and a revision to restore from.
+    gs = GitStore(repo.parent)
+    try:
+        gs.commit_all(repo, f"record {rel} before retry retirement", paths=[rel])
+        absolute.unlink()
+        sha = gs.commit_all(repo, f"retire {rel} for retry", paths=[rel])
     except GitStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return {"retire_commit": sha, "path": rel}
 
 
 @router.post("/api/projects/by-slug/{slug}/artifacts/restore")
+@_guard_project(by_slug=True, write=True, metadata=False)
 def restore_project_artifact_by_slug(slug: str, request: ArtifactRestoreRequest) -> dict:
     """Undo a retirement after a retry that produced no verified replacement:
     restore the latest verified SQL snapshot, with the retire commit's parent as
@@ -922,16 +1120,19 @@ def restore_project_artifact_by_slug(slug: str, request: ArtifactRestoreRequest)
 
 
 @router.get("/api/projects/by-slug/{slug}/export")
+@_guard_project(by_slug=True, write=False, metadata=True)
 def export_project_by_slug(slug: str) -> Response:
     return _export_project_response(_require_project_by_slug(slug))
 
 
 @router.put("/api/projects/by-slug/{slug}/git/remote")
+@_guard_project(by_slug=True, write=True)
 def set_project_remote_by_slug(slug: str, request: RemoteUpdate) -> dict:
     return _set_remote_on(_require_project_by_slug(slug), request.remote_url)
 
 
 @router.post("/api/projects/by-slug/{slug}/git/push")
+@_guard_project(by_slug=True, write=True)
 def push_project_by_slug(slug: str) -> dict:
     return _push_project(_require_project_by_slug(slug))
 
@@ -958,6 +1159,7 @@ def list_files(project_id: str) -> dict:
 
 
 @router.post("/api/projects/by-slug/{slug}/mirror")
+@_guard_project(by_slug=True, write=True)
 def mirror_overleaf_tex(slug: str, request: MirrorRequest, background_tasks: BackgroundTasks) -> dict:
     """Mirror the Overleaf project's `.tex`/`.sty`/`.cls` sources into the matching project's
     `.lea/files/overleaf/` (resolving/creating the project by slug, like `/api/runs`).
@@ -1004,6 +1206,7 @@ async def _read_capped(file: UploadFile, cap: int) -> bytes:
 
 
 @router.post("/api/projects/{project_id}/files", status_code=201)
+@_guard_project(by_slug=False, write=True, metadata=False)
 async def upload_file(project_id: str, file: UploadFile = File(...)) -> dict:
     project = _require_project(project_id)
     try:
@@ -1031,6 +1234,7 @@ def download_file(project_id: str, file_id: str) -> FileResponse:
 
 
 @router.delete("/api/projects/{project_id}/files/{file_id}")
+@_guard_project(by_slug=False, write=True, metadata=False)
 def delete_file(project_id: str, file_id: str) -> dict:
     project = _require_project(project_id)
     row = store.get_project_file(file_id)

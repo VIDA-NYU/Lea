@@ -1,0 +1,243 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage[hidelinks]{hyperref}
+
+\newtheorem{definition}{Definition}
+\newtheorem{lemma}{Lemma}
+\newtheorem{theorem}{Theorem}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{Lea Overleaf Feature Playground}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent Paste this entire file into \code{main.tex} in a fresh Overleaf
+project, with the Lea extension active and the local stack running.
+It uses ordinary LaTeX packages; no \code{lea-tags.sty} is needed.
+Open the Lean pane. There are \textbf{five tagged items}: one definition,
+two consumers of a shared lemma, one intentionally faulty revision target,
+and one optional longer target for manual pause testing.
+
+\paragraph{Recommended order.}
+Formalize \code{mix\_energy}, then \code{mix\_quarter\_drop}, then
+\code{mix\_half\_bound}. Use individual buttons for the revision test.
+The click-through recipes at the end give the source edits to make.
+Keep all Lea labels unchanged throughout the experiments.
+
+\section{One definition and one shared supporting result}
+
+\begin{definition}[Centered energy]\label{def:mix-energy}
+% lea: define label=mix_energy
+% lea: context={Define mix_energy with explicit real arguments in the order c, x, y, and body (x - c)^2 + (y - c)^2. This is a computational definition, not a proposition.}
+For $c,x,y\in\mathbb{R}$, define
+\[
+  E_c(x,y)=(x-c)^2+(y-c)^2.
+\]
+\end{definition}
+
+% Intentionally UNTAGGED: this is supporting mathematics, not a sixth
+% document target. The next two targets ask Lea to reserve it as a shared
+% result. Do not add a formalize marker here and do not list this LaTeX
+% lemma's label in uses: uses lists tagged document dependencies.
+\begin{lemma}[Mixing energy identity]\label{lem:mixing-energy-step}
+For every $c,t,x,y\in\mathbb{R}$,
+\begin{align*}
+  &E_c\bigl((1-t)x+ty,\;tx+(1-t)y\bigr)\\
+  &\qquad=E_c(x,y)-2t(1-t)(x-y)^2.
+\end{align*}
+This identity has \emph{no restriction} on $t$.
+\end{lemma}
+\begin{proof}
+Expand the two squares on the left using the definition of $E_c$.
+Collect the coefficients of $x^2$, $xy$, $y^2$, $cx$, $cy$, and $c^2$.
+Subtracting $E_c(x,y)$ leaves $-2t(1-t)(x-y)^2$.
+\end{proof}
+
+\begin{theorem}[First consumer: quarter mixing]\label{thm:mix-quarter-drop}
+% lea: formalize label=mix_quarter_drop uses={mix_energy}
+% lea: context={Follow the associated proof by applying the untagged Mixing energy identity. Search the project library, then Mathlib. If this exact supporting result is absent, call request_project_dependency with mode deferred and name mixing_energy_step, kind theorem, explicit binders (c t x y : Real), the unrestricted identity stated in the lemma above, and the import of the existing mix_energy definition. Deferred mode is intentional for this workflow test even though the algebra is short. Use the host-assigned module and declaration. Do not duplicate this general identity as a private helper or replace its application with a direct expansion of the target.}
+For every $c,x,y\in\mathbb{R}$,
+\[
+ E_c\left(\frac{3x+y}{4},\frac{x+3y}{4}\right)
+ = E_c(x,y)-\frac{3}{8}(x-y)^2.
+\]
+\end{theorem}
+\begin{proof}
+% lea: proof-for=mix_quarter_drop
+Apply the Mixing energy identity with $t=1/4$.
+The mixed coordinates become $(3x+y)/4$ and $(x+3y)/4$, and
+$2(1/4)(1-1/4)=3/8$. Simplify these expressions to obtain the claim.
+\end{proof}
+
+\begin{theorem}[Second consumer: midpoint mixing]\label{thm:mix-half-bound}
+% lea: formalize label=mix_half_bound uses={mix_energy}
+% lea: context={Follow the associated proof by applying the same unrestricted Mixing energy identity. Search the project library, then Mathlib. Register reuse through request_project_dependency for mixing_energy_step with kind theorem, explicit binders (c t x y : Real), the exact unrestricted identity above, and the import of the existing mix_energy definition; use mode deferred if it is not already available. Use its host-assigned import and declaration. Do not create a differently specialized shared result or independently reprove the general identity.}
+For every $c,x,y\in\mathbb{R}$,
+\[
+ E_c\left(\frac{x+y}{2},\frac{x+y}{2}\right)\le E_c(x,y).
+\]
+\end{theorem}
+\begin{proof}
+% lea: proof-for=mix_half_bound
+Apply the same Mixing energy identity with $t=1/2$. Both coordinates
+become $(x+y)/2$, so the left side equals
+$E_c(x,y)-\tfrac12(x-y)^2$.
+Since $(x-y)^2\ge0$, this is at most $E_c(x,y)$.
+\end{proof}
+
+\section{Pause, revise the source, and resume}
+
+\noindent\textbf{The next statement and its proof are deliberately wrong.}
+They omit the restriction on the mixing parameter. This is the test input
+for author feedback and source-obstruction pauses. The recipes below
+contain the corrected version; they are replacement instructions, not
+hypotheses of the current theorem.
+
+\begin{theorem}[Revision target, version 0]\label{thm:mix-revision-bound}
+% lea: formalize label=mix_revision_bound uses={mix_energy}
+% lea: context={Use the shared unrestricted mixing_energy_step identity and inspect the sign argument in the associated proof. Translate the current statement literally; replacement examples in the test recipes are not assumptions. If the current claim requires an additional hypothesis, publish a blocking Lea Status finding explaining it. Do not silently insert a restriction on t or change the conclusion.}
+For every $c,t,x,y\in\mathbb{R}$,
+\[
+ E_c\bigl((1-t)x+ty,\;tx+(1-t)y\bigr)\le E_c(x,y).
+\]
+\end{theorem}
+\begin{proof}
+% lea: proof-for=mix_revision_bound
+By the Mixing energy identity the left side is
+$E_c(x,y)-2t(1-t)(x-y)^2$.
+For every real $t$, the factor $t(1-t)$ is nonnegative.
+Subtracting a nonnegative quantity proves the inequality.
+\end{proof}
+
+\section{Optional manual pause target}
+
+\begin{theorem}[Repeated quarter mixing]\label{thm:mix-iterated-bound}
+% lea: formalize label=mix_iterated_bound uses={mix_energy,mix_quarter_drop}
+% lea: context={Use sequences x and y indexed by natural numbers, with the two recurrences as hypotheses for every index. Follow the induction proof using the checked mix_quarter_drop theorem. Keep the source statement and proof explicit; do not assume the desired bound.}
+Let $c\in\mathbb{R}$ and let $x,y:\mathbb{N}\to\mathbb{R}$ satisfy,
+for every $n\in\mathbb{N}$,
+\[
+ x(n+1)=\frac{3x(n)+y(n)}4,
+ \qquad y(n+1)=\frac{x(n)+3y(n)}4.
+\]
+Then for every $n\in\mathbb{N}$,
+\[
+ E_c\bigl(x(n),y(n)\bigr)\le E_c\bigl(x(0),y(0)\bigr).
+\]
+\end{theorem}
+\begin{proof}
+% lea: proof-for=mix_iterated_bound
+Induct on $n$. At $n=0$ the inequality is reflexive.
+For the successor step, substitute the two recurrence equations into
+$E_c(x(n+1),y(n+1))$ and apply the quarter-mixing theorem:
+\[
+ E_c(x(n+1),y(n+1))
+ =E_c(x(n),y(n))-\frac38(x(n)-y(n))^2
+ \le E_c(x(n),y(n)).
+\]
+Combine this with the induction hypothesis by transitivity.
+\end{proof}
+
+\section{Click-through recipes and expected evidence}
+
+\subsection*{A. Generate a shared lemma, then reuse it}
+\begin{enumerate}
+ \item Formalize \code{mix\_energy} and wait for its checked definition.
+ \item Formalize \code{mix\_quarter\_drop}. Its context explicitly asks for
+   a deferred shared result, so the intended flow is: target waits,
+   supporting worker proves the identity, target continues automatically.
+ \item Expand \textbf{Shared mathematics}. Inspect the identity's full
+   signature, canonical module/path, verification state, and attempt.
+   The path should be under \code{Shared/}. The definition remains its
+   own document module.
+ \item Formalize \code{mix\_half\_bound}. Look for \textbf{Reused} on the
+   same shared identity, with both consumers listed under \textbf{Used by}.
+   Inspect the two generated target files: each should import and apply
+   that same public lemma. Its attempt count should not increase.
+\end{enumerate}
+\noindent The contexts request this flow, but model choices are not a
+deterministic test harness. A direct algebra proof that compiles has not
+demonstrated sharing: inspect the shared record and actual imports.
+The untagged supporting lemma should not increase the five document targets.
+If the helper was already verified in this project, immediate reuse is expected.
+
+\subsection*{B. Pause on a source issue, fix it, and Resume}
+\begin{enumerate}
+ \item In Lea settings, enable \textbf{Pause formalization when Lea needs
+   author input} and save \emph{before} starting this run.
+ \item Click the individual \textbf{Formalize} button on
+   \code{mix\_revision\_bound}. Do not use \textbf{Formalize all} for this
+   step: it disables automatic source pauses.
+ \item Look for a blocking finding about the missing condition on $t$.
+   A concrete counterexample to version 0 is $c=0$, $t=2$, $x=0$, $y=1$:
+   the original energy is $1$, and the mixed energy is $5$.
+   The intended stop is a source-obstruction pause. If the model instead
+   completes a verified disproof, that is a different outcome; use recipe D
+   for a manual pause.
+ \item Once the run has settled as paused, edit the \emph{live theorem},
+   replacing its opening sentence with:
+\begin{verbatim}
+For every $c,t,x,y\in\mathbb{R}$ with $0\le t\le1$,
+\end{verbatim}
+   Keep its displayed inequality, labels, and Lea context. In its live
+   proof replace the false sign sentence with:
+\begin{verbatim}
+Since $0\le t\le1$, both $t$ and $1-t$ are nonnegative,
+so $2t(1-t)(x-y)^2\ge0$.
+\end{verbatim}
+ \item Let Overleaf save the source, then click \textbf{Resume} on this
+   target. Inspect Lea Status: it should reassess the earlier finding
+   against the new source and prove the corrected claim. The saved session
+   and earlier work should remain, with a linked continuation run.
+\end{enumerate}
+\noindent Resume requires a compatible saved checkpoint. If it reports an
+incompatibility, keep the error visible when assessing the test;
+\textbf{Re-formalize} is a separate fresh-start action.
+
+\subsection*{C. Re-formalize a changed, completed target}
+After recipe B succeeds, edit \code{mix\_revision\_bound} again.
+Remove the interval condition and replace its opening sentence and
+displayed conclusion with:
+\begin{verbatim}
+For every $c,t,x,y\in\mathbb{R}$,
+\[
+ E_c\bigl((1-t)x+ty,\;tx+(1-t)y\bigr)
+ = E_c(x,y)-2t(1-t)(x-y)^2.
+\]
+\end{verbatim}
+Replace its entire proof body, keeping the proof association comment, with:
+\begin{verbatim}
+% lea: proof-for=mix_revision_bound
+Apply the shared Mixing energy identity directly.
+\end{verbatim}
+Also replace its two Lea metadata lines with:
+\begin{verbatim}
+% lea: formalize label=mix_revision_bound uses={mix_energy}
+% lea: context={Apply the checked shared mixing_energy_step
+% lea: identity directly for every real t, using its canonical import.}
+\end{verbatim}
+The corrected theorem is an equality valid for
+all real $t$. Wait for the pane to show the source is out of date, then
+click \textbf{Re-formalize}, possibly in the item's overflow menu.
+Check that the new Lean statement is the unrestricted equality, that it
+uses the existing shared identity, and that no second shared proof attempt
+was created. This tests a new formalization against revised source.
+
+\subsection*{D. Manual Pause and Resume, with a proof-only revision}
+Formalize \code{mix\_iterated\_bound} after the quarter theorem is checked.
+After a completed agent turn, click \textbf{Pause} while it is still running,
+and wait for the pause to settle. Add this sentence to its live source proof,
+just before ``Combine this with the induction hypothesis'':
+\begin{verbatim}
+The last inequality follows because $(x(n)-y(n))^2\ge0$.
+\end{verbatim}
+Let the source save, then \textbf{Resume}. Inspect the preserved work and
+updated source assessment. The theorem itself is unchanged. If the proof
+finishes before Pause takes effect, the completed result should remain;
+use a fresh run if you want to try the timing again.
+
+\end{document}

@@ -1,0 +1,17 @@
+{
+  "normal_port_listeners": {
+    "8001": "",
+    "5173": "",
+    "31245": ""
+  },
+  "test_or_lean_workers": [],
+  "owned_test_containers": [],
+  "other_project_containers_untouched": true,
+  "owned_container_name_prefixes_checked": [
+    "lea-lifecycle-",
+    "lea-prepare-failure-",
+    "lea-prepare-stop-",
+    "lea-production-test-",
+    "lea-cache-test-"
+  ]
+}

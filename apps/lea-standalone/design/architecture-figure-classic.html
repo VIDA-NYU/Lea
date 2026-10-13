@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lea Standalone — Architecture (classical view)</title>
+<style>
+  body { margin:0; background:#eef0f2; color:#2a2724;
+         font:15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; padding:26px 0 70px; }
+  .wrap { max-width:1180px; margin:0 auto; padding:0 20px; }
+  h1 { font-size:21px; margin:0 0 3px; letter-spacing:-.01em; }
+  .sub { color:#8a847c; font-size:13px; margin-bottom:16px; }
+  .card { background:#fff; border:1px solid #dfe3e8; border-radius:12px; padding:10px;
+          box-shadow:0 1px 3px rgba(0,0,0,.05); }
+  svg { width:100%; height:auto; display:block; }
+  .note { color:#8a847c; font-size:12px; margin-top:14px; }
+  .note code { background:#f1f0ec; border:1px solid #e2e0d8; border-radius:4px; padding:0.5px 5px;
+               font:12px ui-monospace, Menlo, monospace; }
+
+  /* SVG text classes */
+  .tname { font:600 13.5px -apple-system, system-ui, sans-serif; fill:#2a2724; }
+  .tsub  { font:11px ui-monospace, Menlo, monospace; fill:#8a847c; }
+  .glyph { font-weight:700; fill:#fff; }
+  .glab  { font:700 11px -apple-system, system-ui, sans-serif; fill:#8a847c; letter-spacing:.07em; }
+  .boxtitle { font:700 12px -apple-system, system-ui, sans-serif; fill:#5a554d; letter-spacing:.05em; }
+  .vlab  { font:700 10.5px -apple-system, system-ui, sans-serif; fill:#a8a298; letter-spacing:.1em; }
+  .alab  { font:600 10.5px -apple-system, system-ui, sans-serif; fill:#5a554d;
+           paint-order:stroke; stroke:#fff; stroke-width:3px; stroke-linejoin:round; }
+  .alab.g{ fill:#3f7a52; }
+  .hl    { font:700 10px -apple-system, system-ui, sans-serif; fill:#c0564a;
+           paint-order:stroke; stroke:#fff; stroke-width:3px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Lea Standalone — System Architecture</h1>
+  <div class="sub">Classical view · <code style="font-family:ui-monospace">apps/lea-standalone</code> · current snapshot, 2026-06-29</div>
+
+  <div class="card">
+  <svg viewBox="0 0 1700 1050" role="img" aria-label="Lea standalone architecture diagram">
+    <defs>
+      <marker id="ah" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 z" fill="#555"/></marker>
+      <marker id="ahg" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 z" fill="#4f8a5b"/></marker>
+    </defs>
+
+    <!-- ===================== GROUP CONTAINERS ===================== -->
+    <!-- outer process box -->
+    <rect x="455" y="130" width="1010" height="830" rx="10" fill="#fbfcfd" stroke="#9aa3ad" stroke-width="1.6"/>
+    <text x="470" y="120" class="boxtitle">LEA STANDALONE — backend process · localhost (one process, no internal HTTP)</text>
+
+    <!-- prover dashed group -->
+    <rect x="645" y="170" width="470" height="475" rx="9" fill="#faf7fc" stroke="#9b86b0" stroke-width="1.5" stroke-dasharray="7 5"/>
+    <text x="657" y="190" class="glab" fill="#7a5a9a">VENDORED PROVER · in-process library (prover/lea)</text>
+    <text class="vlab" transform="translate(1104,470) rotate(-90)" fill="#9b86b0">no HTTP · same process</text>
+
+    <!-- resources dashed group -->
+    <rect x="1155" y="205" width="250" height="300" rx="9" fill="#fdfaf3" stroke="#c2a25e" stroke-width="1.5" stroke-dasharray="7 5"/>
+    <text x="1166" y="225" class="glab" fill="#a06a2a">RESOURCES (local)</text>
+
+    <!-- persistence dashed group -->
+    <rect x="475" y="690" width="360" height="205" rx="9" fill="#f6f7f9" stroke="#8a93a0" stroke-width="1.5" stroke-dasharray="7 5"/>
+    <text x="487" y="710" class="glab" fill="#5f6b7a">PERSISTENCE · source of truth</text>
+
+    <!-- ===================== CONNECTORS (drawn first, under tiles) ===================== -->
+    <g fill="none" stroke="#555" stroke-width="1.6">
+      <!-- Users -> UI -->
+      <path d="M120,486 H170" marker-end="url(#ah)"/>
+      <!-- UI -> Adapter (REST) -->
+      <path d="M237,476 H360 V231 H511" marker-end="url(#ah)"/>
+      <!-- Adapter -> Bridge -->
+      <path d="M546,262 V373" marker-end="url(#ah)"/>
+      <!-- Bridge -> Agent loop (run_events) -->
+      <path d="M577,406 H655 V266 H688" marker-end="url(#ah)"/>
+      <!-- Agent -> LSP -->
+      <path d="M752,246 H938" marker-end="url(#ah)"/>
+      <!-- Agent -> SafeVerify -->
+      <path d="M752,274 H880 V406 H938" marker-end="url(#ah)"/>
+      <!-- Agent -> Mathlib search -->
+      <path d="M721,297 V566 H938" marker-end="url(#ah)"/>
+      <!-- LSP -> Lean -->
+      <path d="M1002,240 H1215 V265 H1243" marker-end="url(#ah)"/>
+      <!-- SafeVerify -> Lean -->
+      <path d="M1002,406 H1198 V281 H1243" marker-end="url(#ah)"/>
+      <!-- Search -> Lean -->
+      <path d="M1002,566 H1188 V297 H1243" marker-end="url(#ah)"/>
+      <!-- Agent -> Model providers (external) -->
+      <path d="M721,235 V158 H1514 V179" marker-end="url(#ah)"/>
+      <!-- Catalog -> Adapter (model list) -->
+      <path d="M1276,462 V665 H620 V247 H511" marker-end="url(#ah)"/>
+      <!-- Bridge -> Git store -->
+      <path d="M531,437 V740" marker-end="url(#ah)"/>
+      <!-- Bridge -> SQLite -->
+      <path d="M561,437 V700 H731 V738" marker-end="url(#ah)"/>
+    </g>
+    <!-- return flows (green) -->
+    <g fill="none" stroke="#4f8a5b" stroke-width="1.6">
+      <!-- Adapter -> UI (SSE) -->
+      <path d="M513,252 H415 V500 H239" marker-end="url(#ahg)"/>
+      <!-- Agent loop -> Bridge (typed events) -->
+      <path d="M688,290 H665 V430 H579" marker-end="url(#ahg)"/>
+    </g>
+
+    <!-- ===================== ARROW LABELS ===================== -->
+    <text x="124" y="478" class="alab">uses</text>
+    <text x="250" y="223" class="alab">HTTPS · REST  /api/*</text>
+    <text x="300" y="494" class="alab g">SSE event stream</text>
+    <text x="552" y="334" class="alab">drive run</text>
+    <text x="650" y="340" text-anchor="end" class="alab">run_events()</text>
+    <text x="650" y="354" text-anchor="end" class="hl">in-process</text>
+    <text x="602" y="452" class="alab g">typed events</text>
+    <text x="822" y="238" class="alab">lean_check</text>
+    <text x="842" y="398" class="alab">verify</text>
+    <text x="760" y="556" class="alab">search</text>
+    <text x="1055" y="232" class="alab">compile</text>
+    <text x="1075" y="398" class="alab">replay</text>
+    <text x="1065" y="558" class="alab">lookup</text>
+    <text x="1040" y="150" class="alab">LLM API (HTTPS) · tokens</text>
+    <text x="905" y="658" class="alab">model list</text>
+    <text x="436" y="600" class="alab">commit on FileChanged</text>
+    <text x="588" y="690" class="alab">index rows (SHA + path)</text>
+
+    <!-- ===================== TILES ===================== -->
+    <!-- Users actor (external) -->
+    <g>
+      <circle cx="88" cy="466" r="12" fill="#5f6b7a"/>
+      <path d="M66,520 q22,-30 44,0 z" fill="#5f6b7a"/>
+      <text x="88" y="552" text-anchor="middle" class="tname">Users</text>
+      <text x="88" y="568" text-anchor="middle" class="tsub">mathematician</text>
+    </g>
+
+    <!-- Web UI (external client) -->
+    <g>
+      <rect x="175" y="455" width="62" height="62" rx="12" fill="#c96442"/>
+      <text x="206" y="495" text-anchor="middle" class="glyph" font-size="22">&lt;/&gt;</text>
+      <text x="206" y="540" text-anchor="middle" class="tname">Web UI</text>
+      <text x="206" y="556" text-anchor="middle" class="tsub">React + Vite · :5173</text>
+    </g>
+
+    <!-- Adapter API -->
+    <g>
+      <rect x="515" y="200" width="62" height="62" rx="12" fill="#4a6fa5"/>
+      <text x="546" y="240" text-anchor="middle" class="glyph" font-size="17">API</text>
+      <text x="546" y="285" text-anchor="middle" class="tname">Adapter API</text>
+      <text x="546" y="301" text-anchor="middle" class="tsub">FastAPI</text>
+    </g>
+
+    <!-- Bridge -->
+    <g>
+      <rect x="515" y="375" width="62" height="62" rx="12" fill="#3d5d8a"/>
+      <text x="546" y="416" text-anchor="middle" class="glyph" font-size="24">⇄</text>
+      <text x="546" y="460" text-anchor="middle" class="tname">Bridge</text>
+      <text x="546" y="476" text-anchor="middle" class="tsub">prover seam · SSE map</text>
+    </g>
+
+    <!-- Git store -->
+    <g>
+      <rect x="520" y="740" width="62" height="62" rx="12" fill="#5f6b7a"/>
+      <g stroke="#fff" stroke-width="2.4" fill="none">
+        <circle cx="544" cy="763" r="4.2"/><circle cx="544" cy="785" r="4.2"/><circle cx="562" cy="763" r="4.2"/>
+        <path d="M544,767 V781 M548,763 q14,0 14,0"/>
+      </g>
+      <text x="551" y="824" text-anchor="middle" class="tname">Git store</text>
+      <text x="551" y="840" text-anchor="middle" class="tsub">proof content</text>
+    </g>
+
+    <!-- SQLite index -->
+    <g>
+      <rect x="700" y="740" width="62" height="62" rx="12" fill="#5f6b7a"/>
+      <g stroke="#fff" stroke-width="2.2" fill="none">
+        <ellipse cx="731" cy="758" rx="13" ry="5"/>
+        <path d="M718,758 V784 M744,758 V784"/>
+        <ellipse cx="731" cy="784" rx="13" ry="5"/>
+        <path d="M718,771 a13,5 0 0 0 26,0" />
+      </g>
+      <text x="731" y="824" text-anchor="middle" class="tname">SQLite index</text>
+      <text x="731" y="840" text-anchor="middle" class="tsub">sessions·runs·steps</text>
+    </g>
+
+    <!-- Agent loop -->
+    <g>
+      <rect x="690" y="235" width="62" height="62" rx="12" fill="#7a5a9a"/>
+      <text x="721" y="277" text-anchor="middle" class="glyph" font-size="27">↻</text>
+      <text x="721" y="320" text-anchor="middle" class="tname">Agent loop</text>
+      <text x="721" y="336" text-anchor="middle" class="tsub">6 tools</text>
+    </g>
+
+    <!-- LSP daemon -->
+    <g>
+      <rect x="940" y="215" width="62" height="62" rx="12" fill="#4f8a5b"/>
+      <text x="971" y="257" text-anchor="middle" class="glyph" font-size="27">✓</text>
+      <text x="971" y="300" text-anchor="middle" class="tname">LSP daemon</text>
+      <text x="971" y="316" text-anchor="middle" class="tsub">lean_check</text>
+    </g>
+
+    <!-- SafeVerify -->
+    <g>
+      <rect x="940" y="375" width="62" height="62" rx="12" fill="#4f8a5b"/>
+      <path d="M971,392 l13,5 v9 q0,13 -13,19 q-13,-6 -13,-19 v-9 z" fill="none" stroke="#fff" stroke-width="2.4"/>
+      <text x="971" y="460" text-anchor="middle" class="tname">SafeVerify</text>
+      <text x="971" y="476" text-anchor="middle" class="tsub">verify · kernel replay</text>
+    </g>
+
+    <!-- Mathlib search -->
+    <g>
+      <rect x="940" y="535" width="62" height="62" rx="12" fill="#4f8a5b"/>
+      <g stroke="#fff" stroke-width="3" fill="none">
+        <circle cx="967" cy="562" r="9"/><line x1="974" y1="569" x2="982" y2="577"/>
+      </g>
+      <text x="971" y="620" text-anchor="middle" class="tname">Mathlib search</text>
+      <text x="971" y="636" text-anchor="middle" class="tsub">search_mathlib</text>
+    </g>
+
+    <!-- Lean + Mathlib -->
+    <g>
+      <rect x="1245" y="250" width="62" height="62" rx="12" fill="#b8842a"/>
+      <text x="1276" y="292" text-anchor="middle" class="glyph" font-size="27">∀</text>
+      <text x="1276" y="335" text-anchor="middle" class="tname">Lean + Mathlib</text>
+      <text x="1276" y="351" text-anchor="middle" class="tsub">Lake workspace</text>
+    </g>
+
+    <!-- Model catalog -->
+    <g>
+      <rect x="1245" y="400" width="62" height="62" rx="12" fill="#a06a2a"/>
+      <text x="1276" y="442" text-anchor="middle" class="glyph" font-size="24">≣</text>
+      <text x="1276" y="485" text-anchor="middle" class="tname">Model catalog</text>
+      <text x="1276" y="501" text-anchor="middle" class="tsub">models.json</text>
+    </g>
+
+    <!-- Model providers (external) -->
+    <g>
+      <rect x="1545" y="150" width="62" height="62" rx="12" fill="#2f8f83"/>
+      <text x="1576" y="192" text-anchor="middle" class="glyph" font-size="24">✦</text>
+      <text x="1576" y="235" text-anchor="middle" class="tname">Model providers</text>
+      <text x="1576" y="251" text-anchor="middle" class="tsub">Gemini · Anthropic · OpenAI</text>
+      <text x="1576" y="135" text-anchor="middle" class="glab" fill="#2f8f83">EXTERNAL · cloud</text>
+    </g>
+
+    <!-- ===================== LEGEND ===================== -->
+    <g transform="translate(470,985)">
+      <line x1="0" y1="0" x2="34" y2="0" stroke="#555" stroke-width="1.6" marker-end="url(#ah)"/>
+      <text x="42" y="4" class="tsub" fill="#5a554d">request / data flow</text>
+      <line x1="220" y1="0" x2="254" y2="0" stroke="#4f8a5b" stroke-width="1.6" marker-end="url(#ahg)"/>
+      <text x="262" y="4" class="tsub" fill="#5a554d">SSE / typed-event return</text>
+      <rect x="470" y="-8" width="22" height="16" rx="4" fill="none" stroke="#8a93a0" stroke-width="1.5" stroke-dasharray="5 4"/>
+      <text x="500" y="4" class="tsub" fill="#5a554d">logical grouping</text>
+      <rect x="660" y="-8" width="22" height="16" rx="4" fill="#fbfcfd" stroke="#9aa3ad" stroke-width="1.5"/>
+      <text x="690" y="4" class="tsub" fill="#5a554d">single OS process</text>
+    </g>
+  </svg>
+  </div>
+
+  <div class="note">
+    Same content as the layered figure (<code>architecture-figure.html</code>), re-drawn in the classical
+    icon-tile / labelled-connector idiom. The browser <b>Web UI</b> and the cloud <b>Model providers</b> sit
+    outside the solid box — everything inside is <b>one local process</b>, which is why the adapter→prover edge
+    is an <b>in-process call, not HTTP</b>. Dashed boxes are logical groupings; green arrows are the return path
+    (SSE to the UI, typed events to the bridge). The <code>Model catalog</code> is also read by the UI (arrow omitted to reduce clutter).
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,7 @@
+..lean_check_fallback {"check_id": "4e6e0a1038604f0c931bf403f353c853", "daemon_generation": null, "backend": "none", "cold_reason": "fallback", "failure": {"kind": "startup", "message": "injected initialization failure", "phase": "lsp"}, "attempts": 2, "timings_ms": {"queue": 0.0, "initialization": 0.0, "lsp": 0.0, "cold": 0.0, "total": 0.0}, "content_sha256": "ca3b18ac67a04141bb636ac1a19ad6b114750c36be92e8ba33c8afaa860946c5", "evidence_version": 1, "environment_sha256": "c13ea3efd3b6261320b2dd97045be9191ac1a11a78baf8792cc2c072e9b5a005", "path": "/private/var/folders/7v/bwwzmh557fq01rdzwhsyys2h0000gn/T/lea-check-recovery-zwh80az7/proofs/Fixture/Good.lean"}
+...
+----------------------------------------------------------------------
+Ran 5 tests in 15.552s
+
+OK
+{"warm_ms_median": 352.655, "warm_ms_p95": 467.79, "cold_ms_median": 223.8, "healthy_fallbacks": 0}

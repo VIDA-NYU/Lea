@@ -1,0 +1,1544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>LeaUI v2.5 — Capability Packs</title>
+<style>
+  :root {
+    --bg: #f5f4ef; --panel: #fffefb; --ink: #2a2724; --muted: #8a847c;
+    --line: #e6e2da; --accent: #c96442; --green: #4f8a5b; --red: #c0564a;
+    --amber: #b8842a; --blue: #4a6fa5; --violet: #7a5a9a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    padding: 32px 0 80px;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+  header { margin-bottom: 8px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .nav { display: flex; gap: 8px; margin: 20px 0 6px; }
+  .nav a { flex: 1; text-align: center; text-decoration: none; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; font-size: 12.5px;
+    font-weight: 600; color: var(--ink); }
+  .nav a span { display: block; font-weight: 400; color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+  .partrule { display: flex; align-items: center; gap: 12px; margin: 46px 0 20px; }
+  .partrule::before, .partrule::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .partrule span { font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase;
+    letter-spacing: .12em; color: var(--muted); }
+  .intro { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 13px 16px; margin: 18px 0 8px; font-size: 13px; color: #4a463f; }
+  .intro b { color: var(--ink); }
+  .danger { background: #fbeeec; border: 1px solid #ecc9c2; border-left: 3px solid var(--red);
+    border-radius: 10px; padding: 12px 16px; margin: 14px 0 8px; font-size: 12.5px; color: #6a3a32; }
+  .danger h3 { margin: 0 0 7px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--red); }
+  .danger b { color: var(--ink); }
+  .gaps { background: #fbf4e6; border: 1px solid #ecdcbb; border-left: 3px solid var(--amber);
+    border-radius: 10px; padding: 12px 16px; margin: 14px 0 14px; font-size: 12.5px; color: #5a4a2a; }
+  .gaps h3 { margin: 0 0 7px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--amber); }
+  .gaps b { color: var(--ink); }
+  .gaps .fix { color: #7a6a44; }
+  .good { background: #eef5ef; border: 1px solid #cfe0d3; border-left: 3px solid var(--green);
+    border-radius: 10px; padding: 12px 16px; margin: 14px 0 26px; font-size: 12.5px; color: #3d5a44; }
+  .good h3 { margin: 0 0 7px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--green); }
+  .good b { color: var(--ink); }
+  .measured { background: #eceef4; border: 1px solid #ccd4e4; border-left: 3px solid var(--blue);
+    border-radius: 10px; padding: 12px 16px; margin: 14px 0 14px; font-size: 12.5px; color: #3a4a64; }
+  .measured h3 { margin: 0 0 7px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--blue); }
+  .measured b { color: var(--ink); }
+  .bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 18px 0 6px; }
+  .bar > i { display: block; height: 100%; background: var(--green); }
+  .counts { color: var(--muted); font-size: 12.5px; margin-bottom: 26px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 14px 0 28px; font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 99px; display: inline-block; }
+  .d-queued { background: #cdc8be; } .d-planned { background: var(--amber); }
+  .d-prog { background: var(--blue); } .d-tested { background: #7aa37f; } .d-done { background: var(--green); }
+
+  .group { margin-bottom: 30px; }
+  .group > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+    margin: 0 0 4px; font-weight: 600; }
+  .group > .ghint { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+
+  .todo { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 13px 15px; margin-bottom: 9px; }
+  .todo.is-planned { border-color: var(--amber); box-shadow: 0 0 0 1px rgba(184,132,42,.15); }
+  .todo.is-tested { border-color: var(--green); box-shadow: 0 0 0 1px rgba(79,138,91,.15); }
+  .todo.is-done { opacity: .62; }
+  .todo .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .id { font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 1px 7px; min-width: 30px;
+    text-align: center; }
+  .id.fe { color: var(--accent); border-color: #e7cabd; background: #fbf1ec; }
+  .id.sub { color: var(--violet); border-color: #d8c8e6; background: #f5eef9; }
+  .title { font-weight: 550; flex: 1; }
+  .tag { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+    padding: 1px 7px; border-radius: 99px; }
+  .tag.be { background: #eef0ec; color: #6a7d63; }
+  .tag.fe { background: #fbf1ec; color: var(--accent); }
+  .tag.prover { background: #eceef4; color: #5a6a8a; }
+  .tag.db { background: #f2eef4; color: #7a5a9a; }
+  .badge { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 99px; white-space: nowrap; }
+  .b-queued { background: #efece6; color: #8a847c; }
+  .b-planned { background: #f7ecd6; color: var(--amber); }
+  .b-prog { background: #e4ecf6; color: var(--blue); }
+  .b-tested { background: #e2efe4; color: #5a8a62; }
+  .b-done { background: #dcefe1; color: var(--green); }
+  .scope { color: var(--muted); font-size: 13px; margin: 6px 0 0 0; }
+  .haz { display: inline-block; font: 600 10.5px ui-monospace, monospace; color: var(--red);
+    background: #fbeeec; border: 1px solid #ecc9c2; border-radius: 5px; padding: 0 5px; margin-right: 4px; }
+  .p1 { display: inline-block; font: 600 10.5px ui-monospace, monospace; color: var(--blue);
+    background: #eaf0f8; border: 1px solid #cfdcee; border-radius: 5px; padding: 0 5px; margin-right: 4px; }
+  .ui { display: inline-block; font: 600 10.5px ui-monospace, monospace; color: var(--violet);
+    background: #f5eef9; border: 1px solid #d8c8e6; border-radius: 5px; padding: 0 5px; margin-right: 4px; }
+  .win { display: inline-block; font: 600 10.5px ui-monospace, monospace; color: var(--green);
+    background: #e6f0e8; border: 1px solid #c6ddcc; border-radius: 5px; padding: 0 5px; margin-right: 4px; }
+  code { background: #f0ede6; border-radius: 4px; padding: 1px 5px; font: 12px ui-monospace, monospace; }
+  pre { background: #f0ede6; border: 1px solid var(--line); border-radius: 8px; padding: 11px 13px;
+    font: 11.5px/1.5 ui-monospace, monospace; overflow-x: auto; margin: 9px 0; color: #4a463f; }
+  table.aud { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 6px 0 0; }
+  table.aud th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); font-weight: 600; padding: 4px 8px 6px 0; border-bottom: 1px solid var(--line); }
+  table.aud td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; color: #4a463f; }
+  table.aud tr:last-child td { border-bottom: none; }
+  table.aud td.n { font: 600 12px ui-monospace, monospace; color: var(--ink); white-space: nowrap; }
+  table.aud td.w { color: var(--red); white-space: nowrap; }
+  table.aud td.g { color: var(--green); white-space: nowrap; font-weight: 600; }
+  .matrix td:first-child { font-weight: 550; color: var(--ink); }
+  footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 40px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>LeaUI v2.5 — Capability Packs <span style="font-size:13px;font-weight:600;color:#4f8a5b;background:#e2efe4;border-radius:99px;padding:3px 11px;vertical-align:middle;margin-left:8px">BUILD COMPLETE</span></h1>
+    <div class="sub">User-authored skills, sub-agents, tools and MCP servers — one pack format, one authoring form ·
+      follows <code>v2.4-error-transparency-progress.html</code></div>
+  </header>
+
+  <div class="nav">
+    <a href="#plan">Part 1 — The Plan<span>findings, measurements, design calls</span></a>
+    <a href="#tracker">Part 2 — The Tracker<span>45 slices, A–H</span></a>
+  </div>
+
+  <div class="partrule"><span>Part 1 — The Plan</span></div>
+  <a id="plan"></a>
+
+  <div class="intro">
+    The goal: let a <b>mathematician</b> — not a programmer — extend the prover with their own procedural knowledge,
+    their own specialist sub-agents, and third-party tools. Three asks came in separately (skills, custom agents,
+    one-click MCP) and a fourth followed (multiple API keys, custom tools, guided prompt authoring). They are
+    <b>one feature</b>: a <b>capability pack</b>. <b>The audit finding is that most of the machinery already
+    exists</b> — skills are fully shipped, MCP is fully implemented in the prover and simply never wired to the
+    adapter, and the multi-key secret vault already accepts arbitrary <code>*_API_KEY</code> entries. What is
+    missing is the <i>declaration layer</i> that ties them together, and one small prover change without which
+    user-defined sub-agents cannot work at all.
+  </div>
+
+  <div class="good">
+    <h3>Already shipped — do not rebuild</h3>
+    <b>Single-file skills are done end to end.</b> DB-backed rows with full CRUD plus GitHub import
+    (<code>routes/skills.py</code>), global ∪ per-project scoping (D47), materialized to per-run temp
+    <code>.md</code> files (<code>skills_catalog.py</code>) and fed to the prover as <code>cfg.skills</code>
+    (<code>bridge.py:1722</code>). <code>SkillFactory.tsx</code> is the UI. <b>Multi-file skills are not
+    supported at all</b> — see gap 4 below, found by importing a real one. ·
+    <b>MCP is complete in the prover.</b> <code>lea/mcp.py</code> handles stdio / SSE / streamable-HTTP, registers
+    discovered tools into the per-activation registry overlay, and fails soft per server;
+    <code>agent.py:572</code> starts it whenever <code>cfg.mcp_servers</code> is non-empty. ·
+    <b>The multi-key vault already generalizes.</b> <code>config.py:98</code> matches any
+    <code>[A-Z][A-Z0-9_]*_API_KEY</code> root entry, <code>_export_provider_keys</code>
+    (<code>config.py:124</code>) publishes them to <code>os.environ</code> <i>and retracts them on clear</i>, and
+    <code>SettingsPage.tsx:49</code> already renders user-added key rows. <code>mcp.py:115</code> merges a
+    server's <code>env</code> <b>over</b> <code>os.environ</code>, so a server inherits saved keys for free. ·
+    <b>The registry is the right seam.</b> <code>register(..., scoped=True)</code> into the activation overlay
+    (<code>registry.py</code>) is exactly how a declarative custom tool should register — same path MCP uses,
+    vanishes on run exit.
+  </div>
+
+  <div class="danger">
+    <h3>The three real gaps</h3>
+    <b>1 · The adapter never sets <code>cfg.mcp_servers</code>.</b> Zero references anywhere in
+    <code>adapter/app/</code>. The prover side is finished and unreachable — the only way to enable an MCP server
+    today is the CLI with a hand-written YAML file. Your own comments already call this out as planned-not-built:
+    <code>stores/factories.ts:14</code> and <code>ScopeAssignment.tsx:6</code> both say "the (deferred) MCP Factory."
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>2 · Sub-agent roles cannot be created, only retuned.</b> <code>profiles.py:64</code> globs
+    <i>only</i> the vendored <code>lea/agents/*.yaml</code> (two files), and <code>routes/subagents.py</code> is
+    GET + PUT with no POST or DELETE. A user can change <code>proof-candidate</code>'s model; they cannot add
+    <code>counterexample-hunter</code>.
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>3 · <span class="haz">LOAD-BEARING</span> The coordinator is never told which roles exist.</b>
+    <code>_SPAWN_SCHEMA</code> (<code>subagents.py:64</code>) declares <code>subagent_type</code> as a
+    <b>free-text string</b>, with role names mentioned only in English prose, and it is registered at import time
+    (<code>subagents.py:646</code>). With two hardcoded roles that survives. The moment a user creates a role, it
+    breaks silently: the model has no way to learn the role exists, so it never calls it — and no error is raised
+    either. <b>The user configures an agent and simply nothing happens.</b> Every other slice in Phase B is
+    decorative until the spawn schema is built per-run with an <code>enum</code> of available roles and their
+    descriptions.
+  </div>
+
+  <div class="danger">
+    <h3>Gap 4 — found by importing a real skill: <code>cameronfreer/lean4-skills</code></h3>
+    Imported through the shipping Skill Factory. What landed in the DB is <b>one row, 8,891 characters — the repo's
+    <code>README.md</code></b>, which is prose <i>about</i> the repo. <b>The actual skill was never fetched.</b>
+    <table class="aud" style="margin-top:9px">
+      <tr><th>In the repo</th><th>Size</th><th>Imported?</th></tr>
+      <tr><td><code>README.md</code> — repo documentation</td><td class="n">8.9 KB</td><td class="w">yes — this is all we got</td></tr>
+      <tr><td><code>plugins/lean4/skills/lean4/SKILL.md</code> — <b>the skill</b></td><td class="n">29 KB</td><td class="w">no</td></tr>
+      <tr><td><code>…/references/*.md</code> — <b>41 files</b></td><td class="n">~690 KB</td><td class="w">no</td></tr>
+      <tr><td><code>plugins/lean4/agents/*.md</code> — 4 sub-agents</td><td class="n">4 files</td><td class="w">no</td></tr>
+      <tr><td><code>plugins/lean4/bin/*</code> — helper scripts</td><td class="n">18+</td><td class="w">no</td></tr>
+      <tr><td colspan="3" style="color:var(--muted)">72 <code>.md</code> files in the repo · 720 KB in the skill directory alone</td></tr>
+    </table>
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>Why the wrong file won.</b> <code>_locate_md</code> (<code>ghimport.py:177</code>) tries
+    <code>SKILL.md</code> → <code>README.md</code> → first <code>*.md</code>. But the first two go through
+    <code>_find_ci</code>, which iterates <code>base.iterdir()</code> — <b>direct children only</b>. This repo's
+    <code>SKILL.md</code> is four levels down, so it is invisible; <code>README.md</code> sits at the root and
+    wins. The <code>rglob</code> fallback <i>would</i> have found it, but only runs when neither priority name
+    exists at the root. <b>Any repo with a root README loses its real skill.</b>
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>And fixing the lookup is not enough.</b> A skill here is a <b>directory</b>, not a file:
+    <code>SKILL.md</code> links <code>references/*.md</code> (including anchors like
+    <code>disprove-engine.md#implementation-status</code>) and expects them to be read <i>on demand</i> — the
+    Agent Skills progressive-disclosure model. Lea's model is one <code>body</code> TEXT column → one temp
+    <code>.md</code> → injected wholesale into the system prompt. The references are ~690 KB ≈ <b>170k tokens</b>;
+    they cannot be concatenated into a prompt, and <code>MAX_BODY_BYTES</code> (256 KB) would refuse them anyway.
+    Every relative link in the imported body is currently dead.
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>Frontmatter is injected raw.</b> <code>load_skills</code> (<code>lea/skills.py</code>) reads the file and
+    wraps it under <code>## Skill: &lt;stem&gt;</code> with no parsing, so <code>SKILL.md</code>'s YAML
+    (<code>name:</code>, <code>description:</code>, <code>license: MIT</code>) would land verbatim in the system
+    prompt — and its <code>description</code> is precisely the when-to-use text Phase C wants to <i>use</i>.
+  </div>
+
+  <div class="gaps">
+    <h3>Where a multi-file skill must live — the read sandbox decides it</h3>
+    <b>The materialization location is not a tidiness question; it is forced.</b>
+    <code>_readable_roots</code> (<code>tools.py:162</code>) allows a run to read exactly two places: its
+    <code>working_dir</code> and the enclosing <b>Lake root</b> (the latter so Mathlib stays readable after
+    <code>search_mathlib</code> returns paths under <code>.lake/packages/mathlib/</code>). Everything else is
+    refused with <i>"outside this run's workspace."</i> That sandbox was added deliberately —
+    reads previously reached <code>~/.ssh/id_rsa</code> and <code>config/lea.local.toml</code>, which holds every
+    provider key in plaintext, and the autonomous Overleaf path has no approval gate between a prompt-injected
+    instruction and a tool call.
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>So today's temp dir cannot work for progressive disclosure.</b>
+    <span class="fix"><code>skills_catalog</code> materializes to the system temp area — deliberately outside any
+    project repo, so skills never pollute the git-owned tree (D7/D8). That is <i>correct today</i> precisely
+    because the body is injected into the prompt and never read from disk. The moment references are read on
+    demand, every one of those reads is refused.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Two options — and reading OpenHands changed the answer.</b>
+    <span class="fix"><b>(a) Copy into <code>&lt;working_dir&gt;/.lea/skills/&lt;slug&gt;/</code>.</b> No sandbox
+    change; <code>.lea/</code> is the established home for run-adjacent non-proof material and
+    <code>bridge.py:851</code> already excludes it from formalization attribution. But it is <b>N copies</b> (one
+    per project), and <b>sub-agents may not be able to read it</b>: a child's <code>working_dir</code> is its
+    scratch dir (<code>&lt;wd&gt;/.lea/tmp/&lt;run&gt;/&lt;agent&gt;</code>), so its roots are [scratch, lake_root]
+    — the parent's repo is reachable only if the session repo happens to sit inside the Lake root.
+    <br><b>(b) One shared read-only cache + a third readable root.</b> Materialize once (content-addressed), point
+    <code>_readable_roots</code> at it. <b>This is what OpenHands does</b> — <code>SkillResources.skill_root</code>
+    is an <i>absolute path</i> into <code>~/.openhands/cache/skills</code>, referenced in place, never copied per
+    session. They can do that because they have no read sandbox; Lea does, so the equivalent is a third root.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b><span class="win">REVISED</span>Prefer (b).</b> <span class="fix">The earlier draft of this plan
+    recommended (a) on the grounds that widening a just-hardened boundary buys nothing. That was wrong on the
+    facts: (b) <b>buys the sub-agent case by construction</b> — every child gets the same extra root regardless of
+    its working_dir, so the layout dependency above simply disappears instead of becoming a
+    <code>VERIFY</code> item. It is also one copy rather than N, and it matches the reference implementation. The
+    widening is narrow and defensible: a directory <i>Lea creates</i>, holding only materialized skill files,
+    mounted <b>read-only</b> — not a user-supplied path. Writes stay confined by
+    <code>_sandboxed_write_path</code>, untouched.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Either way, materialize per skill-version, not per run.</b> <span class="fix">Skills are read-only
+    reference material. Key the cache on content hash and refresh when the row changes; keep the D45 principle
+    that the DB row, not the directory, is the source of truth.</span>
+  </div>
+
+  <div class="good">
+    <h3>Reference implementation — OpenHands agent-SDK <code>openhands/sdk/skills/</code></h3>
+    Read from source (clone at <code>~/Desktop/code/software-agent-sdk</code>, @68aa583, 2026-07-20). It implements
+    the <a href="https://agentskills.io/specification">AgentSkills</a> standard that
+    <code>lean4-skills</code> is written against, so this is the format we are consuming — <b>adopt it rather
+    than invent a manifest.</b>
+    <hr style="border:none;border-top:1px solid #cfe0d3;margin:11px 0">
+    <b>Two injection modes, chosen by format — this corrects H3.</b> Their <code>Skill</code> docstring is
+    explicit: an AgentSkills-format skill is <i>"always listed in <code>&lt;available_skills&gt;</code> with name,
+    description, location"</i> and the <i>"agent reads full content on demand (progressive disclosure)"</i>;
+    a legacy skill with no trigger puts <i>"full content in <code>&lt;REPO_CONTEXT&gt;</code>, always active."</i>
+    <b>Even <code>SKILL.md</code> is not injected</b> — only name + description + location. The earlier plan here
+    proposed injecting the 29 KB <code>SKILL.md</code>; that is unnecessary, and at N skills it would not scale.
+    Lea's existing small always-on skills map exactly onto the legacy mode, so <b>today's behavior is
+    unchanged</b> and the new mode applies only to imported multi-file skills.
+    <hr style="border:none;border-top:1px solid #cfe0d3;margin:11px 0">
+    <b>Triggers are a whole axis we had not considered.</b> <code>KeywordTrigger</code> /
+    <code>TaskTrigger</code> / <code>PathTrigger</code> (<code>skills/trigger.py</code>): content auto-injects when
+    the user's message matches keywords or a touched file matches a path glob, and
+    <code>disable_model_invocation</code> hides a skill from the listing so it is trigger-only. Directly useful
+    here — a measure-theory skill that fires on the statement text, a Mathlib-style skill that fires on touching a
+    <code>.lean</code> file.
+    <hr style="border:none;border-top:1px solid #cfe0d3;margin:11px 0">
+    <b>Skills already declare MCP servers — the pack idea is standard, not ours.</b>
+    <code>Skill.mcp_tools: dict[str, MCPServer]</code>, loaded from a <code>.mcp.json</code> <i>inside the skill
+    directory</i> (<code>find_mcp_config</code> / <code>load_mcp_config</code>). Plus
+    <code>allowed_tools</code> — a pre-approved tool list, an AgentSkills <b>standard field</b>. So E1's manifest
+    should <b>be</b> the AgentSkills format, and F1/H6's tool lists have a standard home.
+    <hr style="border:none;border-top:1px solid #cfe0d3;margin:11px 0">
+    <b>Details worth stealing.</b> Precedence <code>public → user → project</code>, later wins (maps onto D47's
+    global ∪ assigned) · <code>description</code> capped at 1024 chars and truncated <i>with a notice pointing at
+    the source path</i> · pinning detected as <b>detached HEAD</b> (tag or SHA) in
+    <code>is_skills_repo_pinned</code> — a concrete mechanism for A6's supply-chain concern ·
+    <code>SkillResources</code> models <code>scripts/</code> / <code>references/</code> / <code>assets/</code>
+    explicitly rather than globbing.
+  </div>
+
+  <div class="good">
+    <h3>The same import validates the pack design — a real pack in the wild</h3>
+    <code>lean4-skills</code> ships <b>exactly the bundle E1 proposes</b>, independently arrived at: a skill, four
+    sub-agents, helper scripts, and a declared MCP dependency. The agent files carry
+    <code>name</code> / <code>description</code> / <code>tools</code> / <code>model</code> frontmatter that maps
+    <b>almost field-for-field</b> onto <code>AgentProfile</code> (<code>profiles.py</code>) —
+    <code>system_prompt</code> is simply the markdown body.
+    <pre>name: proof-repair
+description: Compiler-guided iterative proof repair with two-stage escalation…
+tools: Read, Grep, Glob, Edit, Bash, mcp__lean-lsp__lean_goal, mcp__lean-lsp__lean_loogle, …
+model: sonnet</pre>
+    <b>But the <code>tools:</code> lists are a live trap.</b> Those are Claude Code's names
+    (<code>Read</code>, <code>Edit</code>, <code>Bash</code>) and <code>mcp__&lt;server&gt;__&lt;tool&gt;</code>
+    prefixes. Lea's built-ins are <code>read_file</code> / <code>edit_file</code> / <code>bash</code>, and
+    <code>mcp.py:158</code> registers MCP tools under their <b>bare</b> names (<code>lean_goal</code>). So an
+    imported profile names tools that do not exist — and <code>compose_child_tools</code>
+    (<code>subagents.py:143</code>) <b>raises</b> on an unknown name. <b>B4's integrity problem is not
+    hypothetical: it fires on the very first real pack import.</b> A name-mapping layer is required, not optional.
+  </div>
+
+  <div class="measured">
+    <h3>Measured — <code>lean-lsp-mcp</code> 0.29.0 driven through Lea's own <code>MCPManager</code></h3>
+    Run against the vendored <code>workspace/</code> (Lean v4.29.0, <code>.lake</code> = 8.4 GB, Mathlib built).
+    Not a bespoke client — the exact product code path.
+    <table class="aud">
+      <tr><th>Measure</th><th>Result</th></tr>
+      <tr><td><code>uvx lean-lsp-mcp</code> cold fetch</td><td class="n">3.5 s</td></tr>
+      <tr><td><code>MCPManager.start()</code></td><td class="n">0.6 s → 23 tools</td></tr>
+      <tr><td>Name collisions with the built-ins</td><td class="g">zero</td></tr>
+      <tr><td>Total toolset the model sees</td><td class="n">30 tools · 4,346 chars ≈ 1,100 tokens</td></tr>
+      <tr><td>First <code>lean_goal</code> (cold Mathlib)</td><td class="w">44.0 s</td></tr>
+      <tr><td>Second <code>lean_goal</code> (warm)</td><td class="g">~0.0 s</td></tr>
+      <tr><td><code>lean_loogle</code> (remote, unauthenticated)</td><td class="n">0.5 s</td></tr>
+      <tr><td>Elevated privileges required</td><td class="g">none</td></tr>
+    </table>
+    <div style="margin-top:11px"><b>No sudo, no OS permission prompt, no keychain, no daemon, no listening port,
+    no API key.</b> A stdio subprocess whose requirements are <i>exactly what Lea already requires</i> —
+    <code>uvx</code> on PATH (installed by <code>install.sh</code>) and a built Lean project. Plus outbound HTTPS
+    for the remote search tools. <b>The worry that motivated this investigation — MCPs needing system access the
+    user must grant rather than the agent — does not apply to the Lean MCP ecosystem.</b></div>
+  </div>
+
+  <div class="danger">
+    <h3>Measured — MCP is per-<i>run</i>, so the 44 s warm-up repeats on every message</h3>
+    <code>run_events</code> (<code>agent.py:572</code>) starts <code>MCPManager</code> at the top of an activation
+    and stops it in the <code>finally</code> — its docstring says so plainly: <i>"Owns MCP lifecycle: starts
+    configured servers … and stops them when the event stream ends."</i> Each <b>run</b> therefore gets a fresh
+    <code>uvx lean-lsp-mcp</code>, whose internal Lean language server is cold again.
+    <table class="aud" style="margin-top:9px">
+      <tr><th>Simulated run (fresh manager, as <code>run_events</code> does)</th><th>start()</th><th>first <code>lean_goal</code></th><th>second</th></tr>
+      <tr><td>Run 1</td><td class="n">1.1 s</td><td class="w">51.8 s</td><td class="g">0.0 s</td></tr>
+      <tr><td>Run 2</td><td class="n">0.9 s</td><td class="w">34.2 s</td><td class="g">0.1 s</td></tr>
+    </table>
+    <div style="margin-top:11px"><b>The warm-up does not survive a run boundary.</b> In the UI each user message
+    is a run, so an MCP-enabled interactive session pays <b>~35 s of dead time per message</b>. Autonomous runs
+    (the Overleaf path) pay it once and are fine. <b>So MCP as wired today is viable for batch and unusable
+    interactively</b> — and the interactive case is exactly what a session-level <code>/mcp</code> targets.
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>Lea already solved this exact problem once.</b> <code>lsp_daemon.py</code> keeps a persistent
+    <code>lake env lean --server</code> per Lake root precisely so <code>lean_check</code> costs ~0.2 s instead of
+    ~88 s cold. MCP needs the same treatment: <b>pool the server connections across runs</b> (A8), keeping the
+    per-activation <i>registry overlay</i> exactly as it is — isolation of tool <i>registration</i> is still
+    correct; it is the <i>connection</i> that should outlive the run.</div>
+  </div>
+
+  <div class="danger">
+    <h3>Where setup actually hurts — all UX, none of it privilege</h3>
+    <b>The useful error never reaches the user.</b> Pointed at a non-Lean directory, the server's own message is
+    excellent and actionable:
+    <pre>ValueError: Lean project path '/Users/shaswatpatel' must contain `lean-toolchain`
+           and either `lakefile.lean` or `lakefile.toml`.</pre>
+    But it dies in the subprocess's stderr. What <code>mcp.py:36</code> prints — <b>also</b> only to stderr, which
+    no UI user ever sees — is:
+    <pre>[mcp] server 'lean-lsp' failed to start: Connection closed; continuing without its tools</pre>
+    The run then proceeds with <code>tools=0</code>. <b>A silently degraded run that looks like the feature just
+    does nothing.</b> A typo'd command behaves identically
+    (<code>[Errno 2] No such file or directory: 'uvxx'</code>).
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>44 s of silence on the first call.</b> With no UI affordance that reads as a hang, and it lands precisely
+    when the user is deciding whether the feature works at all.
+  </div>
+
+  <div class="good">
+    <h3>How OpenHands handles MCP — and the one lesson that lands on A1</h3>
+    <b>They largely don't make it easy.</b> <code>frontend/src/routes/mcp-settings.tsx</code> is a raw CRUD form
+    over the protocol fields — <code>type</code> (sse/stdio/shttp), <code>command</code>, <code>args</code>,
+    <code>env</code>, <code>url</code>, <code>api_key</code>, <code>timeout</code>. No catalog, no one-click, no
+    preflight. A mathematician would be exactly as stuck there as anywhere else. <b>So the curated-catalog plan is
+    not reinventing something the reference implementation solved — it is genuinely ahead of it.</b>
+    <hr style="border:none;border-top:1px solid #cfe0d3;margin:11px 0">
+    <b>The real "make it easy" answer is bundling, not better forms.</b> A <code>.mcp.json</code> <i>inside a skill
+    directory</i> means installing the skill brings its servers. That is the whole one-click story, and it is what
+    E1/H8 already describe. Their settings form is the <i>advanced door</i>, not the front door.
+    <hr style="border:none;border-top:1px solid #cfe0d3;margin:11px 0">
+    <b>Worth copying — <code>MCPErrorCollector</code></b> (<code>openhands/mcp/error_collector.py</code>): a
+    thread-safe collector recording <code>server_name</code>, <code>server_type</code>,
+    <code>error_message</code>, <code>exception_details</code> at each failure site in
+    <code>mcp/client.py</code>, instead of printing to stderr and losing it. Surfaced in the CLI welcome line as
+    <i>"✗ MCP errors detected (type /mcp → select View errors)"</i>. This is <b>A3 with a working reference</b>.
+    Note the limits: it is <i>startup-scoped</i>, and the surfacing shown is CLI-only — their web path is no better
+    than Lea's today, so copy the collector, not the reach.
+    <hr style="border:none;border-top:1px solid #cfe0d3;margin:11px 0">
+    <b>Also worth noting.</b> Their config shape is <code>{"fetch": {"command": "uvx", "args": […]}}</code> —
+    <b>identical to Lea's <code>cfg.mcp_servers</code></b>, so our format is already the de-facto standard; don't
+    diverge. · <code>api_key</code> is a first-class field on sse/shttp servers. ·
+    <code>filter_tools_regex</code> on the agent filters the toolset <i>after</i> MCP tools are added — their
+    answer to tool bloat. Lea's explicit <code>tools: list[str]</code> allowlist is better for auditability, but a
+    regex handles <code>&lt;server&gt;__*</code> wildcards that an explicit list cannot.
+  </div>
+
+  <div class="danger">
+    <h3><span class="haz">LANDS ON A1</span>An MCP spec is secret-bearing — Lea acquires this bug the moment A1 ships</h3>
+    OpenHands <b>removed <code>skills[].mcp_tools</code> from the agent profile</b> (#4017) for exactly one reason,
+    recorded in <code>profiles/agent_profile.py:421</code>: the profile must carry <b>no secret-bearing field</b>,
+    and an embedded MCP config does — because a server spec's <code>env</code> holds API keys. Their
+    <code>disabled_skills</code> deny-list deliberately holds <b>only names</b>.
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>Lea has the identical exposure, latent.</b> <code>LeaConfig</code>'s docstring promises the object
+    <i>"holds no secrets and is safe to log or serialize"</i> — and <code>mcp_servers</code> is a field on it.
+    A1 wires that field. The first catalog entry whose <code>env</code> carries a real key silently breaks the
+    invariant, and every place that logs or serializes a config becomes a key-disclosure site.
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b><span class="haz">CORRECTED</span>The fix was NOT free — the earlier draft of this plan had the
+    mechanism backwards, and measuring it found a live leak instead.</b> This block previously claimed a server
+    "inherits" a key with no <code>env</code> entry because <code>mcp.py</code> merges <code>env</code> over
+    <code>os.environ</code>. Both halves were wrong. Measured with a purpose-built echo server:
+    <table class="aud" style="margin-top:9px">
+      <tr><th>Spec</th><th>What the child actually received</th></tr>
+      <tr><td>no <code>env</code></td><td class="n">8 vars — <code>HOME, PATH, SHELL, TERM, USER…</code>
+        · <b>no API keys</b>, so nothing is "inherited"</td></tr>
+      <tr><td>any <code>env</code> entry</td><td class="w">54 vars — including <code>ANTHROPIC_API_KEY</code>,
+        <code>GOOGLE_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GEMINI_API_KEY</code></td></tr>
+    </table>
+    <div style="margin-top:11px">The SDK's default is a deliberate <b>allowlist</b>
+    (<code>get_default_environment()</code>), so nothing is inherited; and the old
+    <code>{**os.environ, **cfg_env}</code> — written to stop a bare <code>env</code> stripping
+    <code>PATH</code> — handed the child <b>every credential this process holds</b>. The vendored
+    <code>configs/lean-lsp.yaml</code> sets <code>LEAN_PROJECT_PATH</code>, so it took that branch.
+    <b>An MCP server is third-party code; that was a real leak, not a hypothetical one.</b>
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>Shipped fix (A7).</b> <code>_child_env</code> now builds: SDK safe base (keeps <code>PATH</code>) +
+    the spec's literal <code>env</code> + the host values of names listed in a new <code>env_from</code>.
+    A server gets <b>what it declares, not the keyring</b>. <code>env_from</code> is what lets a spec
+    <i>name</i> a credential without <i>carrying</i> it — so the rule survives intact, it just needed
+    building: <b>a stored spec may name a key, never carry one.</b></div>
+  </div>
+
+  <div class="gaps">
+    <h3>Design calls</h3>
+    <b>One pack, not three factories.</b> <span class="fix">A pack = optional MCP server + optional declarative
+    tools + skill + sub-agent role + <code>requires_keys</code>. This is not aesthetic tidiness: enabling
+    <code>lean-lsp-mcp</code> <i>raw</i> makes the prover worse, because it adds tools that overlap what Lea
+    already has (<code>lean_leansearch</code>/<code>lean_loogle</code> vs <code>search_mathlib</code>;
+    <code>lean_run_code</code>/<code>lean_build</code> vs <code>lean_check</code>). The unit that is safe to
+    one-click is <b>server + recommended tool subset + a skill that teaches their use</b> — which is exactly what
+    the existing <code>configs/lean-lsp.yaml</code> already bundles by hand.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Preflight, not an LLM setup wizard.</b> <span class="fix">All three failure modes are deterministically
+    checkable and were verified as such in a few lines of script: (1) is <code>uvx</code> on PATH, (2) does the
+    path contain <code>lean-toolchain</code> + a lakefile, (3) trial-start and capture the child's <b>stderr</b>.
+    A wizard would be non-deterministic, slower, and would still need these same checks to know whether it had
+    succeeded. Reserve the LLM for <i>translating</i> a preflight failure into plain language — never for
+    performing the setup. Auto-filling the path from the workspace the adapter already knows deletes failure
+    mode (1) outright.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Authoring and consuming are different roles.</b> <span class="fix">A mathematician cannot write an endpoint
+    spec with a params schema — that is still engineering. But they can absolutely write <i>when to use this</i>
+    and <i>when not to</i>. So the endpoint spec is authored <b>once</b> (by us, shipped in the curated catalog, or
+    imported from GitHub exactly as <code>ghimport.fetch_skill</code> already does for skills), and the
+    <b>prompt fields are what the mathematician owns and edits</b>. This split is what makes "custom tools for
+    non-programmers" coherent rather than a contradiction.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>One guided form, three consumers.</b> <span class="fix">General description / when to use / when
+    <b>not</b> to use / procedural notes. The fields compile into <b>one string</b> through a fixed template,
+    because <code>build_toolset</code> hands the model nothing but <code>schema["description"]</code>; store the
+    fields separately so they stay editable, render deterministically. "When not to use" is <b>load-bearing, not
+    decorative</b> — it is the mitigation for tool overlap, and for a sub-agent role it is what stops a
+    coordinator delegating everything. For roles, the same text populates the <code>enum</code> descriptions in
+    the dynamic spawn schema: <b>writing "when to use this" and making the coordinator pick correctly are the
+    same act.</b></span>
+    <table class="aud matrix" style="margin-top:11px">
+      <tr><th>Field</th><th>Custom tool</th><th>Skill</th><th>Sub-agent role</th></tr>
+      <tr><td>General description</td><td>→ <code>schema.description</code></td><td>intro line</td><td>role identity</td></tr>
+      <tr><td>When to use</td><td>→ description</td><td>applicability</td><td>when to delegate + enum text</td></tr>
+      <tr><td>When <b>not</b> to use</td><td>→ description</td><td>scope limit</td><td>hand-back condition</td></tr>
+      <tr><td>Procedural notes</td><td>→ description</td><td>the body</td><td>method</td></tr>
+    </table>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Secrets: declare the name, never the value.</b> <span class="fix">The vault exists; what is missing is
+    <code>requires_keys: ["WOLFRAM_API_KEY"]</code> on the manifest. That one field buys: prompt for the key at
+    enable-time, block enabling until it is set, and warn "clearing this breaks 2 enabled packs." <b>The pack spec
+    stores the key <i>name</i>; the handler resolves from <code>os.environ</code> at call time.</b>
+    <code>LeaConfig</code>'s docstring promises it "holds no secrets and is safe to log or serialize" — a tool
+    spec that inlined a key would quietly break that, and tool schemas are transmitted to the model provider.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>The real security risk is supply chain, not privilege.</b> <span class="fix"><code>uvx lean-lsp-mcp</code>
+    downloads and executes code from PyPI at every run start, <b>unpinned</b>. That — not privilege escalation —
+    is the exposure. Pin versions in catalog entries (<code>lean-lsp-mcp==0.29.0</code>) and keep free-form server
+    entry behind an advanced door. Separately and non-negotiably: <b>adding an MCP server must never be a tool the
+    model can call.</b> It is a human config action. Nothing in the current design permits it; keep it that
+    way.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>SSRF is a new surface.</b> <span class="fix"><code>netguard.py</code> guards <b>inbound</b> requests only.
+    A user-authored HTTP tool means the adapter makes outbound calls to a user-supplied URL, internal addresses
+    included. Curated packs are fine; a free-form URL field needs an allowlist or the same advanced-mode gate as
+    free-form MCP servers.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:14px 0 11px">
+    <b>Status of these calls after the investigation.</b> <span class="fix">The seven above were written before
+    the <code>lean-lsp-mcp</code> measurements, the <code>lean4-skills</code> import, the OpenHands read, and the
+    scope decision to defer one-click. Where they stand now:</span>
+    <table class="aud" style="margin-top:9px">
+      <tr><th>Call</th><th>Verdict</th><th>What changed · where it lives</th></tr>
+      <tr><td>One pack, not three factories</td><td class="n">deferred,<br>not dropped</td>
+        <td>H8 <i>strengthened</i> it — AgentSkills already <b>is</b> the pack format, so E1 should adopt rather
+          than invent. But your scope call means near-term we ship <b>E0 as its own tab</b>, i.e. three factories
+          for now, converging later via E3.</td></tr>
+      <tr><td>Preflight, not an LLM wizard</td><td class="g">strengthened</td>
+        <td>Now has a home: <b>E0b</b>'s Test button, justified by the measured 0.6 s <code>start()</code>.
+          OpenHands ships no equivalent, so this is a differentiator rather than catch-up.</td></tr>
+      <tr><td>Authoring ≠ consuming</td><td class="w">holds, but<br>temporarily inverted</td>
+        <td><b>The one that genuinely suffers.</b> Deferring the catalog puts the mathematician <i>in the author
+          seat</i> — the seat this call says they can't occupy. Mitigated, not solved, by E0's validations and
+          E0b's Test button. Revisit when E2 lands.</td></tr>
+      <tr><td>One guided form, three consumers</td><td class="g">strengthened</td>
+        <td>AgentSkills frontmatter already carries <code>description</code> = "when to use" (H4), OpenHands caps
+          it at 1024 chars with a pointer to source, and the same text feeds B1's role <code>enum</code>.</td></tr>
+      <tr><td>Secrets: name, never value</td><td class="g">upgraded to a<br>hard invariant</td>
+        <td>Was a preference; now has precedent (OpenHands removed <code>skills[].mcp_tools</code> in #4017 for
+          exactly this) and two slices: <b>A7</b> (keep <code>LeaConfig</code> serializable) and <b>E0c</b> (keys
+          from the vault, not the env box).</td></tr>
+      <tr><td>Supply chain, not privilege</td><td class="g">holds ·<br>mechanism found</td>
+        <td>Confirmed by measurement (zero privileges needed). Pinning now has a concrete test —
+          <code>is_skills_repo_pinned</code> detects a pinned ref as <b>detached HEAD</b>. A6/H8.</td></tr>
+      <tr><td>SSRF is a new surface</td><td class="n">holds ·<br>deprioritized</td>
+        <td>Unchanged and still correct, but Phase F (declarative HTTP tools) is not near-term, so nothing depends
+          on it yet. Do not drop it — it becomes live the moment F1 starts.</td></tr>
+    </table>
+  </div>
+
+  <div class="danger">
+    <h3>The v2.5 failure mode is <i>absence</i> — and absence throws no exception</h3>
+    v2.4 gave every failure an owner, but its subject was <b>things that break</b>: an exception, a rejected key, a
+    tool that raised. <b>Every characteristic v2.5 failure is instead something that silently did not happen.</b>
+    The MCP server didn't start, so 23 tools aren't there. The role was created but the coordinator never learned it
+    exists (gap 3), so it is never delegated to. The skill didn't resolve because the session is loose. The pack's
+    key isn't set, so its tool 401s on first use. The user's proof still runs — it just runs
+    <i>without the thing they configured</i>, and it looks exactly like a working system.
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>An <code>except</code> block cannot catch this.</b> There is no exception at the moment that matters — the
+    absence <i>is</i> the bug. So the v2.4 machinery has to be driven differently here: <b>something must actively
+    assert the positive and report when it does not hold.</b> After starting a server, compare tools-registered
+    against tools-expected. After building the spawn schema, check the role <code>enum</code> is non-empty when
+    roles exist. After resolving skills, confirm the count matches what the project assigned. Each is one
+    comparison, and each converts an invisible no-op into a <code>degraded</code> diagnostic with a remedy.
+    <b>This is the single most important thing in v2.5's error design</b>, and it is why Phase G is not merely
+    "add some codes."
+  </div>
+
+  <div class="gaps">
+    <h3>Every workflow, and the error it must be able to produce</h3>
+    Proposed codes sit in the existing namespaces and resolve through the same server-side
+    <code>CATALOG</code> (<code>adapter/app/diagnostics.py</code>), so they inherit titles, remedies and action
+    buttons for free. <b>Nothing here needs new machinery</b> — v2.4 already built it.
+    <table class="aud" style="margin-top:9px">
+      <tr><th>Workflow</th><th>What goes wrong</th><th>What the user must see</th><th>Code · severity</th></tr>
+      <tr><td>Enable a pack<br><span style="color:var(--muted)">(one click)</span></td>
+        <td>Server binary missing</td>
+        <td>"Lea can't find <code>uvx</code>" + install action — <b>refuse the enable</b>, don't enable-then-fail</td>
+        <td class="n">mcp.command_missing<br>fatal <span style="color:var(--muted)">(preflight)</span></td></tr>
+      <tr><td></td><td>Lean project path wrong</td>
+        <td>The server's own excellent line, verbatim: needs <code>lean-toolchain</code> + a lakefile</td>
+        <td class="n">mcp.project_path_invalid<br>fatal <span style="color:var(--muted)">(preflight)</span></td></tr>
+      <tr><td></td><td>Declared key not set</td>
+        <td>"This pack needs <code>WOLFRAM_API_KEY</code>" + <b>action button to the key field</b></td>
+        <td class="n">pack.key_missing<br>fatal <span style="color:var(--muted)">(preflight)</span></td></tr>
+      <tr><td>Run with a pack on</td>
+        <td>Server dies at run start</td>
+        <td><b>Persistent</b> capability indicator — "Lean LSP tools unavailable, proof continued without them" +
+          the child's real stderr as <code>detail</code></td>
+        <td class="n">mcp.server_failed<br>degraded · once</td></tr>
+      <tr><td></td><td>First check takes 44 s</td>
+        <td>"Warming up the Lean server — the first check takes ~45 s" — <b>not</b> an error, but silence here
+          reads as a hang</td>
+        <td class="n">mcp.warming<br>notice · once</td></tr>
+      <tr><td></td><td>Fewer tools than expected</td>
+        <td>"Expected 23 tools, got 0" — the positive assertion above; the only thing that catches a
+          <i>partial</i> load</td>
+        <td class="n">mcp.tools_missing<br>degraded · once</td></tr>
+      <tr><td>Delegate to a role</td>
+        <td>Role exists, coordinator never told</td>
+        <td><b>The gap-3 failure.</b> "You defined 2 roles but the agent was offered none" — otherwise
+          indistinguishable from the model choosing not to delegate</td>
+        <td class="n">subagent.roles_not_offered<br>degraded · once</td></tr>
+      <tr><td></td><td>Role names a deleted tool</td>
+        <td>"Role <code>x</code> asked for <code>y</code>, which no longer exists; it ran without it"</td>
+        <td class="n">subagent.tool_dropped<br>degraded</td></tr>
+      <tr><td>Use a custom HTTP tool</td>
+        <td>Key unset at call time</td>
+        <td>Inline on the step + action to Settings</td>
+        <td class="n">tool.auth_missing<br>step_error</td></tr>
+      <tr><td></td><td>Endpoint 4xx/5xx/timeout</td>
+        <td>Status + the service's message, on the step that called it</td>
+        <td class="n">tool.http_failed<br>step_error</td></tr>
+      <tr><td>Author / import a pack</td>
+        <td>Malformed YAML or bad md</td>
+        <td>Which field, which line — at <b>save</b> time, never deferred to run time</td>
+        <td class="n">pack.invalid<br>fatal <span style="color:var(--muted)">(save)</span></td></tr>
+      <tr><td></td><td>Pack file unreadable at run</td>
+        <td>"Your pack didn't apply; the run used defaults" — the
+          <code>settings.overrides_unreadable</code> shape exactly</td>
+        <td class="n">pack.load_failed<br>degraded</td></tr>
+      <tr><td>Clear a key</td><td>Enabled packs depend on it</td>
+        <td>"This disables 2 packs" <b>before</b> confirming, not after</td>
+        <td class="n">— <span style="color:var(--muted)">(UI confirm)</span></td></tr>
+    </table>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>One vocabulary, two moments.</b> <span class="fix">The same code must serve <i>preflight</i> ("you can't
+    enable this yet") and <i>run time</i> ("this stopped working since you enabled it"). A user who saw
+    "Lea can't find <code>uvx</code>" when enabling should see the same sentence if it later disappears — not a
+    different phrasing of the same fact from a different code path.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Remedies must be actions where an action exists.</b> <span class="fix">The catalog comment already makes
+    this argument — <i>"a remedy that says 'check the key in Settings' is still work for the user to go and
+    find; an action takes them there."</i> Packs are the case with the most obvious buttons:
+    <code>ACTION_API_KEYS</code> already exists and already focuses the right field; a pack needs the same for
+    "open this pack's settings" and "re-run preflight."</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Fail at save, not at run.</b> <span class="fix">A malformed role or pack should be rejected when the user
+    presses Save, while they are still looking at the field that is wrong. <code>parse_profile</code>
+    (<code>profiles.py</code>) already refuses unknown keys loudly for exactly this reason — a silently dropped
+    <code>tools:</code> would hand a child the full toolset. Extend that discipline to every pack artifact, and
+    the run-time codes above become rare rather than routine.</span>
+  </div>
+
+  <div class="measured">
+    <h3>Naming: "capabilities" was invented jargon</h3>
+    An earlier draft of this work shipped a project tab and a picker called
+    <b>Capabilities</b> — a word from the codebase's head, not the user's. Corrected on the
+    user's call: a surface covering only skills says <b>Skills</b>; a surface covering both says
+    <b>Skills / MCP</b>. Carried through the whole stack rather than just the label — components,
+    types, API routes (<code>/api/sessions/{id}/skills-mcp</code>) and the table itself
+    (<code>session_skill_mcp_overrides</code>, revision <code>0013</code>), so the schema names the
+    thing people actually read. Pre-existing uses of "capability" — the LSP handshake, and v2.4's
+    <code>degraded</code> "reduced capability" copy — are untouched; they mean something else.
+  </div>
+
+  <div class="danger">
+    <h3><span class="haz">RETRACTED — AND THE REAL CAUSE</span>No MCP tool was ever reachable from the UI</h3>
+    <b>An earlier version of this box claimed the pack thesis had been confirmed</b> — that scoping the skill
+    made the agent use the MCP tools. <b>That was wrong, and the evidence for it was misread.</b> The
+    "confirmation" was the model <i>discussing</i> <code>lean_goal</code> and <code>lean_leansearch</code>
+    (it had read about them in the skill), not calling them.
+    <br><b>Correction to my own evidence:</b> I first "proved" this by finding zero MCP tool calls in
+    <code>timeline.data</code>. That check was worthless — <b>tool calls are not persisted at all</b>
+    (<code>ToolCalled</code> is streamed to the UI; the timeline stores only messages, code steps, edit notes,
+    compactions and diagnostics), so that column is empty of tool calls for <i>every</i> tool. The conclusion
+    survives on evidence that does hold: reading <code>_with_subagents</code>, and the tell in the model's own
+    tool list — it named <code>spawn_subagent</code> and <code>safe_verify</code>, which
+    <code>build_toolset(None)</code> never returns, so the run could only have been using an explicit allowlist.
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>The cause was a single line in <code>_with_subagents</code>:</b>
+    <pre>default_tools = [schema["name"] for schema in build_toolset(None)[0]]
+return replace(cfg, tools=[*default_tools, "spawn_subagent", "safe_verify"], …)</pre>
+    It resolves the default toolset <b>in the adapter, before the run starts</b>, and passes the result as an
+    explicit allowlist. MCP and HTTP tools register <i>inside</i> the run, into the per-activation overlay — so
+    they were never in that snapshot, and an explicit list is a filter. Every UI run therefore shipped the seven
+    built-ins and nothing else, while the MCP server started, warmed, pooled, and reported 23 tools correctly.
+    <b>Every layer was right and the tools were filtered out at the last one.</b>
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>Fixed:</b> <code>LeaConfig.extra_tools</code> lets a caller ask for "the default set PLUS these opt-ins"
+    without naming the defaults — because naming them means snapshotting them. Resolution moves back inside the
+    run, after everything has registered. A regression test asserts <code>cfg.tools is None</code> and that a
+    tool registered mid-run still reaches the model.
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>Three lessons, and the third is the one that matters.</b>
+    <br>· A snapshot of a registry is not the registry. The old code even had a comment explaining that it
+    resolved at call time "so this stays correct if the default set changes" — correct about <i>which</i>
+    built-ins, blind to <i>when</i>.
+    <br>· <b>Never ask a model what tools it has.</b> Two runs were spent on "do you have access to Loogle?"
+    Its list was accurate and I dismissed it as hallucination, because a simulation I had written myself said
+    otherwise. The model was right; my simulation used <code>load_config()</code> and never went through
+    <code>_with_subagents</code>.
+    <br>· <b>Nothing here would have been caught by a test.</b> Store resolved, bridge wired, registration
+    worked, the pool warmed, 45/45 slices passed, and the feature did nothing. It took a human saying
+    <i>"it is still denying it"</i> a third time — after I had twice explained the denial away.
+  </div>
+
+  <div class="gaps">
+    <h3>Gap: a run keeps no record of which tools it used</h3>
+    Found while trying to verify the above. <code>ToolCalled</code> is streamed and rendered live, but never
+    persisted — the timeline holds messages, code steps, edit notes, compactions and diagnostics only. For a
+    system whose defining failure is <i>a capability silently not being there</i>, that means the one question
+    you most want to ask afterwards — <b>"did it actually use the thing I configured?"</b> — is unanswerable
+    from the record. It has to be watched live or not at all, which is exactly how a false "green" survived two
+    rounds of testing here. Not fixed; recorded, because the cost only shows up in hindsight and the fix (a
+    <code>kind='tool'</code> timeline row, or a per-run tool manifest) is a design decision, not a patch.
+  </div>
+
+  <div class="danger">
+    <h3><span class="haz">SPAWN-KILLER</span>MCP tool names reached a child that had no MCP</h3>
+    Surfaced the moment delegation was first tried after the toolset fix:
+    <code>ToolError: unknown tool 'lean_build'</code>, and the spawn died.
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    A child is deliberately built with <code>mcp_servers={}</code> — each child would
+    otherwise spawn another Lean server against the same 8.4 GB Mathlib (the A8 concern).
+    So MCP tools live in the <b>parent's</b> registry and not the child's. But
+    <code>compose_child_tools</code> validated declared names against the parent's live
+    registry, so MCP names passed the check and then failed in the child's
+    <code>build_toolset</code> — a hard failure at spawn, for a name that was entirely
+    legitimate where it was checked.
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>It hit the generalist too</b>, which is what made it total: a generalist's wanted-set
+    IS the parent's whole live toolset, so <i>every</i> delegation broke — not just the four
+    imported roles that name <code>lean_goal</code> explicitly. Fixed by composing against
+    what the child will actually have (<code>_child_available_names</code>): the global
+    registry plus inherited HTTP tools, MCP excluded. <b>B4's soft-drop was already in
+    place and did not help</b> — it only fires for names unknown <i>at composition time</i>,
+    and these were known there. The bug was the wrong reference set, not the wrong policy.
+  </div>
+
+  <div class="measured">
+    <h3>The overlap observation — now unexplained, and still open</h3>
+    <b>Reinterpret with care:</b> the run below had no MCP tools available at all (see the retraction above), so
+    it says nothing about whether the agent <i>prefers</i> <code>search_mathlib</code> when both are offered.
+    The overlap question is <b>untested</b>, not answered. It becomes testable for the first time now.
+    First real run with MCP enabled (<i>"Prove that the derivative of <code>fun x : ℝ =&gt; x^2</code> is
+    <code>fun x =&gt; 2*x</code>. Use the Lean LSP tools…"</i>). <b>The wiring worked</b>: the server started, 23
+    tools registered, and the pooled process was still warm afterwards. <b>The model did not use any of them.</b>
+    It reached for <code>search_mathlib</code> and <code>suggest_imports</code> — Lea's own built-ins — found
+    <code>deriv_pow_field</code>, and compiled first try.
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>Not a wiring failure, a preference failure</b>, and exactly what the plan warned about when
+    <code>lean-lsp-mcp</code> was first measured: it adds tools that overlap what Lea already has
+    (<code>lean_leansearch</code> vs <code>search_mathlib</code>). Given both, the agent picks the familiar one —
+    and never inspects a goal with <code>lean_goal</code>, which is where the LSP tools actually beat the
+    built-ins. Two contributing causes, both addressable:
+    <br>· <b>The skill was scoped to nothing</b>, so its own instruction — <i>"<code>lean_goal</code> — MOST
+    IMPORTANT tool, use often!"</i> — never reached the prompt. That is precisely the "when to use this" guidance
+    C1 exists to carry, and it was inert.
+    <br>· <b>Nothing tells the model which to prefer.</b> The system prompt says use <code>search_mathlib</code>
+    for Mathlib lookups; nothing says when <code>lean_goal</code> is better. Two tools, no tiebreaker.
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>This is why "one-click MCP" was the wrong unit</b> and a pack — server + recommended tool subset + a skill
+    that teaches their use — was the right one. <b>Resolved above:</b> scoping the skill fixed it.
+  </div>
+
+  <div class="danger">
+    <h3><span class="haz">CAUGHT LATE</span>A shipped route was unreachable, and the tests could not see it</h3>
+    <code>GET /api/mcp-servers/defaults</code> (A4's "Use my Lean project") <b>never worked</b>. FastAPI matches
+    routes in declaration order, and <code>/api/mcp-servers/{server_id}</code> was declared first — so both
+    static paths were swallowed and 404'd as <i>"MCP server not found"</i>. A4 was marked Tested on the strength
+    of unit tests that <b>call the route functions directly</b> and never exercise routing, so nothing could have
+    caught it; it surfaced only when the same mistake repeated on D1 and that endpoint was hit over HTTP.
+    <b>Fixed, with a <code>TestClient</code> regression test</b> that walks the real router, and a comment at the
+    parameterized route saying why order matters. The general lesson is narrow and worth keeping: <i>calling a
+    handler is not testing an endpoint.</i>
+  </div>
+
+  <div class="danger">
+    <h3><span class="haz">THREE TIMES</span>"Installed but scoped to nothing" is the failure this project keeps producing</h3>
+    It has now bitten three separate times in testing: the <code>lean4</code> skill sat unscoped and silently
+    never loaded (which produced the false "the model ignores MCP tools" conclusion); a <code>broken</code>
+    server stayed scoped and fired on every run; and the Loogle tool was installed, left unscoped, and the run
+    testing it <b>could not have used it</b> — the person testing had no way to tell.
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>The install-unscoped decision was mine and the reasoning still holds</b> — a suggested item may duplicate
+    something configured, and scoping should be deliberate. But the consequence was an absence with no signal.
+    The badge did say <i>"Unassigned"</i>: accurate, muted, and read as neutral metadata rather than as <i>this
+    does nothing</i>.
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:11px 0">
+    <b>Fixed at the Library layer, in the two shared components, so all three pages inherit it:</b> the badge now
+    reads <b>"Not in use"</b> in amber, and the scope control shows <i>"Not in use yet — pick All projects or at
+    least one project below, or Lea will never load this."</i> <b>This is G3's positive assertion applied one
+    layer up:</b> a run can assert that a configured capability contributed nothing, but only the Library can
+    assert that a capability was never configured to contribute at all. Neither raises. Both have to be said out
+    loud.
+  </div>
+
+  <div class="measured">
+    <h3>A regression I introduced, found by a test I nearly dismissed</h3>
+    Two ordering tests in <code>test_bridge.py</code> began failing intermittently under the full suite while
+    passing in isolation — the shape of a flake, and I twice called it one. They are timing-sensitive
+    (<code>_wait_for</code> with budgets), and my own change had added per-run startup work, so the honest move
+    was to measure rather than re-run until green. <b>Measured: <code>materialize_roles()</code> cost 22.46 ms
+    per run</b> — 50× every other resolution step — because it rewrote four role YAMLs into a fresh temp dir on
+    <i>every</i> run, to produce files most runs never read (a run needs them only if the coordinator actually
+    delegates). Fixed by caching the directory on a hash of the role rows, the same reasoning as A8's connection
+    pool: <b>the expensive part is not per-run state, so it should not have per-run lifetime</b>.
+    <b>22.46 ms → 0.50 ms</b>, and the suite then passed three consecutive full runs.
+  </div>
+
+  <div class="measured">
+    <h3>Two findings that revise earlier advice</h3>
+    <b>Dropping MCP for children is protection, not a bug.</b> <code>_child_config</code> hardcodes
+    <code>mcp_servers={}</code> (<code>subagents.py:161,189</code>). This was initially flagged as a defect —
+    a <code>premise-search</code> scout with no search tools is backwards. But measurement reframes it: each child
+    would spawn <i>another</i> Lean LSP against the same 8.4 GB Mathlib, on top of the one
+    <code>lsp_daemon.py</code> already runs for <code>lean_check</code>. With
+    <code>DEFAULT_MAX_CONCURRENT_CHILDREN = 5</code>, blanket-dropping is probably protecting laptops from swap.
+    <b>If it becomes per-role opt-in, gate it on concurrency</b> — this is the one item here with a real
+    resource cost and it needs a deliberate decision, not a flip.
+    <hr style="border:none;border-top:1px solid #ccd4e4;margin:11px 0">
+    <b>Token bloat is not real — it was speculation, and the measurement disagrees.</b> All 30 tools cost
+    <b>~1,100 tokens</b> of descriptions. The overlap concern stands, but it is <i>behavioral</i> (the model has
+    two ways to search), not a context-size problem. <b>The fix is "when not to use" in the descriptions, not
+    trimming the toolset.</b>
+  </div>
+
+  <div class="good">
+    <h3>Patterns to copy</h3>
+    <b>The skill lifecycle</b> — author ∪ GitHub-import → DB row → scope → materialize per run → clean up in a
+    <code>finally</code>. Packs should reuse this shape wholesale, including <code>ghimport</code>. ·
+    <b>The scoped registry overlay</b> (<code>registry.py</code> <code>push_scope</code>/<code>pop_scope</code>) —
+    dynamic tools that exist only for the life of a run and cannot leak across concurrent activations. ·
+    <b>Override-not-mutate</b> (<code>subagent_overrides.py</code>) — user edits stored as a diff from the
+    vendored default, so an untouched default keeps flowing through and "reset" is deleting a row. Exactly right
+    for pack-shipped roles the user then tweaks. ·
+    <b><code>load_overrides_checked</code></b> — returns <i>why</i> it fell back, because a loader that silently
+    returns <code>{}</code> makes failure undetectable by construction. Every pack loader must follow this.
+  </div>
+
+  <div class="partrule"><span>Part 2 — The Tracker</span></div>
+  <a id="tracker"></a>
+
+  <div class="bar"><i style="width:100%"></i></div>
+  <div class="counts">45 / 45 shipped · Phase A is the day-one fix and stands alone; B1 gates all of B; C–F build on
+    A+B; G rides alongside every phase and must not be deferred to the end — an absence-failure shipped without its
+    assertion is invisible by construction. <a href="#uiqueue" style="color:var(--violet);font-weight:600">UI pass complete — 9 of 10, T9 skipped</a> · <b>H is the one with a live user-visible bug today</b> (an imported
+    skill is silently the wrong file).</div>
+
+  <div class="legend">
+    <span><i class="dot d-queued"></i> Queued</span>
+    <span><i class="dot d-planned"></i> Planned</span>
+    <span><i class="dot d-prog"></i> In progress</span>
+    <span><i class="dot d-tested"></i> Tested</span>
+    <span><i class="dot d-done"></i> Done</span>
+    <span><span class="ui">UI</span> awaiting a human pass</span>
+  </div>
+
+  <div class="gaps" id="uiqueue">
+    <h3>Awaiting UI verification — the human pass, batched to the end</h3>
+    <b>Deliberate process choice:</b> <span class="fix">build continues without stopping for a browser pass each
+    slice; anything needing human eyes is marked <span class="ui">UI</span> inline and accumulates here. Recorded
+    rather than folded into "done" — the v2.4 tracker's closing lesson was that two render paths shipped without
+    ever being watched, and the only reason anyone knows is that it was written down.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b><span class="haz">SUPERSEDED</span>The 2026-08-11 pass reported green on T1/T2, and those verdicts do not
+    hold</b> — the toolset bug above meant no MCP tool could run, so "the agent used the MCP tools" was the model
+    talking about them. T1, T2 and the custom-tool half of T6 need re-running against the fix. The rest of the
+    pass (forms, scoping, catalog install, diagnostics, key warnings, copy) is unaffected and stands.
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Original note — every item green except triggers (T9), skipped as low value.</b>
+    <span class="fix">T1–T8 and T10 all verified in the running app: the MCP tools are used once the skill is
+    scoped, a skill reference is opened on demand, the project tab persists, a sub-agent was authored through the
+    guided form, the catalog install replaced a hand-made unpinned server with
+    <code>lean-lsp-mcp==0.29.0</code>, a custom HTTP tool ran and a private-address one was refused, the key
+    warnings fired, and the copy read acceptably to its intended reader.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>First pass done 2026-08-11.</b> <span class="fix">The MCP tab, skill import, <code>/skills</code>·<code>/mcp</code>
+    and the failure diagnostic all confirmed working in the running app. The pass also produced the single most
+    valuable result of the phase — the <b>tool-overlap observation</b> in Part 1 — which no test could have
+    produced, because the plumbing was correct and the <i>model's choice</i> was the finding.</span>
+    <table class="aud" style="margin-top:9px">
+      <tr><th>Slice</th><th>Verified by machine</th><th>Still needs a human</th></tr>
+      <tr><td><b>E0</b> MCP tab</td>
+        <td>add · Test · save · list · detail render · <b>user-confirmed</b> end to end</td>
+        <td class="g">VERIFIED, including the remote transport form and its failure path.</td></tr>
+      <tr><td><b>E0b</b> Test button</td>
+        <td>stdio: success (23 tools) + two distinct failures, reason line + folded traceback</td>
+        <td class="w">remote (HTTP/SSE) transports · the in-flight "Testing…" spinner</td></tr>
+      <tr><td><b>E0d</b> Capabilities tab</td>
+        <td>tick → <code>mcp_server_specs</code> resolves for that project only</td>
+        <td class="g">VERIFIED — ticks persist across reload and the locked global row reads correctly.</td></tr>
+      <tr><td><b>E0e</b> <code>/skills</code>·<code>/mcp</code></td>
+        <td>the whole diff contract: 9 tests incl. project-changes-reach-existing-sessions</td>
+        <td class="g">VERIFIED in a live session — both overrides stored, and both resolved for the next
+          run.</td></tr>
+      <tr><td><b>A4</b>·<b>A5</b> path + wait</td>
+        <td><code>/defaults</code> returns the real Lake root; preflight rejects a non-project</td>
+        <td class="w">the "Use my Lean project" link appearing and inserting correctly · whether the
+          cold-start sentence lands where it is actually read</td></tr>
+      <tr><td><b>B2</b>·<b>B3</b> user roles</td>
+        <td>row → YAML → <code>agent_dirs</code> → the enum the coordinator is offered, end to end</td>
+        <td class="g">VERIFIED — <code>counterexample-hunter</code> created through the guided form.</td></tr>
+      <tr><td><b>C1</b>·<b>C3</b> authoring form</td>
+        <td>compile order, determinism, unknown-key rejection, round-trip editing, and that a role's
+          <code>when_to_use</code> reaches the coordinator's enum</td>
+        <td class="g">VERIFIED — a sub-agent was authored through the form, and the copy read acceptably to
+          its intended reader.</td></tr>
+      <tr><td><b>H1</b>–<b>H4</b>·<b>H7</b> real skills</td>
+        <td>the real repo re-imported: 41 references, 28 KB entry point, frontmatter parsed; advertise-vs-inject
+          verified through the prover's own loader · <b>user-confirmed</b> in the Skill Factory</td>
+        <td class="g">VERIFIED — the agent opens a reference on demand once the skill is scoped.</td></tr>
+      <tr><td><b>F1</b>–<b>F3</b> custom tools</td>
+        <td>8 tests: scope/resolve, save-time refusal of private URLs, call-time re-check, missing-key naming,
+          scoped registration, clash-skipping · SSRF guard verified against real addresses</td>
+        <td class="g">VERIFIED — a live CrossRef call returned real data, and a tool pointed at Lea's own API
+          was refused at save.</td></tr>
+      <tr><td><b>A3</b> failure diagnostic</td>
+        <td>the <code>Diagnostic</code> is yielded with code, reason and detail</td>
+        <td class="g">VERIFIED — a deliberately broken server produced a rendered degraded card in a live run,
+          and the run continued. The one path in this phase nobody had ever watched.</td></tr>
+      <tr><td><b>A8</b> pooling</td>
+        <td>40.9 s → 0.1 s → 0.0 s across three simulated runs; tools isolated per run</td>
+        <td class="g">VERIFIED across real multi-message sessions.</td></tr>
+      <tr><td colspan="2"><b>The whole feature</b></td>
+        <td class="g"><b>ANSWERED.</b> With the skill scoped the agent uses the MCP tools — the pack thesis,
+          tested and upheld. See the resolution box in Part 1.</td></tr>
+      <tr><td colspan="2"><b>Copy</b></td>
+        <td class="g">VERIFIED — read through and accepted. The only remaining known gap is a UI field for
+          skill triggers, which has no surface yet (T9, deferred as low value).</td></tr>
+    </table>
+  </div>
+
+  <div class="group">
+    <h2>Phase A — Make MCP actually usable</h2>
+    <div class="ghint">The plumbing is written and fast (0.6 s). The entire cost is the failure surface. Ships
+      independently of everything below — roughly a day, and it converts a silent no-op into a working feature.</div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id">A1</span><span class="title">Wire <code>cfg.mcp_servers</code> from the adapter</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="p1">FIRST</span><span class="haz">SEE A7</span>The one missing wire.
+        <code>bridge.py</code> sets <code>cfg.mcp_servers</code> from stored server specs, mirroring how
+        <code>cfg.skills</code> is set at <code>bridge.py:1722</code>. Everything in the prover below this already
+        works — <b>but ship A7 with it</b>, or this slice is what breaks <code>LeaConfig</code>'s no-secrets
+        invariant.
+        <br><span class="win">SHIPPED</span>New <code>mcp_servers</code> + <code>mcp_server_projects</code> tables
+        (revision <code>0011</code>, mirroring <code>skills</code>/<code>skill_projects</code>), a
+        <code>store.mcp_server_specs()</code> resolver, and the <code>bridge</code> wire. Resolution matches skills
+        (global ∪ assigned) with one deliberate difference: <b>a loose session still gets the global servers</b>,
+        since a machine-level tool the user switched on should work in a scratch session too.</div>
+    </div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id">A7</span><span class="title">A stored spec may name a key, never carry one</span>
+        <span class="tag prover">prover</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="haz">SECRETS</span><b>Scope grew once measured.</b> The plan assumed this
+        was config hygiene with nothing to build; the environment a child actually receives turned out to be
+        either <b>8 vars and no key</b> (no <code>env</code>) or <b>54 vars including every provider credential</b>
+        (any <code>env</code>). Shipped <code>_child_env</code>: SDK safe base + literal <code>env</code> +
+        host values of names declared in a new <code>env_from</code>. Verified — literal-only leaks nothing,
+        <code>env_from</code> delivers exactly the one declared key, an unset name warns and still starts, and
+        <code>lean-lsp-mcp</code> is unaffected (23 tools). <b>Remaining for E0:</b> validate on save that a
+        spec's <code>env</code> holds no secret-shaped values, steering them to <code>env_from</code>.</div>
+    </div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id">A8</span><span class="title">Pool MCP connections across runs</span>
+        <span class="tag prover">prover</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="haz">BLOCKS INTERACTIVE</span><span class="p1">GATES /mcp</span>Measured:
+        a fresh manager per run means <b>34–52 s on the first Lean call of every message</b>. Pool the live
+        sessions process-wide keyed by server spec — the same move <code>lsp_daemon.py</code> already makes for
+        <code>lean_check</code> (~0.2 s vs ~88 s). <b>Keep the per-activation registry overlay unchanged</b>: each
+        run still registers its own tool wrappers, they just point at a pooled session. Needs a per-server call
+        lock (concurrent runs share one connection) and a reaping policy — <code>LEA_LSP_RESTART_AFTER</code> is
+        the precedent for both. <b>Without this, session-level <code>/mcp</code> is not worth building.</b>
+        <br><span class="ui">UI</span><span class="win">SHIPPED</span><b>Measured after:</b> run 1 <b>40.9 s</b> → run 2 <b>0.1 s</b> →
+        run 3 <b>0.0 s</b> (was 51.8 / 34.2 / …), with acquire+register at 0.00 s on reuse. Pool sits
+        <i>above</i> <code>MCPManager</code>, whose <code>start</code>/<code>stop</code> contract is unchanged
+        (its integration tests still pass verbatim); each run registers into its own overlay and
+        <code>pop_scope</code> drops it — verified that <code>lean_goal</code> is <b>not</b> registered between
+        runs. A manager with no live session is deliberately not cached, so a fixed path or a newly-installed
+        binary is retried next run. Idle reaping via <code>LEA_MCP_IDLE_TIMEOUT</code> (default 1800 s) plus an
+        <code>atexit</code> hook, because a pooled Lean server holds Mathlib in RAM and now outlives the run that
+        started it.</div>
+    </div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id">A2</span><span class="title">Preflight validator</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">Three deterministic checks before enabling: <code>uvx</code> on PATH · target dir contains
+        <code>lean-toolchain</code> + a lakefile · trial-start the server. All three verified checkable in a few
+        lines. Replaces the LLM-wizard idea entirely.
+        <br><span class="win">SHIPPED</span>Runs before anything spawns, so the two knowable mistakes are
+        answered instantly and in plain language instead of five seconds later as a traceback: a command not on
+        PATH, and a <code>LEAN_PROJECT_PATH</code> that is missing or not a Lean project.</div>
+    </div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id">A3</span><span class="title">Surface the child's stderr on failure</span>
+        <span class="tag be">adapter</span><span class="tag prover">prover</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="haz">SILENT</span><span class="ui">UI</span>Today <code>mcp.py:36</code> warns to stderr and the run
+        continues with zero tools. Capture the subprocess's stderr and raise it as a <code>degraded</code>
+        Diagnostic — the v2.4 contract already has the right shape for "an ongoing capability is missing."</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id">A4</span><span class="title">Auto-fill the Lean project path</span>
+        <span class="tag be">adapter</span><span class="tag fe">frontend</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">The adapter knows the workspace path; the user must never type it. Deletes the most likely
+        setup error outright. Note <code>lean-lsp-mcp</code> 0.29.0 also accepts <code>--lean-project-path</code>,
+        so it need not go through <code>env</code>.
+        <br><span class="win">SHIPPED</span><span class="ui">UI</span><code>GET /api/mcp-servers/defaults</code>
+        returns the vendored Lake root when it really is one; the form offers it as a one-click
+        <i>"Use my Lean project"</i>. The vendored config shipped a literal
+        <code>/ABSOLUTE/PATH/TO/…</code> placeholder — this is that field, finally answerable.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id fe">A5</span><span class="title">Cold-start affordance for the 44 s first call</span>
+        <span class="tag fe">frontend</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">Measured 44.0 s cold, ~0.0 s warm. Without an indicator this reads as a hang, exactly when
+        the user is judging whether the feature works.
+        <br><span class="win">SHIPPED</span><span class="ui">UI</span>Stated where it will be read — in the
+        server's own settings pane — rather than as a spinner nobody can interpret. Pooling (A8) means it is now
+        paid once, not per message.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id">A6</span><span class="title">Pin catalog server versions</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="haz">SUPPLY CHAIN</span><code>uvx &lt;pkg&gt;</code> unpinned fetches and
+        executes latest from PyPI at every run start. Catalog entries pin
+        (<code>lean-lsp-mcp==0.29.0</code>).
+        <br><span class="win">SHIPPED</span>The curated entry ships pinned, and a test asserts it — an unpinned
+        entry is a moving target masquerading as a curated one.</div>
+    </div>
+  </div>
+
+  <div class="group">
+    <h2>Phase B — Sub-agent roles become user-definable</h2>
+    <div class="ghint">B1 is not optional and not reorderable: without it a user-created role is invisible to the
+      coordinator and silently never runs.</div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id sub">B1</span><span class="title">Build the spawn schema per-run with a role <code>enum</code></span>
+        <span class="tag prover">prover</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="haz">LOAD-BEARING</span><span class="p1">GATES B2–B4</span>
+        <code>_SPAWN_SCHEMA</code> (<code>subagents.py:64</code>) is a module-level dict registered at import
+        (<code>subagents.py:646</code>) with <code>subagent_type</code> as free text. Build it at activation time
+        with an <code>enum</code> of available roles and each role's description folded in.
+        <br><span class="win">SHIPPED</span>Done as a general registry hook
+        (<code>Tool.schema_factory</code>) rather than a special case in the loop, so any tool whose shape
+        depends on run-time state can use it. Roles are published <b>two ways</b>, because they do different
+        jobs: the <code>enum</code> is machine-checkable (the model cannot invent a role, and a validating
+        provider rejects a typo), while each role's own <code>description</code> is what lets the model
+        <i>choose</i> — an enum of bare names says nothing about when to use one. A malformed role is skipped,
+        not fatal. 6 tests, led by the regression that has no symptom: <b>a role added after import must appear
+        on the next build</b>.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id sub">B2</span><span class="title">User-authored roles alongside the vendored ones</span>
+        <span class="tag db">db</span><span class="tag prover">prover</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><code>available_profiles()</code> (<code>profiles.py:64</code>) currently globs only
+        <code>lea/agents/*.yaml</code>. Union it with user roles, keeping <code>parse_profile</code>'s
+        fail-loudly-on-unknown-key discipline — a dropped <code>tools:</code> would hand a child the full toolset.
+        <br><span class="win">SHIPPED</span>Rows in, files out — the shape skills already use, and what keeps
+        the prover ignorant of the database: it is handed <b>directories</b>
+        (<code>LeaConfig.agent_dirs</code>), never a connection. Roles are deliberately <b>global</b>, no
+        per-project join: a role is a way of working, not a resource a project owns, and the Skills / MCP tab
+        already says so. A name colliding with a built-in is refused — two roles answering to one name makes
+        "which one ran?" unanswerable.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id sub">B3</span><span class="title">POST / DELETE on the roles route</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><code>routes/subagents.py</code> is GET + PUT only (override an existing role). Creating and
+        deleting a role needs the other two verbs, plus the scope model skills already have.
+        <br><span class="win">SHIPPED</span>Built-in and user roles come back in <b>one list</b> with an
+        <code>origin</code> field, because they are one concept to the user — a built-in can be retuned but not
+        deleted, a user role edited and deleted outright.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id sub">B4</span><span class="title">Referential integrity: deleting a tool a role references</span>
+        <span class="tag prover">prover</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="haz">HARD FAIL</span><code>compose_child_tools</code>
+        (<code>subagents.py:143</code>) <b>raises</b> <code>ToolError</code> on an unknown tool name. Delete a
+        custom tool a role names and every spawn of that role fails confusingly. Either soft-drop unknown names or
+        block the delete — decide deliberately.
+        <br><span class="win">SHIPPED</span><b>Decided: soft-drop.</b> Blocking the delete couples the Library
+        to role internals and leaves undeletable rows; the child now runs without the tool and the human gets
+        <code>subagent.tool_dropped</code>. Same policy as a session's deleted override, so all three agree.</div>
+    </div>
+  </div>
+
+  <div class="group">
+    <h2>Phase C — Guided prompt authoring</h2>
+    <div class="ghint">One editor component, three consumers. The fields are stored structured and compiled to one
+      string through a fixed template.</div>
+
+    <div class="todo">
+      <div class="top"><span class="id fe">C1</span><span class="title">Four-field authoring form</span>
+        <span class="tag fe">frontend</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">General description · when to use · when <b>not</b> to use · procedural notes. Scaffolding
+        that helps a mathematician write a good description without knowing that is what they are doing.
+        <br><span class="win">SHIPPED</span><span class="ui">UI</span>Copy is deliberately concrete — a
+        mathematician can answer each about their own practice without knowing what a prompt is. The
+        "when NOT to" box carries a hint saying it is the most useful one, because it is the box nobody fills
+        in unprompted.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id">C2</span><span class="title">Compile fields → one description string</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">Deterministic template. <code>build_toolset</code> transmits only
+        <code>schema["description"]</code>; the structured fields persist so they stay editable.
+        <br><span class="win">SHIPPED</span>The fields AND the compiled text are both stored, deliberately:
+        the fields so re-opening the form shows answers rather than prose to reverse-engineer, the compiled
+        text so <code>skills.body</code> and <code>agent_roles.system_prompt</code> keep working unchanged —
+        nothing downstream learns a new shape. Deterministic, so re-saving without edits is a no-op. 11 tests.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id fe">C3</span><span class="title">Reuse the form across skills, roles and tools</span>
+        <span class="tag fe">frontend</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">Same component in <code>SkillFactory</code>, <code>SubagentFactory</code> and the tool
+        editor. For roles the same text feeds B1's <code>enum</code> descriptions.
+        <br><span class="win">SHIPPED</span><span class="ui">UI</span>One component, two consumers so far. It
+        also gives <b>B2 its UI</b> — the Sub-agents page can finally add a role, not only retune the two
+        built-ins. And the connection is real, not aspirational: a role's <code>when_to_use</code> becomes its
+        <code>description</code>, which B1 lists beside the role name in the coordinator's <code>enum</code>.
+        <b>Authoring a role well and making the coordinator pick it are the same act.</b> A skill written by
+        hand or imported keeps its markdown editor — the form is an option, never a migration of prose someone
+        already wrote.</div>
+    </div>
+  </div>
+
+  <div class="group">
+    <h2>Phase D — Multiple API keys</h2>
+    <div class="ghint">The vault already works and already retracts on clear. This phase is purely the declaration
+      layer on top of it.</div>
+
+    <div class="todo">
+      <div class="top"><span class="id">D1</span><span class="title"><code>requires_keys</code> on the manifest</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">Names only, never values. Resolution stays at call time from <code>os.environ</code>, so
+        <code>LeaConfig</code> keeps its "safe to log or serialize" property.
+        <br><span class="win">SHIPPED</span>Nothing new is declared — <code>env_from</code> and
+        <code>api_key_name</code> already NAME the credentials, precisely so the value never has to be stored.
+        <code>mcp_key_requirements()</code> reads that declaration back.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id fe">D2</span><span class="title">Prompt for a missing key at enable-time</span>
+        <span class="tag fe">frontend</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">Block enabling until the declared keys are present. Reuses the existing user-added key rows
+        (<code>SettingsPage.tsx:49</code>) and the <code>^[A-Z][A-Z0-9_]*_API_KEY$</code> validation.
+        <br><span class="win">SHIPPED</span><span class="ui">UI</span>Surfaced in the Library rather than as a
+        block: an unsaved key means the server starts fine and 401s on <i>first use</i>, so the warning belongs
+        where the user can act on it, not at a gate.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id fe">D3</span><span class="title">Impact warning when clearing a key</span>
+        <span class="tag fe">frontend</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">"Clearing this disables 2 enabled packs." The retraction half already works correctly
+        (<code>config.py:124</code>) — this is telling the user what it will cost.
+        <br><span class="win">SHIPPED</span>Clearing a key an MCP server declares is <b>refused with the list of
+        servers</b>, and <code>force_clear_keys</code> is the explicit "do it anyway" — so it warns once rather
+        than becoming unskippable.</div>
+    </div>
+  </div>
+
+  <div class="group">
+    <h2>Phase E — The MCP tab, then (later) packs</h2>
+    <div class="ghint"><b>Scope decision:</b> one-click / curated catalog is deferred to future work. The near-term
+      goal is a <b>manual "add an MCP server" tab</b> — the advanced door, which is what OpenHands actually ships
+      and the only thing needed for a user who has already installed a server themselves.</div>
+
+    <div class="todo is-planned">
+      <div class="top"><span class="id fe">E0</span><span class="title">MCP servers tab — manual add/edit/delete</span>
+        <span class="tag fe">frontend</span><span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="p1">THE FOCUS</span>Model on OpenHands'
+        <code>mcp-server-form.tsx</code>: <b>type picker first</b> (stdio / sse / streamable-http) switching which
+        fields render, then plain text fields — <b>no JSON</b>. Name (<code>^[a-zA-Z0-9_-]+$</code>, unique) ·
+        Command (<b>single executable; reject spaces</b> with "put parameters in Arguments" — the most likely user
+        error) · Arguments (textarea, one per line) · Environment (textarea, one <code>KEY=value</code> per line) ·
+        URL + timeout for the remote types. Validate client- and server-side. Produces
+        <code>cfg.mcp_servers</code> directly — the shape already matches.<br><span class="win">BACKEND DONE</span>Table + CRUD/scope routes + save-time validation
+        (spaces in command, secret-shaped <code>env</code>, missing endpoint per transport), 12 tests. <span class="ui">UI</span><span class="win">SHIPPED</span>Tab, form and store landed and were
+        driven in a real browser: transport picker, one-arg-per-line fields, save, edit, enable/disable, scope,
+        delete.</div>
+    </div>
+
+    <div class="todo is-planned">
+      <div class="top"><span class="id fe">E0b</span><span class="title">"Test connection" button in the form</span>
+        <span class="tag fe">frontend</span><span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="win">CHEAPEST WIN</span><b>OpenHands has no such button</b> — a broken
+        server saves fine and fails later. <code>start()</code> is 0.6 s measured, so the form can answer
+        immediately: <i>connected, 23 tools found</i>, or the real reason. This is where A2's preflight lives, and
+        it removes the entire silent-failure class at the moment the user can still fix it.<br><span class="win">ENDPOINT DONE</span><code>POST /api/mcp-servers/test</code> dry-runs an
+        <i>unsaved</i> draft and returns <code>{ok, tool_count, tools, error, detail}</code>, where
+        <code>detail</code> is the child's real stderr (A3). Deliberately unpooled — a test must observe a cold
+        start. <span class="ui">UI</span><span class="win">SHIPPED</span>Verified live end to
+        end: a wrong Lean path reports <i>"Lean project path '…' must contain <code>lean-toolchain</code> and
+        either <code>lakefile.lean</code> or <code>lakefile.toml</code>"</i> with the traceback folded behind
+        "Technical details"; the correct path reports <b>"Connected — 23 tools available"</b>. The exception class
+        is stripped so the line reads as a sentence, not a Python error.</div>
+    </div>
+
+    <div class="todo is-planned">
+      <div class="top"><span class="id fe">E0c</span><span class="title">Keys come from the vault, not the env box</span>
+        <span class="tag fe">frontend</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="haz">SECRETS</span>Deliberate divergence from OpenHands, which stores env
+        values straight into settings. Lea's env field must not take secrets (A7). The form instead points at
+        <b>Settings → API keys</b> and the spec names it under <code>env_from</code> (A7), so the value is
+        read at spawn and never stored. Fewer fields to fill, and the secret stays where it is already handled.</div>
+    </div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id fe">E0d</span><span class="title">Project-level assignment for MCP servers</span>
+        <span class="tag db">db</span><span class="tag fe">frontend</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="p1">SCOPING DECIDED</span>Mirror skills exactly: an
+        <code>mcp_server_projects</code> join beside <code>skill_projects</code>, surfaced through the existing
+        <code>ScopeAssignment.tsx</code> — <b>built unit-agnostic for precisely this</b>. Project → select MCP
+        servers + skills → applies to every session in the project. This settles the earlier open question:
+        <b>project-scoped, not machine-global</b>, so MCP and skill scoping cannot drift apart when H8 lands and a
+        skill starts declaring its own servers.
+        <br><span class="ui">UI</span><span class="win">SHIPPED</span>Both directions. The Library side (server → projects) came with E0;
+        this adds the direction that matters to a mathematician — a <b>Capabilities tab</b> inside the project
+        answering "what does THIS project have?", listing skills and servers with checkboxes. Both write through
+        the SAME assignment endpoint, so one join table has one writer and the two views cannot disagree. A
+        <b>global item shows on-and-locked</b>: un-ticking it here would silently mean "stop being global", which
+        is a Library-level decision. Verified live — ticking Lean LSP in PDE made
+        <code>mcp_server_specs(PDE)</code> return the spec while Erdős and loose sessions stayed empty.</div>
+    </div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id fe">E0e</span><span class="title"><code>/skills</code> and <code>/mcp</code> — per-session selection</span>
+        <span class="tag fe">frontend</span><span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="win">INFRA EXISTS</span>Slash commands are already built
+        (<code>lib/slashCommands.js</code>, <code>slashCommandRunner.ts</code>, and the menu in
+        <code>ChatThread.tsx:784</code>), so this is a new command, not new machinery. Lists the library and lets a
+        session opt in. <b>Also fixes a real gap:</b> a loose (project-less) session resolves to <i>zero</i> skills
+        today by construction (<code>skills_catalog</code>'s docstring) — there is currently no way to use a skill
+        outside a project at all. <b>Depends on A8</b> for <code>/mcp</code>: selection applies from the next run,
+        and only makes sense once the connection outlives the run.
+        <br><b>Semantics.</b> The session view lists the <b>whole library</b> with the project's picks
+        pre-checked, and the user checks or unchecks freely — so a session can <i>add</i> skill Y and equally
+        <i>remove</i> project-level skill X, for that session only. Same for MCP servers.
+        <br><b>Store the diff, not the resulting set.</b> <span class="haz">DERIVED STATE</span>The session must
+        persist <i>what it changed</i> (added Y, removed X), never the absolute list — otherwise a session
+        snapshots the project at creation and a skill added at project level later <b>never reaches existing
+        sessions</b>, which contradicts "applies to every session in the project." The absolute set <i>is</i>
+        derived (project's set ± the session's diff), and this repo's rule is that derived state is computed, never
+        stored. Exact precedent: <code>subagent_overrides.py</code> persists only fields that <b>differ</b> from a
+        role's default, expressly so "a vendored default the user didn't touch keeps flowing through."
+        <br><b>Deleted-item policy.</b> A diff naming a skill or server later removed from the library
+        <b>soft-drops with a diagnostic</b> — never a hard failure. Same answer as B4/H6; keep the three
+        consistent.
+        <br><span class="win">SHIPPED</span><span class="ui">UI</span>Both commands, a picker over any view,
+        and the diff store (revision <code>0012</code>+<code>0013</code>). 9 tests, led by the one that proves
+        the diff earns its keep: <b>a skill assigned to a project AFTER a session exists still reaches that
+        session</b> — a stored absolute list would fail exactly there. Also covered: add/drop per session,
+        clearing an override to re-inherit, a <b>loose session using a skill at all</b> (impossible before), a
+        deleted item soft-dropping, and a session being unable to opt into a <i>disabled</i> server.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id">E1</span><span class="title">Pack manifest schema</span>
+        <span class="tag db">db</span><span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span style="color:var(--muted)">(future)</span> Per H8, <b>be</b> the AgentSkills format
+        rather than invent one: frontmatter + <code>.mcp.json</code> + <code>allowed_tools</code> +
+        <code>requires_keys</code>.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id">E2</span><span class="title">Curated catalog — <code>lean-lsp-mcp</code> as entry #1</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span style="color:var(--muted)">(future — deferred by scope decision)</span> Pinned, path
+        auto-filled, shipped with a recommended tool subset and <code>skills/lean_lsp_proving.md</code>.
+        <b>Justifies its own maintenance cost only because the domain is narrow</b> — 1–3 Lean servers, not the
+        unbounded curation a general-purpose harness would face, which is why OpenHands ships a raw form instead.
+        <b>LeanExplore is dropped</b>, not deferred: its docs 403'd on two separate attempts, so neither its launch
+        command nor whether it needs an API key could ever be confirmed. Shipping a curated entry on a guess is
+        the opposite of what curation is for.
+        <br><span class="win">SHIPPED</span>One entry, pinned, Lean path auto-filled, and carrying a
+        <b>recommended tool subset</b> — <code>lean_goal</code> and friends, which add what Lea lacks, and not
+        <code>lean_leansearch</code>, which duplicates <code>search_mathlib</code>. That subset is the direct
+        answer to the overlap finding above.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id fe">E3</span><span class="title">Pack Factory page</span>
+        <span class="tag fe">frontend</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span style="color:var(--muted)">(future)</span> The long-deferred "MCP Factory"
+        (<code>factories.ts:14</code>), generalized to packs — E0 is its first, manual half. Reuses
+        <code>ScopeAssignment.tsx</code>, built unit-agnostic for exactly this.
+        <br><span class="win">SHIPPED</span><span class="ui">UI</span>A "Suggested" strip above the manual form:
+        one click installs the pinned server with its Lean path filled in. The paired skill stays a separate,
+        visible act — an install that silently added four sub-agents would be worse than one that added
+        none.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id">E4</span><span class="title">Import a pack from GitHub</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">Extends <code>ghimport.fetch_skill</code>'s shallow-clone-and-snapshot to a whole pack.
+        This is the channel by which a technical collaborator authors and a mathematician consumes.
+        <br><span class="win">SHIPPED</span>Proven on the real repo: one URL brought a 28 KB skill, 41
+        references, and 4 sub-agents with their tool names translated.</div>
+    </div>
+  </div>
+
+  <div class="group">
+    <h2>Phase F — Declarative custom tools</h2>
+    <div class="ghint">Not a replacement for MCP — the lighter path for a plain REST service with an API key, where
+      standing up an MCP server is disproportionate.</div>
+
+    <div class="todo">
+      <div class="top"><span class="id">F1</span><span class="title">HTTP tool spec</span>
+        <span class="tag db">db</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">Endpoint · method · params schema · <code>auth_key_name</code>. No code execution, unlike
+        <code>tool_modules</code>. <b>Pick a genuinely key-requiring service for the first one</b> — Wolfram Alpha,
+        Semantic Scholar. <span class="haz">NOT LOOGLE</span> Loogle needs no API key (measured: 0.5 s
+        unauthenticated) and is <i>already</i> exposed as <code>lean_loogle</code> by catalog entry E2 — building it
+        would add a third way to search Mathlib, which is the overlap problem, not a solution to it.
+        <br><span class="win">SHIPPED</span><span class="ui">UI</span>A Tools page, scoped like everything else.
+        The split that makes it usable: the <b>endpoint</b> is written once (URL, parameter names, key name),
+        the <b>four authoring questions</b> are what the mathematician owns — and they are what the model reads
+        when deciding whether to reach for it.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id">F2</span><span class="title">Register into the activation overlay</span>
+        <span class="tag prover">prover</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><code>register(..., scoped=True)</code> at run start — the same seam MCP already uses, so
+        tools vanish on run exit and concurrent activations cannot corrupt each other.
+        <br><span class="win">SHIPPED</span>A name clashing with a built-in is <b>skipped with a diagnostic</b>,
+        never allowed to shadow it — one bad tool must not cost the user their proof.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id">F3</span><span class="title">SSRF guard on user-supplied URLs</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="haz">NEW SURFACE</span><code>netguard.py</code> guards inbound only. Outbound
+        calls to a user-supplied URL can reach internal addresses. Allowlist, or the same advanced-mode gate as
+        free-form MCP servers.
+        <br><span class="win">SHIPPED</span>Enforced at BOTH save and call time, and on the <b>resolved
+        addresses</b> rather than the hostname — a name is not a promise, and <code>evil.example</code> can
+        resolve to <code>169.254.169.254</code>. https only; loopback, private, link-local and multicast all
+        refused; a multi-homed name is refused unless every address is public. Verified against Lea's own API,
+        the metadata endpoint, and real public domains.</div>
+    </div>
+  </div>
+
+  <div class="group">
+    <h2>Phase G — Error transparency for packs</h2>
+    <div class="ghint">Extends v2.4's <code>Diagnostic</code> contract to the v2.5 surface. No new machinery —
+      <code>diagnostics.report()</code>, the server-side <code>CATALOG</code>, severities and action buttons all
+      exist. G3 is the one that is genuinely new thinking, because absence throws no exception.</div>
+
+    <div class="todo is-planned">
+      <div class="top"><span class="id">G1</span><span class="title">Pack / MCP / tool codes in the catalog</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">The ~11 codes from the workflow table, each with a title and a remedy, in the existing
+        namespaces. Follow <code>lean.lsp_cold_fallback</code>'s wording: what happened, what it costs you, how to
+        fix it. Note <code>tool.unknown</code>'s remedy <b>already</b> refers to MCP — v2.4 anticipated this.</div>
+    </div>
+
+    <div class="todo is-planned">
+      <div class="top"><span class="id">G2</span><span class="title">One vocabulary for preflight and run time</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">A2's preflight emits the same codes the run-time path emits, so "can't enable" and "stopped
+        working" are the same sentence. Prevents two code paths inventing two phrasings of one fact.
+        <br><span class="win">SHIPPED</span>Preflight and run time share the codes, and F's URL rules are the
+        prover's own <code>check_url</code> called from the adapter — one implementation, so save-time and
+        call-time cannot disagree.</div>
+    </div>
+
+    <div class="todo is-planned">
+      <div class="top"><span class="id">G3</span><span class="title">Positive assertions for absence-failures</span>
+        <span class="tag prover">prover</span><span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="haz">SILENT</span><span class="p1">THE KEY ONE</span>Nothing raises when a
+        capability simply isn't there. Assert and report: tools-registered vs expected
+        (<code>mcp.tools_missing</code>) · role <code>enum</code> non-empty when roles exist
+        (<code>subagent.roles_not_offered</code>) · resolved skill count vs assigned. Each is one comparison; each
+        converts an invisible no-op into a diagnostic with a remedy.
+        <br><span class="win">SHIPPED</span>A server that connects and lists <b>nothing</b> now yields
+        <code>mcp.no_tools</code> (degraded) at run start, and the Test button refuses to call it a success.
+        Nothing raised in that case — which is the whole point. The role-<code>enum</code> and skill-count
+        assertions land with B1 and later.
+        Now complete: a role that could not be materialized reports <code>subagent.role_unavailable</code>, a
+        reference file that never reached disk reports <code>skill.files_incomplete</code>, and a tool whose key
+        is missing reports <code>tool.auth_missing</code> — each an absence that raises nothing.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id fe">G4</span><span class="title">Action buttons for pack remedies</span>
+        <span class="tag fe">frontend</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">Reuses the <code>ACTION_API_KEYS</code> pattern (<code>diagnostics.py:149</code>) — which
+        already focuses the right Settings field — plus "open this pack" and "re-run preflight". Covers D2's
+        missing-key prompt.
+        <br><span class="win">SHIPPED</span>Generalized: a <code>CODE_ACTIONS</code> map attaches buttons by
+        <b>code</b>, so every v2.5 diagnostic gets one without touching a handler, and a new
+        <code>open-library</code> action lands on Skills / Sub-agents / MCP servers. Only where there is somewhere
+        useful to go — a button onto a page the user can do nothing with is worse than none.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id">G5</span><span class="title">Pack loaders report <i>why</i> they fell back</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">Follow <code>load_overrides_checked</code>: a loader that quietly returns <code>{}</code>
+        makes its own failure undetectable by construction — wrapping it in a <code>try</code> catches nothing. Every
+        pack loader returns <code>(value, why_it_failed)</code>. A missing file is not a failure; an unreadable one
+        is.
+        <br><span class="win">SHIPPED</span>Applied to skill materialization: a reference the entry point links
+        but that never reached disk now yields <code>skill.files_incomplete</code> instead of a
+        <code>read_file</code> failing mid-proof for no visible reason.
+        <br><span class="win">SHIPPED</span>Parsed, stripped, and the author's <code>description:</code> kept —
+        it is exactly the "when to use this" the authoring form asks for. Malformed frontmatter is treated as
+        ordinary text rather than failing an import.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id">G6</span><span class="title">Validate at save, not at run</span>
+        <span class="tag be">adapter</span><span class="tag fe">frontend</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">Reject a malformed pack, role or tool spec while the user is still looking at the offending
+        field, in <code>parse_profile</code>'s refuse-unknown-keys spirit. Makes the run-time codes rare rather than
+        routine.
+        <br><span class="win">SHIPPED</span>A tool URL is validated against the prover's own guard at save; a
+        secret-shaped <code>env</code> or header is refused at save; a role with no instructions, a command with
+        spaces, and a duplicate name are all refused at save.</div>
+    </div>
+  </div>
+
+  <div class="group">
+    <h2>Phase H — Multi-file skills &amp; real-world pack import</h2>
+    <div class="ghint">Driven by the <code>lean4-skills</code> import (gap 4). H2 is a schema change and the
+      largest single item in v2.5; H1 is a one-line-ish fix that is <i>not</i> sufficient on its own.</div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id">H1</span><span class="title">Find <code>SKILL.md</code> anywhere, not just at the root</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="win">SMALL</span><code>_find_ci</code> (<code>ghimport.py:198</code>) scans
+        direct children only, so a root <code>README.md</code> beats a nested <code>SKILL.md</code>. Search
+        recursively, preferring the shallowest <code>SKILL.md</code>. <b>Necessary but not sufficient</b> — without
+        H2 it imports a 29 KB file whose every relative link is dead.</div>
+    </div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id">H2</span><span class="title">A skill is a directory, not a TEXT column</span>
+        <span class="tag db">db</span><span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="haz">SCHEMA</span>Today: one <code>body</code> column → one temp
+        <code>.md</code>. Needed: a file set (entry point + <code>references/</code>), materialized as a <b>tree</b>
+        so relative links resolve. Alembic revision; <code>MAX_BODY_BYTES</code> becomes a per-file and per-skill
+        budget. Keep the D45 snapshot principle — the rows stay the source of truth, not a live link.</div>
+    </div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id">H3</span><span class="title">Progressive disclosure: inject the entry point, read the rest on demand</span>
+        <span class="tag prover">prover</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="p1">ELEGANT FIT</span>Inject only <code>SKILL.md</code> (29 KB ≈ 7k tokens)
+        and let the agent <code>read_file</code> the references it needs — <b>Lea already has
+        <code>read_file</code></b>, which is exactly the mechanism Agent Skills assumes. The alternative
+        (concatenate everything) is ~170k tokens and impossible.
+        <b>Two modes, chosen by format</b> (per OpenHands): AgentSkills → list name + description + location in
+        <code>&lt;available_skills&gt;</code>, agent reads on demand; legacy/simple → full content injected, exactly
+        as today. <b>Lea's existing skills keep today's behavior.</b>
+        <b>But reads are sandboxed</b> (<code>_readable_roots</code>, <code>tools.py:162</code>, added by
+        AUDIT-2026-07-24 S4): a run may read only its <code>working_dir</code> and the enclosing Lake root.
+        <b>The current system-temp materialization is neither</b> — it works today only because the body goes
+        into the <i>prompt</i> and is never read from disk. So H3 <b>requires the read-only skills root</b>
+        (H7); see the location decision in Part 1.
+        <br><span class="win">SHIPPED</span>Verified end to end: a single-file skill's body is injected, a
+        multi-file skill contributes its entry point plus its references <b>by path</b> — never their contents.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id">H4</span><span class="title">Parse YAML frontmatter instead of injecting it</span>
+        <span class="tag prover">prover</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><code>load_skills</code> (<code>lea/skills.py</code>) wraps the raw file, so
+        <code>name:</code>/<code>description:</code>/<code>license:</code> land in the system prompt as literal
+        YAML. Parse it — and feed <code>description</code> into Phase C's "when to use", which is what it already
+        is.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id sub">H5</span><span class="title">Import bundled <code>agents/*.md</code> as roles</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">Their frontmatter maps almost field-for-field onto <code>AgentProfile</code>; the body is
+        <code>system_prompt</code>. Depends on B2/B3 (user-authored roles) and H6 (tool names).
+        <br><span class="win">SHIPPED</span>Re-imported the real repo: <b>4 sub-agents created</b>
+        (<code>proof-repair</code>, <code>proof-golfer</code>, <code>axiom-eliminator</code>,
+        <code>sorry-filler-deep</code>) alongside the skill. The import now <i>reports</i> what it brought — an
+        import that silently added four sub-agents would be worse than one that added none.</div>
+    </div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id sub">H6</span><span class="title">Tool-name mapping for imported profiles</span>
+        <span class="tag prover">prover</span><span class="tag be">adapter</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="haz">HARD FAIL</span>Imported profiles name <code>Read</code>/<code>Edit</code>/<code>Bash</code>
+        and <code>mcp__&lt;server&gt;__&lt;tool&gt;</code>; Lea has <code>read_file</code>/<code>edit_file</code>/<code>bash</code>
+        and registers MCP tools <b>bare</b> (<code>mcp.py:158</code>). <code>compose_child_tools</code> raises on
+        an unknown name, so an imported role fails at spawn. Map the known aliases, strip the
+        <code>mcp__…__</code> prefix, and report the unmapped ones as a diagnostic (G1) rather than raising —
+        this is <b>B4's policy question arriving early</b>, and it must be answered before H5 ships.
+        <br><span class="win">SHIPPED</span>Translated at IMPORT, once, where the result is inspectable —
+        <code>Read, Edit, Bash, mcp__lean-lsp__lean_goal…</code> became
+        <code>read_file, edit_file, bash, lean_goal…</code> on the real repo.
+        <code>Grep</code>/<code>Glob</code> have no equivalent and are dropped quietly; anything else is
+        <b>reported, never guessed</b> — deciding that <code>Glob</code> means <code>bash</code> would hand a
+        read-only role a shell.</div>
+    </div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id">H7</span><span class="title">A third, read-only skills root</span>
+        <span class="tag prover">prover</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope"><span class="haz">SANDBOX</span><span class="p1">GATES H3</span>Add the shared skills
+        cache to <code>_readable_roots</code> (<code>tools.py:162</code>) as a <b>read</b>-only root — writes stay
+        confined by <code>_sandboxed_write_path</code>, untouched. Narrow and defensible: a directory Lea creates
+        holding only materialized skill files, not a user-supplied path. <b>Solves sub-agent access by
+        construction</b> — every child gets the same root regardless of its scratch working_dir. Mirrors
+        OpenHands' absolute <code>SkillResources.skill_root</code>.
+        <br><span class="win">SHIPPED</span>Read roots only — <code>_sandboxed_write_path</code> untouched, so
+        nothing here widens what a run may write.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id">H8</span><span class="title">Adopt the AgentSkills manifest wholesale</span>
+        <span class="tag be">adapter</span><span class="tag db">db</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">Don't invent E1's format — <b>be</b> AgentSkills: frontmatter (<code>name</code>,
+        <code>description</code>, <code>version</code>, <code>license</code>, <code>allowed_tools</code>,
+        <code>metadata</code>) plus <code>.mcp.json</code> in the skill dir for declared MCP servers, and
+        <code>scripts/</code> / <code>references/</code> / <code>assets/</code>. Makes every skill in the wild
+        importable and gives F1/H6's tool lists a standard home. Cap <code>description</code> at 1024 chars,
+        truncating with a pointer to the source.
+        <br><span class="win">SHIPPED</span>Frontmatter (<code>name</code>, <code>description</code>,
+        <code>version</code>, <code>license</code>, <code>allowed_tools</code>) plus <code>.mcp.json</code>,
+        whose servers are created <b>disabled</b>: a skill may declare which servers it wants, but starting a
+        third-party command on someone's machine stays an explicit human act.</div>
+    </div>
+
+    <div class="todo">
+      <div class="top"><span class="id">H9</span><span class="title">Triggers: keyword, path, task</span>
+        <span class="tag prover">prover</span><span class="badge b-tested">Tested</span></div>
+      <div class="scope">Auto-inject a skill's content when the statement text matches keywords or a touched file
+        matches a path glob, per <code>skills/trigger.py</code>. <code>disable_model_invocation</code> makes a
+        skill trigger-only (hidden from the listing). Lets a measure-theory skill fire on the problem statement
+        instead of being always-on for every proof.
+        <br><span class="win">SHIPPED</span>Whole-word matching, because substring would fire "ring" on
+        "bringing" and a keyword list has to be something a mathematician can reason about. No triggers = always
+        on, so every existing skill is unaffected. An explicit <code>/skills</code> opt-in <b>beats</b> the
+        keywords — the user asking for it is a stronger signal than any list.</div>
+    </div>
+  </div>
+
+  <footer>
+    v2.5 · capability packs · plan + tracker · 45/45 ·
+    MCP findings measured against <code>lean-lsp-mcp</code> 0.29.0 through <code>lea.mcp.MCPManager</code>
+  </footer>
+</div>
+</body>
+</html>

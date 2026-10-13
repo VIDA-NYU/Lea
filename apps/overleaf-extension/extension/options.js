@@ -23,6 +23,7 @@ const modelCatalogStatus = document.querySelector("#model-catalog-status");
 const modelRequirementsContainer = document.querySelector("#model-requirements");
 const leaMaxTurnsInput = document.querySelector("#lea-max-turns");
 const leaTexMirrorInput = document.querySelector("#lea-tex-mirror");
+const leaSourcePauseInput = document.querySelector("#lea-source-pause");
 const providerStatusList = document.querySelector("#provider-key-status");
 const providerKeyInputs = {
   openai: document.querySelector("#openai-api-key"),
@@ -45,7 +46,8 @@ chrome.storage.sync.get(
     leaApiBaseUrl: "http://127.0.0.1:8001",
     leaModel: DEFAULT_LEA_MODEL,
     leaMaxTurns: 20,
-    leaTexMirrorEnabled: DEFAULT_LEA_TEX_MIRROR_ENABLED
+    leaTexMirrorEnabled: DEFAULT_LEA_TEX_MIRROR_ENABLED,
+    leaPauseOnSourceIssue: false
   },
   (settings) => {
     companionUrlInput.value = settings.companionUrl;
@@ -55,6 +57,7 @@ chrome.storage.sync.get(
     renderProviderKeyStatus(latestProviderKeys);
     leaMaxTurnsInput.value = settings.leaMaxTurns;
     if (leaTexMirrorInput) leaTexMirrorInput.checked = settings.leaTexMirrorEnabled !== false;
+    leaSourcePauseInput.checked = settings.leaPauseOnSourceIssue === true;
     loadCompanionSettings({ silent: true });
   }
 );
@@ -73,6 +76,7 @@ form.addEventListener("submit", async (event) => {
   const leaModel = leaModelInput.value.trim() || DEFAULT_LEA_MODEL;
   const leaMaxTurns = Number.parseInt(leaMaxTurnsInput.value, 10) || 20;
   const leaTexMirrorEnabled = leaTexMirrorInput ? leaTexMirrorInput.checked : DEFAULT_LEA_TEX_MIRROR_ENABLED;
+  const leaPauseOnSourceIssue = leaSourcePauseInput.checked;
   const leaProviderApiKeys = collectProviderApiKeyPatch();
   try {
     const leaResponse = await fetch(`${companionUrl}/settings/lea`, {
@@ -84,6 +88,7 @@ form.addEventListener("submit", async (event) => {
         leaModel,
         leaMaxTurns,
         leaTexMirrorEnabled,
+        leaPauseOnSourceIssue,
         leaProviderApiKeys,
         leaApiKeys: collectDynamicApiKeyPatch()
       })
@@ -99,7 +104,8 @@ form.addEventListener("submit", async (event) => {
       leaApiBaseUrl: leaPayload.leaApiBaseUrl,
       leaModel: leaPayload.leaModel,
       leaMaxTurns: leaPayload.leaMaxTurns,
-      leaTexMirrorEnabled: leaPayload.leaTexMirrorEnabled
+      leaTexMirrorEnabled: leaPayload.leaTexMirrorEnabled,
+      leaPauseOnSourceIssue: leaPayload.leaPauseOnSourceIssue
     });
     latestProviderKeys = leaPayload.leaProviderKeys || latestProviderKeys;
     latestApiKeys = leaPayload.leaApiKeys || latestApiKeys;
@@ -140,6 +146,7 @@ async function loadCompanionSettings({ silent }) {
     await loadModelRequirements(payload.leaModel || leaModelInput.value || DEFAULT_LEA_MODEL);
     leaMaxTurnsInput.value = payload.leaMaxTurns || leaMaxTurnsInput.value || 20;
     if (leaTexMirrorInput) leaTexMirrorInput.checked = payload.leaTexMirrorEnabled !== false;
+    leaSourcePauseInput.checked = payload.leaPauseOnSourceIssue === true;
 
     await chrome.storage.sync.set({
       companionUrl,
@@ -147,7 +154,8 @@ async function loadCompanionSettings({ silent }) {
       leaApiBaseUrl: leaApiBaseUrlInput.value,
       leaModel: leaModelInput.value,
       leaMaxTurns: Number.parseInt(leaMaxTurnsInput.value, 10) || 20,
-      leaTexMirrorEnabled: leaTexMirrorInput ? leaTexMirrorInput.checked : DEFAULT_LEA_TEX_MIRROR_ENABLED
+      leaTexMirrorEnabled: leaTexMirrorInput ? leaTexMirrorInput.checked : DEFAULT_LEA_TEX_MIRROR_ENABLED,
+      leaPauseOnSourceIssue: leaSourcePauseInput.checked
     });
 
     if (!silent) {

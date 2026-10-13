@@ -46,6 +46,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from threading import Lock
+from . import project_coordination
 
 # Admission outcomes. Strings (not an Enum) so they serialize into log lines and
 # test assertions without ceremony, and read the same in both.
@@ -75,6 +76,7 @@ class ActiveRun:
 
     run_id: str
     session_id: str
+    project_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -110,14 +112,14 @@ class RunRegistry:
     def capacity(self) -> int:
         return self._max
 
-    def try_admit(self, run_id: str, session_id: str) -> Admission:
+    def try_admit(self, run_id: str, session_id: str, *, project_id: str | None = None) -> Admission:
         """Atomically decide + claim. See the module docstring for the ordering.
 
         On ``admitted`` the slot is recorded and must be paired with a
         ``release(run_id)`` (the run thread's ``finally``). Every other outcome
         claims nothing — the caller does not release.
         """
-        with self._lock:
+        with project_coordination.mutation(project_id, admission=True), self._lock:
             capacity = self._max
             if run_id in self._active:
                 return Admission(ALREADY_ACTIVE, len(self._active), capacity)
@@ -130,7 +132,8 @@ class RunRegistry:
             if len(self._active) >= capacity:
                 return Admission(AT_CAPACITY, len(self._active), capacity)
 
-            self._active[run_id] = ActiveRun(run_id=run_id, session_id=session_id)
+            project_coordination.worker_started(project_id, run_id)
+            self._active[run_id] = ActiveRun(run_id=run_id, session_id=session_id, project_id=project_id)
             self._by_session[session_id] = run_id
             return Admission(ADMITTED, len(self._active), capacity)
 
@@ -148,6 +151,7 @@ class RunRegistry:
                 return False
             if self._by_session.get(run.session_id) == run_id:
                 del self._by_session[run.session_id]
+            project_coordination.worker_finished(run.project_id, run_id)
             return True
 
     def is_active(self, run_id: str) -> bool:

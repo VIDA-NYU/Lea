@@ -1,0 +1,81 @@
+{
+  "database_exists": true,
+  "checked": 103,
+  "matching": 95,
+  "mismatches": [
+    {
+      "step_id": 3987,
+      "path": "apps/lea-standalone/prover/workspace/proofs/Lea/P6ab4a31176d5a9a6a80883b3/Probe.lean",
+      "reason": "bytes_differ",
+      "check_status": "error",
+      "formalization_links": []
+    },
+    {
+      "step_id": 4702,
+      "path": "apps/lea-standalone/prover/workspace/proofs/Lea/P6ab4a31176d5a9a6a80883b3/candidate.lean",
+      "reason": "missing_or_unreadable",
+      "formalization_links": []
+    },
+    {
+      "step_id": 2102,
+      "path": "apps/lea-standalone/prover/workspace/proofs/Lea/P6ab4a31176d5a9a6a80883b3/criticalQ.lean",
+      "reason": "missing_or_unreadable",
+      "formalization_links": []
+    },
+    {
+      "step_id": 1323,
+      "path": "apps/lea-standalone/prover/workspace/proofs/Lea/P6ab4a31176d5a9a6a80883b3/lembootstrapcentralHelpers.lean",
+      "reason": "missing_or_unreadable",
+      "formalization_links": [
+        {
+          "formalization_id": "d35ed81a-ea7f-412f-a226-e0856d598609",
+          "role": "support"
+        }
+      ]
+    },
+    {
+      "step_id": 1346,
+      "path": "apps/lea-standalone/prover/workspace/proofs/Lea/P6ab4a31176d5a9a6a80883b3/lembootstrapcentralVerification.lean",
+      "reason": "missing_or_unreadable",
+      "formalization_links": [
+        {
+          "formalization_id": "d35ed81a-ea7f-412f-a226-e0856d598609",
+          "role": "support"
+        }
+      ]
+    },
+    {
+      "step_id": 319,
+      "path": "apps/lea-standalone/prover/workspace/proofs/Lea/P6ab4a31176d5a9a6a80883b3/probe_recovery.lean",
+      "reason": "missing_or_unreadable",
+      "formalization_links": [
+        {
+          "formalization_id": "a75e9537-1f8c-4182-98e6-4189425580aa",
+          "role": "generated"
+        }
+      ]
+    },
+    {
+      "step_id": 194,
+      "path": "apps/lea-standalone/prover/workspace/proofs/Lea/P6ab4a31176d5a9a6a80883b3/probe_upper.lean",
+      "reason": "missing_or_unreadable",
+      "formalization_links": [
+        {
+          "formalization_id": "d8f46635-0548-4d5e-89ac-31535698f4c8",
+          "role": "generated"
+        }
+      ]
+    },
+    {
+      "step_id": 496,
+      "path": "apps/lea-standalone/prover/workspace/proofs/Lea/P6ab4a31176d5a9a6a80883b3/scratch_scale.lean",
+      "reason": "missing_or_unreadable",
+      "formalization_links": [
+        {
+          "formalization_id": "d35ed81a-ea7f-412f-a226-e0856d598609",
+          "role": "support"
+        }
+      ]
+    }
+  ]
+}

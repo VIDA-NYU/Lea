@@ -5,6 +5,7 @@ import re
 import subprocess
 import tempfile
 import threading
+from functools import wraps
 from pathlib import Path
 
 from .imports import IMPORT_COMMAND_RE, direct_imports, without_comments
@@ -20,8 +21,7 @@ from .runctx import current_config, current_depth, current_working_dir
 
 # Cold `lake env lean <file>` fallback: caps concurrent full-Mathlib compiles
 # (each ~GBs resident). Not a correctness bound — a memory one.
-_COLD_CHECK_CONCURRENCY = max(1, int(os.environ.get("LEA_COLD_CHECK_CONCURRENCY", "2")))
-_cold_check_sem = threading.BoundedSemaphore(_COLD_CHECK_CONCURRENCY)
+from .lean_checks import _COLD_CHECK_CONCURRENCY, _cold_check_sem
 
 # `lake build` writes the shared workspace's `.lake` artifacts; two concurrent
 # builds against one lake_root race on them (a documented non-goal). One lock
@@ -299,6 +299,11 @@ def _sandboxed_write_path(path: str) -> Path:
             f"path {path!r} resolves outside this run's workspace ({root}). "
             "Write only within your session's proofs directory."
         )
+    config = current_config()
+    relative = target.relative_to(root).as_posix()
+    if (config and config.project_library and relative.split("/", 1)[0] in {"Shared", "External"}
+            and relative not in config.project_context.get("reserved_paths", [])):
+        raise _SandboxViolation("Reserve this shared module with request_project_dependency before writing it; another attempt may own it.")
     return target
 
 
@@ -320,6 +325,26 @@ def _broad_import_error(path: Path, content: str) -> str | None:
     )
 
 
+def _mutating(fn):
+    @wraps(fn)
+    def guarded(*args, **kwargs):
+        from .check_evidence import mutation
+        from .check_runtime import CheckBudget
+        from .runctx import current_should_stop
+        raw = args[0] if args else kwargs.get('path')
+        if fn.__name__ in {'write_file', 'edit_file'}:
+            try:
+                path = _sandboxed_write_path(raw)
+            except _SandboxViolation:
+                return fn(*args, **kwargs)
+        else:
+            path = (current_working_dir() or os.getcwd()) if fn.__name__ == 'bash' else _run_relative_path(raw)
+        with mutation(path, budget=CheckBudget(should_stop=current_should_stop())):
+            return fn(*args, **kwargs)
+    return guarded
+
+
+@_mutating
 def write_file(path: str, content: str) -> str:
     try:
         p = _sandboxed_write_path(path)
@@ -329,9 +354,11 @@ def write_file(path: str, content: str) -> str:
         return policy_error
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content)
-    return f"Wrote {len(content)} bytes to {p}"
+    from .check_runtime import CheckText
+    return CheckText(f"Wrote {len(content)} bytes to {p}", captured_content=content, snapshot_path=str(p.resolve()))
 
 
+@_mutating
 def edit_file(path: str, old_string: str, new_string: str) -> str:
     try:
         p = _sandboxed_write_path(path)
@@ -349,10 +376,11 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
     if policy_error := _broad_import_error(p, updated):
         return policy_error
     p.write_text(updated)
-    return "OK"
+    from .check_runtime import CheckText
+    return CheckText("OK", captured_content=updated, snapshot_path=str(p.resolve()))
 
 
-def lean_check(path: str, *, use_lsp: bool = True) -> str:
+def lean_check(path: str, *, use_lsp: bool = True, allow_cold: bool = True) -> str:
     p = _run_relative_path(path)
     roots = _readable_roots()
     if roots is not None and not _within(p, roots):
@@ -362,71 +390,9 @@ def lean_check(path: str, *, use_lsp: bool = True) -> str:
         )
     if not p.exists():
         return f"Error: {p} does not exist."
-
-    lake_root = _find_lake_root(str(p))
-
-    # Fast path: persistent LSP daemon (keeps Mathlib oleans warm). ~420×
-    # speedup on in-place edits. See lea/lsp_daemon.py and tests/lsp/.
-    #
-    # `use_lsp=False` skips this deliberately (see `lean_check_cold` below):
-    # the daemon caches every module it has ever imported for the life of its
-    # process, so a check through it can silently resolve an `import` against
-    # a stale in-memory copy even after a real `lake build` (`rebuild_module`,
-    # below) refreshed that module's `.olean` on disk from a *different*
-    # process.
-    #
-    # CAUTION: a live end-to-end test (tests/lsp/test_cascade_rename_integration.py)
-    # found that `use_lsp=False` -- i.e. the plain `lake env lean <file>`
-    # subprocess below -- does NOT reliably see a just-rebuilt project-local
-    # module's fresh `.olean` either, unlike restarting the daemon (which does).
-    # This is a real Lean/Lake behavior difference still under investigation,
-    # not something to rely on for correctness yet. The Overleaf lean pane's
-    # cascade re-check of a dependent (routes/sessions.py) does NOT use this --
-    # it relies on `rebuild_module`'s `lsp_daemon.mark_stale` call instead,
-    # confirmed correct by the same test. See
-    # docs/FEATURE-overleaf-lean-pane-manual-edit.md ("Cascade verification").
-    if use_lsp and lake_root and not os.environ.get("LEA_DISABLE_LSP"):
-        try:
-            from lea.lsp_daemon import check_via_lsp
-            return check_via_lsp(str(p), p.read_text(), lake_root)
-        except Exception as exc:  # noqa: BLE001 — fall through to subprocess
-            # C4: the fallback is CORRECT but ~440x slower (~0.2s -> ~88s per check,
-            # a cold Mathlib elaboration). Silently, this looked like the agent
-            # thinking for a minute and a half, repeatedly, with no way for the user
-            # to know the fast path was gone. `once=True`: the daemon being down is
-            # one ongoing condition, not one fact per check.
-            from lea import diagnostics
-            diagnostics.report(
-                "degraded", "lean.lsp_cold_fallback",
-                f"The Lean language-server daemon is unavailable ({type(exc).__name__}); "
-                "falling back to full compiles.",
-                source="lean_check", once=True, path=str(p),
-            )
-
-    if lake_root:
-        cmd = ["lake", "env", "lean", str(p)]
-        cwd = lake_root
-    else:
-        cmd = ["lean", str(p)]
-        cwd = str(p.parent)
-
-    timeout = int(os.environ.get("LEAN_CHECK_TIMEOUT", "900"))
-    # Semaphore-bound: this cold compile loads a full Mathlib. Under concurrent
-    # runs a single daemon hiccup would otherwise let every run spawn one at
-    # once (D74 / item 6). Held across the whole compile so waiters queue.
-    with _cold_check_sem:
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd
-            )
-            output = (result.stdout + "\n" + result.stderr).strip()
-            if result.returncode == 0 and not output:
-                return "OK — no errors, no warnings."
-            return output if output else f"Exit code {result.returncode} (no output)."
-        except subprocess.TimeoutExpired:
-            return f"Error: lean timed out after {timeout}s."
-        except FileNotFoundError:
-            return "Error: `lean` or `lake` not found. Is Lean 4 installed?"
+    from .lean_checks import check_file
+    return check_file(p, _find_lake_root(str(p)), use_lsp=use_lsp,
+                      allow_cold=allow_cold).text()
 
 
 def lean_check_cold(path: str) -> str:
@@ -462,6 +428,7 @@ def _generated_lean_check(path: str) -> str:
     return lean_check(path)
 
 
+@_mutating
 def rebuild_module(path: str) -> str:
     """Force a real `lake build` of the Lean module at `path`, so its compiled
     `.olean` on disk reflects the file's *current* source.
@@ -609,6 +576,7 @@ def scrubbed_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if not _is_secret_env(k)}
 
 
+@_mutating
 def bash(command: str, timeout: int = 120) -> str:
     # Run in the active run's working dir (item 8) instead of the process-global
     # cwd, so under concurrent runs one run's shell command can't land in
@@ -882,3 +850,7 @@ def safe_verify(args: dict) -> str:
 # `opt_in=True`, so build_toolset(None) never includes it — existing runs are
 # byte-identical, and a subagent's own default toolset can't contain it.
 from . import subagents as _subagents  # noqa: E402,F401
+
+# Host-mediated, opt-in: unavailable to ordinary CLI/LeaChat runs.
+from .status_reporting import TOOL_SCHEMA as _STATUS_SCHEMA, unsupported_handler as _status_handler
+register(Tool(name="update_lea_status", schema=_STATUS_SCHEMA, handler=_status_handler, opt_in=True))

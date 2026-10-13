@@ -1,0 +1,391 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{parskip}
+\usepackage{xcolor}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\see}[1]{\textbf{You should see:} #1}
+
+\title{Cascade Verification: Click-Through Recipes}
+\author{lea-ecosystem}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\noindent Every recipe below is the same shape: \emph{formalize something,
+edit it a specific way in the Lean pane, save, then look at what happens to
+the item that depends on it.} No \code{curl}, no test files, no code
+reading --- just clicking through the pane in your real
+\code{ClaudeDepTest} Overleaf project. The automated \code{node --test} suite
+(already green) covers most of these mechanically; this document is for
+watching the same things happen live.
+
+\section{One-Time Setup}
+\begin{enumerate}[label=\arabic*.]
+  \item Start the stack: \code{./start-dev.sh --keep-data} from the
+    monorepo root.
+  \item Make sure your \code{ClaudeDepTest} project's \code{main.tex} is set
+    to the contents of \code{docs/cascade-testing-fixture.tex} (copy it in
+    directly, not from any other document).
+  \item Set up the four items \emph{in this order}, pasting the exact Lean
+    code below via the pane's \textbf{Edit} button rather than trusting
+    whatever the first \textbf{Formalize}/\textbf{Define} pass produces.
+    Two of these four items (\code{compactness\_corollary} and
+    \code{heine\_borel\_application}) have deliberately vague LaTeX bodies
+    --- ``a consequence that should follow from...'', ``built on top
+    of...'' --- that describe the dependency shape but aren't real math, so
+    an agent formalizing them cold has nothing concrete to prove and can
+    land on a stub that doesn't type-check (e.g.\ it may try to
+    \code{exact} the upstream declaration against a goal whose type doesn't
+    actually match it). Pasting known-good code sidesteps that and gives
+    every recipe below a predictable, \emph{genuinely}-chained starting
+    point: each stub literally \code{exact}s its dependency, so it stays
+    sensitive to real signature changes later, unlike a disconnected
+    \code{trivial} would be.
+
+    If your project's namespace differs from \code{ClaudeDepTest} (Lea
+    derives it from your actual Overleaf project name), substitute your
+    real namespace in the \code{import} lines below --- open any
+    already-formalized item in the pane and read its shown
+    \code{import ...} line to confirm the exact form.
+    \begin{enumerate}[label=(\alph*)]
+      \item Click \textbf{Formalize} on \code{compactness\_criterion}, then
+        \textbf{Edit} and replace the whole code box with:
+\begin{verbatim}
+theorem compactness_criterion : True := by
+  trivial
+\end{verbatim}
+        Save, confirm \code{valid}.
+      \item Click \textbf{Formalize} on \code{compactness\_corollary}, then
+        \textbf{Edit} and replace the whole code box with (this
+        \code{import} line is \textsc{[A-import]}, referenced again below):
+\begin{verbatim}
+import Lea.ClaudeDepTest.compactness_criterion
+
+theorem compactness_corollary : True := by
+  exact compactness_criterion
+\end{verbatim}
+        Save, confirm \code{valid}.
+      \item Click \textbf{Define} on \code{locally\_finite\_family}, then
+        \textbf{Edit} and replace the whole code box with:
+\begin{verbatim}
+def locally_finite_family : Prop := True
+\end{verbatim}
+        Save, confirm \code{defined}. (Recipe 5 resets this again at its
+        own step 1 --- doing it here just means it starts from a known
+        state.)
+      \item Click \textbf{Formalize} on \code{heine\_borel\_application},
+        then \textbf{Edit} and replace the whole code box with (this
+        \code{import} line is \textsc{[B-import]}):
+\begin{verbatim}
+import Lea.ClaudeDepTest.compactness_corollary
+
+theorem heine_borel_application : True := by
+  exact compactness_corollary
+\end{verbatim}
+        Save, confirm \code{valid}.
+    \end{enumerate}
+\end{enumerate}
+You now have a chain: \code{heine\_borel\_application} depends on
+\code{compactness\_corollary}, which depends on \code{compactness\_criterion}.
+\code{locally\_finite\_family} is independent, used later.
+
+Every recipe below edits an item's \textbf{Lean code} (via the pane's Edit
+button on that item), not the LaTeX statement above it. The exact Lean text
+given in each recipe is intentionally simple/generic (\code{True},
+\code{sorry}) rather than a real proof of the stated math --- that's fine and
+deliberate, it's the same convention Setup just used, and it keeps every
+recipe's outcome fully predictable.
+
+\section{Recipes}
+
+\subsection*{Recipe 1 --- Rename}
+\begin{enumerate}[label=\arabic*.]
+  \item Open \code{compactness\_criterion}, click \textbf{Edit}.
+  \item Replace the whole code box with:
+\begin{verbatim}
+theorem compactness_thm : True := by
+  trivial
+\end{verbatim}
+  \item Click \textbf{Save}.
+\end{enumerate}
+\see{\code{compactness\_criterion}'s own chip turns \code{valid} (it still
+compiles, just under a new name). \code{compactness\_corollary}'s chip
+changes and its note specifically says the declaration it referred to was
+\emph{renamed} --- different wording from a generic break.}
+
+\subsection*{Recipe 2 --- Break the Compile}
+\begin{enumerate}[label=\arabic*.]
+  \item Open \code{compactness\_criterion}, click \textbf{Edit}.
+  \item Replace the whole code box with:
+\begin{verbatim}
+theorem compactness_criterion : True := by
+  exact this_name_does_not_exist
+\end{verbatim}
+  \item Click \textbf{Save}.
+\end{enumerate}
+\see{\code{compactness\_criterion} itself turns \code{invalid}, showing an
+"unknown identifier" error. \code{compactness\_corollary} also updates ---
+its own status flips too, since it can no longer build against a broken
+import; it should \emph{not} just show a quiet side-note while its chip still
+says valid.}
+
+\subsection*{Recipe 3 --- Proof-Only Edit (Should Never Cascade)}
+\begin{enumerate}[label=\arabic*.]
+  \item First undo Recipes 1--2: open \code{compactness\_criterion}, Edit,
+    set it back to:
+\begin{verbatim}
+theorem compactness_criterion : True := by
+  trivial
+\end{verbatim}
+    Save, and confirm both it and \code{compactness\_corollary} read
+    \code{valid} again before continuing.
+  \item Open \code{compactness\_criterion} again, Edit, change \emph{only}
+    the tactic, keeping the statement identical:
+\begin{verbatim}
+theorem compactness_criterion : True := by
+  sorry
+\end{verbatim}
+  \item Save.
+\end{enumerate}
+\see{\code{compactness\_criterion}'s own chip updates. \code{compactness\_corollary}'s
+chip and message do \emph{not} change at all --- a proof-body-only edit is
+invisible to the dependent, on purpose (this is the ``proof irrelevance''
+guarantee the whole feature leans on).}
+
+\subsection*{Recipe 4 --- Signature Change (Attributed Break)}
+\begin{enumerate}[label=\arabic*.]
+  \item Open \code{compactness\_criterion}, Edit, add a hypothesis:
+\begin{verbatim}
+theorem compactness_criterion (h : True) : True := by
+  trivial
+\end{verbatim}
+  \item Save.
+\end{enumerate}
+\see{\code{compactness\_corollary} flips to \code{invalid}, and its message
+names \code{compactness\_criterion} specifically as the cause (not just
+``something broke''). This is the ordinary, non-rename version of a cascade
+break.}
+
+\subsection*{Recipe 5 --- \code{def} Body Edit: Computational vs.\ Nominal Use}
+This is the one that most needs walking through by hand --- it's the
+difference between a dependent that actually \emph{uses} a definition's value
+and one that only mentions it.
+\begin{enumerate}[label=\arabic*.]
+  \item Open \code{locally\_finite\_family}, Edit, set it to:
+\begin{verbatim}
+def locally_finite_family : Prop := True
+\end{verbatim}
+    Save.
+  \item Add these two new blocks to your Overleaf document (after the
+    existing four), then click \textbf{Formalize} on each from the pane:
+\begin{verbatim}
+\begin{theorem}\label{thm:uses-computationally}
+% lea: formalize label=uses_locally_finite_computationally uses={locally_finite_family}
+A statement whose proof actually uses the value of locally_finite_family.
+\end{theorem}
+
+\begin{theorem}\label{thm:uses-nominally}
+% lea: formalize label=uses_locally_finite_nominally uses={locally_finite_family}
+A statement that only mentions locally_finite_family, never unfolds it.
+\end{theorem}
+\end{verbatim}
+  \item Open \code{uses\_locally\_finite\_computationally}, Edit, replace with
+    (using \textsc{[locally\_finite\_family's import line]}, which you can
+    read the same way you read \textsc{[A-import]} earlier):
+\begin{verbatim}
+import Lea.ClaudeDepTest.locally_finite_family
+theorem uses_locally_finite_computationally : locally_finite_family := by
+  unfold locally_finite_family
+  trivial
+\end{verbatim}
+    Save --- it should come back \code{valid}.
+  \item Open \code{uses\_locally\_finite\_nominally}, Edit, replace with:
+\begin{verbatim}
+import Lea.ClaudeDepTest.locally_finite_family
+theorem uses_locally_finite_nominally (h : locally_finite_family) : True := by
+  trivial
+\end{verbatim}
+    Save --- also \code{valid} (it never inspects what
+    \code{locally\_finite\_family} actually \emph{is}, just that it's a
+    \code{Prop}).
+  \item Now open \code{locally\_finite\_family} again, Edit, flip the value:
+\begin{verbatim}
+def locally_finite_family : Prop := False
+\end{verbatim}
+    Save.
+\end{enumerate}
+\see{\code{uses\_locally\_finite\_computationally} turns \code{invalid} ---
+\code{unfold} now exposes \code{False}, and \code{trivial} can't close that.
+\code{uses\_locally\_finite\_nominally} stays \code{valid} --- it never
+depended on the def's actual value. Same edit, same ``def body changed''
+classification, genuinely different real outcomes. This is the case the
+automated suite \emph{cannot} prove on its own (it only checks that the
+cascade fires, using canned pass/fail responses) --- this recipe is the real
+proof.}
+
+\subsection*{Recipe 6 --- Rename \emph{and} Change the Signature at Once}
+\begin{enumerate}[label=\arabic*.]
+  \item First reset \code{compactness\_criterion} back to its Recipe-4 state
+    (with the hypothesis) so you have a known starting point:
+\begin{verbatim}
+theorem compactness_criterion (h : True) : True := by
+  trivial
+\end{verbatim}
+    Save.
+  \item Now rename \emph{and} change the statement in the same edit:
+\begin{verbatim}
+theorem compactness_thm2 (h1 : True) (h2 : True) : True := by
+  trivial
+\end{verbatim}
+    Save.
+\end{enumerate}
+\see{Whatever \code{compactness\_corollary}'s message says --- read it
+carefully. Does it only mention the rename, or does it also warn that the
+\emph{type} changed too? If a dependent only fixes the rename (updates the
+import/reference) without noticing the extra hypothesis, it will look fixed
+but still be wrong. This is a real open question about the tool's messaging,
+not a known answer --- write down exactly what you see.}
+
+\subsection*{Recipe 7 --- Delete the Declaration Entirely}
+\begin{enumerate}[label=\arabic*.]
+  \item Open \code{compactness\_criterion}, Edit, delete everything in the
+    box so it's empty (or just a comment), and Save.
+\end{enumerate}
+\see{\code{compactness\_criterion} should show some kind of error (empty/no
+declaration), and \code{compactness\_corollary} should still get re-checked
+and come back broken --- \emph{not} silently treated as an unrelated,
+untouched item.}
+
+\subsection*{Recipe 8 --- Attribute-Only Edit}
+\begin{enumerate}[label=\arabic*.]
+  \item Reset \code{compactness\_criterion} to the Recipe 3 state
+    (\code{theorem compactness\_criterion : True := by trivial}). Confirm
+    both items read \code{valid}.
+  \item Edit \code{compactness\_criterion} again, adding only an attribute
+    line above the theorem, nothing else:
+\begin{verbatim}
+@[simp]
+theorem compactness_criterion : True := by
+  trivial
+\end{verbatim}
+  \item Save.
+\end{enumerate}
+\see{Watch \code{compactness\_corollary} closely --- does anything happen to
+it at all? Our best guess from reading the code is \emph{no} (an
+\code{@[simp]} change is currently invisible to the cascade), which would
+mean a downstream automation-relevant change can silently skip
+verification. Confirm what actually happens and note it.}
+
+\subsection*{Recipe 9 --- Comment Inside the Header}
+\begin{enumerate}[label=\arabic*.]
+  \item With \code{compactness\_criterion} back to its plain
+    \code{(h : True)} form (Recipe 4), edit it to insert a comment between
+    the binder and the colon:
+\begin{verbatim}
+theorem compactness_criterion (h : True) -- just a hint
+  : True := by
+  trivial
+\end{verbatim}
+  \item Save.
+\end{enumerate}
+\see{Nothing about the statement actually changed, so this should behave
+like Recipe 3 --- \code{compactness\_corollary} untouched. If it instead
+gets re-checked, the comment is being mis-read as a real signature change.}
+
+\subsection*{Recipe 10 --- Transitive Chain}
+\begin{enumerate}[label=\arabic*.]
+  \item Reset \code{compactness\_criterion} to
+    \code{theorem compactness\_criterion : True := by trivial}. Confirm
+    \code{compactness\_corollary} and \code{heine\_borel\_application} both
+    read \code{valid}.
+  \item Edit \code{compactness\_criterion} once more with a real signature
+    change:
+\begin{verbatim}
+theorem compactness_criterion (h : True) : True := by
+  trivial
+\end{verbatim}
+  \item Save.
+\end{enumerate}
+\see{Both \code{compactness\_corollary} \emph{and}
+\code{heine\_borel\_application} update --- not just the direct dependent.
+\code{heine\_borel\_application} only imports \code{compactness\_corollary},
+never \code{compactness\_criterion} directly, so this confirms the cascade
+walks the whole chain, not just one hop.}
+
+\subsection*{Recipe 11 --- Busy Dependent}
+\begin{enumerate}[label=\arabic*.]
+  \item Click \textbf{Re-formalize} on \code{compactness\_corollary} (this
+    starts a live agent run, which takes a little while).
+  \item \emph{Immediately}, while that run is still going, open
+    \code{compactness\_criterion} and edit it with a real signature change
+    (same as Recipe 4), then Save.
+\end{enumerate}
+\see{The impact note for \code{compactness\_corollary} should say something
+like ``not re-checked yet, a run is already in progress'' rather than either
+silently skipping it or racing the live run. Once the re-formalize run
+finishes, a later edit to \code{compactness\_criterion} should cascade to it
+normally again.}
+
+\subsection*{Recipe 12 --- Recovery After a Prior Failure}
+\begin{enumerate}[label=\arabic*.]
+  \item Run Recipe 2 (break the compile) so both
+    \code{compactness\_criterion} and \code{compactness\_corollary} are
+    sitting in a broken/unconfirmed state.
+  \item Now edit \code{compactness\_criterion} with \emph{only} a proof-body
+    fix, statement unchanged:
+\begin{verbatim}
+theorem compactness_criterion : True := by
+  trivial
+\end{verbatim}
+  \item Save.
+\end{enumerate}
+\see{Even though this is ``just'' a proof-only edit (which normally never
+cascades, per Recipe 3), \code{compactness\_corollary} \emph{does} get
+re-checked this time and clears back to \code{valid}. The system treats
+``recovering from a break'' as its own trigger, separate from the ordinary
+signature/def rules.}
+
+\section{Harder Cases (Optional, Lower Priority)}
+These need more setup than a quick recipe, or don't have a clean way to force
+through the pane UI alone. Worth knowing about, not worth blocking on:
+\begin{itemize}
+  \item \textbf{Moving a declaration to a different file/module} without
+    renaming it --- the pane doesn't expose a ``move'' action, so this needs
+    direct manipulation of the session's files outside the normal UI.
+  \item \textbf{Diamond dependencies} (one item importing two others that
+    both import a common item) --- doable, but needs two more formalized
+    items beyond this fixture to set up.
+  \item \textbf{Two different Overleaf projects sharing a label} --- needs a
+    second project.
+  \item \textbf{A dependent whose fast check passes but a real
+    \code{lake build} of the edited module fails} --- hard to force by hand;
+    this is the sharpest edge case in the whole feature (a fast check can
+    pass via a \code{sorry}-shaped recovery even when the real build is
+    broken), and is already covered by an automated test with a synthetic
+    failure.
+  \item \textbf{An orphaned dependent file with no matching session record}
+    --- needs directly editing files/state outside the pane.
+\end{itemize}
+
+\section{Appendix: Re-Running the Automated Suite}
+\begin{verbatim}
+cd apps/lea-standalone/adapter
+./.venv/bin/python -m pytest tests/test_db_code_steps.py tests/test_routes_sessions.py
+cd -
+npm test -w apps/overleaf-extension
+npm run test:frontend -w apps/lea-standalone
+\end{verbatim}
+
+\section{Cleanup}
+\begin{verbatim}
+npm run reset:local -- --dry-run
+npm run reset:local
+\end{verbatim}
+
+\end{document}

@@ -14,6 +14,9 @@ import type {
   TimelineItem,
 } from '../lib/api';
 import { MarkdownMessage } from './MarkdownMessage';
+import { LeanCheckRuntimeStatus } from './LeanCheckRuntimeStatus';
+import { checkExecutionMessage } from '../lib/leanCheckRuntime.mjs';
+import { usageCostText, usageDetailText } from '../lib/usageDetails.mjs';
 import { ModelPicker } from './ModelPicker';
 import { OriginBadge } from './OriginBadge';
 import { buildTimeline } from '../lib/timeline.mjs';
@@ -74,7 +77,11 @@ export function ChatThread({
   draft,
   onDraftChange,
   onSubmit,
+  onSubmitGeneral,
+  submissionBusy = false,
+  sourceConnection,
   onInterrupt,
+  onResumeRun,
   onOpenLibrary,
   onOpenSettings,
   canvasCollapsed,
@@ -91,7 +98,11 @@ export function ChatThread({
   draft: string;
   onDraftChange: (value: string) => void;
   onSubmit: () => void;
+  onSubmitGeneral?: () => void;
+  submissionBusy?: boolean;
+  sourceConnection?: { targetId: string; label: string; state: 'preparing' | 'connected' | 'error' } | null;
   onInterrupt: () => void;
+  onResumeRun?: (runId: string, action?: 'resume' | 'continue') => Promise<void> | void;
   onOpenSettings?: () => void;
   onOpenLibrary?: (focus?: string) => void;
   canvasCollapsed: boolean;
@@ -184,8 +195,11 @@ export function ChatThread({
   const runStatus = useProofSession((s) => s.runStatus);
   const runStatusById = useProofSession((s) => s.runStatusById);
   const runResultKindById = useProofSession((s) => s.runResultKindById);
+  const runStopReasonById = useProofSession((s) => s.runStopReasonById);
+  const runRecoveryById = useProofSession((s) => s.runRecoveryById);
   const runFocusById = useProofSession((s) => s.runFocusById);
   const formalizations = useProofSession((s) => s.formalizations);
+  const formalizationScope = useProofSession((s) => s.formalizationScope);
   const isRunning = useProofSession((s) => s.isRunning);
   const currentRunId = useProofSession((s) => s.currentRunId);
   const approvals = useProofSession((s) => s.approvals);
@@ -220,12 +234,12 @@ export function ChatThread({
     for (const d of diagnostics) {
       // Keep the LATEST of each code: a condition reported repeatedly is one
       // condition, and its most recent description is the current one.
-      if (d.severity === 'degraded') byCode.set(d.code, d);
+      if (d.severity === 'degraded' && !d.code.startsWith('lean.lsp_')) byCode.set(d.code, d);
     }
     return [...byCode.values()];
   }, [diagnostics]);
   const threadDiagnostics = useMemo(
-    () => diagnostics.filter((d) => d.severity !== 'degraded' && !d.context?.child_id),
+    () => diagnostics.filter((d) => (d.severity !== 'degraded' || d.code.startsWith('lean.lsp_')) && !d.context?.child_id),
     [diagnostics],
   );
   const childDiagnostics = useMemo(() => {
@@ -396,23 +410,36 @@ export function ChatThread({
     },
     [runResultKindById],
   );
+  const stopReasons = Object.values(runStopReasonById);
+  const latestStopReason = stopReasons.length ? stopReasons[stopReasons.length - 1] : undefined;
+  const runIds = Object.keys(runStatusById);
+  const latestRunId = runIds.length ? runIds[runIds.length - 1] : undefined;
   const headChip = isRunning
-    ? { cls: 'run', text: '● proving' }
+    ? { cls: 'run', text: currentRunId && runRecoveryById[currentRunId]?.state === 'recovering'
+      ? '● recovering saved progress' : '● proving' }
+    : (session?.status === 'needs_review' || formalizations.some((item) =>
+        item.validity_status === 'needs_review' &&
+        (formalizationScope === item.id || (formalizationScope === 'project' && formalizations.length === 1))))
+    ? { cls: 'warn', text: 'Needs review' }
     : latestProofStatus === 'stubbed'
     ? { cls: 'run', text: '○ stubbed' }
     : latestRunOutcome === 'disproved' && latestProofStatus === 'proved'
     ? { cls: 'warn', text: '⊘ disproved' }
-    : (latestRunOutcome === 'proved' || latestRunOutcome === 'success' || latestRunOutcome === 'needs_review') &&
+    : latestRunOutcome === 'needs_review'
+    ? { cls: 'warn', text: 'Needs review' }
+    : (latestRunOutcome === 'proved' || latestRunOutcome === 'success') &&
         latestRunResultKind === 'defined' &&
         (latestProofStatus === 'proved' || latestProofStatus === 'defined')
     ? { cls: 'ok', text: '✓ defined' }
-    : (latestRunOutcome === 'proved' || latestRunOutcome === 'success' || latestRunOutcome === 'needs_review') &&
+    : (latestRunOutcome === 'proved' || latestRunOutcome === 'success') &&
         latestProofStatus === 'proved'
     ? { cls: 'ok', text: '✓ proved' }
     : runStatus === 'failed' || runStatus === 'max_turns'
     ? { cls: 'fail', text: '✕ unproved' }
     : runStatus === 'cancelled'
-    ? { cls: 'fail', text: '◼ stopped' }
+    ? { cls: 'fail', text: latestRunId && runRecoveryById[latestRunId]?.state === 'review'
+      ? 'Interrupted — review before resuming' : latestStopReason === 'timeout' ? '◼ time limit reached'
+      : latestStopReason === 'user_stop' ? '◼ stopped by user' : '◼ stopped' }
     : null;
 
   // M18: show "Lea is thinking…" whenever a run is live and Lea isn't currently
@@ -440,7 +467,7 @@ export function ChatThread({
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (!isRunning && draft.trim()) onSubmit();
+      if (!isRunning && !submissionBusy && draft.trim()) onSubmit();
     }
   };
 
@@ -616,6 +643,20 @@ export function ChatThread({
                         ? `Working on ${focused.declaration_name || focused.display_title}`
                         : 'Project discussion'}
                     </strong>
+                    {runRecoveryById[group.runId]?.state === 'recovering' && <span>Recovering saved progress</span>}
+                    {runRecoveryById[group.runId]?.state === 'review' && (
+                      <span title={runRecoveryById[group.runId]?.reason || undefined}>
+                        Interrupted — review before resuming. {runRecoveryById[group.runId]?.reason}
+                        {onResumeRun && <button type="button" disabled={isRunning || submissionBusy} onClick={() => void onResumeRun(group.runId!, 'resume')}>
+                          Resume after review
+                        </button>}
+                      </span>
+                    )}
+                    {runRecoveryById[group.runId]?.action === 'continue' && onResumeRun && (
+                      <button type="button" disabled={isRunning || submissionBusy} onClick={() => void onResumeRun(group.runId!, 'continue')}>
+                        Resume faithfully
+                      </button>
+                    )}
                   </div>
                 )}
                 {coalesceUnits(group.nodes).map((unit) =>
@@ -666,6 +707,7 @@ export function ChatThread({
               interleaved: they describe a condition that is STILL TRUE, so they
               belong where they stay visible rather than scrolling away like an
               event. One row per code — a fallback reported forty times is one fact. */}
+          <LeanCheckRuntimeStatus sessionId={session?.id} active={isRunning} refreshKey={diagnostics.length} />
           {degradedDiagnostics.map((d) => (
             <DiagnosticCard key={`deg:${d.code}`} diagnostic={d} onAction={runDiagnosticAction} />
           ))}
@@ -719,10 +761,12 @@ export function ChatThread({
           </div>
         )}
         {verifySurface && (
-          <div className={`verify-box ${verifySurface.status === 'ok' ? 'ok' : 'bad'}`}>
+          <div className={`verify-box ${verifySurface.status === 'ok' && verifySurface.current === true ? 'ok' : 'bad'}`}>
             <div className="verify-box-head">
               <span className="verify-box-title">
-                🛡 SafeVerify {verifySurface.status === 'ok' ? '✓ passed' : verifySurface.status}
+                🛡 SafeVerify {verifySurface.status === 'ok'
+                  ? verifySurface.current === true ? '✓ passed' : 'recheck required'
+                  : verifySurface.status}
               </span>
               <span className="verify-box-spacer" />
               {verifySurface.detail && (
@@ -806,7 +850,17 @@ export function ChatThread({
             </div>
           );
         })()}
-        <div className="composer-inner">
+        {sourceConnection && (
+          <div className="composer-source" role="status" aria-live="polite">
+            <span>{sourceConnection.state === 'preparing' ? 'Refreshing Overleaf source' : sourceConnection.state === 'connected' ? 'Overleaf source refreshed' : 'Overleaf source unavailable'} · {sourceConnection.label}</span>
+            {sourceConnection.state === 'error' && onSubmitGeneral && draft.trim() && (
+              <button type="button" disabled={isRunning || submissionBusy} onClick={onSubmitGeneral} title="Send this message without publishing an Overleaf status assessment">
+                Send as general chat
+              </button>
+            )}
+          </div>
+        )}
+        <div className="composer-inner" aria-busy={submissionBusy}>
           <textarea
             ref={textareaRef}
             value={draft}
@@ -818,6 +872,7 @@ export function ChatThread({
                 : 'Ask a follow-up, or state a theorem to prove…'
             }
             rows={1}
+            disabled={submissionBusy}
           />
           <div className="crow">
             <ComposerScopeChip session={session} />
@@ -826,7 +881,7 @@ export function ChatThread({
                 ◼
               </button>
             ) : (
-              <button className="send" onClick={onSubmit} disabled={!draft.trim()} title="Send">
+              <button className="send" onClick={onSubmit} disabled={!draft.trim() || submissionBusy} title={submissionBusy ? 'Preparing your message' : 'Send'}>
                 ↑
               </button>
             )}
@@ -883,7 +938,10 @@ function FormalizationScope({ session }: { session?: SessionSummary }) {
             {/* Its own element so it can ellipsize: a bare text node in a flex row has no
                 box to clip, which is how a whole prompt ended up spilling across the rail. */}
             <span className="form-label">{item.declaration_name || item.display_title}</span>
-            <small>{item.activity.status !== 'idle' ? item.activity.status : item.validity_status}</small>
+            <small title={item.validity_reason || undefined}>
+              {item.activity.status !== 'idle' ? item.activity.status : item.validity_status === 'needs_review' ? 'Needs review' : item.validity_status}
+              {item.validity_status === 'needs_review' && item.check_current ? ' · Lean check passed' : ''}
+            </small>
           </button>
         ))}
         <button
@@ -1015,7 +1073,7 @@ function formalizationStatusClass(validity: string, activity: string): string {
   if (activity !== 'idle') return 'run';
   if (validity === 'proved' || validity === 'defined') return 'ok';
   if (validity === 'failing') return 'fail';
-  if (validity === 'stale') return 'warn';
+  if (validity === 'stale' || validity === 'needs_review') return 'warn';
   return 'idle';
 }
 
@@ -1211,7 +1269,10 @@ function DiagnosticCard({
   // goes, it just reports which one was pressed.
   onAction?: (action: DiagnosticAction) => void;
 }) {
-  const { severity, title, message, detail, remedy, actions, context, code } = diagnostic;
+  const { severity, title, detail, remedy, actions, context, code } = diagnostic;
+  const message = code === 'lean.check_execution'
+    ? checkExecutionMessage(context?.execution, context?.check_status) || diagnostic.message
+    : diagnostic.message;
   const anchor = context?.path || context?.tool;
   return (
     <div className={`diag diag-${severity}`} data-code={code}>
@@ -1385,7 +1446,7 @@ function DefinedCard({ steps, session }: { steps: number; session?: SessionSumma
         <div className="meta">
           <span>{steps} steps</span>
           {session.total_tokens ? <span>{formatTokens(session.total_tokens)} tokens</span> : null}
-          {session.cost_usd ? <span>${session.cost_usd.toFixed(3)}</span> : null}
+          {session.cost_usd || session.usage_details?.unpriced_calls ? <span title={usageDetailText(session.usage_details)}>{usageCostText(session.cost_usd, session.usage_details, 3)}</span> : null}
           {session.duration_seconds ? <span>{session.duration_seconds}s</span> : null}
         </div>
       )}
@@ -1401,7 +1462,7 @@ function DisprovedCard({ steps, session }: { steps: number; session?: SessionSum
         <div className="meta">
           <span>{steps} steps</span>
           {session.total_tokens ? <span>{formatTokens(session.total_tokens)} tokens</span> : null}
-          {session.cost_usd ? <span>${session.cost_usd.toFixed(3)}</span> : null}
+          {session.cost_usd || session.usage_details?.unpriced_calls ? <span title={usageDetailText(session.usage_details)}>{usageCostText(session.cost_usd, session.usage_details, 3)}</span> : null}
           {session.duration_seconds ? <span>{session.duration_seconds}s</span> : null}
         </div>
       )}
@@ -1425,7 +1486,7 @@ function StubCard({ steps, session }: { steps: number; session?: SessionSummary 
         <div className="meta">
           <span>{steps} steps</span>
           {session.total_tokens ? <span>{formatTokens(session.total_tokens)} tokens</span> : null}
-          {session.cost_usd ? <span>${session.cost_usd.toFixed(3)}</span> : null}
+          {session.cost_usd || session.usage_details?.unpriced_calls ? <span title={usageDetailText(session.usage_details)}>{usageCostText(session.cost_usd, session.usage_details, 3)}</span> : null}
           {session.duration_seconds ? <span>{session.duration_seconds}s</span> : null}
         </div>
       )}

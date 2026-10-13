@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mock — Sub-agents in the sidebar</title>
+<style>
+/* ---------------------------------------------------------------------------
+   Tokens + sidebar rules are COPIED VERBATIM from src/styles/lea-v2.css so this
+   mock is a real preview, not a lookalike. Anything invented for the mock is in
+   the "MOCK-ONLY" block at the bottom and marked NEW: where it's a proposal.
+   --------------------------------------------------------------------------- */
+:root {
+  --bg: #f5f4ef; --panel: #ffffff; --panel-2: #faf9f6;
+  --ink: #1f1e1d; --ink-2: #3d3c39; --muted: #8a8983;
+  --line: #e9e7e0; --line-2: #efedE7;
+  --accent: #c96442; --accent-soft: #f3e3db;
+  --green: #4f8a5b; --green-soft: #e6f0e7;
+  --red: #c0564a; --red-soft: #f6e3e0;
+  --amber: #b8842a; --amber-soft: #f6ecd8;
+  --code-bg: #fbfaf7; --radius: 12px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-size: 14px; line-height: 1.5;
+  font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased; }
+code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .92em; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #d9d4ca; border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+.app { display: grid; grid-template-columns: 264px 1fr; grid-template-rows: minmax(0, 1fr);
+  height: 100vh; overflow: hidden; }
+
+/* ---------- Sidebar (verbatim) ---------- */
+.sidebar { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0;
+  background: var(--panel); }
+.brand { display: flex; align-items: center; gap: 9px; padding: 16px 16px 12px; }
+.brand .logo { width: 26px; height: 26px; border-radius: 7px; background: var(--accent); color: #fff;
+  display: grid; place-items: center; font-weight: 700; font-size: 15px; font-family: Georgia, serif; }
+.brand .name { font-weight: 600; }
+.brand .ver { font-size: 11px; color: var(--muted); background: var(--line-2); padding: 1px 6px;
+  border-radius: 20px; margin-left: auto; }
+.newbtn { margin: 4px 12px 8px; padding: 9px 12px; border: 1px solid var(--line); background: var(--panel);
+  border-radius: 10px; display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 550;
+  color: var(--ink-2); width: calc(100% - 24px); text-align: left; font-family: inherit; font-size: 14px; }
+.newbtn:hover { background: var(--panel-2); }
+.newbtn .plus { color: var(--accent); font-size: 16px; line-height: 1; }
+.searchbtn { margin: 0 12px 8px; padding: 8px 12px; border: 1px solid var(--line); background: var(--panel);
+  border-radius: 10px; display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--muted);
+  font-family: inherit; font-size: 13px; text-align: left; width: calc(100% - 24px); }
+.searchbtn .kbd { margin-left: auto; font-size: 11px; border: 1px solid var(--line); border-radius: 5px;
+  padding: 0 5px; color: var(--muted); }
+.sb-scroll { overflow-y: auto; padding: 4px 8px 16px; flex: 1; }
+.group-label { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted);
+  padding: 14px 8px 5px; font-weight: 600; display: flex; align-items: center; }
+.row { padding: 8px 10px; border-radius: 9px; cursor: pointer; display: flex; align-items: center; gap: 9px;
+  width: 100%; text-align: left; background: none; border: none; font-family: inherit; font-size: 14px; }
+.row:hover { background: var(--panel-2); }
+.row.active { background: var(--accent-soft); }
+.row .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.dot.ok { background: var(--green); } .dot.run { background: var(--amber); }
+.dot.fail { background: var(--red); } .dot.idle { background: var(--muted); }
+.row .rtitle { min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--ink-2); }
+.row.active .rtitle { color: var(--ink); font-weight: 550; }
+.row .picon { width: 20px; height: 20px; border-radius: 6px; background: var(--accent-soft); color: var(--accent);
+  display: grid; place-items: center; font-size: 12px; flex: none; }
+.row .count { font-size: 11px; color: var(--muted); }
+.proj-group { margin-bottom: 6px; }
+.sidebar-foot { border-top: 1px solid var(--line); padding: 10px 14px; display: flex; align-items: center;
+  gap: 9px; color: var(--muted); font-size: 12.5px; }
+.sidebar-foot .gear { margin-left: auto; cursor: pointer; background: none; border: none; color: var(--muted);
+  font-size: 15px; }
+
+/* ===========================================================================
+   MOCK-ONLY  —  everything below is either the proposal (NEW:) or mock chrome
+   =========================================================================== */
+
+/* NEW: the contextual Sub-agents block. Reuses .proj-group/.group-label/.row so
+   it inherits the sidebar's look for free. Only these rules are additive. */
+.sa-group { margin-bottom: 6px; border-top: 1px solid var(--line); margin-top: 6px; }
+.sa-group .group-label { color: var(--accent); }
+.sa-group .sa-count { margin-left: auto; font-size: 10.5px; font-weight: 600; color: var(--muted);
+  background: var(--line-2); border-radius: 20px; padding: 1px 7px; letter-spacing: 0; }
+/* the parent header row — the way back up the tree */
+.sa-parent { display: flex; align-items: center; gap: 7px; padding: 3px 10px 6px; font-size: 12px;
+  color: var(--muted); cursor: pointer; }
+.sa-parent:hover { color: var(--ink-2); }
+.sa-parent .chev { font-size: 11px; }
+.sa-parent .ptitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* candidate rows sit slightly inset so the tree relationship reads */
+.sa-group .row { padding-left: 14px; }
+.sa-group .row .role { font-size: 10.5px; color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
+.sa-spin { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--amber);
+  animation: sa-pulse 1.1s ease-in-out infinite; }
+@keyframes sa-pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+
+/* main pane — deliberately rough; this mock is about the sidebar */
+.main { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.topbar { border-bottom: 1px solid var(--line); padding: 12px 20px; display: flex; align-items: center;
+  gap: 10px; background: var(--panel); }
+.topbar .t { font-weight: 600; }
+.pane { flex: 1; overflow-y: auto; padding: 22px 24px; }
+.bubble { max-width: 640px; border: 1px solid var(--line); background: var(--panel); border-radius: 12px;
+  padding: 11px 14px; margin-bottom: 10px; }
+.bubble.user { background: var(--accent-soft); border-color: #e8d3c9; margin-left: auto; }
+
+/* NEW: the spawn_subagent node in the chat timeline (collapsed by default) */
+.spawn { max-width: 640px; border: 1px solid var(--line); background: var(--panel-2); border-radius: 10px;
+  margin-bottom: 10px; overflow: hidden; }
+.spawn summary { cursor: pointer; padding: 9px 12px; display: flex; align-items: center; gap: 9px;
+  list-style: none; font-size: 13px; }
+.spawn summary::-webkit-details-marker { display: none; }
+.spawn summary::before { content: "▸"; color: var(--muted); font-size: 10px; transition: transform .15s; }
+.spawn[open] summary::before { transform: rotate(90deg); }
+.spawn .tool { font: 600 12px ui-monospace, Menlo, monospace; color: var(--accent); }
+.spawn .act { margin-left: auto; font-size: 11.5px; color: var(--muted); }
+.spawn .kids { border-top: 1px solid var(--line); padding: 6px; }
+.spawn .kid { display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 8px;
+  cursor: pointer; font-size: 13px; }
+.spawn .kid:hover { background: var(--panel); }
+.spawn .kid .rtitle { flex: 1; color: var(--ink-2); }
+.spawn .kid .verdict { font-size: 11px; padding: 1px 8px; border-radius: 20px; font-weight: 600; }
+.verdict.ok { color: var(--green); background: var(--green-soft); }
+.verdict.err { color: var(--red); background: var(--red-soft); }
+.verdict.run { color: var(--amber); background: var(--amber-soft); }
+
+/* NEW: provenance bar — what replaces the composer on a read-only child */
+.prov { border-top: 1px solid var(--line); background: var(--panel-2); padding: 12px 20px;
+  display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--muted); }
+.prov .lock { color: var(--muted); }
+.prov b { color: var(--ink-2); font-weight: 550; }
+.prov .up { margin-left: auto; border: 1px solid var(--line); background: var(--panel); border-radius: 8px;
+  padding: 5px 11px; cursor: pointer; color: var(--ink-2); font-family: inherit; font-size: 12.5px; }
+.prov .up:hover { background: var(--panel-2); }
+/* the real composer, for contrast */
+.composer { border-top: 1px solid var(--line); background: var(--panel); padding: 14px 20px; }
+.composer .box { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; color: var(--muted);
+  background: var(--panel-2); }
+
+/* mock notes overlay */
+.note { position: fixed; right: 16px; bottom: 16px; max-width: 310px; background: #fbf4e6;
+  border: 1px solid #ecdcbb; border-left: 3px solid var(--amber); border-radius: 10px; padding: 11px 13px;
+  font-size: 12px; color: #5a4a2a; box-shadow: 0 2px 10px rgba(0,0,0,.07); }
+.note h4 { margin: 0 0 6px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--amber); }
+.note b { color: #3d3c39; }
+.note code { background: #f3ead6; border-radius: 3px; padding: 0 3px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">L</div><div class="name">Lea</div><div class="ver">v2</div>
+    </div>
+    <button class="newbtn"><span class="plus">+</span> New proof</button>
+    <button class="searchbtn">🔍 Search all proofs <span class="kbd">⌘K</span></button>
+    <div class="sb-scroll" id="sb"></div>
+    <div class="sidebar-foot"><span>local</span><button class="gear">⚙</button></div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar"><span class="t" id="topTitle">—</span></div>
+    <div class="pane" id="pane"></div>
+    <div id="foot"></div>
+  </div>
+</div>
+
+<div class="note">
+  <h4>Mock — click around</h4>
+  Click <b>Prove √2 irrational</b> → the <b>Sub-agents</b> block appears. Click a candidate → the block
+  <b>stays</b> (siblings visible, you can get back). Click <b>Cauchy sequences</b> → it vanishes.
+  <br><br>The rule is <code>children(parent_id ?? id)</code> — scoped to the <b>tree root</b>, not the selection.
+  Scope it to the selection instead and the block disappears the instant you click into a candidate.
+</div>
+
+<script>
+/* The data shape this proposes: sessions with a parent_id. Children are real
+   sessions, excluded from the root list (opencode's `roots` filter). */
+const SESSIONS = [
+  { id: 's1', title: 'Prove √2 irrational',        status: 'running', parent_id: null },
+  { id: 's2', title: 'Cauchy sequences converge',  status: 'proved',  parent_id: null },
+  { id: 's3', title: 'Div by 6 ⇒ div by 2 and 3',  status: 'error',   parent_id: null },
+  // children of s1 — never in the root list
+  { id: 'c1', title: 'induction on numerator', role: 'proof-candidate', status: 'error',   parent_id: 's1', turn: 4 },
+  { id: 'c2', title: 'parity / infinite descent', role: 'proof-candidate', status: 'proved',  parent_id: 's1', turn: 4 },
+  { id: 'c3', title: 'Nat.Prime.irrational_sqrt', role: 'mathlib-scout',  status: 'running', parent_id: 's1', turn: 4 },
+];
+
+let selected = 's1';
+const byId = (id) => SESSIONS.find((s) => s.id === id);
+const roots = () => SESSIONS.filter((s) => !s.parent_id);          // the `roots` filter
+const childrenOf = (id) => SESSIONS.filter((s) => s.parent_id === id);
+
+function dotClass(s) {
+  if (s.status === 'running') return 'run';
+  if (s.status === 'proved' || s.status === 'ok') return 'ok';
+  if (s.status === 'error') return 'fail';
+  return 'idle';
+}
+const VERDICT = { proved: ['ok', 'compiles'], error: ['err', '3 errors'], running: ['run', 'checking…'] };
+
+function render() {
+  const sel = byId(selected);
+  // ---- THE RULE: scope the block to the tree ROOT, not the selection --------
+  const treeRootId = sel.parent_id ?? sel.id;
+  const kids = childrenOf(treeRootId);
+
+  // ---------- sidebar ----------
+  let html = `
+    <div class="proj-group">
+      <div class="group-label">Projects</div>
+      <button class="row"><span class="picon">∑</span><span class="rtitle">Analysis I</span><span class="count">7</span></button>
+    </div>
+    <div class="proj-group">
+      <div class="group-label">Library</div>
+      <button class="row"><span class="picon">✦</span><span class="rtitle">Skills</span></button>
+    </div>
+    <div class="group-label">Chats</div>
+    <div class="group-label" style="padding-top:4px">Today</div>`;
+
+  for (const s of roots()) {
+    html += `<button class="row ${selected === s.id ? 'active' : ''}" onclick="select('${s.id}')">
+      <span class="dot ${dotClass(s)}"></span><span class="rtitle">${s.title}</span></button>`;
+  }
+
+  // ---- NEW: the contextual Sub-agents block --------------------------------
+  if (kids.length) {
+    const root = byId(treeRootId);
+    const running = kids.filter((k) => k.status === 'running').length;
+    html += `
+      <div class="sa-group">
+        <div class="group-label">Sub-agents
+          <span class="sa-count">${running ? running + ' running' : kids.length + ' done'}</span>
+        </div>
+        <div class="sa-parent" onclick="select('${root.id}')">
+          <span class="chev">◂</span><span class="ptitle">${root.title}</span>
+        </div>`;
+    for (const k of kids) {
+      const dot = k.status === 'running' ? `<span class="sa-spin"></span>` : `<span class="dot ${dotClass(k)}"></span>`;
+      html += `<button class="row ${selected === k.id ? 'active' : ''}" onclick="select('${k.id}')">
+        ${dot}<span class="rtitle">${k.title}</span><span class="role">${k.role.split('-')[0]}</span></button>`;
+    }
+    html += `</div>`;
+  }
+  document.getElementById('sb').innerHTML = html;
+
+  // ---------- main pane ----------
+  document.getElementById('topTitle').textContent = sel.parent_id ? sel.title : sel.title;
+  if (sel.parent_id) renderChild(sel); else renderParent(sel);
+}
+
+function renderChild(sel) {
+  const [vc, vt] = VERDICT[sel.status];
+  document.getElementById('pane').innerHTML = `
+    <div class="bubble"><b>Task from coordinator</b><br>
+      Prove <code>Irrational (√2)</code> using the ${sel.title} approach. Write to your candidate dir.</div>
+    <div class="bubble">Trying <code>${sel.title}</code>… wrote <code>.lea/tmp/${sel.id}/Sqrt2.lean</code>,
+      ran <code>lean_check</code> → <span class="verdict ${vc}">${vt}</span></div>
+    <div class="bubble" style="color:var(--muted);font-size:12.5px">
+      ↑ this is the ordinary chat rendering — same components, <b>read-only</b>.</div>`;
+  // NEW: composer replaced by provenance. The child's interlocutor is the parent.
+  document.getElementById('foot').innerHTML = `
+    <div class="prov">
+      <span class="lock">🔒</span>
+      <span>Delegated by <b>${byId(sel.parent_id).title}</b> · turn ${sel.turn} · <b>${sel.role}</b></span>
+      <button class="up" onclick="select('${sel.parent_id}')">Back to parent</button>
+    </div>`;
+}
+
+function renderParent(sel) {
+  const kids = childrenOf(sel.id);
+  let kidRows = '';
+  for (const k of kids) {
+    const [vc, vt] = VERDICT[k.status];
+    kidRows += `<div class="kid" onclick="select('${k.id}')">
+      <span class="dot ${dotClass(k)}"></span><span class="rtitle">${k.title}</span>
+      <span class="verdict ${vc}">${vt}</span></div>`;
+  }
+  const running = kids.filter((k) => k.status === 'running').length;
+  document.getElementById('pane').innerHTML = `
+    <div class="bubble user">Prove that √2 is irrational.</div>
+    <div class="bubble">This has a few standard routes. I'll try three in parallel and keep whichever compiles.</div>
+    ${kids.length ? `
+    <details class="spawn" open>
+      <summary><span class="tool">spawn_subagent</span> × ${kids.length}
+        <span class="act">${running ? running + ' running · ' : ''}${kids.length - running} done</span></summary>
+      <div class="kids">${kidRows}</div>
+    </details>` : ''}
+    <div class="bubble" style="color:var(--muted);font-size:12.5px">
+      ↑ the timeline node answers <b>when &amp; why</b> (in <code>seq</code> order).
+      The sidebar block answers <b>where are they now</b>. Both select the same child.</div>`;
+  document.getElementById('foot').innerHTML = `
+    <div class="composer"><div class="box">Reply to Lea…</div></div>`;
+}
+
+function select(id) { selected = id; render(); }
+render();
+</script>
+</body>
+</html>

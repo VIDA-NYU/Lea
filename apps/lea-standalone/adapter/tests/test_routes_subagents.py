@@ -1,17 +1,19 @@
 """Sub-agents routes (D6): list built-in roles + save per-role overrides.
 
-Route functions are called directly (as the other route tests do). The overrides live in
-a JSON sidecar; only that path is patched — the roles come from the vendored prover YAML.
+Route functions are called directly (as the other route tests do). Isolate both the
+override sidecar and user-role database; built-in roles come from the vendored prover YAML.
 """
 import pytest
 from fastapi import HTTPException
 
-from app import subagent_overrides
+from app import db, subagent_overrides
 from app.routes import subagents as sa
 from app.routes.subagents import OverrideRequest
 
 
 def _setup(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
     monkeypatch.setattr(subagent_overrides, "_OVERRIDES_PATH", tmp_path / "subagent-overrides.json")
 
 

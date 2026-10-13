@@ -229,6 +229,63 @@ npm run dev:overleaf
 The companion listens on `http://127.0.0.1:31245` and expects the adapter to be
 reachable at `LEA_API_BASE_URL`.
 
+## Set Up The Overleaf Extension
+
+The Overleaf integration requires the [local install](#option-b--local-install-macos--linux);
+it is not included in the Docker image. If you previously ran the UI-only setup,
+add the Overleaf side from the monorepo root:
+
+```sh
+npm run setup -- --target overleaf
+```
+
+Then:
+
+1. **Start the local stack:**
+
+   ```sh
+   ./start-dev.sh
+   ```
+
+   This starts the adapter, standalone UI, and Overleaf companion. Keep the
+   terminal open while using the extension.
+
+2. **Load the extension in Chrome:**
+
+   - Open `chrome://extensions`.
+   - Enable **Developer mode**.
+   - Click **Load unpacked** and select
+     `apps/overleaf-extension/extension/` from this repository.
+
+3. **Check the extension settings.** Open **Details** for the extension, choose
+   **Extension options**, and confirm:
+
+   - Companion URL: `http://127.0.0.1:31245`
+   - Local Lea repo path: the absolute path to
+     `apps/lea-standalone/prover`
+   - Lea API URL: `http://127.0.0.1:8001`
+
+   Setup writes these defaults for you. The options page can also load the
+   current values from the companion.
+
+4. **Mark a theorem in Overleaf** with a `% lea:` comment:
+
+   ```tex
+   \begin{theorem}\label{thm:finite-tree-leaves}
+   % lea: formalize label=finite_tree_leaves
+   Every finite tree has at least two leaves.
+   \end{theorem}
+   ```
+
+   The `label=` value is required and must be a valid Lean identifier: letters,
+   digits, and underscores, with no leading digit. Open the document in Overleaf;
+   the extension adds a badge to the marked block. Choose **Formalize** to start
+   the run or **View in Lea UI** to open its proof timeline.
+
+For dependency markers, context hints, custom LaTeX environments, and other
+extension details, see the
+[Overleaf extension guide](apps/overleaf-extension/README.md).
+
 ## Common Commands
 
 ```sh

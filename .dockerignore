@@ -22,9 +22,17 @@ apps/lea-standalone/prover/third_party/SafeVerify/.lake
 
 # Local runtime data + secrets — must never enter the image
 .env
+.env.*
+!**/.env.example
 **/lea.env
+**/lea.local.toml
+**/*.key
+**/*.pem
+**/*.token
 apps/lea-standalone/data
 apps/lea-standalone/config/lea.local.toml
+apps/lea-standalone/prover/workspace/proofs
+apps/lea-standalone/prover/workspace/projects
 apps/overleaf-extension/.overleaf-lean-stub
 
 # Docs and tests aren't needed to build the image. The extension/ dir IS needed:

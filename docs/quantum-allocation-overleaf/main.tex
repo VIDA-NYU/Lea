@@ -1,0 +1,81 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+
+\newtheorem{definition}{Definition}[section]
+\newtheorem{lemma}[definition]{Lemma}
+\newtheorem{theorem}[definition]{Theorem}
+
+\title{Lean Formalization Scaffold for\\
+  \emph{Leveraging Quantum Computing for Optimal Data Allocation in
+  Distributed Systems}}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section*{How to use this project}
+
+This Overleaf project restates the paper's mathematical core for incremental
+formalization with the Lea extension. The source is divided by role:
+
+\begin{itemize}
+  \item \texttt{allocation-definitions.tex} contains the problem-domain and
+    QUBO definitions derived from Section 3;
+  \item \texttt{qubo-transformation.tex} contains the corrected encoding,
+    objective components, QUBO representation, and correctness results derived
+    from Section 5.
+\end{itemize}
+
+Formalize targets from top to bottom, beginning with
+\texttt{AllocationInstance}. Every \texttt{uses} entry names an earlier Lea
+target and records a checked dependency. The comment-marker syntax used here
+does not require \texttt{lea-tags.sty}.
+
+The scaffold makes the following modeling choices explicit:
+
+\begin{itemize}
+  \item node and partition types are finite and have decidable equality;
+  \item capacities, sizes, request frequencies, communication costs, and the
+    replication parameter are natural numbers;
+  \item ``$k$-safety'' means \emph{exactly} $k$ copies, matching Definition 3.4
+    and the penalty term in Equation (3) of the paper;
+  \item feasibility is separate from optimality, so correctness results state
+    explicitly when a feasible assignment must exist;
+  \item the storage-chunk construction is corrected to cover arbitrary natural
+    capacities, including the paper's examples with capacities $7$ and $3$;
+  \item the constant terms removed during QUBO coefficient collection are
+    tracked by an explicit objective offset.
+\end{itemize}
+
+The Section 3 restatement combines or splits a few prose definitions to produce
+a stable Lean interface:
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Paper & Formalization target \\
+\midrule
+Definitions 3.1--3.2 and instance data from 3.6--3.7
+  & \texttt{AllocationInstance} \\
+Definition 3.3 & \texttt{DataAssignment} \\
+Definition 3.4 & \texttt{ExactKSafety} \\
+Definition 3.5 & \texttt{RespectsStorage} \\
+Definition 3.6 & \texttt{ProcessingCost} \\
+Definition 3.7 & \texttt{FeasibleAssignment} \\
+               & \texttt{IsOptimalAssignment} \\
+Definition 3.8 & \texttt{QUBO} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\input{allocation-definitions}
+
+\input{qubo-transformation}
+
+\end{document}

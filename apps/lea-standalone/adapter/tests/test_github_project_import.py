@@ -1,16 +1,27 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from app import db, formalizations, github_import_service, github_source, projects, store
+from app import (
+    alignment_store,
+    db,
+    formalizations,
+    github_import_service,
+    github_source,
+    projects,
+    store,
+)
 from app.github_project_import import (
     ImportLimits,
     ImportPlanningError,
     SourceInventory,
+    TaggedTarget,
     inventory_source,
     plan_import,
 )
@@ -46,6 +57,127 @@ def _setup(tmp_path, monkeypatch):
     monkeypatch.setattr(github_import_service, "STAGING_ROOT", tmp_path / "github-imports")
     monkeypatch.setattr(github_import_service, "github_token", lambda: None)
     return proofs_root
+
+
+def _source_bundle(label: str) -> dict:
+    payload = {
+        "version": 2,
+        "targetKey": label,
+        "targetKind": "theorem",
+        "statement": f"Statement for {label}.",
+        "proof": f"Proof for {label}.",
+        "proofAssociation": {
+            "status": "associated",
+            "method": "adjacent",
+            "sourceFile": "main.tex",
+            "sourceStartLine": 5,
+            "sourceEndLine": 7,
+            "proofHash": "",
+        },
+        "statementLocation": {
+            "sourceFile": "main.tex",
+            "sourceStartLine": 1,
+            "sourceEndLine": 4,
+        },
+        "uses": [],
+        "context": "",
+        "relevantSource": [],
+        "mirror": None,
+    }
+    identity = {
+        "version": payload["version"],
+        "targetKey": payload["targetKey"],
+        "targetKind": payload["targetKind"],
+        "statement": payload["statement"],
+        "proof": payload["proof"],
+        "proofAssociation": {
+            key: payload["proofAssociation"][key]
+            for key in ("status", "method", "sourceFile", "proofHash")
+        },
+        "uses": payload["uses"],
+        "context": payload["context"],
+        "relevantSource": payload["relevantSource"],
+        "mirror": payload["mirror"],
+    }
+    payload["bundleHash"] = hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    return payload
+
+
+def test_import_checks_lean_and_retains_source_without_independent_evaluator(tmp_path, monkeypatch):
+    proofs_root = _setup(tmp_path, monkeypatch)
+    project = projects.provision_project("Destination", proofs_root)
+    source_repo = _git_repo(
+        tmp_path / "semantic-remote",
+        {
+            "Bundle.lean": (
+                "namespace Lea.Source\n"
+                "theorem first : True := by trivial\n"
+                "theorem second : True := by trivial\n"
+                "end Lea.Source\n"
+            ),
+        },
+    )
+    repository = GitHubRepository(
+        owner="owner",
+        name="repo",
+        source_url="https://github.com/owner/repo",
+        clone_url=str(source_repo),
+    )
+    targets = [
+        TaggedTarget(
+            origin_key=f"doc:theorem:{name}",
+            label=name,
+            declaration_name=name,
+            kind="theorem",
+            display_title=name.title(),
+            statement=f"Statement for {name}.",
+            source_hash=character * 64,
+            source_bundle=_source_bundle(name),
+        )
+        for name, character in (("first", "a"), ("second", "b"))
+    ]
+    lean_checks = []
+    evaluator_submissions = []
+
+    monkeypatch.setattr(github_import_service, "parse_github_repository_url", lambda _url: repository)
+    monkeypatch.setattr(github_import_service, "enqueue_import", lambda *_args: None)
+
+    def check(path):
+        lean_checks.append(path)
+        return SimpleNamespace(status="ok", detail="checked")
+
+    monkeypatch.setattr(github_import_service, "interface_check", check)
+
+    preview = github_import_service.preview_import(
+        project=project,
+        proofs_root=proofs_root,
+        repository_url=repository.source_url,
+        targets=targets,
+    )
+    progress = github_import_service.confirm_import(
+        project=project,
+        proofs_root=proofs_root,
+        preview_id=preview["preview_id"],
+    )
+    github_import_service._check_import(progress["id"], proofs_root)
+
+    assert len(lean_checks) == 1
+    assert len(evaluator_submissions) == 0
+    for name in ("first", "second"):
+        formalization = store.find_formalization_by_declaration(
+            project_id=project["id"],
+            loose_session_id=None,
+            declaration_name=name,
+        )
+        history = alignment_store.history(formalization["id"])
+        assert history == []
+    finished = store.github_import_progress(progress["id"])
+    assert finished["status"] == "complete"
+    assert "targets_json" not in finished
+    persisted = store.get_github_import(progress["id"])
+    assert len(json.loads(persisted["targets_json"])) == 2
 
 
 def test_root_url_parser_rejects_lookalikes_and_non_root_paths():
@@ -207,7 +339,7 @@ def test_confirm_import_populates_matching_target_and_keeps_helper_reusable(tmp_
     assert "lemma conflict" in (repo / "Conflict.lean").read_text()
     decorated = formalizations.get(formalization["id"])
     assert decorated["primary_path"] == "Goal.lean"
-    assert decorated["validity_status"] == "proved"
+    assert decorated["validity_status"] == "unchecked"
     reusable = store.find_unbound_imported_declarations(project["id"], "helper")
     assert len(reusable) == 1
     assert all(

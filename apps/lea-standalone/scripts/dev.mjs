@@ -38,7 +38,9 @@ function waitFor(url, label, timeoutMs = 20000) {
     const tick = () => {
       const request = http.get(url, (response) => {
         response.resume();
-        resolve();
+        if (response.statusCode >= 200 && response.statusCode < 300) resolve();
+        else if (Date.now() - started > timeoutMs) reject(new Error(`${label} did not become ready at ${url}`));
+        else setTimeout(tick, 400);
       });
       request.setTimeout(1000, () => {
         request.destroy();
@@ -128,7 +130,7 @@ await ensurePortAvailable(8001, "UI adapter API");
 start("adapter", "./.venv/bin/python", ["run_api.py"], { cwd: path.join(root, "adapter") });
 
 try {
-  await waitFor("http://127.0.0.1:8001/api/health", "UI adapter API");
+  await waitFor("http://127.0.0.1:8001/api/ready", "UI adapter API");
   console.log("[dev] UI adapter API ready at http://127.0.0.1:8001");
 } catch (error) {
   console.error(`[dev] ${error.message}`);

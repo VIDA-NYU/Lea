@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>LeaUI v2.4 — Error Transparency</title>
+<style>
+  :root {
+    --bg: #f5f4ef; --panel: #fffefb; --ink: #2a2724; --muted: #8a847c;
+    --line: #e6e2da; --accent: #c96442; --green: #4f8a5b; --red: #c0564a;
+    --amber: #b8842a; --blue: #4a6fa5; --violet: #7a5a9a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    padding: 32px 0 80px;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+  header { margin-bottom: 8px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .intro { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 13px 16px; margin: 18px 0 8px; font-size: 13px; color: #4a463f; }
+  .intro b { color: var(--ink); }
+  .danger { background: #fbeeec; border: 1px solid #ecc9c2; border-left: 3px solid var(--red);
+    border-radius: 10px; padding: 12px 16px; margin: 14px 0 8px; font-size: 12.5px; color: #6a3a32; }
+  .danger h3 { margin: 0 0 7px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--red); }
+  .danger b { color: var(--ink); }
+  .gaps { background: #fbf4e6; border: 1px solid #ecdcbb; border-left: 3px solid var(--amber);
+    border-radius: 10px; padding: 12px 16px; margin: 14px 0 14px; font-size: 12.5px; color: #5a4a2a; }
+  .gaps h3 { margin: 0 0 7px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--amber); }
+  .gaps b { color: var(--ink); }
+  .gaps .fix { color: #7a6a44; }
+  .good { background: #eef5ef; border: 1px solid #cfe0d3; border-left: 3px solid var(--green);
+    border-radius: 10px; padding: 12px 16px; margin: 14px 0 26px; font-size: 12.5px; color: #3d5a44; }
+  .good h3 { margin: 0 0 7px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--green); }
+  .good b { color: var(--ink); }
+  .bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 18px 0 6px; }
+  .bar > i { display: block; height: 100%; background: var(--green); }
+  .counts { color: var(--muted); font-size: 12.5px; margin-bottom: 26px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 14px 0 28px; font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 99px; display: inline-block; }
+  .d-queued { background: #cdc8be; } .d-planned { background: var(--amber); }
+  .d-prog { background: var(--blue); } .d-tested { background: #7aa37f; } .d-done { background: var(--green); }
+  .d-unplanned { background: #b79ad0; }
+
+  .group { margin-bottom: 30px; }
+  .group > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+    margin: 0 0 4px; font-weight: 600; }
+  .group > .ghint { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+
+  .todo { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 13px 15px; margin-bottom: 9px; }
+  .todo.is-planned { border-color: var(--amber); box-shadow: 0 0 0 1px rgba(184,132,42,.15); }
+  .todo.is-tested { border-color: var(--green); box-shadow: 0 0 0 1px rgba(79,138,91,.15); }
+  .todo.is-done { opacity: .62; }
+  .todo .top { display: flex; align-items: center; gap: 10px; }
+  .id { font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 1px 7px; min-width: 30px;
+    text-align: center; }
+  .id.fe { color: var(--accent); border-color: #e7cabd; background: #fbf1ec; }
+  .id.sub { color: var(--violet); border-color: #d8c8e6; background: #f5eef9; }
+  .title { font-weight: 550; flex: 1; }
+  .tag { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+    padding: 1px 7px; border-radius: 99px; }
+  .tag.be { background: #eef0ec; color: #6a7d63; }
+  .tag.fe { background: #fbf1ec; color: var(--accent); }
+  .tag.prover { background: #eceef4; color: #5a6a8a; }
+  .tag.db { background: #f2eef4; color: #7a5a9a; }
+  .badge { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 99px; white-space: nowrap; }
+  .b-queued { background: #efece6; color: #8a847c; }
+  .b-planned { background: #f7ecd6; color: var(--amber); }
+  .b-prog { background: #e4ecf6; color: var(--blue); }
+  .b-tested { background: #e2efe4; color: #5a8a62; }
+  .b-done { background: #dcefe1; color: var(--green); }
+  .scope { color: var(--muted); font-size: 13px; margin: 6px 0 0 0; }
+  .haz { display: inline-block; font: 600 10.5px ui-monospace, monospace; color: var(--red);
+    background: #fbeeec; border: 1px solid #ecc9c2; border-radius: 5px; padding: 0 5px; margin-right: 4px; }
+  .p1 { display: inline-block; font: 600 10.5px ui-monospace, monospace; color: var(--blue);
+    background: #eaf0f8; border: 1px solid #cfdcee; border-radius: 5px; padding: 0 5px; margin-right: 4px; }
+  .win { display: inline-block; font: 600 10.5px ui-monospace, monospace; color: var(--green);
+    background: #e6f0e8; border: 1px solid #c6ddcc; border-radius: 5px; padding: 0 5px; margin-right: 4px; }
+  code { background: #f0ede6; border-radius: 4px; padding: 1px 5px; font: 12px ui-monospace, monospace; }
+  table.aud { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 6px 0 0; }
+  table.aud th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); font-weight: 600; padding: 4px 8px 6px 0; border-bottom: 1px solid var(--line); }
+  table.aud td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; color: #4a463f; }
+  table.aud tr:last-child td { border-bottom: none; }
+  table.aud td.w { color: var(--red); white-space: nowrap; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 40px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>LeaUI v2.4 — Error Transparency <span style="font-size:13px;font-weight:600;color:#4f8a5b;background:#e2efe4;border-radius:99px;padding:3px 11px;vertical-align:middle;margin-left:8px">COMPLETE</span></h1>
+    <div class="sub">Every failure gets an owner in the UI · audit of all 88 <code>except</code> sites across
+      adapter + prover + frontend · follows <code>v2.3.1-subagents-visibility-parallelism-progress.html</code></div>
+  </header>
+
+  <div class="intro">
+    v2.3.1 made the agent's <b>work</b> visible (live children, first-class child runs, compaction markers). This one
+    makes its <b>failures</b> visible. The audit finding is blunt: <b>the error model is one mutable string</b> —
+    <code>proofSession.error?: string</code> (<code>proofSession.ts:65</code>) rendered as a single
+    <code>&lt;div class="err-banner"&gt;</code> (<code>ChatThread.tsx:538</code>). Last-writer-wins, never persisted,
+    no severity, no source, and no link to the turn, tool, or step that failed. Its main producer is
+    <code>bridge.py:1101</code> — <code>f"{type(exc).__name__}: {exc}"</code>, a raw Python exception as user-facing copy.
+    <b>The through-line:</b> replace the banner with an <b>anchored, persisted, coded <code>Diagnostic</code></b> that
+    renders <i>where the failure happened</i> — the generalization of the one surface that already works, the red
+    sub-agent child.
+  </div>
+
+  <div class="danger">
+    <h3>What the audit found</h3>
+    <b><code>Error</code> is dead code.</b> <code>events.py:86</code> defines it and <code>bridge.py:1064</code> handles
+    it → <code>run_error</code>. <code>grep -rn "yield Error" prover/lea/</code> returns <b>nothing</b>. The prover has
+    no way to report a recoverable failure as an event — everything is a raised exception caught by one outer
+    <code>except</code>, or a string handed to the model. ·
+    <b>Tool failures are visible to the LLM and invisible to the human:</b> <code>agent.py:886</code> turns every tool
+    exception into <code>f"Error: tool '{name}' raised …"</code> — a <code>tool_result</code> the model reads and may
+    silently recover from. The human sees only the <code>Running &lt;tool&gt;</code> chip. ·
+    <b>~28 of 88 <code>except</code> blocks swallow silently</b> (<code>pass</code> / default-and-continue) across
+    <code>uploads</code>, <code>graph</code>, <code>projects</code>, <code>ghimport</code>, <code>models_catalog</code>. ·
+    <b>A failed proof promotion is a <code>logger.warning</code></b> (<code>bridge.py:653</code>) — children run,
+    nothing is promoted, the user is told nothing. ·
+    <b>Nothing is persisted:</b> "what went wrong in yesterday's run" exists only in a terminal's stderr.
+  </div>
+
+  <div class="gaps">
+    <h3>Design calls</h3>
+    <b>A failure needs an owner, not a banner.</b> <span class="fix">One global string means the second error erases the
+    first, and a failure three turns back is unattributable. Every diagnostic carries a <code>context</code>
+    (<code>run_id</code>, <code>turn</code>, <code>tool</code>, <code>path</code>, <code>child_id</code>,
+    <code>call_id</code>) and renders <b>at that anchor</b> — on the tool step, the code card, the child row.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Three severities, three shapes.</b> <span class="fix"><b>fatal</b> → terminal run state + a persisted timeline
+    row. <b>step_error</b> → inline on the step it belongs to; the run continues. <b>degraded</b> → a <i>persistent
+    capability indicator</i>, not a transient toast, because it describes an ongoing state (LSP fell back to cold
+    compile, SafeVerify unavailable, overrides didn't load). A toast is the wrong shape for a condition that is still
+    true five minutes later.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Coded, with a remedy.</b> <span class="fix"><code>provider.auth_missing</code> → "No <code>ANTHROPIC_API_KEY</code>.
+    Add one in Settings." Codes are testable and let a remedy be attached once; raw exception strings are neither.
+    <code>AuthenticationError: …</code> is a stack-trace fragment, not an instruction.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Persisted, because a diagnostic is history.</b> <span class="fix">Stored as
+    <code>kind='diagnostic'</code> on <code>timeline</code>, reusing the <code>data</code> JSON column that already
+    exists and is essentially unused (<code>0003_timeline_and_blobs.py:133</code> — "JSON: per-tool specifics only").
+    Same principle as the compaction marker (G3): live and reload must not disagree.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>"Couldn't do it" ≠ "it's wrong."</b> <span class="fix">Already the right call in
+    <code>VerifyResult</code> (<code>events.py:72</code>), which keeps <code>error</code>/<code>unavailable</code>
+    distinct from <code>rejected</code>. Generalize that discipline: a swallowed <code>OSError</code> currently makes a
+    <b>partial</b> import, graph, or file inventory present itself as a <b>complete</b> one.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Composes with the tool-descriptor refactor, doesn't compete.</b> <span class="fix">Once a handler returns
+    structured effects instead of a bare <code>str</code>, <code>tool.raised</code> becomes a <i>declared failure
+    effect</i> rather than prose only the model reads — and <code>_meaning_events</code>'s string-sniffing
+    (<code>agent.py:335</code>) goes away with it. Phase A here is deliberately buildable <b>before</b> that refactor,
+    and makes it cheaper.</span>
+  </div>
+
+  <div class="good">
+    <h3>What already works — the patterns to copy</h3>
+    <b>The red sub-agent child</b> (<code>_subagent_error</code>, <code>bridge.py:517</code>) — a failure rendered
+    <i>on the thing that failed</i>, with its real cause, not a paraphrase. This is the template for the whole phase. ·
+    <b><code>VerifyResult</code>'s tri-state</b> — <code>ok</code>/<code>rejected</code>/<code>error</code>/<code>unavailable</code>,
+    with "couldn't verify" explicitly never reading as "verified bad." ·
+    <b>The persisted pending approval</b> (<code>bridge.py:164</code>) — an interactive prompt that survives a stream
+    drop and a session switch because it lives on the run row, not only in a one-shot SSE. ·
+    <b>Honest capacity 409s</b> (<code>runs.py:324</code>) with <code>Retry-After</code> and human copy, and the
+    <b>402 spend-limit</b> message. These four are already right; the work is making everything else behave like them.
+  </div>
+
+  <div class="bar"><i style="width:100%"></i></div>
+  <div class="gaps">
+    <h3>Live testing — what was and wasn't exercised</h3>
+    <b>Two render paths shipped without ever being watched:</b> <span class="fix">the
+    <b>queued child</b> state (<b>D4</b>) and the child row's <b>stop notice</b> (<b>D3</b>'s UI
+    half). Both need a real delegating run with 6+ spawns or an exhausted turn budget to produce
+    naturally. Their logic is unit-tested; their pixels are not. Recorded here rather than quietly
+    folded into "done" — the next person to touch a sub-agent row should know these two were never
+    seen working.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Verified in the running app:</b> a wrong API key, and a <i>valid</i> key with a model from
+    another provider. The second is the case that justified the design: at the exception level the
+    two are indistinguishable, so the card offers <b>both</b> routes rather than guessing — and the
+    user could tell them apart. Sub-agent failures surfaced too.
+    <span class="fix">Flipped to Tested: <b>A3</b> (anchored rendering), <b>A4</b> (code catalog + remedies), <b>B1</b> (provider auth), <b>A2+G1</b> (persisted and replayed on reload — the half the old error model got wrong by construction), <b>E1</b> (Stop during a pending approval — the only place the system silently attributed an action to the user that they never took).</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>What is left splits in two, and only one half needs a human.</b>
+    <span class="fix"><b>Deterministic — covered in CI, no UI pass needed:</b> corrupt file in,
+    diagnostic out, no judgement anywhere. <b>F2</b> (overrides unreadable — driven through the real
+    <code>run_lea</code>), <b>C2</b> (<code>content_lost</code>), <b>C1</b> (a tool raising),
+    <b>D1/D2</b> (promotion refused / unwritable — assertions added, the existing tests only checked
+    that nothing was promoted, not that anyone was told), <b>D3</b> (stop-reason mapping), <b>B2</b>,
+    and every provider code (quota / context / region / access) via the error matrix. Re-testing
+    these by hand would only re-run what CI already runs on every commit.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Needs a human to look — these are RENDER paths, not logic:</b>
+    <span class="fix">the <b>degraded strip</b> is now confirmed via <b>F2</b> (pinned at the foot, amber, and two rows correctly rendered as ONE strip) — which also covers the render half of <b>C4</b> and <b>F3</b>, leaving only their triggers, the <b>queued child</b> state (<b>D4</b>), and the child row's stop notice (<b>D3</b>'s
+    UI half). <b>C4</b> also needs a real daemon kill, which no unit test can stage.</span>
+  </div>
+  <div class="counts">
+    <b>COMPLETE — 22/22 shipped</b> · <b>7 confirmed in the running app</b> (A2 · A3 · A4 · B1 · E1 · F2 · G1) — the contract end to end,
+    provider auth, the approval gate, and persistence across a reload
+    &nbsp;·&nbsp; <b>+3 unplanned bugs</b> found &amp; fixed (<span class="haz">X1</span> <span class="haz">X2</span> <span class="haz">X3</span>, below) — two of them only surfaced by driving 8 sub-agents in the real app
+    &nbsp;·&nbsp; adapter <b>465 pass</b> · prover <b>31/31 suites</b> · overleaf <b>371 pass</b> ·
+    frontend <b>50 pass</b> · <code>tsc</code> clean — <b>no known failures anywhere</b>
+    &nbsp;·&nbsp; <span class="win">WIN</span> = high value, independently shippable
+    &nbsp;·&nbsp; <span class="haz">P0</span> = the contract everything else lands on
+  </div>
+
+  <div class="danger" style="background:#fbeeec">
+    <h3><span class="haz">X2</span> Unplanned — found in live testing: a child sat "Checking with Lean…" after finishing</h3>
+    <b>Every child was reported finished at the same instant, whenever the SLOWEST one finished.</b>
+    <code>run_children_concurrently</code> returns only when all children are done, and the
+    coordinator drained every <code>SubagentFinished</code> after it returned — so a child that
+    finished in 15s kept <code>status='running'</code> for another 40s, and its session view showed a
+    live spinner over a completed transcript. The DB was unambiguous: 8 children created within the
+    same second, all retired within <b>30ms of each other, ~51s later</b>. Fixed by emitting each
+    child's result as <i>it</i> finishes. Pinned by a timing test (fast child + blocked sibling) that
+    was verified to FAIL without the fix — the first two revert attempts printed nothing at all,
+    which looked like "passes either way" until it turned out an earlier test was crashing the runner
+    before it ran. Pre-existing E2 behaviour from v2.3.1; invisible at 2 children, obvious at 8.
+
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:13px 0">
+    <h3><span class="haz">X3</span> Unplanned — found in live testing: a running child's task was invisible</h3>
+    <b>The delegated prompt only existed in the child's transcript, which replays on FINISH.</b>
+    So a running child's session was empty and its three-word title was the whole visible record of
+    what it had been asked to do — you could watch it work for minutes with no way to judge whether
+    the coordinator had delegated the right thing, which is exactly the window in which that judgement
+    is still worth making. <code>SubagentStarted</code> now carries the full <code>task</code>; the
+    adapter records it as the child's first message <b>at spawn</b> (and skips the transcript's
+    leading user message on finish, so it isn't stored twice); the session list exposes it beside
+    <code>final_summary</code>. Also fixed alongside: an expanded running child said "This sub-agent
+    produced no final output" — a <i>verdict</i>, and a false one, since an unfinished run has no
+    output <i>yet</i>.
+
+    <hr style="border:none;border-top:1px solid #ecc9c2;margin:13px 0">
+    <h3><span class="haz">X1</span> Unplanned — found by a test this work turned green</h3>
+    <b>A DENIED <code>write_file</code> emitted <code>FileChanged</code>.</b>
+    <code>tests/agent/test_gate.py</code> had two failing assertions on <code>main</code>
+    ("denied → NOT executed"). Cause: <code>_meaning_events</code> decides whether a write
+    succeeded by sniffing the result <i>string</i> — <code>_tool_result_ok</code> is
+    "non-empty and doesn't start with <code>error:</code>" — and the <b>decline notice
+    satisfies that</b>. So refusing a write still emitted <code>FileChanged</code>, and the
+    adapter dutifully read the path and recorded a <b>code step for a write the user had
+    just refused</b>. Fixed by tracking refused call indices in the loop
+    (<code>refused_idx</code>) instead of re-deriving a refusal from prose — the loop
+    <i>knows</i> it denied the call. Both assertions now pass.
+    <b>This is the string-sniffing failure mode in miniature</b>, and the reason the tool
+    contract is the next thing worth changing.
+  </div>
+
+  <div class="legend">
+    <span><i class="dot d-queued"></i> Queued</span>
+    <span><i class="dot d-planned"></i> Planned (next)</span>
+    <span><i class="dot d-done"></i> Done (shipped)</span>
+    <span><i class="dot d-tested"></i> Tested ✓</span>
+    <span style="margin-left:auto"><span class="tag be">adapter</span> &nbsp; <span class="tag prover">prover</span>
+      &nbsp; <span class="tag fe">frontend</span> &nbsp; <span class="tag db">schema</span></span>
+  </div>
+
+  <div class="gaps">
+    <h3>Two pre-existing prover test failures — both fixed (neither from this work)</h3>
+    <b><code>test_subagent_started</code></b> — "plan scratch dir was created" asserted
+    <i>after</i> the <code>TemporaryDirectory</code> block had already deleted the tree, so it
+    looked for a directory Python had just thrown away. The check now runs inside the block.
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b><code>test_subagent_parallel</code></b> — "the run completed". Measured: the run ends
+    <code>assistant</code>, not <code>completed</code>, because the fake coordinator delegates
+    and then never writes a proof file itself; a child's candidate stays in the child's sandbox
+    by design (the adapter's <code>_promote_winner</code> is what fills that gap). <b>The
+    product was right and the assertion was out of scope</b> — that test is about two spawns
+    overlapping in one turn, not about which outcome a run reaches.
+    <span class="fix">So the test now asserts what it is named for: both spawns issued in the
+    <b>same turn</b> (verified non-vacuous — <code>TurnStarted(2)</code> really is in the
+    stream, after both spawns), and the loop <b>terminating cleanly</b> — exactly one terminal
+    event, so a hang or an escaped thread still fails it — instead of pinning an outcome it
+    was never testing.</span>
+  </div>
+
+  <div class="gaps">
+    <h3>What to exercise when you test</h3>
+    <b>Start a run with no API key</b> → one fatal card naming the provider + "add a key in
+    Settings", not <code>AuthenticationError:</code> · <b>Stop while an approval card is
+    up</b> → "Stop cancelled the pending approval"; the agent must NOT say you declined it ·
+    <b>Spawn 6+ sub-agents in one turn</b> → children 6+ read <b>queued</b>, not exploring ·
+    <b>Let a sub-agent hit its turn budget</b> → the child row says so instead of looking
+    like a clean finish · <b>Delegate, then let the winner fail re-verification</b> → a card
+    naming the candidate and why · <b>Reload mid-thread</b> → every card is still there, in
+    the same place · <b>Kill the LSP daemon</b> → an amber "Lean checks are running cold"
+    strip that stays up.
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Known deviations from the plan, deliberate:</b> <span class="fix">(1) A4's catalog is
+    resolved <b>server-side</b> — <code>title</code>/<code>remedy</code> ship on the wire —
+    rather than duplicated as a second frontend catalog, so there is exactly one source of
+    copy. (2) G2 needed no schema change: a run's failure surfaces as its persisted
+    <code>fatal</code> diagnostic rather than a new column on <code>runs</code>. (3) Request/
+    response endpoints (graph, rename, upload, models) can't stream, so they return the same
+    payload in a <code>warnings[]</code> array — one shape, two transports.</span>
+  </div>
+
+  <!-- ─────────────────────────────  PHASE A  ───────────────────────────── -->
+  <div class="group">
+    <h2>Phase A · The <code>Diagnostic</code> contract</h2>
+    <p class="ghint">One typed failure record, end to end: prover event → adapter dispatch → timeline row → SSE →
+      anchored UI. Everything below depends on this.</p>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id">A1</span><span class="title"><code>Diagnostic</code> event replaces the never-emitted <code>Error</code></span>
+        <span class="tag prover">prover</span><span class="badge b-done">Done</span></div>
+      <div class="scope"><span class="haz">P0</span> <code>Diagnostic(severity, code, source, message, remedy, context)</code>
+        in <code>events.py</code>, added to the <code>AgentEvent</code> union and exported from
+        <code>interface.py</code>. <code>severity</code> ∈ <code>fatal | degraded | step_error | notice</code>;
+        <code>context</code> ∈ <code>{run_id, turn, tool, path, child_id, call_id}</code>. Retire <code>Error</code>
+        (<code>events.py:86</code>) — defined, handled, and <b>never yielded</b> — or make it a
+        <code>severity='fatal'</code> alias so <code>bridge.py:1064</code> keeps working during the transition.</div>
+    </div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id">A2</span><span class="title">Adapter dispatch + <code>kind='diagnostic'</code> timeline row</span>
+        <span class="tag be">adapter</span><span class="tag db">schema</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope"><span class="haz">P0</span> A branch in <code>run_lea</code>'s ladder that persists the
+        diagnostic and emits a <code>diagnostic</code> SSE with the <b>same bytes</b> (the streamed/stored invariant the
+        code rows already hold). New Alembic revision <code>0007</code> widening the <code>kind</code> CHECK —
+        exactly as <code>0006</code> did for <code>compaction</code> — storing the payload in the existing
+        <code>data</code> JSON column. <b>No new table</b>: a diagnostic is a timeline event, and its position in the
+        thread is what makes it legible.</div>
+    </div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id fe">A3</span><span class="title">Anchored renderers replace the global <code>error</code> string</span>
+        <span class="tag fe">frontend</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope"><span class="haz">P0</span> <code>proofSession.error?: string</code> →
+        <code>diagnostics: Diagnostic[]</code>, indexed by anchor. Renderers: inline on a code card, on a tool step, on
+        a child row (reusing the existing <code>kid-error-msg</code> treatment), plus a run-level block for
+        <code>fatal</code> and a header chip for <code>degraded</code>. A diagnostic with no matching anchor falls back
+        to the run block — <b>never dropped</b>, which is what the single-string model does today on the second error.</div>
+    </div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id">A4</span><span class="title">Error-code catalog with remedies</span>
+        <span class="tag be">adapter</span><span class="tag fe">frontend</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope">One module mapping <code>code → {title, remedy, docs_href}</code>, consumed by both sides —
+        the same shape as <code>packages/lea-model-catalog</code>. Keeps human copy out of exception handlers and makes
+        "does this failure explain itself?" a unit test rather than a judgement call.</div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────  PHASE B  ───────────────────────────── -->
+  <div class="group">
+    <h2>Phase B · Workflow: starting a run</h2>
+    <p class="ghint">The human types a theorem and hits send. Everything that can go wrong before the first token.</p>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id">B1</span><span class="title">Provider auth / config errors → <code>provider.auth_missing</code></span>
+        <span class="tag prover">prover</span><span class="tag be">adapter</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope">Today a missing or invalid key is uncaught in the prover, hits <code>bridge.py:1098</code>, and
+        reaches the user as <code>AuthenticationError: …</code> in a banner — with no provider named and no remedy. The
+        single most likely first-run failure deserves the single clearest message: <b>"No API key for
+        &lt;provider&gt;. Add one in Settings."</b> Classify at the <code>providers.py</code> seam
+        (<code>_api_key_kwargs</code>, <code>providers.py:117</code>) where the provider is still known.</div>
+    </div>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id">B2</span><span class="title">Silent project-provisioning failure</span>
+        <span class="tag be">adapter</span><span class="badge b-done">Done</span></div>
+      <div class="scope"><code>runs.py:134</code> — <code>except ValueError: project_id = None</code>. The run proceeds
+        <b>un-namespaced</b>: no project context message, no skills, no shared repo, usage rolls up nowhere. The user
+        believes they are in a project. Emit a <code>notice</code> and say which part didn't apply.</div>
+    </div>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id fe">B3</span><span class="title">Capacity / supersede 409s anchored on the run</span>
+        <span class="tag fe">frontend</span><span class="badge b-done">Done</span></div>
+      <div class="scope">The copy is already good (<code>runs.py:324</code>, <code>Retry-After: 5</code>) — the
+        <i>surface</i> is a transient banner competing with every other error for one slot. Render it on the pending run
+        instead, so "waiting for a slot" reads as a state rather than a failure.</div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────  PHASE C  ───────────────────────────── -->
+  <div class="group">
+    <h2>Phase C · Workflow: watching it work</h2>
+    <p class="ghint">The run is live. Failures here are currently either model-only or invisible.</p>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id">C1</span><span class="title">Tool exceptions surface to the human, not just the model</span>
+        <span class="tag prover">prover</span><span class="badge b-done">Done</span></div>
+      <div class="scope"><span class="win">WIN</span> <code>agent.py:886</code> —
+        <code>_exec_tool</code> catches everything into <code>f"Error: tool '{name}' raised …"</code> and hands it to the
+        model. <b>Keep that string</b> (the model needs it to recover) and <i>also</i> yield
+        <code>Diagnostic(step_error, 'tool.raised', tool=…, turn=…)</code>. Same for
+        <code>Error: unknown tool</code>, which today means a misconfigured toolset fails completely silently.
+        Independent of Phase A if it lands as an <code>Error</code> event first.</div>
+    </div>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id">C2</span><span class="title">Unreadable file after a write stores <code>content_lost</code>, not <code>""</code></span>
+        <span class="tag be">adapter</span><span class="badge b-done">Done</span></div>
+      <div class="scope"><span class="win">WIN</span> <code>_read_after</code> (<code>bridge.py:258</code>) returns
+        <code>""</code> on <code>OSError</code>/<code>UnicodeDecodeError</code> with a <code>logger.debug</code>. The
+        schema has a <code>content_lost</code> flag for exactly this (<code>0003:131</code>) — but
+        <code>add_code_step</code> (<code>store.py:1218</code>) never sets it, so the empty blob is stored <b>as
+        truth</b> and the canvas shows an empty file as if the agent wrote one. Thread the read failure through and set
+        the flag it was designed for.</div>
+    </div>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id">C3</span><span class="title">Run crashes carry turn / tool / step context</span>
+        <span class="tag be">adapter</span><span class="badge b-done">Done</span></div>
+      <div class="scope">The outer handler (<code>bridge.py:1098</code>) has <code>current_turn</code>,
+        <code>last_tool</code>, and <code>step_id_by_path</code> in scope and uses none of them —
+        it emits the bare exception. Attach them, classify the common causes
+        (provider timeout, rate limit, Lean toolchain missing, disk), and anchor the diagnostic on the last step.</div>
+    </div>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id">C4</span><span class="title">LSP cold-fallback as a <code>degraded</code> indicator</span>
+        <span class="tag prover">prover</span><span class="tag fe">frontend</span><span class="badge b-done">Done</span></div>
+      <div class="scope">When the daemon dies or restarts, <code>lean_check</code> silently falls back to
+        <code>lake env lean</code> — <b>~0.2s → ~88s per check</b>. The user experiences a minutes-long unexplained
+        stall and has no way to know the fastest path is gone. A persistent "checking cold" chip, cleared when the
+        daemon is back.</div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────  PHASE D  ───────────────────────────── -->
+  <div class="group">
+    <h2>Phase D · Workflow: delegating to sub-agents</h2>
+    <p class="ghint">The most expensive workflow, and the one where a silent failure wastes the most wall-clock.</p>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id sub">D1</span><span class="title">Promotion refused because the winner didn't re-verify</span>
+        <span class="tag be">adapter</span><span class="badge b-done">Done</span></div>
+      <div class="scope"><span class="win">WIN</span> <code>bridge.py:653</code> — the winning candidate is re-checked
+        at the canonical path, and on failure the code does <code>logger.warning(…)</code> and returns
+        <code>None</code>. The human watched N children run for minutes and is shown: no proof, no promotion, no
+        reason. The re-verification is <i>correct</i> and worth keeping — it just has to say so. Report which candidate
+        was selected and why it was rejected at the new path.</div>
+    </div>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id sub">D2</span><span class="title"><code>collation.promote</code> failure is fully silent</span>
+        <span class="tag be">adapter</span><span class="badge b-done">Done</span></div>
+      <div class="scope"><code>bridge.py:649</code> — <code>except ValueError: return None</code>, with no log at all.
+        A promotion that can't even be attempted is indistinguishable from "no children produced anything."</div>
+    </div>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id sub">D3</span><span class="title">Non-error child terminations render as normal completions</span>
+        <span class="tag fe">frontend</span><span class="tag be">adapter</span><span class="badge b-done">Done</span></div>
+      <div class="scope"><code>_subagent_error</code> (<code>bridge.py:517</code>) returns non-null <b>only</b> when
+        <code>stop_reason == 'error'</code>, and the frontend sets <code>subagentErrors</code> only from that field
+        (<code>useProofStream.ts:410</code>). So a child that hit <b>max_turns</b> or its <b>max_cost</b> cap renders as
+        a child that finished fine and happened to produce nothing. Surface the terminal reason on the child row —
+        "stopped: turn budget" is a different fact from "found nothing," and it changes what the user does next.</div>
+    </div>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id sub">D4</span><span class="title">Queued children display as running</span>
+        <span class="tag prover">prover</span><span class="tag fe">frontend</span><span class="badge b-done">Done</span></div>
+      <div class="scope">All spawns yield <code>SubagentStarted</code> in Phase 1 (<code>agent.py:932</code>), but
+        <code>run_children_concurrently</code> then blocks each thread on a semaphore capped at
+        <code>DEFAULT_MAX_CONCURRENT_CHILDREN = 5</code>. Children 6+ show "running" while actually waiting. A
+        <code>queued</code> state on the child row — the cap is a good safety property, and it should be visible rather
+        than misreported.</div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────  PHASE E  ───────────────────────────── -->
+  <div class="group">
+    <h2>Phase E · Workflow: approving a tool</h2>
+    <p class="ghint">The one place the human is <i>in</i> the loop — so a silent reinterpretation of their input is the
+      worst failure mode in the system.</p>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id">E1</span><span class="title">Stop during an approval silently becomes a deny</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope"><code>_await_decision</code> (<code>bridge.py:168-176</code>): the wait loop breaks on
+        <code>stop_event</code>, falls through with <code>decision = None</code>, and <code>None</code> is not in
+        <code>_APPROVAL_DECISIONS</code> → <b><code>deny</code></b>. The model then receives the "the user declined this
+        call" redirect and narrates around a refusal the human never made. Deny is the correct <i>safe default</i>;
+        silently attributing it to the user is not. Distinguish <code>cancelled</code> from <code>denied</code> and say
+        which happened.</div>
+    </div>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id fe">E2</span><span class="title">Stale approval 409 anchored on the card</span>
+        <span class="tag fe">frontend</span><span class="badge b-done">Done</span></div>
+      <div class="scope">A decision for an approval the run already consumed 409s (<code>runs.py:198</code>) and lands
+        in the global banner, disconnected from the card the user just clicked. Render it on that card and settle it.</div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────  PHASE F  ───────────────────────────── -->
+  <div class="group">
+    <h2>Phase F · Workflow: projects, uploads, settings</h2>
+    <p class="ghint">Everything outside a run. This is where the swallowed <code>OSError</code>s live, and where
+      "partial" currently presents itself as "complete."</p>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id">F1</span><span class="title">Silent <code>OSError</code> sweep across asset paths</span>
+        <span class="tag be">adapter</span><span class="badge b-done">Done</span></div>
+      <div class="scope"><code>uploads.py:139,263,307,410</code> · <code>graph.py:74,151</code> ·
+        <code>projects.py:476,526</code> · <code>ghimport.py:240</code> (<code>SubprocessError</code>). Each yields a
+        partially-imported repo, a blueprint graph missing nodes, or a truncated file inventory — all presented as
+        success. Per-file diagnostics with the path, so a partial result is <b>labelled</b> partial. Follows
+        <code>VerifyResult</code>'s discipline: "couldn't read it" must never render as "it isn't there."</div>
+    </div>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id">F2</span><span class="title">Sub-agent overrides silently don't apply</span>
+        <span class="tag be">adapter</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope"><code>bridge.py:378</code> — <code>except Exception: overrides = {}</code>. The user set
+        per-role models, turn caps, and prompts on the <b>Sub-agents page</b>; a malformed file reverts every child to
+        vendored defaults with no indication. A user-authored setting that doesn't take effect must always say so.</div>
+    </div>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id">F3</span><span class="title">Model-catalog fallback as a <code>degraded</code> state</span>
+        <span class="tag be">adapter</span><span class="tag fe">frontend</span><span class="badge b-done">Done</span></div>
+      <div class="scope"><code>models_catalog.py:76,81</code> swallow and fall back to built-in defaults, so the picker
+        can silently offer a stale list. Show that the catalog didn't load rather than presenting the fallback as
+        current.</div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────  PHASE G  ───────────────────────────── -->
+  <div class="group">
+    <h2>Phase G · Retrospective visibility</h2>
+    <p class="ghint">The payoff for persisting diagnostics: failures become answerable after the fact.</p>
+
+    <div class="todo is-tested">
+      <div class="top"><span class="id fe">G1</span><span class="title">Diagnostics survive reload and replay in order</span>
+        <span class="tag fe">frontend</span><span class="tag be">adapter</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope">Returned by <code>session_detail</code> and rendered inline at their anchors, so the live
+        thread and a reloaded one show the same failures in the same places — the invariant the code rows and the
+        compaction marker already hold, and the one the banner breaks by construction.</div>
+    </div>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id fe">G2</span><span class="title">Run summary: what failed and why</span>
+        <span class="tag fe">frontend</span><span class="badge b-done">Done</span></div>
+      <div class="scope">A failed run's row shows its terminal code and remedy instead of only
+        <code>status='failed'</code>. Makes "why did last night's batch fail?" answerable from the UI — today it
+        requires the adapter's stderr, which in practice no longer exists.</div>
+    </div>
+  </div>
+
+  <footer>
+    v2.4 · error transparency · audit of 88 <code>except</code> sites across adapter + prover + frontend ·
+    phase complete · 22/22 · 7 confirmed live, the rest covered by CI
+  </footer>
+</div>
+</body>
+</html>

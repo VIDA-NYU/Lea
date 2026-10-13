@@ -1,3 +1,6 @@
+export { renderLeaStatus, leaStatusLabel } from "./leaStatusView.mjs";
+import { dependencyWait, dependencyWaitAction } from "./dependencyWaitCore.mjs";
+export { dependencyWait, dependencyWaitAction };
 // Pure, DOM-free helpers for the Overleaf Lean project pane.
 //
 // These live in their own module so they can be unit-tested directly: the content
@@ -8,6 +11,78 @@
 
 export { renderPaneMath } from "./leanPaneMath.mjs";
 
+const sharedViews = new Map();
+export function renderSharedDependencies(dependencies, { document, key = "shared", retry, open }) {
+  if (!dependencies?.length) return null;
+  const previous = sharedViews.get(key);
+  const expanded = new Set(previous?.ownerDocument === document
+    ? [...previous.querySelectorAll("details[open]")].map((item) => item.dataset.dependencyId) : []);
+  const root = document.createElement("section");
+  root.className = "ol-lean-shared-results";
+  const node = (tag, text, parent = root) => {
+    const value = document.createElement(tag);
+    if (text !== undefined) value.textContent = text;
+    parent.appendChild(value);
+    return value;
+  };
+  node("strong", "Shared mathematics");
+  const ready = dependencies.filter((dep) => dep.ready).length;
+  node("p", `${ready} of ${dependencies.length} shared results available`).className = "ol-lean-live-status-meta";
+  for (const dep of dependencies) {
+    const spec = dep.specification || {};
+    const name = spec.name || dep.declaration_name || dep.id;
+    const detail = node("details");
+    detail.dataset.dependencyId = dep.id;
+    detail.open = expanded.has(dep.id);
+    const status = dep.ready ? dep.reused ? "Reused" : "Verified" : dep.state === "running"
+      ? "Proving" : dep.state === "waiting" ? "Waiting for supporting results" : String(dep.state || "pending").replaceAll("_", " ");
+    node("summary", `${status} · ${name}${dep.current === false ? " · Last known state" : ""}`, detail);
+    if (dep.targetLabels?.length) node("p", `${dep.ready ? "Used by" : "Waiting targets"}: ${dep.targetLabels.join(", ")}`, detail);
+    if (spec.statement) node("p", spec.statement, detail);
+    node("pre", `import ${dep.module_name}\n${dep.declaration_name} ${spec.signature || ""}`, detail);
+    node("p", dep.path, detail).className = "ol-lean-live-status-meta";
+    if (spec.citation) node("p", `Citation: ${typeof spec.citation === "string" ? spec.citation : JSON.stringify(spec.citation)}`, detail);
+    for (const source of spec.sources || []) node("p", typeof source === "string" ? source : JSON.stringify(source), detail);
+    if (dep.blocker) node("p", `${dep.blocker.category || "Blocker"}: ${dep.blocker.detail || ""}`, detail);
+    for (const attempt of dep.attempts || []) {
+      const row = node("p", `Attempt ${attempt.generation}: ${attempt.state}${attempt.detail ? ` · ${attempt.detail}` : ""}`, detail);
+      if (open && attempt.session_id) {
+        const button = node("button", "Inspect attempt", row);
+        button.type = "button";
+        button.className = "ol-lean-secondary-button";
+        button.addEventListener("click", () => open({ ...dep, session_id: attempt.session_id }));
+      }
+    }
+    if (retry && !dep.ready && ["failed", "blocked", "needs_review", "stale", "interrupted"].includes(dep.state) && spec.signature) {
+      const label = dep.state === "interrupted" ? "Resume shared result" : "Retry shared result";
+      const button = node("button", label, detail);
+      button.type = "button";
+      button.className = "ol-lean-secondary-button";
+      const message = node("span", "", detail);
+      message.setAttribute("role", "status");
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        button.textContent = "Starting retry…";
+        try { await retry(dep, { resume: dep.state === "interrupted" }); button.textContent = "Attempt started"; }
+        catch (error) { message.textContent = error.message; button.disabled = false; button.textContent = label; }
+      });
+      if (dep.state === "interrupted") {
+        const restart = node("button", "Retry shared result", detail);
+        restart.type = "button";
+        restart.className = "ol-lean-secondary-button";
+        restart.addEventListener("click", async () => {
+          restart.disabled = true;
+          button.disabled = true;
+          try { await retry(dep, { resume: false }); restart.textContent = "Retry started"; }
+          catch (error) { message.textContent = error.message; restart.disabled = false; button.disabled = false; }
+        });
+      }
+    }
+  }
+  sharedViews.set(key, root);
+  return root;
+}
+
 const PANE_STATUS_LABELS = {
   "missing-stub": "missing stub",
   "stub-generated": "stub generated",
@@ -17,6 +92,8 @@ const PANE_STATUS_LABELS = {
   // not a proof of the stated theorem (FEATURE-counterexample-workflows.md).
   disproved: "counterexample",
   "in-progress": "in progress",
+  paused: "paused",
+  "needs-review": "Needs review",
   invalid: "invalid",
   stale: "out of date",
   error: "error",
@@ -90,12 +167,13 @@ const PANE_TEXT_ESCAPES = new Map([
 ]);
 
 const SUCCESS_PANE_STATUSES = new Set(["valid", "defined", "disproved"]);
-const PROGRESS_SUCCESS_STATUSES = new Set(["valid", "formalized", "defined", "disproved"]);
+const PROGRESS_SUCCESS_STATUSES = new Set(["valid", "formalized", "defined"]);
 const PROGRESS_STUB_STATUSES = new Set(["stub-generated", "sorry_stub"]);
 const PROGRESS_FAILED_STATUSES = new Set(["failed", "invalid", "error"]);
 const PROGRESS_IN_PROGRESS_STATUSES = new Set(["in-progress", "in_progress"]);
 const PROGRESS_SEGMENT_DEFS = [
-  { id: "success", label: "Successful", countKey: "success" },
+  { id: "success", label: "Verified", countKey: "success" },
+  { id: "disproved", label: "Disproved", countKey: "disproved" },
   { id: "sorry-stubbed", label: "Sorry-stubbed", countKey: "sorryStubbed" },
   { id: "failed", label: "Failed", countKey: "failed" },
   { id: "out-of-date", label: "Out of date", countKey: "outOfDate" },
@@ -328,6 +406,7 @@ export function aggregatePaneStatus(items) {
     .filter(Boolean);
   if (statuses.length === 0) return "unknown";
   if (statuses.includes("in-progress")) return "in-progress";
+  if (statuses.includes("paused")) return "paused";
   if (statuses.includes("error")) return "error";
   if (statuses.includes("invalid")) return "invalid";
   if (statuses.includes("stale")) return "stale";
@@ -344,6 +423,7 @@ export function aggregatePaneStatus(items) {
 export function paneProgressBucketForItem(item) {
   const status = String(item?.status || item?.effectiveStatus || "unknown").toLowerCase();
   if (PROGRESS_SUCCESS_STATUSES.has(status)) return "success";
+  if (status === "disproved") return "disproved";
   if (PROGRESS_STUB_STATUSES.has(status)) return "sorryStubbed";
   if (PROGRESS_FAILED_STATUSES.has(status)) return "failed";
   if (status === "stale") return "outOfDate";
@@ -354,6 +434,7 @@ export function summarizePaneProgress(items) {
   const summary = {
     total: 0,
     success: 0,
+    disproved: 0,
     sorryStubbed: 0,
     failed: 0,
     outOfDate: 0,
@@ -393,7 +474,8 @@ export function formatPaneProgressLabel(path, summary) {
   const parts = [
     `${file}: ${total} Lea item${total === 1 ? "" : "s"}`
   ];
-  appendProgressLabelPart(parts, summary?.success, "successful");
+  appendProgressLabelPart(parts, summary?.success, "verified");
+  appendProgressLabelPart(parts, summary?.disproved, "disproved");
   appendProgressLabelPart(parts, summary?.sorryStubbed, "sorry-stubbed");
   appendProgressLabelPart(parts, summary?.failed, "failed");
   appendProgressLabelPart(parts, summary?.outOfDate, "out of date");
@@ -448,7 +530,7 @@ export function hasInProgressItems(items) {
 // work stays out of a batch even though its per-item Re-formalize action remains
 // available.
 const BATCH_FORMALIZABLE_PANE_STATUSES = new Set([
-  "missing-stub", "stub-generated", "stale", "invalid", "unknown", "error"
+  "missing-stub", "stub-generated", "invalid", "unknown", "error", "paused", "needs-review"
 ]);
 
 // Whether the pane should offer a Formalize / Re-formalize action for an item.
@@ -457,6 +539,21 @@ const BATCH_FORMALIZABLE_PANE_STATUSES = new Set([
 export function canFormalizePaneItem(item) {
   if (!item || !item.formalizable || item.inProgress) return false;
   return item.status !== "in-progress";
+}
+
+// A source-obstruction pause may be continued under an explicit, one-run
+// best-effort policy when there is no associated author proof to preserve.
+// Keep this narrow: an ambiguous proof association means there *is* source
+// proof evidence and Lea must not silently choose between competing methods.
+export function canContinueBestEffort(item) {
+  if (!canFormalizePaneItem(item) || item?.status !== "paused") return false;
+  const stopReason = item?.leanCheck?.stopReason
+    || item?.leaStatus?.activity?.stop_reason
+    || item?.stopReason;
+  if (stopReason !== "source_obstruction") return false;
+  const bundle = item?.sourceBundle;
+  if (!bundle || String(bundle.proof || "").trim()) return false;
+  return ["missing", "not_applicable"].includes(bundle.proofAssociation?.status);
 }
 
 // Whether the pane should offer a sorry-stub action for an item. Mirrors the
@@ -480,8 +577,10 @@ export function canStubPaneItem(item) {
 // can't re-key; a formalize CAN and should just use the label.
 export function paneItemToFormalizeTarget(item) {
   return {
-    targetKind: item?.leanKind === "def" ? "definition" : "theorem",
+    targetKind: item?.targetKind || (item?.leanKind === "def" ? "definition" : "theorem"),
     targetLabel: item?.label || item?.leanDeclarationName || "",
+    labelSource: item?.labelSource || "explicit",
+    latexLabel: item?.latexLabel || "",
     targetText: item?.naturalLanguageLatex || "",
     targetUses: Array.isArray(item?.targetUses) ? item.targetUses : [],
     targetContext: item?.targetContext || "",
@@ -506,7 +605,10 @@ export function paneItemToGithubImportTarget(item) {
     declarationName,
     displayTitle: declarationName || targetLabel,
     statement: item?.naturalLanguageLatex || "",
-    sourceHash: item?.sourceHash || ""
+    sourceHash: item?.sourceHash || "",
+    // The adapter persists this frozen bundle with the import so its background
+    // worker can start a semantic Lea Check after the Lean file check settles.
+    sourceBundle: item?.sourceBundle || null
   };
 }
 
@@ -556,23 +658,20 @@ export function githubImportMatchedTargetKeys(preview, targets) {
   return githubImportMatchedTargets(preview, targets).map((target) => target.key);
 }
 
-// Pane statuses that correspond to a real Lea run or saved proof artifact.
-// Same rule the in-document popover applies before offering "View in Lea UI"
-// (companion statuses formalized / defined / disproved / in_progress /
-// sorry_stub), translated to the pane vocabulary and extended with the
-// pane-only artifact states (stale / invalid), which also imply
-// a recorded run. missing-stub / unknown / error stay excluded so stale
-// session metadata can't make unformalized items appear viewable.
+// These statuses imply a recorded run or artifact. A saved session also stays
+// reachable when source freshness, review, or an unavailable check changes the
+// item's status: navigation to its history does not certify the formalization.
 const LEA_UI_VIEWABLE_PANE_STATUSES = new Set([
   "valid", "defined", "disproved", "in-progress",
-  "stub-generated", "stale", "invalid"
+  "stub-generated", "stale", "invalid", "paused"
 ]);
 
 // Whether the pane should offer a "View in Lea UI" action for an item. Needs a
 // stable target identity (like chat) to resolve the associated Lea session.
 export function canViewPaneItemInLeaUi(item) {
   if (!item || !(item.leanDeclarationName || item.label)) return false;
-  return LEA_UI_VIEWABLE_PANE_STATUSES.has(item.status);
+  return Boolean(item.leaSessionId || item.leaSessionUrl || item.leanArtifactPath)
+    || LEA_UI_VIEWABLE_PANE_STATUSES.has(item.status);
 }
 
 // --- Lean-pane chat mirror -------------------------------------------------
@@ -601,7 +700,8 @@ export function paneItemToChatTarget(item, overleafProjectId) {
     targetContext: item?.targetContext || "",
     leanDeclarationName: item?.leanDeclarationName || "",
     recordedProofPath: item?.leanArtifactPath || "",
-    status: item?.status || ""
+    status: item?.status || "",
+    ...(item?.sourceBundle ? { sourceBundle: item.sourceBundle } : {})
   };
 }
 
@@ -652,8 +752,8 @@ export function canEditPaneItem(item) {
 
 // --- Item action hierarchy ---------------------------------------------------
 
-// The full action set for an expanded pane item, arranged by visual weight so
-// the card stays one row instead of a wall of same-looking buttons:
+// The full action set for a pane item. The renderer keeps Formalize and Go to
+// source in the summary, with the remaining actions in expanded details:
 //   primary  -- at most ONE status-derived accented text button (repair wins
 //               over formalize: breakage attribution means the guided path).
 //   rail     -- always-relevant navigation, rendered as icon buttons.
@@ -661,26 +761,48 @@ export function canEditPaneItem(item) {
 //               formalizable-but-broken item keeps Re-formalize here so no
 //               capability is lost when Repair takes the primary slot.
 // Copy actions are absent by design: they belong on the code blocks they copy.
-export function paneItemActions(item, { editing = false } = {}) {
-  const canFormalize = canFormalizePaneItem(item);
-  const formalizeAction = {
+export function paneItemFormalizeAction(item) {
+  const wait = dependencyWait(item);
+  if (wait) return dependencyWaitAction(wait);
+  const paused = item?.status === "paused" || item?.leanCheck?.status === "paused";
+  return {
     id: "formalize",
-    label: item?.status === "missing-stub" ? "Formalize" : "Re-formalize"
+    label: paused ? canContinueBestEffort(item) ? "Resume faithfully" : "Resume"
+      : item?.status === "missing-stub" ? "Formalize" : "Re-formalize"
   };
+}
+
+export function paneItemActions(item, { editing = false } = {}) {
+  const wait = dependencyWait(item);
+  const canFormalize = canFormalizePaneItem(item);
+  const canBestEffort = canContinueBestEffort(item);
+  const formalizeAction = paneItemFormalizeAction(item);
+  const bestEffortAction = { id: "best-effort", label: "Continue best effort" };
 
   let primary = null;
-  if (!editing && canRepairPaneItem(item)) {
+  if (!editing && wait) {
+    primary = dependencyWaitAction(wait);
+  } else if (!editing && canRepairPaneItem(item)) {
     primary = { id: "repair", label: "Repair with Lea" };
+  } else if (!editing && canBestEffort) {
+    primary = bestEffortAction;
   } else if (!editing && canFormalize) {
     primary = formalizeAction;
   }
 
   const rail = [{ id: "go-to-source", label: "Go to source" }];
   if (canChatPaneItem(item)) rail.push({ id: "chat", label: "Chat" });
-  if (canViewPaneItemInLeaUi(item)) rail.push({ id: "view-in-lea", label: "Open in Lea UI" });
+  if (canViewPaneItemInLeaUi(item)) rail.push({ id: "view-in-lea", label: "Open in LeaChat" });
 
   const overflow = [];
-  if (primary?.id === "repair" && canFormalize) overflow.push(formalizeAction);
+  if (wait && !editing) {
+    if (primary?.id !== "dependency-view") overflow.push({ id: "dependency-view", label: "View supporting result" });
+    if (primary?.id !== "dependency-refresh") overflow.push({ id: "dependency-refresh", label: "Refresh status" });
+    if (wait.autoResume) overflow.push({ id: "dependency-stop", label: "Stop waiting" });
+  }
+  if (primary?.id === "repair" && canBestEffort) overflow.push(bestEffortAction);
+  if (["repair", "best-effort"].includes(primary?.id) && canFormalize) overflow.push(formalizeAction);
+  if ((item?.status === "paused" || item?.leanCheck?.status === "paused") && canFormalize) overflow.push({ id: "reformalize", label: "Re-formalize" });
   if (canStubPaneItem(item)) overflow.push({ id: "stub", label: "Stub" });
   if (!editing && canEditPaneItem(item)) overflow.push({ id: "edit", label: "Edit" });
 
@@ -693,7 +815,14 @@ export function paneItemToEditTarget(item, overleafProjectId) {
   return {
     overleafProjectId: String(overleafProjectId || ""),
     targetKind: item?.leanKind === "def" ? "definition" : "theorem",
-    targetLabel: item?.leanDeclarationName || item?.label || ""
+    targetLabel: item?.leanDeclarationName || item?.label || "",
+    ...(item?.sourceHash ? { sourceHash: item.sourceHash } : {}),
+    ...(item?.sourceBundle ? {
+      sourceBundle: item.sourceBundle,
+      sourceFile: item.sourceFile || "",
+      sourceStartLine: item.sourceStartLine,
+      sourceEndLine: item.sourceEndLine
+    } : {})
   };
 }
 
@@ -880,15 +1009,29 @@ export function formatRepairOutcome(entry, operation = "repair") {
     case "stubbed": return `${label}: stub created.`;
     case "formalized": return `${label}: formalized and verified.`;
     case "disproved": return `${label}: counterexample found.`;
-    case "needs_review": return `${label}: repaired, but the statement changed -- review required.`;
+    case "incomplete": return entry.reason === "dependency_wait"
+      ? `${label}: waiting for a supporting result.${entry.detail ? ` ${entry.detail}` : ""} Inspect Shared mathematics for the result and its next action.`
+      : `${label}: incomplete${entry.reason ? ` — ${String(entry.reason).replaceAll("_", " ")}` : "."}${entry.detail ? ` · ${entry.detail}` : ""}${entry.recoverable ? " · Resume available." : ""}`;
+    case "needs_review": return operation === "formalize"
+      ? `${label}: Needs review${entry.reason ? ` — ${entry.reason}` : "."}`
+      : `${label}: repaired, but the statement changed -- review required.`;
     case "canceled": return `${label}: stopped.`;
     case "failed": {
       const verb = operation === "stub" ? "stub failed" : operation === "formalize" ? "formalization failed" : "repair failed";
       return `${label}: ${verb}${entry.reason ? ` -- ${entry.reason}` : "."}`;
     }
     case "skipped":
+      if (String(entry.reason || "").startsWith("depends_on_incomplete:")) {
+        return `${label}: skipped — dependency ${String(entry.reason).slice("depends_on_incomplete:".length)} is incomplete.`;
+      }
       if (String(entry.reason || "").startsWith("depends_on_failed:")) {
         return `${label}: skipped -- depends on failed ${operation === "formalize" ? "formalization" : "repair"} of ${String(entry.reason).slice("depends_on_failed:".length)}.`;
+      }
+      if (String(entry.reason || "").startsWith("depends_on_review:")) {
+        return `${label}: skipped — dependency ${String(entry.reason).slice("depends_on_review:".length)} needs review.`;
+      }
+      if (entry.reason === "existing_proof") {
+        return `${label}: existing Lean proof kept -- re-formalize this item separately if needed.`;
       }
       return `${label}: skipped${entry.reason === "already_fixed" ? " -- already compiles." : entry.reason ? ` (${entry.reason})` : "."}`;
     default: return `${label}: ${entry.state || "unknown"}.`;

@@ -41,6 +41,24 @@ for arg in "$@"; do
   esac
 done
 
+# Check before --fresh as well as before spawning services. A duplicate launch
+# must not clear the data of a stack that is still running.
+node scripts/dev-stack-preflight.mjs stack
+
+LOCAL_CONFIG="apps/lea-standalone/config/lea.local.toml"
+LOCAL_CONFIG_EXAMPLE="apps/lea-standalone/config/lea.local.example.toml"
+
+if [[ ! -e "$LOCAL_CONFIG" && ! -L "$LOCAL_CONFIG" ]]; then
+  if [[ ! -f "$LOCAL_CONFIG_EXAMPLE" ]]; then
+    echo "[start] Cannot create $LOCAL_CONFIG: example config is missing at $LOCAL_CONFIG_EXAMPLE." >&2
+    exit 1
+  fi
+
+  # The Settings UI may later store provider keys here, so create it owner-only.
+  (umask 077; cp "$LOCAL_CONFIG_EXAMPLE" "$LOCAL_CONFIG")
+  echo "[start] Created $LOCAL_CONFIG from the example config."
+fi
+
 # Reset must happen BEFORE the adapter starts — it deletes the SQLite file, and
 # the adapter recreates it (with the current schema) on startup.
 if [[ "$FRESH" -eq 1 ]]; then
@@ -50,38 +68,5 @@ else
   echo "[start] Keeping previous session data (pass --fresh to start from a clean slate)."
 fi
 
-pids=()
-cleaned_up=0
-cleanup() {
-  [[ "$cleaned_up" -eq 1 ]] && return
-  cleaned_up=1
-  echo
-  echo "[start] Shutting down..."
-  for pid in "${pids[@]}"; do
-    kill "$pid" 2>/dev/null || true
-  done
-  wait 2>/dev/null || true
-}
-trap cleanup INT TERM
-
-echo "[start] Starting UI (adapter :8001 + frontend :5173)..."
-npm run dev:ui &
-pids+=($!)
-
-echo "[start] Starting Overleaf companion (:31245)..."
-npm run dev:overleaf &
-pids+=($!)
-
-echo "[start] All processes launched. Press Ctrl+C to stop."
-
-# If any child exits, tear the rest down too. (Portable poll — avoids `wait -n`,
-# which needs bash 4+, while macOS still ships bash 3.2.)
-while :; do
-  for pid in "${pids[@]}"; do
-    if ! kill -0 "$pid" 2>/dev/null; then
-      cleanup
-      exit 0
-    fi
-  done
-  sleep 1
-done
+echo "[start] Starting adapter, UI, and Overleaf companion under one supervisor."
+exec node scripts/supervisor.mjs stack

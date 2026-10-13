@@ -1,0 +1,15 @@
+{
+  "real_agent_revision": {
+    "real_compiler_check_hashes": [
+      "c39af18d2283f6ca7d67b29dc1e5f1695c922195ca3040bae3505a5fd96ebe75",
+      "5b498dd738a30d7b0a0fc461a20db09cd199b45a60e7d8b2335725900c4daa6b"
+    ],
+    "stored_hash": "5b498dd738a30d7b0a0fc461a20db09cd199b45a60e7d8b2335725900c4daa6b",
+    "stored_code_is_bad": true,
+    "stored_check_status": "error",
+    "run_status": "max_turns",
+    "formalization_status": "failing",
+    "actual_final_check": "error",
+    "actual_final_detail": "Error: Lean exited with code 1.\n/tmp/lea-audit-agent-aidua3jn/workspace/proofs/816ae84c-d28f-4637-928a-dad322de5e21/Target.lean:1:35: error: Tactic `assumption` failed\n\n\u22a2 False"
+  }
+}

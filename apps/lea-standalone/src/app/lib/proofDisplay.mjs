@@ -20,7 +20,8 @@ export function codeStepContainsSorry(step) {
   return hasSorryLikeCode(step.code) || hasSorryLikeCheckDetail(step.check_detail);
 }
 
-export function deriveCodeStepProofStatus(step) {
+export function deriveCodeStepProofStatus(step, { historical = false } = {}) {
+  if (!historical && step?.check_current !== true) return 'unchecked';
   if (!step || !step.check_status || step.check_status === 'unchecked') return 'unchecked';
   if (step.check_status === 'error') return 'failed';
   if (step.check_status !== 'ok') return 'unchecked';
@@ -41,7 +42,8 @@ export function latestCodeStep(steps = []) {
  */
 export function deriveRunCompletionStatus(runStatus, steps = [], resultKind = null) {
   if (runStatus === 'disproved') return runStatus;
-  if (runStatus !== 'proved' && runStatus !== 'success' && runStatus !== 'needs_review') return runStatus || 'pending';
+  if (runStatus === 'needs_review' || resultKind === 'needs_review') return 'needs_review';
+  if (runStatus !== 'proved' && runStatus !== 'success') return runStatus || 'pending';
   const latest = latestCodeStep(steps);
   const proofStatus = deriveCodeStepProofStatus(latest);
   if (proofStatus === 'defined' || ((resultKind === 'defined' || latest?.artifact_kind === 'definition') && proofStatus === 'proved')) return 'defined';

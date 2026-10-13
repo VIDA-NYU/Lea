@@ -149,7 +149,7 @@ def test_the_dev_proxy_and_the_bundled_ui_still_work(client):
         "/api/health",
         headers={"Host": "localhost:8001", "Origin": "http://localhost:8001"},
     )
-    assert dev.status_code == 200 and dev.json() == {"ok": True}
+    assert dev.status_code == 200 and dev.json()["ok"] is True
     assert bundled.status_code == 200
 
 

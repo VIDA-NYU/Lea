@@ -199,6 +199,11 @@
 .final .meta { font-size: 12px; color: var(--muted); display: flex; gap: 14px; margin-top: 8px; flex-wrap: wrap; }
 
 .composer { padding: 12px 24px 18px; }
+.composer-source { max-width: 720px; margin: 0 auto 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); }
+.composer-source span { min-width: 0; overflow-wrap: anywhere; }
+.composer-source button { font: inherit; color: var(--ink); border: 0; background: transparent; padding: 3px 0; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.composer-source button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.composer-source button:disabled { cursor: default; opacity: .55; }
 .composer .form-scope { max-width: 720px; margin: 0 auto 8px; display: grid; gap: 7px; }
 .composer .form-rail { display: flex; gap: 6px; overflow-x: auto; padding: 1px 0 2px; }
 .composer .form-rail button { flex: none; display: inline-flex; align-items: center; gap: 6px; max-width: 230px;

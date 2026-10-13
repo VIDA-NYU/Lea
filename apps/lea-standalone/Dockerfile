@@ -21,7 +21,9 @@
 # -----------------------------------------------------------------------------
 # Stage 1: build the React frontend into static assets (dist/)
 # -----------------------------------------------------------------------------
-FROM node:22-bookworm-slim AS web
+# Browser assets are architecture-independent. Keep their native build tools on
+# the builder's platform; emulated Go/esbuild can crash on cross-platform builds.
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web
 WORKDIR /web
 
 # npm workspaces are locked at the monorepo root.  The older app-local lockfile
@@ -38,8 +40,14 @@ WORKDIR /web/apps/lea-standalone
 # only the files Vite actually reads (keeps this layer small + cacheable).
 COPY apps/lea-standalone/index.html apps/lea-standalone/vite.config.ts apps/lea-standalone/postcss.config.mjs ./
 COPY apps/lea-standalone/src ./src
+COPY apps/lea-standalone/scripts/lean-assets.mjs ./scripts/lean-assets.mjs
 COPY packages/lea-blueprint /web/packages/lea-blueprint
 RUN npm run build   # -> /web/apps/lea-standalone/dist
+
+# -----------------------------------------------------------------------------
+# Target-platform Node, kept separate from the native frontend build stage.
+# The companion's executable must match the runtime architecture.
+FROM node:22-bookworm-slim AS companion-node
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime — Python 3.13 + uv (base), plus Lean toolchain and Mathlib
@@ -85,7 +93,8 @@ COPY apps/lea-standalone/prover ./prover
 # runtime. `safe_verify`, by contrast, has its own exe target and builds here.
 WORKDIR /app/prover
 RUN cd workspace \
- && lake exe cache get \
+ && (lake exe cache get || lake exe cache get \
+     || echo "[build] Mathlib cache download incomplete; compiling missing targets.") \
  && lake build Mathlib \
  && lake build --no-build Mathlib \
  && echo "[build] complete Mathlib cache verified" \
@@ -104,12 +113,12 @@ RUN cd workspace \
 # The prover is driven in-process (D1); there is no separate Lea API venv.
 WORKDIR /app/adapter
 COPY apps/lea-standalone/adapter ./
-RUN uv sync   # creates /app/adapter/.venv (incl. the in-process prover)
+RUN uv sync --frozen --no-dev
 
 # --- Overleaf companion (:31245) -------------------------------------------
 # The companion has ZERO third-party npm deps (pure Node built-ins + local
-# .mjs), so it needs only the `node` binary — lifted from the web build stage,
-# same pinned Node 22, same Debian bookworm base as this runtime. Its source is
+# .mjs), so it needs only the target-platform `node` binary — lifted from the
+# companion-node stage, same Node 22 and Debian bookworm base as this runtime. Its source is
 # laid out at the monorepo-relative paths its imports expect (../../../scripts,
 # ../../../packages, ../shared); the prover it targets stays at /app/prover via
 # LEA_ROOT below, so /app/prover/../adapter (what the companion's doctor derives)
@@ -119,10 +128,11 @@ RUN uv sync   # creates /app/adapter/.venv (incl. the in-process prover)
 # shared/{theoremParser,leanPaneManifest}.mjs import ../extension/targetParserCore.mjs
 # at runtime, so the companion crashes without it. Copying the whole (tiny) dir
 # is robust against shared/ picking up another extension module later.
-COPY --from=web /usr/local/bin/node /usr/local/bin/node
+COPY --from=companion-node /usr/local/bin/node /usr/local/bin/node
 COPY apps/overleaf-extension/companion  /app/apps/overleaf-extension/companion
 COPY apps/overleaf-extension/shared     /app/apps/overleaf-extension/shared
 COPY apps/overleaf-extension/extension  /app/apps/overleaf-extension/extension
+COPY apps/lea-standalone/src/app/lib/leanCheckRuntime.mjs /app/apps/lea-standalone/src/app/lib/leanCheckRuntime.mjs
 COPY scripts                            /app/scripts
 COPY packages/lea-model-catalog         /app/packages/lea-model-catalog
 # Companion runtime state dir (job logs + settings.json); a compose volume
@@ -155,6 +165,6 @@ EXPOSE 8001 31245
 # Healthy only when BOTH backends answer — the launcher's "ready" then means the
 # UI and the Overleaf companion both work.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:8001/api/health && curl -fsS http://127.0.0.1:31245/health || exit 1
+  CMD curl -fsS http://127.0.0.1:8001/api/ready && curl -fsS http://127.0.0.1:31245/health || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]

@@ -86,12 +86,18 @@ CATALOG: dict[str, tuple[str, str | None]] = {
         "Pick a different model in Settings — the configured model id was rejected.",
     ),
     "run.crashed": ("The run stopped on an unexpected error", None),
+    "run.restart_requested": ("Adapter restart requested", "Active work will finish before the adapter restarts."),
+    "run.recovering": ("Recovering saved progress", None),
+    "run.recovery_review": ("Interrupted run needs review", "Inspect the saved progress and uncertain action before choosing Resume."),
+    "run.recovery_stopped": ("Interrupted run reached its original limit", None),
     "run.project_unavailable": (
         "This run is not attached to its project",
         "The run continues without project context, instructions, or skills. Re-check "
         "the project in the Projects hub.",
     ),
     # --- tools / steps (Phase C) ---
+    "status.publish_failed": ("Lea Status could not be saved", "The last accepted assessment is retained. Restore local storage before continuing corrections."),
+    "status.reporting_incomplete": ("Lea ended without a final status update", "Inspect the last assessment and its revision before resuming."),
     "tool.raised": ("A tool failed", None),
     "tool.unknown": (
         "The model called a tool that is not registered",
@@ -111,10 +117,14 @@ CATALOG: dict[str, tuple[str, str | None]] = {
         "is pointed at the right project, or remove it under Library → MCP servers.",
     ),
     "lean.lsp_cold_fallback": (
-        "Lean checks are running cold",
-        "Checks are ~440x slower until the language-server daemon comes back. "
-        "Restarting the adapter rebuilds it.",
+        "Checking with full compilation",
+        "The Lean server could not recover for this check. A full compile is running "
+        "within the check's remaining time limit; later checks retry the server automatically.",
     ),
+    "lean.lsp_recovering": ("Recovering Lean server", "The check will retry through a fresh Lean server."),
+    "lean.lsp_recovered": ("Lean server recovered", None),
+    "lean.check_execution": ("Lean check finished", None),
+    "proof.check_stale": ("Proof inputs changed", "Check the current revision again before treating it as certified."),
     "code.content_lost": (
         "A written file could not be read back",
         "The step is recorded, but its contents are not stored — the file may have "
@@ -470,6 +480,10 @@ def resolve(
     invisible precisely because nobody had written its copy yet, which is the bug
     this whole phase is about.
     """
+    if code.startswith("lean.") and context:
+        failure = context.get("failure") or (context.get("execution") or {}).get("failure")
+        if failure and detail is None:
+            detail = json.dumps(failure, ensure_ascii=False, indent=2)
     # G4: fill in the code's buttons when the caller didn't supply any.
     if actions is None:
         actions = CODE_ACTIONS.get(code)

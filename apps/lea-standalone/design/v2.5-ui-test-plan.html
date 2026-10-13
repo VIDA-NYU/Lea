@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>LeaUI v2.5 — UI test plan</title>
+<style>
+  :root {
+    --bg: #f5f4ef; --panel: #fffefb; --ink: #2a2724; --muted: #8a847c;
+    --line: #e6e2da; --accent: #c96442; --green: #4f8a5b; --red: #c0564a;
+    --amber: #b8842a; --blue: #4a6fa5; --violet: #7a5a9a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    padding: 32px 0 80px; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .intro { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 13px 16px; margin: 18px 0 22px; font-size: 13px; color: #4a463f; }
+  .intro b { color: var(--ink); }
+  .danger { background: #fbeeec; border: 1px solid #ecc9c2; border-left: 3px solid var(--red);
+    border-radius: 10px; padding: 12px 16px; margin: 14px 0 22px; font-size: 12.5px; color: #6a3a32; }
+  .danger h3 { margin: 0 0 7px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--red); }
+  .danger b { color: var(--ink); }
+  .test { background: var(--panel); border: 1px solid var(--line); border-radius: 11px;
+    padding: 15px 17px; margin-bottom: 14px; }
+  .test.is-key { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(201,100,66,.14); }
+  .test > h2 { font-size: 15px; margin: 0 0 3px; display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .tid { font: 600 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 1px 7px; }
+  .tid.key { color: var(--accent); border-color: #e7cabd; background: #fbf1ec; }
+  .mins { font-size: 11px; font-weight: 500; color: var(--muted); }
+  .why { font-size: 12.5px; color: #6a655d; margin: 6px 0 11px; line-height: 1.6; }
+  .why b { color: var(--ink); }
+  ol.steps { margin: 0 0 11px; padding-left: 20px; font-size: 13px; line-height: 1.75; }
+  ol.steps li { margin-bottom: 2px; }
+  .expect { border-left: 3px solid var(--green); background: #eef5ef; border-radius: 0 8px 8px 0;
+    padding: 9px 13px; font-size: 12.5px; color: #3d5a44; margin-bottom: 8px; line-height: 1.6; }
+  .expect b, .fail b { color: var(--ink); }
+  .fail { border-left: 3px solid var(--amber); background: #fbf4e6; border-radius: 0 8px 8px 0;
+    padding: 9px 13px; font-size: 12.5px; color: #5a4a2a; line-height: 1.6; }
+  code { background: #f0ede6; border-radius: 4px; padding: 1px 5px; font: 12px ui-monospace, monospace; }
+  pre { background: #f0ede6; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+    font: 11.5px/1.5 ui-monospace, monospace; overflow-x: auto; margin: 8px 0; color: #4a463f; }
+  .grouphead { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+    font-weight: 600; margin: 28px 0 10px; }
+  table.st { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 4px 0 0; }
+  table.st th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); font-weight: 600; padding: 4px 8px 6px 0; border-bottom: 1px solid var(--line); }
+  table.st td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; color: #4a463f; }
+  table.st tr:last-child td { border-bottom: none; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 40px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>v2.5 — UI test plan</h1>
+  <div class="sub">10 tests · the build is at 45/45; this is what a machine could not verify ·
+    companion to <code>v2.5-capability-packs.html</code></div>
+
+  <div class="intro">
+    Everything here is <b>already unit-tested</b> — these are the things tests cannot decide: whether a
+    rendering appears, whether wording is answerable by a mathematician, and above all <b>whether the agent
+    actually uses what you configured</b>. That last one is not a detail: your first MCP run proved the
+    plumbing worked perfectly and the model still ignored it, which no test could have told us.
+    <br><br><b>Do the housekeeping first</b> — two of the tests below are meaningless without it, and one
+    stale row is currently firing an error on every run in one of your projects.
+    App: <code>http://localhost:5173</code>.
+  </div>
+
+  <div class="danger">
+    <h3>Housekeeping — 2 minutes, do this first</h3>
+    <b>1 · Delete the <code>broken</code> MCP server.</b> The <code>echo</code> server from the diagnostic test is
+    still installed <i>and scoped to a project</i>, so it fails at the start of every run there. Library → MCP
+    servers → <code>broken</code> → Delete.
+    <br><br><b>2 · Scope the <code>lean4</code> skill.</b> It is currently <code>global=false</code> with
+    <b>zero</b> projects, so it resolves nowhere and no run has ever loaded it — its 41 references and its
+    "use <code>lean_goal</code> often" instruction have never reached the model. Library → Skills →
+    <code>lean4</code> → Scope → tick <b>All projects</b>.
+    <br><br><b>3 · Optional but recommended: use a strong model.</b> Several tests below judge whether the agent
+    <i>chooses</i> well. A weak model tests the model, not the wiring.
+  </div>
+
+  <div class="grouphead">The two that actually matter</div>
+
+  <div class="test is-key">
+    <h2><span class="tid key">T1</span> Does the agent use the MCP tools once the skill is scoped?
+      <span class="mins">~5 min</span></h2>
+    <div class="why">
+      <b>The one open question in the whole phase.</b> Your first run had MCP resolved, the server warm, 23 tools
+      registered — and the model used <code>search_mathlib</code> and <code>suggest_imports</code> instead,
+      never inspecting a goal. The skill was scoped to nothing, so its own instruction
+      (<i>"<code>lean_goal</code> — MOST IMPORTANT tool, use often!"</i>) never reached the prompt. This re-runs
+      the same proof with that instruction present. It decides whether a skill+server pack works, or whether the
+      recommended-tool-subset is needed instead.
+    </div>
+    <ol class="steps">
+      <li>Confirm housekeeping #2 is done (the skill is on <b>All projects</b>).</li>
+      <li>Open a session <b>inside the PDE project</b> — it is the one with <code>lean-lsp</code> scoped.</li>
+      <li>Paste:</li>
+    </ol>
+    <pre>Prove that the derivative of fun x : ℝ =&gt; x^2 is fun x =&gt; 2*x.</pre>
+    <div class="expect"><b>Hoped for:</b> tool steps named <code>lean_goal</code>, <code>lean_hover_info</code> or
+      <code>lean_multi_attempt</code> — the agent inspecting real proof state rather than guessing lemma names.
+      Also watch for a <code>read_file</code> on something under <code>references/</code>: that is the
+      progressive-disclosure half (T2) proving itself in the same run.</div>
+    <div class="fail"><b>If it again only uses <code>search_mathlib</code>:</b> that is a real finding, not a
+      failure of the test — it means prompt guidance is not enough and the answer is the <b>recommended tool
+      subset</b> (already built, catalog entry <code>lean-lsp</code>). Tell me and I will switch the resolution
+      to use it. <b>Also worth noting:</b> if it uses <i>both</i> <code>search_mathlib</code> and
+      <code>lean_leansearch</code> for the same lookup, that is the overlap problem costing you budget twice.</div>
+  </div>
+
+  <div class="test is-key">
+    <h2><span class="tid key">T2</span> Can the agent open a skill reference? <span class="mins">~2 min</span></h2>
+    <div class="why">
+      A multi-file skill is <b>advertised, not injected</b>: the 41 references are listed by path and the agent is
+      told to open what it needs. If <code>read_file</code> refuses them, the read sandbox root (H7) is wrong and
+      progressive disclosure silently does nothing — the model would be told about material it cannot reach.
+      <b>Verified in isolation, never in a live run.</b>
+    </div>
+    <ol class="steps">
+      <li>In any session (skill scoped), ask:</li>
+    </ol>
+    <pre>Read your lean4 skill's reference on compilation errors and summarise
+the three most common causes.</pre>
+    <div class="expect">A <code>read_file</code> step on a path ending
+      <code>references/compilation-errors.md</code>, followed by a summary that clearly comes from the file
+      (it is 24 KB of specific Lean error guidance, not something the model would invent).</div>
+    <div class="fail"><b>"outside this run's workspace"</b> means the sandbox root is wrong — send me the exact
+      message. <b>Note:</b> the model has previously <i>claimed</i> it could not read files without trying; I
+      verified it can. If it says that here, ask it to try anyway.</div>
+  </div>
+
+  <div class="grouphead">Built and unit-tested, never clicked</div>
+
+  <div class="test">
+    <h2><span class="tid">T3</span> Project → Skills / MCP tab <span class="mins">~2 min</span></h2>
+    <div class="why">The project tier of the two-tier model. Ticking here applies to <b>every session in the
+      project</b>, and the global row is deliberately shown on-and-locked — un-ticking it would silently mean
+      "stop being global", a Library-level decision.</div>
+    <ol class="steps">
+      <li>Open the <b>Real Analysis</b> project → <b>Skills / MCP</b> tab.</li>
+      <li>Tick <code>lean-lsp</code> under MCP servers.</li>
+      <li><b>Reload the page</b> and return to the tab.</li>
+      <li>Untick it again.</li>
+    </ol>
+    <div class="expect">The tick survives the reload. The <code>lean4</code> skill row shows as on with an
+      <b>"All projects"</b> badge and its checkbox disabled.</div>
+    <div class="fail">If the locked global row reads as <i>broken</i> rather than <i>inherited</i>, that is a copy
+      problem worth telling me about — it is the one piece of this UI I expect to be misread.</div>
+  </div>
+
+  <div class="test">
+    <h2><span class="tid">T4</span> Add a sub-agent through the guided form <span class="mins">~4 min</span></h2>
+    <div class="why">This is where the four authoring questions do real work: <b>"When should Lea use this?"
+      becomes the line the coordinator reads when choosing whom to delegate to</b>. Writing it well and making
+      delegation work are the same act.</div>
+    <ol class="steps">
+      <li>Library → Sub-agents → <b>Add a sub-agent</b>.</li>
+      <li>Name: <code>Counterexample hunter</code>. Then answer the four questions, e.g.
+        <br>· <i>What is it?</i> — A helper that looks for a counterexample before committing to a proof.
+        <br>· <i>When should Lea use this?</i> — When a statement looks false, or a proof attempt has failed the
+        same way twice.
+        <br>· <i>When should Lea NOT?</i> — When the statement is routine or already close to compiling.
+        <br>· <i>How?</i> — Try small cases first: n = 0, n = 1, the empty set, the zero function.</li>
+      <li>Add it, then open one of the four imported roles (e.g. <code>proof-golfer</code>) and check it offers
+        <b>Delete</b>; open a built-in (<code>premise-search</code>) and check it offers <b>Reset to defaults</b>
+        instead.</li>
+    </ol>
+    <div class="expect">The new role appears in the list tagged <b>yours</b>. Built-ins can be retuned but not
+      deleted; imported and hand-written roles can be deleted.</div>
+    <div class="fail">If the four questions read as vague or you would not know what to type, say so — that copy
+      was written blind and is the single least-validated thing in v2.5.</div>
+  </div>
+
+  <div class="test">
+    <h2><span class="tid">T5</span> One-click catalog install <span class="mins">~3 min</span></h2>
+    <div class="why">The curated entry ships <b>pinned</b> (<code>lean-lsp-mcp==0.29.0</code>) with the Lean path
+      filled in from your machine — the two things a mathematician cannot supply. Your current
+      <code>lean-lsp</code> row was added by hand and is <b>unpinned</b>, so it executes whatever PyPI serves
+      that day.</div>
+    <ol class="steps">
+      <li>Library → MCP servers. Note your existing <code>lean-lsp</code> row's Arguments say
+        <code>lean-lsp-mcp</code> with no version.</li>
+      <li>Delete that row. A <b>Suggested</b> strip should appear at the top.</li>
+      <li>Click <b>Install</b> on "Lean language server".</li>
+      <li>Open the new row and check Arguments and Settings.</li>
+      <li>Re-scope it to PDE (installs are unscoped by default).</li>
+    </ol>
+    <div class="expect">Arguments read <code>lean-lsp-mcp==0.29.0</code>; Settings already contain
+      <code>LEAN_PROJECT_PATH=…/prover/workspace</code>. Press <b>Test</b> → <i>Connected — 23 tools
+      available</i>.</div>
+    <div class="fail">If the Suggested strip does not appear after deleting, the "already installed" check is
+      matching wrongly — tell me.</div>
+  </div>
+
+  <div class="test">
+    <h2><span class="tid">T6</span> Add a custom HTTP tool <span class="mins">~4 min</span></h2>
+    <div class="why">A REST endpoint as a tool, no code and no install. The example below is real, public, and
+      needs no API key — <b>I verified it returns live data</b> before writing this.</div>
+    <ol class="steps">
+      <li>Library → <b>Tools</b> → Add a tool.</li>
+      <li>Name: <code>Paper search</code>. Web address:</li>
+    </ol>
+    <pre>https://api.crossref.org/works?query.bibliographic={query}&amp;rows=3&amp;select=title,DOI</pre>
+    <ol class="steps" start="3">
+      <li>Values Lea fills in: <code>query</code></li>
+      <li>Leave the API-key box empty. Answer the four questions (e.g. <i>"Finds published papers by
+        title or topic"</i> / <i>"When the user asks whether something has been published, or for a
+        reference"</i> / <i>"Not for looking up Lean lemmas — use Mathlib search for that"</i>).</li>
+      <li>Scope it to <b>All projects</b>, then ask in any session:
+        <code>Find me papers about the Erdős discrepancy problem.</code></li>
+    </ol>
+    <div class="expect">A <code>paper-search</code> tool step, and real paper titles in the reply.</div>
+    <div class="fail"><b>Also try the guard:</b> attempt to save a tool pointing at
+      <code>https://localhost:8001/api/settings</code> — it must be <b>refused at save</b>. That is Lea's own API;
+      a tool able to reach it could read your settings.</div>
+  </div>
+
+  <div class="test">
+    <h2><span class="tid">T7</span> The missing-key warning and the clear guard <span class="mins">~3 min</span></h2>
+    <div class="why">A server whose key is unsaved starts fine and 401s on <b>first use</b> — a delayed failure
+      far from its cause. And clearing a key silently breaks whatever declared it.</div>
+    <ol class="steps">
+      <li>Library → MCP servers → edit any server → in <b>"Needs an API key?"</b> type
+        <code>WOLFRAM_API_KEY</code> → Save.</li>
+      <li>Return to the MCP servers page.</li>
+      <li>Now go to Settings → API keys, add <code>WOLFRAM_API_KEY</code> with any dummy value, save, then try to
+        <b>clear</b> it.</li>
+      <li>Undo: remove the key name from the server.</li>
+    </ol>
+    <div class="expect">Step 2: an amber banner naming <code>WOLFRAM_API_KEY</code> and which server needs it.
+      Step 3: clearing is <b>refused</b>, naming the server that still uses it.</div>
+    <div class="fail">If clearing succeeds silently, the guard is not wired to the Settings page — tell me.</div>
+  </div>
+
+  <div class="grouphead">Lower value, but never exercised</div>
+
+  <div class="test">
+    <h2><span class="tid">T8</span> Remote MCP transports <span class="mins">~2 min</span></h2>
+    <div class="why">Only <b>stdio</b> has ever run. The HTTP and SSE paths are implemented and unit-tested but
+      have never been used against anything, and I have no remote Lean MCP server to point you at — so this is a
+      form-and-error test, not a connectivity test.</div>
+    <ol class="steps">
+      <li>Library → MCP servers → Add → pick <b>Remote (HTTP)</b>.</li>
+      <li>Check the fields switch to URL + API key name (no Command/Arguments).</li>
+      <li>Enter <code>https://example.com/mcp</code> and press <b>Test</b>.</li>
+      <li>Cancel without saving.</li>
+    </ol>
+    <div class="expect">The form switches cleanly, and Test returns a readable failure — not a raw traceback and
+      not a hang.</div>
+    <div class="fail">A spinner that never resolves is the thing to watch for here.</div>
+  </div>
+
+  <div class="test">
+    <h2><span class="tid">T9</span> Skill triggers <span class="mins">~3 min</span></h2>
+    <div class="why">A skill that only matters sometimes should only be present sometimes — otherwise every
+      skill you add costs context on every proof. <b>Note:</b> triggers have no UI field yet, so this needs one
+      command. Tell me if it is worth a field.</div>
+    <ol class="steps">
+      <li>Run in a terminal:</li>
+    </ol>
+    <pre>curl -s -X POST http://127.0.0.1:8001/api/skills \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Measure theory notes","body":"Use `MeasureTheory` lemmas.",
+       "is_global":true}'</pre>
+    <ol class="steps" start="2">
+      <li>Then set its triggers directly (there is no field yet):</li>
+    </ol>
+    <pre>sqlite3 apps/lea-standalone/data/lea-interface.sqlite3 \
+  "update skills set triggers='[\"measure\",\"integral\"]' where slug='measure-theory-notes';"</pre>
+    <ol class="steps" start="3">
+      <li>Ask an unrelated question (<code>prove 1+1=2</code>), then one mentioning
+        <code>measure</code>.</li>
+      <li>Delete the test skill afterwards.</li>
+    </ol>
+    <div class="expect">The skill is absent from the first run and present in the second. Hard to see directly —
+      easiest signal is whether the agent mentions <code>MeasureTheory</code> guidance unprompted.</div>
+    <div class="fail">This is the weakest test here; skip it if short on time.</div>
+  </div>
+
+  <div class="test">
+    <h2><span class="tid">T10</span> The copy read-through <span class="mins">~5 min</span></h2>
+    <div class="why"><b>The one thing no test can decide.</b> Every label, hint and error message in v2.5 was
+      written without a mathematician reading it. If a sentence assumes you know what a prompt, a transport or an
+      environment variable is, it has failed.</div>
+    <ol class="steps">
+      <li>Walk the four Library pages and the Project → Skills / MCP tab, reading only the labels and hints.</li>
+      <li>Flag anything you would not be able to answer without asking me.</li>
+    </ol>
+    <div class="expect">Specific suspects, in the order I would bet on them being wrong:</div>
+    <table class="st">
+      <tr><th>Where</th><th>Text</th><th>Worry</th></tr>
+      <tr><td>MCP form</td><td>"Settings" (the <code>KEY=value</code> box)</td>
+        <td>Overloaded — it is not the app's Settings page</td></tr>
+      <tr><td>MCP form</td><td>"Just the program name"</td><td>Assumes you know what a program name is here</td></tr>
+      <tr><td>MCP form</td><td>"Local command / Remote (HTTP) / Remote (SSE)"</td><td>SSE is jargon</td></tr>
+      <tr><td>Authoring</td><td>"When should Lea NOT use this?"</td>
+        <td>The most useful box, and the one most likely to be left blank</td></tr>
+      <tr><td>Tools</td><td>"Values Lea fills in"</td><td>Attempt at avoiding "parameters" — may be worse</td></tr>
+      <tr><td>Sub-agents</td><td>"Reset to defaults" vs "Delete"</td><td>Is it clear why only some can be deleted?</td></tr>
+    </table>
+  </div>
+
+  <footer>
+    v2.5 · UI test plan · 10 tests · T1 and T2 are the ones that decide a design question; the rest confirm
+    things that are already unit-tested
+  </footer>
+</div>
+</body>
+</html>

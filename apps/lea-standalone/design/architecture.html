@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lea Standalone Architecture Diagram</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'JetBrains Mono', monospace; background: #f8fafc; min-height: 100vh; padding: 2rem; color: #0f172a; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #0891b2; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .diagram-container { background: #ffffff; border-radius: 1rem; border: 1px solid #e2e8f0; padding: 1.5rem; overflow-x: auto; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06); }
+    svg { width: 100%; min-width: 900px; display: block; }
+    .footer { text-align: center; margin-top: 1.5rem; color: #64748b; font-size: 0.75rem; }
+    .toolbar { display: flex; gap: 0.5rem; margin-left: auto; flex-shrink: 0; align-items: center; }
+    .toolbar-toggle { background: transparent; border: none; color: #64748b; cursor: pointer; font-size: 1.25rem; line-height: 1; padding: 0.25rem 0.5rem; border-radius: 0.375rem; transition: color 0.2s, background 0.2s; }
+    .toolbar-toggle:hover { color: #475569; background: #f1f5f9; }
+    .toolbar-actions { display: none; gap: 0.5rem; }
+    .toolbar.expanded .toolbar-actions { display: flex; }
+    .toolbar-actions button { background: #f1f5f9; border: 1px solid #cbd5e1; color: #475569; padding: 0.375rem 0.75rem; border-radius: 0.375rem; font-family: inherit; font-size: 0.75rem; cursor: pointer; transition: all 0.2s; white-space: nowrap; }
+    .toolbar-actions button:hover { background: #e2e8f0; color: #0f172a; border-color: #64748b; }
+    @media print { body { background: #ffffff; padding: 1rem; } .toolbar { display: none !important; } }
+    .docs { margin-top: 2.5rem; }
+    .doc-section { margin-bottom: 2.25rem; }
+    .doc-section > h2 { font-size: 1.15rem; font-weight: 700; color: #0f172a; padding-bottom: 0.45rem; border-bottom: 2px solid #e2e8f0; margin-bottom: 1.1rem; display: flex; align-items: center; gap: 0.55rem; }
+    .sec-dot { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
+    .sec-dot.cyan { background: #0891b2; } .sec-dot.emerald { background: #059669; }
+    .sec-dot.violet { background: #7c3aed; } .sec-dot.amber { background: #d97706; } .sec-dot.slate { background: #64748b; }
+    .doc-comp { margin-bottom: 1.05rem; }
+    .doc-comp h3 { font-size: 0.95rem; font-weight: 600; color: #0f172a; margin-bottom: 0.25rem; }
+    .doc-comp p { font-size: 0.85rem; line-height: 1.65; color: #475569; }
+    .doc-comp code { background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 4px; padding: 0.5px 5px; font-size: 0.8em; }
+    .doc-shots { display: flex; gap: 0.6rem; margin-top: 0.75rem; flex-wrap: wrap; }
+    .doc-shots figure { flex: 1 1 0; min-width: 200px; margin: 0; }
+    .doc-shots img { width: 100%; height: auto; border: 1px solid #e2e8f0; border-radius: 8px; display: block; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08); }
+    .doc-shots figcaption { font-size: 0.72rem; color: #94a3b8; text-align: center; margin-top: 0.35rem; }
+    .doc-shots img { cursor: zoom-in; }
+    .img-modal { display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(15, 23, 42, 0.88); align-items: center; justify-content: center; padding: 2rem; cursor: zoom-out; }
+    .img-modal.open { display: flex; }
+    .img-modal img { max-width: 95vw; max-height: 92vh; border-radius: 10px; box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5); }
+    .schema { margin-top: 0.85rem; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; }
+    .schema table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .schema th, .schema td { text-align: left; padding: 7px 11px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+    .schema th { background: #f8fafc; color: #64748b; font-weight: 600; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; }
+    .schema tr:last-child td { border-bottom: none; }
+    .schema td.tname { font-weight: 600; color: #0f172a; white-space: nowrap; }
+    .schema td:last-child { color: #64748b; }
+    .schema code { background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 3px; padding: 0 4px; font-size: 0.92em; color: #334155; }
+  </style>
+</head>
+<body>
+  <div class="container" id="report-container">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>Lea UI - System Architecture</h1>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button onclick="copyAsImage(this)">📋 Copy</button>
+            <button onclick="downloadPNG(this)">🖼️ PNG</button>
+            <button onclick="downloadPDF(this)">📄 PDF</button>
+          </div>
+          <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export options" aria-label="Export options">⋯</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Diagram -->
+    <div class="diagram-container">
+      <svg viewBox="0 0 940 825">
+        <defs>
+          <marker id="ah" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/></marker>
+          <marker id="ah-cyan" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#0891b2"/></marker>
+          <marker id="ah-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#059669"/></marker>
+          <marker id="ah-rose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#e11d48"/></marker>
+          <marker id="ah-amber" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#d97706"/></marker>
+          <marker id="ah-slate" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/></marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#e2e8f0" stroke-width="0.5"/></pattern>
+        </defs>
+
+        <!-- Background grid -->
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <!-- ===== Boundaries (drawn first, behind everything) ===== -->
+        <!-- Process region -->
+        <rect x="250" y="45" width="635" height="735" rx="12" fill="rgba(217, 119, 6, 0.06)" stroke="#d97706" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="264" y="65" fill="#d97706" font-size="11" font-weight="600">SINGLE OS PROCESS · localhost · no internal HTTP</text>
+        <!-- Vendored prover cluster (Lea) -->
+        <rect x="290" y="325" width="360" height="308" rx="10" fill="rgba(5, 150, 105, 0.06)" stroke="#059669" stroke-width="1" stroke-dasharray="6,4"/>
+        <text x="640" y="343" fill="#059669" font-size="10" font-weight="600" text-anchor="end">Lea</text>
+        <!-- Persistence cluster -->
+        <rect x="690" y="195" width="185" height="150" rx="10" fill="rgba(124, 58, 237, 0.06)" stroke="#7c3aed" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="864" y="214" fill="#7c3aed" font-size="9" font-weight="600" text-anchor="end">DATA STORES</text>
+        <!-- Web UI cluster -->
+        <rect x="40" y="150" width="200" height="212" rx="10" fill="rgba(8, 145, 178, 0.06)" stroke="#0891b2" stroke-width="1" stroke-dasharray="6,4"/>
+        <text x="52" y="168" fill="#0891b2" font-size="9" font-weight="600">Web UI</text>
+
+        <!-- ===== Connections (behind boxes) ===== -->
+        <!-- Users -> Web UI -->
+        <line x1="140" y1="112" x2="140" y2="176" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah-slate)"/>
+        <rect x="146" y="129" width="30" height="15" rx="3" fill="#ffffff"/>
+        <text x="150" y="140" fill="#64748b" font-size="9">uses</text>
+        <!-- Web UI -> Adapter (REST) -->
+        <line x1="240" y1="248" x2="383" y2="118" stroke="#0891b2" stroke-width="1.5" marker-end="url(#ah-cyan)"/>
+        <rect x="261" y="161" width="78" height="15" rx="3" fill="#ffffff"/>
+        <text x="300" y="172" fill="#334155" font-size="9" text-anchor="middle">REST · /api/*</text>
+        <!-- Adapter -> Web UI (SSE) -->
+        <line x1="383" y1="140" x2="240" y2="292" stroke="#059669" stroke-width="1.5" marker-end="url(#ah-green)"/>
+        <rect x="274" y="233" width="62" height="15" rx="3" fill="#ffffff"/>
+        <text x="305" y="244" fill="#334155" font-size="9" text-anchor="middle">SSE stream</text>
+        <!-- Adapter -> Bridge -->
+        <line x1="470" y1="146" x2="470" y2="200" stroke="#059669" stroke-width="1.5" marker-end="url(#ah-green)"/>
+        <rect x="476" y="166" width="57" height="15" rx="3" fill="#ffffff"/>
+        <text x="480" y="177" fill="#334155" font-size="9">drive run</text>
+        <!-- Bridge -> Agent (in-process highlight) -->
+        <line x1="470" y1="256" x2="470" y2="348" stroke="#e11d48" stroke-width="1.5" marker-end="url(#ah-rose)"/>
+        <rect x="476" y="286" width="116" height="27" rx="3" fill="#ffffff"/>
+        <text x="480" y="297" fill="#e11d48" font-size="9" font-weight="600">run_events()</text>
+        <text x="480" y="309" fill="#be123c" font-size="8">in-process · no HTTP</text>
+        <!-- Agent -> Bridge (typed events) -->
+        <line x1="452" y1="348" x2="452" y2="256" stroke="#059669" stroke-width="1.5" marker-end="url(#ah-green)"/>
+        <rect x="373" y="327" width="73" height="15" rx="3" fill="#ffffff"/>
+        <text x="446" y="338" fill="#334155" font-size="9" text-anchor="end">typed events</text>
+        <!-- Agent -> Approval gate (every tool call is intercepted) -->
+        <line x1="470" y1="402" x2="470" y2="425" stroke="#e11d48" stroke-width="1.5" marker-end="url(#ah-rose)"/>
+        <rect x="474" y="407" width="62" height="15" rx="3" fill="#ffffff"/>
+        <text x="478" y="418" fill="#334155" font-size="9">tool calls</text>
+        <!-- Approval gate -> read-only tools (auto-approve) -->
+        <line x1="424" y1="479" x2="380" y2="520" stroke="#059669" stroke-width="1.5" marker-end="url(#ah-green)"/>
+        <rect x="371" y="492" width="30" height="15" rx="3" fill="#ffffff"/>
+        <text x="386" y="503" fill="#047857" font-size="9" text-anchor="middle">auto</text>
+        <!-- Approval gate -> write tools (ask first) -->
+        <line x1="516" y1="479" x2="560" y2="520" stroke="#e11d48" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#ah-rose)"/>
+        <rect x="542" y="492" width="24" height="15" rx="3" fill="#ffffff"/>
+        <text x="554" y="503" fill="#be123c" font-size="9" text-anchor="middle">ask</text>
+        <!-- read-only tools -> Lean workspace -->
+        <line x1="378" y1="618" x2="402" y2="686" stroke="#059669" stroke-width="1.5" marker-end="url(#ah-green)"/>
+        <rect x="346" y="647" width="94" height="15" rx="3" fill="#ffffff"/>
+        <text x="350" y="658" fill="#334155" font-size="9">compile · lookup</text>
+        <!-- write tools -> Lean workspace -->
+        <line x1="562" y1="618" x2="466" y2="686" stroke="#e11d48" stroke-width="1.5" marker-end="url(#ah-rose)"/>
+        <rect x="456" y="647" width="100" height="15" rx="3" fill="#ffffff"/>
+        <text x="556" y="658" fill="#334155" font-size="9" text-anchor="end">write proof files</text>
+        <!-- Lean workspace -> SafeVerify (kernel replay verdict) -->
+        <line x1="498" y1="715" x2="524" y2="715" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah-slate)"/>
+        <rect x="539" y="670" width="132" height="15" rx="3" fill="#ffffff"/>
+        <text x="605" y="681" fill="#334155" font-size="9" text-anchor="middle">kernel replay → verdict</text>
+        <!-- Agent -> Model providers -->
+        <line x1="385" y1="378" x2="222" y2="428" stroke="#d97706" stroke-width="1.5" marker-end="url(#ah-amber)"/>
+        <rect x="253" y="381" width="94" height="15" rx="3" fill="#ffffff"/>
+        <text x="300" y="392" fill="#334155" font-size="9" text-anchor="middle">LLM API · tokens</text>
+        <!-- Model catalog -> Adapter -->
+        <line x1="700" y1="118" x2="557" y2="118" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah-slate)"/>
+        <rect x="597" y="99" width="62" height="15" rx="3" fill="#ffffff"/>
+        <text x="628" y="110" fill="#334155" font-size="9" text-anchor="middle">model list</text>
+        <!-- Bridge -> Git (commit) -->
+        <line x1="555" y1="222" x2="698" y2="250" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)"/>
+        <rect x="558" y="201" width="121" height="15" rx="3" fill="#ffffff"/>
+        <text x="562" y="212" fill="#334155" font-size="9">commit on FileChanged</text>
+        <!-- Bridge -> SQLite (index) -->
+        <line x1="555" y1="244" x2="698" y2="306" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)"/>
+        <rect x="596" y="277" width="62" height="15" rx="3" fill="#ffffff"/>
+        <text x="600" y="288" fill="#334155" font-size="9">index rows</text>
+        <!-- Git store -> Adapter (read-back: history / reload) -->
+        <line x1="755" y1="232" x2="557" y2="142" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah)"/>
+        <rect x="596" y="165" width="105" height="15" rx="3" fill="#ffffff"/>
+        <text x="648" y="176" fill="#334155" font-size="9" text-anchor="middle">git show · history</text>
+
+        <!-- ===== Components (opaque mask + styled box) ===== -->
+        <!-- Users -->
+        <rect x="40" y="58" width="200" height="54" rx="6" fill="#ffffff"/>
+        <rect x="40" y="58" width="200" height="54" rx="6" fill="rgba(100, 116, 139, 0.10)" stroke="#64748b" stroke-width="1.5"/>
+        <text x="140" y="82" fill="#0f172a" font-size="11" font-weight="600" text-anchor="middle">Users</text>
+        <text x="140" y="98" fill="#64748b" font-size="9" text-anchor="middle">mathematician</text>
+
+        <!-- Web UI sub-components (x52, w176, center 140) -->
+        <!-- Sidebar · Sessions -->
+        <rect x="52" y="178" width="176" height="32" rx="5" fill="#ffffff"/>
+        <rect x="52" y="178" width="176" height="32" rx="5" fill="rgba(8, 145, 178, 0.10)" stroke="#0891b2" stroke-width="1.2"/>
+        <text x="140" y="193" fill="#0f172a" font-size="9.5" font-weight="600" text-anchor="middle">Sidebar · Sessions</text>
+        <text x="140" y="204" fill="#64748b" font-size="7.5" text-anchor="middle">browse / resume runs</text>
+        <!-- Chat panel -->
+        <rect x="52" y="214" width="176" height="32" rx="5" fill="#ffffff"/>
+        <rect x="52" y="214" width="176" height="32" rx="5" fill="rgba(8, 145, 178, 0.10)" stroke="#0891b2" stroke-width="1.2"/>
+        <text x="140" y="229" fill="#0f172a" font-size="9.5" font-weight="600" text-anchor="middle">Chat panel</text>
+        <text x="140" y="240" fill="#64748b" font-size="7.5" text-anchor="middle">steer · approve tools</text>
+        <!-- Lean canvas -->
+        <rect x="52" y="250" width="176" height="32" rx="5" fill="#ffffff"/>
+        <rect x="52" y="250" width="176" height="32" rx="5" fill="rgba(8, 145, 178, 0.10)" stroke="#0891b2" stroke-width="1.2"/>
+        <text x="140" y="265" fill="#0f172a" font-size="9.5" font-weight="600" text-anchor="middle">Lean canvas</text>
+        <text x="140" y="276" fill="#64748b" font-size="7.5" text-anchor="middle">co-edit · check · verify</text>
+        <!-- Project window -->
+        <rect x="52" y="286" width="176" height="32" rx="5" fill="#ffffff"/>
+        <rect x="52" y="286" width="176" height="32" rx="5" fill="rgba(8, 145, 178, 0.10)" stroke="#0891b2" stroke-width="1.2"/>
+        <text x="140" y="301" fill="#0f172a" font-size="9.5" font-weight="600" text-anchor="middle">Project window</text>
+        <text x="140" y="312" fill="#64748b" font-size="7.5" text-anchor="middle">graph · instr · memory · files</text>
+        <!-- Settings -->
+        <rect x="52" y="322" width="176" height="32" rx="5" fill="#ffffff"/>
+        <rect x="52" y="322" width="176" height="32" rx="5" fill="rgba(8, 145, 178, 0.10)" stroke="#0891b2" stroke-width="1.2"/>
+        <text x="140" y="337" fill="#0f172a" font-size="9.5" font-weight="600" text-anchor="middle">Settings</text>
+        <text x="140" y="348" fill="#64748b" font-size="7.5" text-anchor="middle">keys · models · usage</text>
+
+        <!-- Model providers (external) -->
+        <rect x="40" y="398" width="180" height="68" rx="6" fill="#ffffff"/>
+        <rect x="40" y="398" width="180" height="68" rx="6" fill="rgba(217, 119, 6, 0.12)" stroke="#d97706" stroke-width="1.5"/>
+        <text x="130" y="422" fill="#0f172a" font-size="11" font-weight="600" text-anchor="middle">Model providers</text>
+        <text x="130" y="438" fill="#64748b" font-size="8" text-anchor="middle">Gemini · Anthropic · OpenAI</text>
+        <text x="130" y="453" fill="#d97706" font-size="7" text-anchor="middle">external · cloud (HTTPS)</text>
+
+        <!-- Adapter API -->
+        <rect x="385" y="90" width="170" height="56" rx="6" fill="#ffffff"/>
+        <rect x="385" y="90" width="170" height="56" rx="6" fill="rgba(5, 150, 105, 0.12)" stroke="#059669" stroke-width="1.5"/>
+        <text x="470" y="114" fill="#0f172a" font-size="12" font-weight="600" text-anchor="middle">Adapter API</text>
+        <text x="470" y="130" fill="#64748b" font-size="9" text-anchor="middle">FastAPI</text>
+
+        <!-- Bridge -->
+        <rect x="385" y="200" width="170" height="56" rx="6" fill="#ffffff"/>
+        <rect x="385" y="200" width="170" height="56" rx="6" fill="rgba(5, 150, 105, 0.12)" stroke="#059669" stroke-width="1.5"/>
+        <text x="470" y="224" fill="#0f172a" font-size="12" font-weight="600" text-anchor="middle">Bridge</text>
+        <text x="470" y="240" fill="#64748b" font-size="9" text-anchor="middle">prover seam · SSE map</text>
+
+        <!-- Approval gate (per-tool supervision · D19) -->
+        <rect x="348" y="425" width="244" height="54" rx="6" fill="#ffffff"/>
+        <rect x="348" y="425" width="244" height="54" rx="6" fill="rgba(225, 29, 72, 0.10)" stroke="#e11d48" stroke-width="1.5"/>
+        <text x="470" y="448" fill="#0f172a" font-size="10" font-weight="600" text-anchor="middle">Approval gate</text>
+        <text x="470" y="463" fill="#be123c" font-size="8" text-anchor="middle">per-tool approval gate</text>
+
+        <!-- Model catalog -->
+        <rect x="700" y="90" width="170" height="56" rx="6" fill="#ffffff"/>
+        <rect x="700" y="90" width="170" height="56" rx="6" fill="rgba(100, 116, 139, 0.10)" stroke="#64748b" stroke-width="1.5"/>
+        <text x="785" y="114" fill="#0f172a" font-size="11" font-weight="600" text-anchor="middle">Model catalog</text>
+        <text x="785" y="130" fill="#64748b" font-size="9" text-anchor="middle">models.json</text>
+
+        <!-- Git store -->
+        <rect x="700" y="232" width="160" height="48" rx="6" fill="#ffffff"/>
+        <rect x="700" y="232" width="160" height="48" rx="6" fill="rgba(124, 58, 237, 0.12)" stroke="#7c3aed" stroke-width="1.5"/>
+        <text x="780" y="252" fill="#0f172a" font-size="11" font-weight="600" text-anchor="middle">Git store</text>
+        <text x="780" y="268" fill="#64748b" font-size="8" text-anchor="middle">proof content</text>
+
+        <!-- SQLite index -->
+        <rect x="700" y="290" width="160" height="48" rx="6" fill="#ffffff"/>
+        <rect x="700" y="290" width="160" height="48" rx="6" fill="rgba(124, 58, 237, 0.12)" stroke="#7c3aed" stroke-width="1.5"/>
+        <text x="780" y="310" fill="#0f172a" font-size="11" font-weight="600" text-anchor="middle">SQLite index</text>
+        <text x="780" y="326" fill="#64748b" font-size="8" text-anchor="middle">sessions · runs · steps</text>
+
+        <!-- Agent loop -->
+        <rect x="385" y="348" width="170" height="54" rx="6" fill="#ffffff"/>
+        <rect x="385" y="348" width="170" height="54" rx="6" fill="rgba(5, 150, 105, 0.12)" stroke="#059669" stroke-width="1.5"/>
+        <text x="470" y="371" fill="#0f172a" font-size="12" font-weight="600" text-anchor="middle">Agent loop</text>
+        <text x="470" y="387" fill="#64748b" font-size="9" text-anchor="middle">6 tools · proving loop</text>
+
+        <!-- Read-only tool group (auto-approved) -->
+        <rect x="300" y="520" width="156" height="98" rx="6" fill="#ffffff"/>
+        <rect x="300" y="520" width="156" height="98" rx="6" fill="rgba(5, 150, 105, 0.12)" stroke="#059669" stroke-width="1.5"/>
+        <text x="378" y="539" fill="#047857" font-size="8.5" font-weight="600" text-anchor="middle">read-only · auto-approve</text>
+        <line x1="312" y1="547" x2="444" y2="547" stroke="#059669" stroke-width="0.6" opacity="0.45"/>
+        <text x="378" y="565" fill="#0f172a" font-size="9" text-anchor="middle">read_file</text>
+        <text x="378" y="585" fill="#0f172a" font-size="9" text-anchor="middle">lean_check · LSP daemon</text>
+        <text x="378" y="605" fill="#0f172a" font-size="9" text-anchor="middle">search_mathlib · Mathlib</text>
+
+        <!-- Write / side-effect tool group (gated · ask) -->
+        <rect x="484" y="520" width="156" height="98" rx="6" fill="#ffffff"/>
+        <rect x="484" y="520" width="156" height="98" rx="6" fill="rgba(225, 29, 72, 0.10)" stroke="#e11d48" stroke-width="1.5"/>
+        <text x="562" y="539" fill="#be123c" font-size="8.5" font-weight="600" text-anchor="middle">write · ask first</text>
+        <line x1="496" y1="547" x2="628" y2="547" stroke="#e11d48" stroke-width="0.6" opacity="0.45"/>
+        <text x="562" y="565" fill="#0f172a" font-size="9" text-anchor="middle">write_file</text>
+        <text x="562" y="585" fill="#0f172a" font-size="9" text-anchor="middle">edit_file</text>
+        <text x="562" y="605" fill="#0f172a" font-size="9" text-anchor="middle">bash</text>
+
+        <!-- Lean + Mathlib (Lake workspace) -->
+        <rect x="312" y="688" width="186" height="58" rx="6" fill="#ffffff"/>
+        <rect x="312" y="688" width="186" height="58" rx="6" fill="rgba(100, 116, 139, 0.10)" stroke="#64748b" stroke-width="1.5"/>
+        <text x="405" y="713" fill="#0f172a" font-size="12" font-weight="600" text-anchor="middle">Lean + Mathlib</text>
+        <text x="405" y="730" fill="#64748b" font-size="9" text-anchor="middle">Lake workspace (local)</text>
+
+        <!-- SafeVerify (kernel-replay verdict; not an agent tool, not gated) -->
+        <rect x="526" y="688" width="158" height="58" rx="6" fill="#ffffff"/>
+        <rect x="526" y="688" width="158" height="58" rx="6" fill="rgba(5, 150, 105, 0.12)" stroke="#059669" stroke-width="1.5"/>
+        <text x="605" y="713" fill="#0f172a" font-size="11" font-weight="600" text-anchor="middle">SafeVerify</text>
+        <text x="605" y="730" fill="#64748b" font-size="8" text-anchor="middle">kernel replay · auto</text>
+
+        <!-- ===== Legend (outside all boundaries) ===== -->
+        <rect x="40" y="795" width="16" height="10" rx="2" fill="rgba(8, 145, 178, 0.10)" stroke="#0891b2" stroke-width="1"/>
+        <text x="62" y="804" fill="#64748b" font-size="8">Frontend</text>
+        <rect x="135" y="795" width="16" height="10" rx="2" fill="rgba(5, 150, 105, 0.12)" stroke="#059669" stroke-width="1"/>
+        <text x="157" y="804" fill="#64748b" font-size="8">Backend / prover</text>
+        <rect x="270" y="795" width="16" height="10" rx="2" fill="rgba(124, 58, 237, 0.12)" stroke="#7c3aed" stroke-width="1"/>
+        <text x="292" y="804" fill="#64748b" font-size="8">Persistence</text>
+        <rect x="380" y="795" width="16" height="10" rx="2" fill="rgba(100, 116, 139, 0.10)" stroke="#64748b" stroke-width="1"/>
+        <text x="402" y="804" fill="#64748b" font-size="8">Local resource</text>
+        <rect x="500" y="795" width="16" height="10" rx="2" fill="rgba(217, 119, 6, 0.12)" stroke="#d97706" stroke-width="1"/>
+        <text x="522" y="804" fill="#64748b" font-size="8">External cloud</text>
+        <line x1="615" y1="800" x2="635" y2="800" stroke="#e11d48" stroke-width="1.5" marker-end="url(#ah-rose)"/>
+        <text x="640" y="804" fill="#64748b" font-size="8">in-process call</text>
+        <line x1="740" y1="800" x2="760" y2="800" stroke="#059669" stroke-width="1.5" marker-end="url(#ah-green)"/>
+        <text x="765" y="804" fill="#64748b" font-size="8">SSE / events</text>
+      </svg>
+    </div>
+
+    <!-- Component walkthrough -->
+    <div class="docs">
+
+      <!-- ===== Section 1 · Web UI ===== -->
+      <div class="doc-section">
+        <h2><span class="sec-dot cyan"></span>1 · Web UI <span style="font-weight:400;color:#94a3b8;font-size:0.85rem">— the React front end (Vite dev server on :5173)</span></h2>
+
+        <div class="doc-shots" style="margin-bottom:1.4rem;justify-content:center">
+          <figure style="flex:0 0 75%;max-width:75%"><img src="https://raw.githubusercontent.com/darturi/UnifiedLeaEcosystem/fix/safeverify-sibling-import/apps/lea-standalone/design/images/WebUI/Lea_WebUI_Interface.png" alt="Lea Web UI interface"></figure>
+        </div>
+
+        <div class="doc-comp">
+          <h3>Lean canvas</h3>
+          <p>The live view of the current <code>.lean</code> proof file. The agent writes here and the user can <b>co-edit</b> the same file, then trigger a <b>lean_check</b> (fast compile) or a full <b>verify</b> (SafeVerify). Backed by the session file + check + verify endpoints (<code>/sessions/{id}/file · lean-check · verify</code>).</p>
+        </div>
+
+        <div class="doc-comp">
+          <h3>Project window</h3>
+          <p>The project-context surface that wraps a proof in its supporting material: the <b>blueprint graph</b>, free-text <b>instructions</b>, persistent <b>memory</b>, and the project's <b>files</b>. Served by the project routes (<code>/api/projects/*</code>).</p>
+          <div class="doc-shots">
+            <figure><img src="https://raw.githubusercontent.com/darturi/UnifiedLeaEcosystem/fix/safeverify-sibling-import/apps/lea-standalone/design/images/project%20feature/project_home.png" alt="Project home view"><figcaption>project home</figcaption></figure>
+            <figure><img src="https://raw.githubusercontent.com/darturi/UnifiedLeaEcosystem/fix/safeverify-sibling-import/apps/lea-standalone/design/images/project%20feature/blueprint.png" alt="Blueprint graph view"><figcaption>blueprint</figcaption></figure>
+            <figure><img src="https://raw.githubusercontent.com/darturi/UnifiedLeaEcosystem/fix/safeverify-sibling-import/apps/lea-standalone/design/images/project%20feature/filesystem.png" alt="Filesystem view"><figcaption>filesystem</figcaption></figure>
+          </div>
+        </div>
+
+        <div class="doc-comp">
+          <h3>Settings</h3>
+          <p>Configuration: choosing the <b>provider / model</b>, managing <b>API keys</b> (stored redacted, presence-only to the client), and viewing token <b>usage / cost</b>. Backed by <code>/api/settings</code>, <code>/api/models</code>, and <code>/api/stats</code>.</p>
+        </div>
+      </div>
+
+      <!-- ===== Section 2 · The backend ===== -->
+      <div class="doc-section">
+        <h2><span class="sec-dot emerald"></span>2 · The backend <span style="font-weight:400;color:#94a3b8;font-size:0.85rem">— one OS process, no internal HTTP</span></h2>
+
+        <div class="doc-comp">
+          <h3>Adapter API</h3>
+          <p>The single backend process and the <b>only HTTP surface</b> in the system. It exposes everything the browser needs under <code>/api/*</code> — runs, sessions, projects, settings, models, stats, plus the per-session file / lean-check / verify endpoints — and turns each run into a long-lived <b>Server-Sent Events</b> response. It owns the supervision policy and imports the prover as a library, so there is no separate "Lea API" service; the prover runs inside this same process (FastAPI / uvicorn).</p>
+        </div>
+
+        <div class="doc-comp">
+          <h3>Bridge</h3>
+          <p>The <b>in-process seam</b> between the adapter and the vendored prover — there is no socket between them. For each run it composes the session/project context into the prover's <code>messages</code>, builds its <code>LeaConfig</code>, and calls <code>run_events(...)</code> directly as a Python generator. It then pattern-matches the prover's <b>typed events</b> (<code>TurnStarted</code>, <code>ToolCalled</code>, <code>FileChanged</code>, <code>CheckResult</code>, <code>VerifyResult</code>, <code>UsageUpdated</code>, <code>ToolApprovalRequested</code>, <code>Finished</code>, …) onto the SSE stream, applies the approval gate, and persists results — a git commit on every <code>FileChanged</code> plus an index row in SQLite.</p>
+        </div>
+
+        <div class="doc-comp">
+          <h3>Approval gate</h3>
+          <p>A <b>per-tool checkpoint</b> the Bridge applies to the prover's tool calls. Read-only / no-effect tools (<code>read_file</code>, <code>lean_check</code>, <code>search_mathlib</code>) are <b>auto-approved</b> and never pause. Side-effecting tools (<code>write_file</code>, <code>edit_file</code>, <code>bash</code>) are <b>gated</b>: the run parks, a <code>ToolApprovalRequested</code> prompt rides the SSE to the UI, and the prover only proceeds once the user allows or denies (with an "always allow this session" option). Autonomous runs (the Overleaf path) disable the gate entirely.</p>
+        </div>
+      </div>
+
+      <!-- ===== Section 3 · Lea ===== -->
+      <div class="doc-section">
+        <h2><span class="sec-dot emerald"></span>3 · Lea <span style="font-weight:400;color:#94a3b8;font-size:0.85rem">— the Lean 4 theorem-proving agent</span></h2>
+
+        <div class="doc-comp">
+          <h3>Agent loop</h3>
+          <p>The proving loop at the heart of Lea. It runs a single tool-calling cycle — write a <code>.lean</code> file, compile it, read the errors, edit, repeat — streaming model tokens from the providers until the proof compiles with <b>zero errors and zero <code>sorry</code>s</b>. Exactly <b>six tools</b>, no hidden orchestration.</p>
+        </div>
+
+        <div class="doc-comp">
+          <h3>The six tools</h3>
+          <p>The agent's entire surface. <b>Read-only</b> — <code>read_file</code>, <code>lean_check</code>, <code>search_mathlib</code> — run freely; <b>write / side-effecting</b> — <code>write_file</code>, <code>edit_file</code>, <code>bash</code> — pass through the approval gate first. <code>lean_check</code> compiles via the LSP daemon, and <code>search_mathlib</code> looks up Mathlib lemmas under a fixed per-problem budget.</p>
+        </div>
+
+        <div class="doc-comp">
+          <h3>LSP daemon</h3>
+          <p>A persistent <code>lake env lean --server</code> per Lake root that keeps Mathlib's compiled <code>oleans</code> warm. It's what makes <code>lean_check</code> fast — roughly <b>0.2s</b> for an in-place edit versus ~88s cold — so the write → check → edit loop stays interactive.</p>
+        </div>
+
+        <div class="doc-comp">
+          <h3>SafeVerify</h3>
+          <p>The honest "verified" verdict. After a proof compiles, SafeVerify replays it through the <b>Lean kernel</b> and checks each declaration's type/body against an <b>axiom whitelist</b>, catching structural cheats — namespace shadowing, <code>sorry</code>-in-imports, redefining a name as <code>True</code> — that a plain compile + <code>sorry</code>-grep miss. It's read-only and runs separately from the agent's tool loop.</p>
+        </div>
+
+        <div class="doc-comp">
+          <h3>Lean + Mathlib</h3>
+          <p>The <b>Lake workspace</b> (Lean and Mathlib both pinned via <code>lean-toolchain</code>) where proofs are actually written and compiled, under <code>proofs/</code>. It's the local resource every tool ultimately touches: <code>lean_check</code> and SafeVerify replay against it, <code>search_mathlib</code> queries it, and <code>write_file</code> / <code>edit_file</code> mutate its files.</p>
+        </div>
+      </div>
+
+      <!-- ===== Section 4 · Data stores ===== -->
+      <div class="doc-section">
+        <h2><span class="sec-dot violet"></span>4 · Data stores <span style="font-weight:400;color:#94a3b8;font-size:0.85rem">— a deliberate split: content vs. metadata</span></h2>
+
+        <div class="doc-comp">
+          <h3>Git store</h3>
+          <p><b>Git owns the proof content.</b> Each session/project is a git repo, and the Bridge <b>commits on every <code>FileChanged</code></b>; a timeline row keeps only the resulting <code>commit_sha</code> + path, not the file bytes. The Lean canvas reads history back through the adapter via <code>git show</code>, and user canvas edits are committed too (linked to an <code>edit_note</code> message). Keeping the filesystem canonical is also what lets the LSP fast path stay warm.</p>
+        </div>
+
+        <div class="doc-comp">
+          <h3>SQLite index</h3>
+          <p>A <b>rebuildable index of metadata</b> — never proof bytes, and never the canonical <code>.lea/*.md</code> content (instructions / memory / blueprint live as files in the project repo). Because a session's status is <b>derived</b> from its latest code-step verdict rather than stored, it can't drift. It's a clean v2 schema (no in-place migrations — disposable, single-user):</p>
+          <div class="schema">
+            <table>
+              <thead><tr><th>Table</th><th>What it holds</th><th>Key columns</th></tr></thead>
+              <tbody>
+                <tr><td class="tname">sessions</td><td>One proof/chat session (status is derived, not stored)</td><td><code>id</code> · <code>project_id</code> · <code>title</code> · <code>api_session_id</code> · timestamps</td></tr>
+                <tr><td class="tname">projects</td><td>A shared dir + git repo + index row</td><td><code>id</code> · <code>slug</code> (immutable) · <code>namespace</code> · <code>repo_path</code> · <code>remote_url</code></td></tr>
+                <tr><td class="tname">project_files</td><td>Uploaded / extracted files (index only — bytes live in git)</td><td><code>id</code> · <code>project_id</code> · <code>filename</code> · <code>stored_path</code> · <code>kind</code></td></tr>
+                <tr><td class="tname">runs</td><td>One prover activation and its accounting</td><td><code>id</code> · <code>session_id</code> · <code>status</code> · <code>autonomous</code> · <code>model</code>/<code>provider</code> · tokens · <code>cost_usd</code> · <code>transcript</code> · <code>safe_verify_status</code></td></tr>
+                <tr><td class="tname">messages</td><td>The flattened human-facing thread</td><td><code>id</code> · <code>session_id</code> · <code>run_id</code> · <code>role</code> · <code>content</code> · <code>kind</code> · <code>commit_sha</code> · <code>seq</code></td></tr>
+                <tr><td class="tname">code_steps</td><td>A timeline step = pointer into git (not the text)</td><td><code>id</code> · <code>session_id</code> · <code>seq</code> · <code>turn</code> · <code>author</code> · <code>path</code> · <code>commit_sha</code> · <code>check_status</code></td></tr>
+                <tr><td class="tname">status_events</td><td>Per-run progress / status log</td><td><code>id</code> · <code>session_id</code> · <code>run_id</code> · <code>step_number</code> · <code>status</code> · <code>message</code></td></tr>
+                <tr><td class="tname">run_usage_breakdown</td><td>Per-phase token / cost breakdown for a run</td><td><code>id</code> · <code>run_id</code> · <code>phase</code> · <code>label</code> · <code>turn</code> · in/out tokens · <code>cost_usd</code></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Section 5 · External ===== -->
+      <div class="doc-section">
+        <h2><span class="sec-dot slate"></span>5 · External <span style="font-weight:400;color:#94a3b8;font-size:0.85rem">— actors and resources outside the process</span></h2>
+
+        <div class="doc-comp">
+          <h3>Users</h3>
+          <p>The human collaborator (a mathematician). They supply the natural-language statement, the project context, and the model + keys, then <b>steer</b> the run and answer the <b>approval prompts</b>; in return they get a compiling proof (zero errors / zero <code>sorry</code>s), live progress, the check + SafeVerify verdicts, and a downloadable repo.</p>
+        </div>
+
+        <div class="doc-comp">
+          <h3>Model providers</h3>
+          <p><b>Gemini · Anthropic · OpenAI</b>, reached over HTTPS — the only outbound internet dependency. The agent loop streams tokens from whichever provider/model is selected; keys come from the root <code>.env</code> / Settings and are kept <b>redacted</b> (presence-only to the client).</p>
+        </div>
+
+        <div class="doc-comp">
+          <h3>Model catalog</h3>
+          <p>Two layers. A small <b>curated shortlist</b> (<code>models.json</code> in <code>packages/lea-model-catalog</code>) is the default pick list shared by both front ends and the adapter, so it stays consistent across the standalone UI and the Overleaf path. The <b>searchable picker</b> in Settings is <b>LiteLLM-backed</b> (<code>models_catalog.py</code>): the full LiteLLM catalog — roughly <b>2k chat models across ~76 providers</b> — which also drives the dynamic API-key prompt (which env var a chosen model needs). LiteLLM is optional and <b>degrades gracefully</b>: if it can't be imported, the adapter falls back to the curated shortlist. Served to the browser via <code>/api/models</code>.</p>
+        </div>
+      </div>
+
+      <!-- ===== Next directions ===== -->
+      <div class="doc-section">
+        <h2><span class="sec-dot amber"></span>Next directions <span style="font-weight:400;color:#94a3b8;font-size:0.85rem">— where this is headed</span></h2>
+
+        <div class="doc-comp">
+          <h3>1 · No axiom and opaque</h3>
+          <p>Axioms (and <code>opaque</code> declarations) are escape hatches — they let the agent "close" a goal without actually proving it. <b>Axioms are already caught</b>: SafeVerify collects every axiom a declaration depends on and rejects anything outside its whitelist (so a stray <code>axiom</code> or a <code>sorry</code> fails verification). The <b>gap is <code>opaque</code></b> — an agent-introduced helper <code>opaque</code> isn't an axiom, so it slips past that check unless it happens to clash with a target declaration's kind. The next step is to <b>extend the same hard stop to cover agent-introduced <code>opaque</code></b> (alongside the existing <code>sorry</code> / <code>native_decide</code> bans), enforced at verify time rather than trusted to the prompt.</p>
+        </div>
+
+        <div class="doc-comp">
+          <h3>2 · Human-in-the-loop formalization <span style="font-weight:400;color:#94a3b8;font-size:0.82rem">— a workflow proposed by Prof. Jaume</span></h3>
+          <p>Drop in a file, and the first step is to <b>break it down into its definitions, lemmas, and theorems</b>. For each one, run a <b>deep search against Mathlib</b> to decide what already exists, and report two lists: <b>what is already formalized (reuse it)</b> and <b>what must be formalized from scratch</b>.</p>
+          <p>From there, formalize the pieces <b>one at a time with a human in the loop</b> — the <b>definitions, lemmas, and theorems the whole proof rests on</b> get expanded and signed off by a person before anything builds on them. Items that merely <b>compose existing building blocks</b> can be drafted <b>autonomously</b> (at least the first pass). Once the foundations are settled, the <b>final proof can be handed off to the agent</b> — and even that initial draft can run autonomously, provided the agent first <b>relays back every assumption it made</b>, so nothing is silently baked in.</p>
+        </div>
+
+        <div class="doc-comp">
+          <h3>3 · Testing on definition-heavy samples</h3>
+          <p>For evaluation, lean toward <b>definition-heavy samples rather than proof-heavy ones</b> — they exercise the decompose / Mathlib-search / formalize-from-scratch path that matters here, instead of just stress-testing tactic search. We need a small suite of <b>4–5 examples</b> to test against, and to compare <b>different prompts and configurations</b> across them.</p>
+        </div>
+
+        <div class="doc-comp">
+          <h3>4 · Human-readable refinement <span style="font-weight:400;color:#94a3b8;font-size:0.82rem">— few-shot from Prof. Jaume's style</span></h3>
+          <p>Prof. Jaume generally <b>cleans up the Lean to make it more human-understandable</b>, and when explaining me a proof he wrote it in a <b>natural-language, algorithm-style</b> form. We can capture that style — together with a <b>few samples from his repo</b> — as <b>few-shot examples in the prompt</b>, applied as a dedicated <b>"refining" step that runs after the initial draft</b> compiles: the goal there is a final proof that is readable, not just correct.</p>
+        </div>
+
+        <div class="doc-comp">
+          <h3>5 · Side-by-side NL ↔ Lean view <span style="font-weight:400;color:#94a3b8;font-size:0.82rem">— future integration, suggested by Prof. Jaume</span></h3>
+          <p>A split editor that places the <b>Lean file / theorem on one side and the Overleaf (natural-language) source on the other</b>, so the informal statement and its formalization sit next to each other — making it easy to see which prose maps to which Lean declaration as the proof is built.</p>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Footer -->
+    <p class="footer">
+      Lea UI • apps/lea-standalone
+    </p>
+  </div>
+
+  <!-- Image lightbox modal (outside #report-container so exports skip it) -->
+  <div class="img-modal" id="imgModal"><img id="imgModalImg" src="" alt=""></div>
+
+  <script>
+    async function copyAsImage(btn) {
+      const orig = btn.textContent;
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#ffffff', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        btn.textContent = '✓ Copied!';
+      } catch (e) { btn.textContent = '✗ Failed'; }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+    async function downloadPNG(btn) {
+      const orig = btn.textContent; btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#ffffff', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const link = document.createElement('a'); link.download = 'lea-architecture.png'; link.href = canvas.toDataURL('image/png'); link.click();
+        btn.textContent = '✓ Done!';
+      } catch (e) { btn.textContent = '✗ Failed'; }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+    async function downloadPDF(btn) {
+      const orig = btn.textContent; btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#ffffff', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const imgData = canvas.toDataURL('image/png');
+        const { jsPDF } = window.jspdf;
+        const orientation = canvas.width > canvas.height ? 'landscape' : 'portrait';
+        const pdf = new jsPDF({ orientation, unit: 'px', format: [canvas.width, canvas.height], hotfixes: ['px_scaling'] });
+        pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+        pdf.save('lea-architecture.pdf');
+        btn.textContent = '✓ Done!';
+      } catch (e) { btn.textContent = '✗ Failed'; }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+    // Image lightbox: click a screenshot to open it full-size; click backdrop or press Esc to close.
+    (function () {
+      const modal = document.getElementById('imgModal');
+      const modalImg = document.getElementById('imgModalImg');
+      document.querySelectorAll('.doc-shots img').forEach(img => {
+        img.addEventListener('click', () => { modalImg.src = img.src; modal.classList.add('open'); });
+      });
+      modal.addEventListener('click', () => modal.classList.remove('open'));
+      document.addEventListener('keydown', e => { if (e.key === 'Escape') modal.classList.remove('open'); });
+    })();
+  </script>
+</body>
+</html>

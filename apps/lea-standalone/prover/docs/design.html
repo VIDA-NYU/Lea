@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lea — Architecture</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a22; --ink: #e6e9ef; --muted: #9aa4b2;
+    --line: #2a2f3a; --accent: #7aa2ff;
+    --consumer: #3b82f6; --config: #22c55e; --core: #f59e0b; --events: #a855f7; --ext: #14b8a6;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 32px;
+  }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 40px 0 16px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+  .sub { color: var(--muted); margin: 0 0 8px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  a { color: var(--accent); }
+
+  /* ---- architecture flow ---- */
+  .flow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+  .stage { flex: 1 1 200px; min-width: 190px; }
+  .stage-title {
+    font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+    font-weight: 700; margin: 0 0 10px; padding-left: 4px;
+  }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-left-width: 4px;
+    border-radius: var(--radius); padding: 10px 12px;
+  }
+  .card .name { font-weight: 650; }
+  .card .desc { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+  .arrow {
+    display: flex; align-items: center; justify-content: center;
+    color: var(--accent); font-size: 26px; padding: 0 6px; flex: 0 0 auto;
+  }
+  .s-consumer .stage-title, .s-consumer .card .name { color: var(--consumer); }
+  .s-consumer .card { border-left-color: var(--consumer); }
+  .s-config .stage-title, .s-config .card .name { color: var(--config); }
+  .s-config .card { border-left-color: var(--config); }
+  .s-core .stage-title, .s-core .card .name { color: var(--core); }
+  .s-core .card { border-left-color: var(--core); }
+  .s-events .stage-title, .s-events .card .name { color: var(--events); }
+  .s-events .card { border-left-color: var(--events); }
+  .s-ext .stage-title, .s-ext .card .name { color: var(--ext); }
+  .s-ext .card { border-left-color: var(--ext); }
+
+  .note { color: var(--muted); font-size: 13px; margin-top: 14px; }
+  .note b { color: var(--ink); }
+
+  /* ---- turn lifecycle ---- */
+  .steps { border-left: 2px solid var(--line); margin-left: 10px; padding-left: 22px; }
+  .step { position: relative; padding: 8px 0 16px; }
+  .step::before {
+    content: ""; position: absolute; left: -29px; top: 12px;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--core); border: 2px solid var(--bg);
+  }
+  .step.final::before { background: var(--events); }
+  .step .who { font-size: 12px; color: var(--muted); }
+  .step .what { margin-top: 2px; }
+  .badge {
+    display: inline-block; font-family: ui-monospace, monospace; font-size: 12px;
+    background: #20242e; border: 1px solid var(--line); border-radius: 6px;
+    padding: 1px 7px; margin: 2px 4px 2px 0; color: var(--events);
+  }
+  .badge.in { color: var(--consumer); }
+  pre {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 16px; overflow:auto; font-family: ui-monospace, monospace; font-size: 13px;
+  }
+  .legend { display:flex; gap:18px; flex-wrap:wrap; color: var(--muted); font-size:13px; margin-top:10px; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:middle; }
+</style>
+</head>
+<body>
+
+  <h1>Lea — Architecture</h1>
+  <p class="sub">A config-driven Lean-proving agent with one <b>config-in / event-out</b> contract.
+  The agent is the product; the CLI, a UI, and eval are consumers of the same core.</p>
+  <p class="sub">See <a href="decisions.md">decisions.md</a> for the rationale and the mini-swe-agent mapping.</p>
+
+  <h2>Architecture flow</h2>
+  <div class="flow">
+
+    <div class="stage s-consumer">
+      <p class="stage-title">Consumers</p>
+      <div class="stack">
+        <div class="card"><div class="name">cli.py</div><div class="desc">--config + flag overrides</div></div>
+        <div class="card"><div class="name">Teammate UI</div><div class="desc">renders events live</div></div>
+        <div class="card"><div class="name">eval/ harnesses</div><div class="desc">batch, collect transcript</div></div>
+      </div>
+    </div>
+
+    <div class="arrow">&rarr;</div>
+
+    <div class="stage s-config">
+      <p class="stage-title">Config in</p>
+      <div class="stack">
+        <div class="card"><div class="name">default.yaml</div><div class="desc">single source of defaults</div></div>
+        <div class="card"><div class="name">config.load_config</div><div class="desc">base + --config overlay</div></div>
+        <div class="card"><div class="name">validation.validate_config</div><div class="desc">I/O-free, typed errors → LeaConfig</div></div>
+      </div>
+    </div>
+
+    <div class="arrow">&rarr;</div>
+
+    <div class="stage s-core">
+      <p class="stage-title">Agent core</p>
+      <div class="stack">
+        <div class="card"><div class="name">agent.run_events</div><div class="desc">generator loop — yields events; owns MCP lifecycle</div></div>
+        <div class="card"><div class="name">providers.stream</div><div class="desc">LiteLLM, stream or blocking</div></div>
+        <div class="card"><div class="name">registry.build_toolset</div><div class="desc">active tools: built-ins + custom + MCP</div></div>
+        <div class="card"><div class="name">prompt.load_system_prompt</div><div class="desc">base variant + skills</div></div>
+      </div>
+    </div>
+
+    <div class="arrow">&rarr;</div>
+
+    <div class="stage s-events">
+      <p class="stage-title">Events out</p>
+      <div class="stack">
+        <div class="card"><div class="name">typed event stream</div><div class="desc">TextDelta · ToolCall · Usage · Finished</div></div>
+        <div class="card"><div class="name">render_to_stdout</div><div class="desc">CLI transcript + per-turn cost</div></div>
+        <div class="card"><div class="name">UI / eval consumers</div><div class="desc">same events, own rendering</div></div>
+      </div>
+    </div>
+
+  </div>
+
+  <p class="note"><b>Key property:</b> the LiteLLM engine swap and the streaming/blocking choice never touch
+  the loop or the consumers — <code>providers.stream()</code> always yields the same event types, so everything
+  to the right of it is invariant. The UI can also call <code>validate_config()</code> directly on a payload
+  (dashed path — no disk, no agent run).</p>
+
+  <h2>Extension points — everything is config</h2>
+  <p class="sub">Three sources feed one tool registry; a fourth feeds the prompt. The loop is unchanged —
+  it asks <code>build_toolset()</code> for the active tools and gets a system prompt with skills appended.</p>
+  <div class="flow">
+
+    <div class="stage s-ext">
+      <p class="stage-title">Tool sources</p>
+      <div class="stack">
+        <div class="card"><div class="name">tools.py built-ins</div><div class="desc">read/write/edit/lean_check/bash/search — register at import</div></div>
+        <div class="card"><div class="name">agent.tool_modules</div><div class="desc">user modules: <code>@tool</code> / <code>register()</code> custom tools</div></div>
+        <div class="card"><div class="name">mcp.servers &rarr; MCPManager</div><div class="desc">stdio / HTTP servers; tools register by bare name (prefix on clash)</div></div>
+      </div>
+    </div>
+
+    <div class="arrow">&rarr;</div>
+
+    <div class="stage s-core">
+      <p class="stage-title">Registry &rarr; loop</p>
+      <div class="stack">
+        <div class="card"><div class="name">registry.REGISTRY</div><div class="desc">name &rarr; Tool(schema, handler)</div></div>
+        <div class="card"><div class="name">build_toolset(config.tools)</div><div class="desc">allowlist + order; null &rarr; all registered</div></div>
+      </div>
+    </div>
+
+    <div class="arrow">&rarr;</div>
+
+    <div class="stage s-config">
+      <p class="stage-title">Prompt</p>
+      <div class="stack">
+        <div class="card"><div class="name">agent.skills</div><div class="desc">markdown fragments of procedural knowledge, in order</div></div>
+        <div class="card"><div class="name">load_system_prompt</div><div class="desc">base variant + lea.md + skills</div></div>
+      </div>
+    </div>
+
+  </div>
+  <p class="note"><b>Why this shape:</b> MCP tools and custom tools are not special cases — they land in the
+  same <code>REGISTRY</code> as the built-ins, so <code>build_toolset</code>, the loop, events, and transcripts
+  are untouched. See <a href="lean-lsp-mcp.md">lean-lsp-mcp.md</a> for a worked MCP + skill setup.</p>
+
+  <h2>Turn lifecycle</h2>
+  <div class="steps">
+    <div class="step"><div class="who">run_events → consumer</div>
+      <div class="what"><span class="badge">TurnStarted(turn)</span></div></div>
+    <div class="step"><div class="who">run_events → providers.stream → LiteLLM</div>
+      <div class="what"><span class="badge in">stream(model, msgs, tools, model_kwargs, streaming)</span></div></div>
+    <div class="step"><div class="who">providers → run_events</div>
+      <div class="what"><span class="badge in">TextDelta*</span><span class="badge in">ToolCall (+_ToolMeta)</span><span class="badge in">Done(usage, cost)</span></div></div>
+    <div class="step"><div class="who">run_events → consumer</div>
+      <div class="what"><span class="badge">AssistantTextDelta*</span><span class="badge">ToolCalled*</span><span class="badge">UsageUpdated(in, out, cost)</span> &larr; per-turn cost</div></div>
+    <div class="step"><div class="who">if tool calls present</div>
+      <div class="what">run each resolved handler <code>build_toolset()[name](args)</code> → <span class="badge">ToolResulted</span>, persist session, next turn</div></div>
+    <div class="step final"><div class="who">else (no tool calls, or max_turns hit)</div>
+      <div class="what"><span class="badge">Finished(reason, text, turns, usage, cost, transcript)</span> &nbsp;reason ∈ {completed, max_turns}</div></div>
+  </div>
+
+  <h2>Config schema</h2>
+<pre>model:
+  name: gemini/gemini-3.1-pro-preview   # LiteLLM provider/model
+  stream: true                          # true → live tokens; false → one blocking call
+  model_kwargs:                         # open passthrough to litellm.completion
+    max_tokens: 16384
+agent:
+  prompt_variant: default
+  max_turns: null                       # null → run until done
+  tools: null                           # null → all registered; or [names] to allow + order them
+  tool_modules: []                      # python modules that register custom tools
+  skills: []                            # markdown files injected into the system prompt, in order
+mcp:
+  servers: {}                           # name: {command, args, env}  (stdio)
+                                        #   or {url, headers, transport}  (remote)</pre>
+
+  <div class="legend">
+    <span><span class="dot" style="background:var(--consumer)"></span>Consumers</span>
+    <span><span class="dot" style="background:var(--config)"></span>Config in</span>
+    <span><span class="dot" style="background:var(--core)"></span>Agent core</span>
+    <span><span class="dot" style="background:var(--events)"></span>Events out</span>
+    <span><span class="dot" style="background:var(--ext)"></span>Extension points</span>
+  </div>
+
+  <p class="note">Open this file in a browser. <b>Built</b> config-driven extension points: tool registry +
+  custom tools, skills, and MCP servers. <b>Still planned</b> on the same seam: a swappable verifier and a
+  pluggable model backend.</p>
+
+</body>
+</html>

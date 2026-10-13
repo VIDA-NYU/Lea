@@ -1,0 +1,17 @@
+{
+  "previous_feature_head": "4c6d195f990242e1283b2d3070441618ac29524a",
+  "vida_main": "8fc9a74bb7de07b655105e46fe661eb3473482b2",
+  "manifest_version": 2,
+  "review_state": "reviewed",
+  "same_reviewed_paths": 133,
+  "same_resolution_choices": true,
+  "changed_blob_paths": [
+    ".github/workflows/publish-image.yml",
+    ".github/workflows/site.yml"
+  ],
+  "reviewed_modes": {
+    "100644": 131,
+    "100755": 2
+  },
+  "manifest_sha256": "fa438d39702e3b5c0eda10a13da03a1eec2f156242a76d5d06a17102c37536a8"
+}

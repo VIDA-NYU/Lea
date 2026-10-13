@@ -1,0 +1,26 @@
+{
+  "before": {
+    "head": "fc899f977b4ede26b49f78646ba0ded16630f7eb",
+    "branch": "LeaCheckAddition",
+    "refs_sha256": "738b2e2848839792c02ffe0c6202e8aea66edd7d79d5dfa5cd3356a572bf023c",
+    "index_sha256": "c4fb6bcb47048bb7289bfe39a3994819337a3367128f9d55fcd3ee4985e345fb",
+    "status": "",
+    "merge_head_present": false
+  },
+  "after": {
+    "head": "fc899f977b4ede26b49f78646ba0ded16630f7eb",
+    "branch": "LeaCheckAddition",
+    "refs_sha256": "738b2e2848839792c02ffe0c6202e8aea66edd7d79d5dfa5cd3356a572bf023c",
+    "index_sha256": "c4fb6bcb47048bb7289bfe39a3994819337a3367128f9d55fcd3ee4985e345fb",
+    "status": "",
+    "merge_head_present": false
+  },
+  "unchanged": true,
+  "raw_conflicts": 99,
+  "resolved_conflicts": 99,
+  "candidate_changes": [],
+  "main": "8fc9a74bb7de07b655105e46fe661eb3473482b2",
+  "manifest_sha256": "fa438d39702e3b5c0eda10a13da03a1eec2f156242a76d5d06a17102c37536a8",
+  "remote_main_verified": true,
+  "applied": false
+}

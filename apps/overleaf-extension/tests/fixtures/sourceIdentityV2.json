@@ -1,0 +1,39 @@
+{
+  "bundle": {
+    "version": 2,
+    "targetKey": "sample_lemma",
+    "targetKind": "theorem",
+    "statement": "For every n, π is fixed.",
+    "proof": "Use induction.",
+    "proofAssociation": {
+      "status": "associated",
+      "method": "adjacent",
+      "sourceFile": "main.tex",
+      "sourceStartLine": 6,
+      "sourceEndLine": 8,
+      "proofHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "statementLocation": {
+      "sourceFile": "main.tex",
+      "sourceStartLine": 1,
+      "sourceEndLine": 5
+    },
+    "uses": ["base_case"],
+    "context": "Work in Nat.",
+    "relevantSource": [{
+      "kind": "surrounding-context",
+      "path": "main.tex",
+      "startLine": 1,
+      "endLine": 8,
+      "content": "A local excerpt.",
+      "truncated": false
+    }],
+    "mirror": {
+      "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "mirroredFileCount": 1,
+      "verified": true
+    }
+  },
+  "bundleHash": "fc2c8029bce61d77f47ad08250217b27771fc9d1431f1dfc294dbd7048efc32a",
+  "sourceIdentityHash": "fb809cef6965f6f270cd331f0d82acbb681029a84dbd5bd97afe0ff50e197e8b"
+}

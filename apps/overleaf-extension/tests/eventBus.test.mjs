@@ -56,6 +56,7 @@ test("GET /events streams bus events as SSE with project filtering", async () =>
   const appDir = await fs.mkdtemp(path.join(os.tmpdir(), "overleaf-events-"));
   const server = await createServer({
     settingsPath: path.join(appDir, "settings.json"),
+    envPath: path.join(appDir, ".env"),
     jobsPath: path.join(appDir, "jobs.json"),
     chatSessionsPath: path.join(appDir, "chatSessions.json"),
     env: {}

@@ -1,0 +1,62 @@
+{
+  "image": "lea-readiness:amd64",
+  "runtime": {
+    "image_architecture": "amd64",
+    "node": {
+      "architecture": "x64",
+      "version": "v22.23.3"
+    },
+    "lean": "Lean (version 4.29.0, x86_64-unknown-linux-gnu, commit 98dc76e3c0a9b856c9b98726b713fb04fab16740, Release)",
+    "python": "3.13.11"
+  },
+  "completed_scenarios": [
+    {
+      "from_revision": "0019_custom_tools",
+      "both_backends": true,
+      "real_compiler": true,
+      "safe_verify": true,
+      "source_overwrite_invalidates": true,
+      "external_source_conflict_http_status": 409,
+      "saved_invalid_revision_fails_compiler": true,
+      "dependency_rebuild_failure": true,
+      "history_preserved": true,
+      "restart_ready": true,
+      "shutdown_exit_code": 0
+    },
+    {
+      "from_revision": "0031_usage_details",
+      "both_backends": true,
+      "real_compiler": true,
+      "safe_verify": true,
+      "source_overwrite_invalidates": true,
+      "external_source_conflict_http_status": 409,
+      "saved_invalid_revision_fails_compiler": true,
+      "dependency_rebuild_failure": true,
+      "history_preserved": true,
+      "restart_ready": true,
+      "shutdown_exit_code": 0
+    },
+    {
+      "partial_mathlib_cache_repaired_before_admission": true
+    }
+  ],
+  "date": "2026-10-12",
+  "execution": "emulated Linux AMD64 on ARM64 Docker Desktop",
+  "build_passed": true,
+  "image_id": "sha256:e2ad2d2a4c8e3782e7f732ddd7abc92154f736de020d725bfa0b380801b1e3a5",
+  "image_size_bytes": 11241620981,
+  "image_created": "2026-10-12T16:17:57.577784503Z",
+  "dockerfile_sha256": "9608f2bae45e2b321f5211e274b1054589cf96a1a8494218beac432f1478ca27",
+  "source_head": "b01afb7",
+  "source_changes": [
+    "apps/lea-standalone/Dockerfile"
+  ],
+  "complete_mathlib_build": true,
+  "no_build_completeness_check": true,
+  "safe_verify_executable_built": true,
+  "runtime_harness_exit_code": 0,
+  "temporary_data_only": true,
+  "model_calls": false,
+  "cache_download_retry_recovered_files": 8,
+  "reviewed_source_commit": "8e818d713e352c86595f2325a1f9e9916a20b64f"
+}

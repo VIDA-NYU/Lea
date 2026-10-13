@@ -1,0 +1,131 @@
+% Section 3 targets. This file is included by main.tex.
+
+\setcounter{section}{2}
+\section{Problem Statement}
+
+\begin{definition}[Allocation instance]\label{def:allocation-instance}
+% lea: define
+% lea: label=AllocationInstance
+% lea: context={Create a structure named AllocationInstance. Bundle finite node and partition types with DecidableEq instances, capacity and size functions into Nat, request frequencies indexed by partition and node into Nat, a communication-cost function into Nat, and an exact replication parameter k : Nat. Do not build feasibility assumptions into the structure.}
+An \emph{allocation instance} $I$ consists of finite types $N_I$ of storage
+nodes and $P_I$ of data partitions, together with functions
+\[
+  \operatorname{capacity}_I : N_I \to \mathbb{N}, \qquad
+  \operatorname{size}_I : P_I \to \mathbb{N},
+\]
+\[
+  \operatorname{requests}_I : P_I \to N_I \to \mathbb{N}, \qquad
+  \operatorname{communicationCost}_I : P_I \to \mathbb{N},
+\]
+and an exact replication parameter $k_I\in\mathbb{N}$. Equality on $N_I$ and
+$P_I$ is decidable. No feasibility assumption is part of the data of an
+allocation instance.
+\end{definition}
+
+\begin{definition}[Data assignment]\label{def:data-assignment}
+% lea: define
+% lea: label=DataAssignment
+% lea: uses={AllocationInstance}
+% lea: context={Define DataAssignment (I : AllocationInstance) as a function from I's partition type to Finset of I's node type. Use the primary declaration name DataAssignment.}
+For an allocation instance $I$, a \emph{data assignment} is a function
+\[
+  D : P_I \longrightarrow \mathcal{P}_{\mathrm{fin}}(N_I).
+\]
+The condition $n\in D(p)$ means that node $n$ stores a copy of partition $p$.
+\end{definition}
+
+\begin{definition}[Exact $k$-safety]\label{def:exact-k-safety}
+% lea: define
+% lea: label=ExactKSafety
+% lea: uses={AllocationInstance, DataAssignment}
+% lea: context={Define a Prop-valued predicate ExactKSafety (I : AllocationInstance) (D : DataAssignment I). It should state that the card of D p equals I.k for every partition p. This is exact replication, not at-least replication.}
+A data assignment $D$ for $I$ has \emph{exact $k$-safety} when every partition
+is stored on exactly $k_I$ nodes:
+\[
+  \forall p\in P_I, \qquad |D(p)|=k_I.
+\]
+\end{definition}
+
+\begin{definition}[Storage feasibility]\label{def:respects-storage}
+% lea: define
+% lea: label=RespectsStorage
+% lea: uses={AllocationInstance, DataAssignment}
+% lea: context={Define a Prop-valued predicate RespectsStorage (I : AllocationInstance) (D : DataAssignment I). Use Finset.univ filtered by membership of a node in D p, and require the sum of I.size p to be at most I.capacity n for every node n.}
+A data assignment $D$ \emph{respects storage} when, for every node $n$, the
+combined size of the partitions assigned to $n$ does not exceed its capacity:
+\[
+  \forall n\in N_I, \qquad
+  \sum_{\substack{p\in P_I\\ n\in D(p)}}
+    \operatorname{size}_I(p)
+  \leq \operatorname{capacity}_I(n).
+\]
+\end{definition}
+
+\begin{definition}[Processing cost]\label{def:processing-cost}
+% lea: define
+% lea: label=ProcessingCost
+% lea: uses={AllocationInstance, DataAssignment}
+% lea: context={Define ProcessingCost (I : AllocationInstance) (D : DataAssignment I) : Nat as a finite double sum over nodes and partitions. Include I.requests p n times I.communicationCost p exactly when n is not in D p.}
+The \emph{processing cost} of an assignment $D$ is the total communication cost
+of requests made at nodes that do not store the requested partition:
+\[
+  \operatorname{ProcessingCost}_I(D)
+  = \sum_{n\in N_I}\sum_{\substack{p\in P_I\\ n\notin D(p)}}
+      \operatorname{requests}_I(p,n)
+      \operatorname{communicationCost}_I(p).
+\]
+\end{definition}
+
+\begin{definition}[Feasible assignment]\label{def:feasible-assignment}
+% lea: define
+% lea: label=FeasibleAssignment
+% lea: uses={ExactKSafety, RespectsStorage}
+% lea: context={Define FeasibleAssignment (I : AllocationInstance) (D : DataAssignment I) : Prop as the conjunction ExactKSafety I D and RespectsStorage I D. Reuse the imported project definitions rather than restating them.}
+A data assignment is \emph{feasible} when it has exact $k$-safety and respects
+all storage constraints:
+\[
+  \operatorname{FeasibleAssignment}_I(D)
+  \quad\Longleftrightarrow\quad
+  \operatorname{ExactKSafety}_I(D)
+  \wedge \operatorname{RespectsStorage}_I(D).
+\]
+\end{definition}
+
+\begin{definition}[Optimal assignment]\label{def:optimal-assignment}
+% lea: define
+% lea: label=IsOptimalAssignment
+% lea: uses={FeasibleAssignment, ProcessingCost}
+% lea: context={Define IsOptimalAssignment (I : AllocationInstance) (D : DataAssignment I) : Prop. Require D to be feasible and its ProcessingCost to be at most that of every feasible assignment D'. Do not assert that such an assignment exists.}
+A data assignment $D$ is an \emph{optimal solution} to the assignment problem
+for $I$ when $D$ is feasible and no feasible assignment has lower processing
+cost:
+\[
+  \begin{aligned}
+    &\operatorname{FeasibleAssignment}_I(D) \\
+    &\quad\wedge\ \forall D',\
+      \operatorname{FeasibleAssignment}_I(D') \longrightarrow \\
+    &\qquad \operatorname{ProcessingCost}_I(D)
+      \leq \operatorname{ProcessingCost}_I(D').
+  \end{aligned}
+\]
+This is a predicate on candidate assignments; it does not claim that a feasible
+or optimal assignment exists.
+\end{definition}
+
+\begin{definition}[Quadratic unconstrained binary optimization]\label{def:qubo}
+% lea: define
+% lea: label=QUBO
+% lea: context={Create a structure QUBO (V : Type*) parameterized by a finite linearly ordered variable type V. Store a real-valued weight function on pairs of variables. Define QUBO.energy on assignments x : V -> Fin 2 by summing w i j times x_i times x_j over i <= j, and define QUBO.IsOptimal. Keeping V as a parameter will let later files instantiate QUBO with AllocationQUBOVariable.}
+For a finite linearly ordered type $V$, a \emph{quadratic unconstrained binary
+optimization problem} (QUBO) consists of real weights
+$w:V\to V\to\mathbb{R}$. A binary assignment $x:V\to\{0,1\}$ has energy
+\[
+  E_w(x)=\sum_{\substack{i,j\in V\\ i\leq j}} w(i,j)x(i)x(j).
+\]
+The assignment $x$ is optimal when
+\[
+  \forall y:V\to\{0,1\}, \qquad E_w(x)\leq E_w(y).
+\]
+The order restriction $i\leq j$ ensures that each unordered pair contributes
+once while permitting diagonal terms $i=j$.
+\end{definition}

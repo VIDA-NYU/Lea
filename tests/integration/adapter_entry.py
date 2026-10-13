@@ -1,7 +1,7 @@
 """Test-only adapter entrypoint for the cross-layer integration harness
 (PLAN-system-hardening Phase 1 / review B6).
 
-Boots the REAL FastAPI adapter with exactly one substitution: bridge.run_events
+Boots the REAL FastAPI adapter with deterministic prover substitutions: bridge.run_events
 is replaced by a scripted stub prover (no model calls, no Lean toolchain). The
 stub yields the prover's real typed events (imported from the vendored
 lea.interface), so everything downstream of the seam — event mapping, git
@@ -24,6 +24,7 @@ stub_theorem — so artifact contents match what the companion expects.
 """
 
 import os
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -88,12 +89,34 @@ def stub_run_events(config, messages, *, namespace=None, session_id=None,
     yield FileChanged(str(proof_path))
     yield UsageUpdated(11, 7, 0.002)
     yield ToolCalled("lean_check", {"path": str(proof_path)})
-    yield CheckResult(str(proof_path), "ok", None)
+    yield stub_check(str(proof_path))
     yield Finished("completed", f"Proved {decl}.", 1, session_id, config.model,
-                   Usage(input_tokens=11, output_tokens=7), 0.002, {"messages": []})
+                   Usage(input_tokens=11, output_tokens=7), 0.002, {"messages": []},
+                   result_kind="needs_review" if "[stub:review]" in task else "proved")
 
 
 bridge.run_events = stub_run_events
+
+# Manual checks report the same execution hash contract as the real compiler.
+# Integration tests validate transport and persistence; real Lean has its own suite.
+from app.routes import sessions as session_routes, projects as project_routes
+
+def stub_check(path, **kwargs):
+    content = Path(path).read_bytes()
+    bad = b"bad_tactic" in content
+    from lea.check_evidence import environment_hash, lake_root, _configuration, source_identity
+    from uuid import uuid4
+    root = lake_root(path)
+    environment = {'configuration': _configuration(root) if root else {}, 'files': {}}
+    return CheckResult(path, "error" if bad else "ok", "unknown tactic" if bad else None,
+        execution={'check_id': uuid4().hex, 'evidence_version': 1,
+            'content_sha256': hashlib.sha256(content).hexdigest(), 'source_path': path, 'source_identity': source_identity(path),
+            'environment': environment, 'environment_sha256': environment_hash(environment)},
+        content=content.decode())
+
+session_routes.interface_check = project_routes.interface_check = stub_check
+session_routes.interface_rebuild = stub_check
+session_routes.lean_check_runtime = lambda session_id: {"state": "healthy"}
 
 from app.main import app  # noqa: E402
 

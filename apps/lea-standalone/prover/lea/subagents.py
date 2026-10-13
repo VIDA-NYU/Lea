@@ -319,7 +319,18 @@ def _run_child(child_config, child_messages, *, working_dir: str, run_key: str,
     them in the model's `messages` — only the distilled result becomes the tool_result."""
     # Lazy import breaks the tools -> subagents -> agent import cycle: agent.py imports
     # tools (which imports this module), so this module cannot import agent at load.
-    from .agent import run_events
+    from .agent import run_events, _checkpoint_hook
+
+    parent_journal = _checkpoint_hook.get()
+
+    def journal_child(kind, payload):
+        # Keep raw paid-call usage in the existing journal, but never replace
+        # the coordinator's checkpoint with a child's isolated transcript.
+        if kind != "checkpoint":
+            payload = dict(payload)
+            if kind == "invocation_start":
+                payload["name"] = f"subagent:{run_key}:{payload['name']}"
+            parent_journal(kind, payload)
 
     last_check: CheckResult | None = None
     finished: Finished | None = None
@@ -331,6 +342,7 @@ def _run_child(child_config, child_messages, *, working_dir: str, run_key: str,
         depth=depth,
         should_stop=should_stop,
         gate=None,            # a child never pauses for human approval
+        **({"checkpoint_callback": journal_child} if parent_journal else {}),
     ):
         if isinstance(ev, CheckResult):
             last_check = ev
@@ -357,6 +369,8 @@ class SubagentResult:
     stop_reason: str                # child's Finished.reason, or 'error'
     summary: str                    # child's final text
     transcript: list = field(default_factory=list, repr=False)
+    execution: dict | None = None
+    content: str | None = None
 
     def render(self) -> str:
         """Compact, explicit prose for the parent — evidence, not a verdict of record;
@@ -385,7 +399,7 @@ class SubagentResult:
             check_detail=self.check_detail,
             stop_reason=self.stop_reason,
             summary=self.summary,
-            transcript=self.transcript,
+            transcript=self.transcript, execution=self.execution, content=self.content,
         )
 
 
@@ -408,6 +422,8 @@ def _build_result(
         stop_reason=finished.reason if finished else "error",
         summary=finished.text if finished else "",
         transcript=list(finished.transcript.get("messages", [])) if finished else [],
+        execution=last_check.execution if last_check else None,
+        content=last_check.content if last_check else None,
     )
 
 

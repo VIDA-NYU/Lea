@@ -54,9 +54,27 @@ def fake_completion(**kwargs):
     ]
 
 
+def fake_completion_cost(**kwargs):
+    return 0.003
+
+
+
+def legacy_cost_mock(fn):
+    def estimate(*, completion_response, model):
+        usage = completion_response.usage
+        details = getattr(usage, "prompt_tokens_details", None)
+        cache = {}
+        for source, destination in [("cached_tokens", "cache_read_input_tokens"),
+                                    ("cache_creation_tokens", "cache_creation_input_tokens")]:
+            value = getattr(details, source, None)
+            if value:
+                cache[destination] = value
+        return sum(fn(model, usage.prompt_tokens, usage.completion_tokens, **cache))
+    return estimate
+
+
 def fake_cost_per_token(model, prompt_tokens, completion_tokens, **cache):
     return (0.001, 0.002)
-
 
 def fake_completion_blocking(**kwargs):
     _CAPTURED.update(kwargs)
@@ -102,7 +120,7 @@ MESSAGES = [{"role": "user", "content": "prove it"}]
 
 def test_blocking_mode():
     providers.litellm.completion = fake_completion_blocking
-    providers.litellm.cost_per_token = fake_cost_per_token
+    providers.litellm.completion_cost = fake_completion_cost
     events = list(providers.stream("gemini/test-model", "SYS", MESSAGES, TOOLS, {"max_tokens": 100}, streaming=False))
     check("blocking: TextDelta whole content", events[0] == TextDelta("Hello world"))
     check("blocking: ToolCall assembled", events[1] == ToolCall("lean_check", {"path": "/x.lean"}))
@@ -113,7 +131,7 @@ def test_blocking_mode():
 
 def test_gpt_5_6_responses_compatibility():
     providers.litellm.completion = fake_gpt_5_6_completion
-    providers.litellm.cost_per_token = fake_cost_per_token
+    providers.litellm.completion_cost = fake_completion_cost
     caller_kwargs = {"max_tokens": 100, "include": []}
     events = list(providers.stream(
         "gpt-5.6-sol",
@@ -185,7 +203,7 @@ def test_portkey_gateway_routing():
         os.environ["PORTKEY_API_KEY"] = "pk-test"
         os.environ["PORTKEY_BASE_URL"] = "https://gateway.example/v1/"
         providers.litellm.completion = fake_completion
-        providers.litellm.cost_per_token = fake_cost
+        providers.litellm.completion_cost = legacy_cost_mock(fake_cost)
         _CAPTURED.clear()
         caller_kwargs = {"max_tokens": 100, "extra_headers": {"x-portkey-trace-id": "t1"}}
         catalog = "@openai-jdoe/gpt-4o"
@@ -272,7 +290,7 @@ def fake_completion_cached(**kwargs):
 def test_anthropic_cache_breakpoints():
     """Claude models get two prompt-cache breakpoints: system prompt + last block."""
     providers.litellm.completion = fake_completion
-    providers.litellm.cost_per_token = fake_cost_per_token
+    providers.litellm.completion_cost = legacy_cost_mock(fake_cost_per_token)
 
     _CAPTURED.clear()
     list(providers.stream("anthropic/claude-opus-4-8", "SYS", TOOL_CONVERSATION, TOOLS))
@@ -309,7 +327,7 @@ def test_anthropic_cache_breakpoints():
         return (0.004, 0.001)
 
     providers.litellm.completion = fake_completion_cached
-    providers.litellm.cost_per_token = fake_cost
+    providers.litellm.completion_cost = legacy_cost_mock(fake_cost)
     events = list(providers.stream("anthropic/claude-opus-4-8", "SYS", MESSAGES, TOOLS))
     done = events[-1]
     check("cache: usage keeps the whole prompt as input_tokens", done.usage.input_tokens == 5350)
@@ -351,7 +369,7 @@ def test_portkey_native_anthropic_route():
         os.environ["PORTKEY_API_KEY"] = "pk-test"
         os.environ["PORTKEY_BASE_URL"] = "https://gateway.example/v1/"
         providers.litellm.completion = fake_completion_cached
-        providers.litellm.cost_per_token = fake_cost
+        providers.litellm.completion_cost = legacy_cost_mock(fake_cost)
         caller_kwargs = {"max_tokens": 100, "extra_headers": {"x-portkey-trace-id": "t1"}}
         events = list(providers.stream(f"portkey/{catalog}", "SYS", TOOL_CONVERSATION, TOOLS, caller_kwargs))
 
@@ -399,7 +417,7 @@ def test_portkey_native_anthropic_route():
             return fake_completion(**kwargs)
 
         providers.litellm.completion = flaky_completion
-        providers.litellm.cost_per_token = fake_cost_per_token
+        providers.litellm.completion_cost = legacy_cost_mock(fake_cost_per_token)
         _CAPTURED.clear()
         events = list(providers.stream(f"portkey/{catalog}", "SYS", MESSAGES, TOOLS))
         check("fallback: native tried first, then chat completions",
@@ -448,7 +466,7 @@ def test_portkey_native_anthropic_route():
 def main():
     print("providers (LiteLLM stream) tests:")
     providers.litellm.completion = fake_completion
-    providers.litellm.cost_per_token = fake_cost_per_token
+    providers.litellm.completion_cost = fake_completion_cost
 
     tools = TOOLS
     messages = MESSAGES

@@ -23,6 +23,7 @@ test("detects a comment-marked theorem target", () => {
   assert.deepEqual(result.targets[0], {
     targetKind: "theorem",
     targetLabel: "even_square",
+    labelSource: "explicit",
     targetText: "If $n$ is even, then $n^2$ is even.",
     targetUses: ["even_def"],
     targetContext: "Use the parity definition first.",
@@ -155,10 +156,12 @@ test("ignores unmarked environments and legacy custom theorem commands", () => {
   assert.deepEqual(parseTargets("\\theorem[label=legacy]{A}"), []);
 });
 
-test("reports missing, invalid, and duplicate marker labels", () => {
+test("generates missing labels and reports invalid or duplicate markers", () => {
   const missing = parseTargetDocument("\\begin{theorem}\n% lea: formalize\nA.\n\\end{theorem}");
-  assert.equal(missing.targets.length, 0);
-  assert.equal(missing.diagnostics[0].code, "missing_label");
+  assert.equal(missing.targets.length, 1);
+  assert.equal(missing.diagnostics.length, 0);
+  assert.equal(missing.targets[0].labelSource, "generated");
+  assert.equal(isValidLeanIdentifier(missing.targets[0].targetLabel), true);
 
   const invalid = parseTargetDocument("\\begin{definition}\n% lea: define label=bad-label\nA.\n\\end{definition}");
   assert.equal(invalid.targets.length, 0);
@@ -173,6 +176,15 @@ test("reports missing, invalid, and duplicate marker labels", () => {
   ].join("\n"));
   assert.equal(duplicate.targets.length, 0);
   assert.equal(duplicate.diagnostics[0].code, "duplicate_marker");
+});
+
+test("label-free targets have stable file-scoped candidates across statement edits", () => {
+  const source = (statement) => `\\begin{theorem}\\label{thm:one}\n% lea: formalize\n${statement}\n\\end{theorem}`;
+  const before = parseTargets(source("A."), { sourcePath: "main.tex" })[0];
+  const after = parseTargets(source("A changed statement."), { sourcePath: "main.tex" })[0];
+  assert.equal(before.targetLabel, after.targetLabel);
+  assert.equal(before.labelSource, "generated");
+  assert.notEqual(before.targetLabel, parseTargets(source("A."), { sourcePath: "other.tex" })[0].targetLabel);
 });
 
 // Regression test for a follow-on bug found live: excluding verbatim-like

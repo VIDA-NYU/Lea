@@ -24,7 +24,6 @@ import { restoreFormalizationSelection } from '../lib/formalizations.mjs';
 // the Overleaf companion's already-proven retry loop.
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
-const RECONNECT_MAX_ATTEMPTS = 20;
 
 // Decorrelated-ish jitter: full exponential value minus up to 25%, so a fleet of
 // tabs that all dropped at once don't resynchronize onto the same retry tick.
@@ -61,13 +60,71 @@ export function useProofStream() {
   const reconnectRef = useRef<{ runId: string; count: number }>({ runId: '', count: 0 });
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Close the stream when App unmounts.
-  useEffect(() => () => {
-    if (reconnectTimerRef.current !== null) clearTimeout(reconnectTimerRef.current);
-    eventSourceRef.current?.close();
+  const selectionGeneration = useRef(0);
+  const scopeGeneration = useRef(0);
+  const streamGeneration = useRef(0);
+  const applyingDetail = useRef(false);
+  const pendingRequests = useRef(new Set<AbortController>());
+
+  // Ownership survives renders, but expires on every navigation (including A→B→A).
+  const captureSelection = (includeScope = true) => {
+    const generation = selectionGeneration.current;
+    const scope = scopeGeneration.current;
+    const sessionId = useSessions.getState().selectedSessionId;
+    return () => generation === selectionGeneration.current
+      && sessionId === useSessions.getState().selectedSessionId
+      && (!includeScope || scope === scopeGeneration.current);
+  };
+  const captureStream = () => {
+    const owned = captureSelection(false);
+    const generation = streamGeneration.current;
+    return () => owned() && generation === streamGeneration.current;
+  };
+  const fetchDetail = async (sessionId: string) => {
+    const controller = new AbortController();
+    pendingRequests.current.add(controller);
+    try { return await getSession(sessionId, controller.signal); }
+    finally { pendingRequests.current.delete(controller); }
+  };
+  useEffect(() => useProofSession.subscribe((state, previous) => {
+    if (!applyingDetail.current && state.formalizationScope !== previous.formalizationScope) {
+      scopeGeneration.current += 1;
+    }
+  }), []);
+  useEffect(() => () => closeStream(), []);
+
+  useEffect(() => {
+    const poll = async () => {
+      if (document.visibilityState === 'hidden' || !useProofSession.getState().isRunning) return;
+      const owned = captureStream();
+      try {
+        const response = await fetch('/api/health');
+        if (!response.ok) return;
+        const health = await response.json() as { lifecycle_state?: string };
+        if (!owned()) return;
+        if (health.lifecycle_state === 'draining') {
+          useProofSession.getState().setReconnecting('Waiting to restart…');
+        } else if (health.lifecycle_state === 'recovering') {
+          useProofSession.getState().setReconnecting('Recovering saved progress…');
+        } else if (health.lifecycle_state === 'ready' && eventSourceRef.current?.readyState === EventSource.OPEN) {
+          const current = useProofSession.getState().reconnecting;
+          if (current === 'Waiting to restart…' || current === 'Recovering saved progress…') {
+            useProofSession.getState().setReconnecting(undefined);
+          }
+        }
+      } catch { /* Connection errors are handled by the stream reconnect path. */ }
+    };
+    const timer = setInterval(() => { void poll(); }, 5000);
+    return () => clearInterval(timer);
   }, []);
 
-  const closeStream = () => {
+  const closeStream = (invalidateSelection = true) => {
+    streamGeneration.current += 1;
+    if (invalidateSelection) {
+      selectionGeneration.current += 1;
+      for (const controller of pendingRequests.current) controller.abort();
+      pendingRequests.current.clear();
+    }
     // Cancel any pending backoff so a switched-away run can't reconnect underneath
     // the newly-opened session. Attempt count is left to reset on a real open (or
     // a fresh user-initiated attach that opens), so it survives across reattach
@@ -82,6 +139,7 @@ export function useProofStream() {
   };
 
   const applyDetail = (detail: SessionDetail) => {
+    if (useSessions.getState().selectedSessionId !== detail.id) closeStream();
     const previousScope = useProofSession.getState().formalizationScope;
     const {
       setMessages,
@@ -96,6 +154,8 @@ export function useProofStream() {
       setApprovalBusy,
       setRunStatusById,
       setRunResultKindById,
+      setRunStopReasonById,
+      setRunRecoveryById,
       setRunFocusById,
       setEditedPath,
       setSafeVerify,
@@ -110,6 +170,7 @@ export function useProofStream() {
     // It also covers what upstream set by hand here (composerScopeOverride,
     // currentFormalizationSnapshot, canvasRevisionMode), which all reset to the same
     // defaults — they now live in SESSION_SCOPED instead of being repeated.
+    applyingDetail.current = true;
     useProofSession.getState().resetSessionScoped();
     const formalizations = detail.formalizations || [];
     setFormalizations(formalizations);
@@ -120,6 +181,7 @@ export function useProofStream() {
       latestFocusId: detail.latest_focus_formalization_id,
       formalizations,
     }));
+    applyingDetail.current = false;
     useSessions.getState().setSelectedSessionId(detail.id);
     setMessages(detail.messages);
     setCodeSteps(detail.code_steps);
@@ -161,20 +223,28 @@ export function useProofStream() {
     setApprovalBusy(false);
     const statuses: Record<string, string> = {};
     const resultKinds: Record<string, string | null | undefined> = {};
+    const stopReasons: Record<string, string | null | undefined> = {};
     const focuses: Record<string, string | null | undefined> = {};
+    const recoveries: Record<string, { state?: string | null; reason?: string | null; action?: 'resume' | 'continue' | null }> = {};
     for (const r of detail.runs || []) {
       statuses[r.id] = r.status;
       resultKinds[r.id] = r.result_kind;
+      stopReasons[r.id] = r.stop_reason || r.stop_requested_reason;
       focuses[r.id] = r.focus_formalization_id;
+      recoveries[r.id] = { state: r.recovery_state, reason: r.recovery_reason, action: r.available_recovery_action };
     }
     if (active) {
       statuses[active.id] = active.status;
       resultKinds[active.id] = active.result_kind;
+      stopReasons[active.id] = active.stop_reason || active.stop_requested_reason;
       focuses[active.id] = active.focus_formalization_id;
+      recoveries[active.id] = { state: active.recovery_state, reason: active.recovery_reason };
     }
     setRunStatusById(statuses);
     setRunResultKindById(resultKinds);
+    setRunStopReasonById(stopReasons);
     setRunFocusById(focuses);
+    setRunRecoveryById(recoveries);
     setEditedPath(undefined);
     setSafeVerify(detail.safe_verify || null);
     setVerifySurface(null);
@@ -184,8 +254,29 @@ export function useProofStream() {
     }
   };
 
+  const loadSession = async (sessionId: string) => {
+    closeStream();
+    useSessions.getState().setSelectedSessionId(sessionId);
+    useProofSession.getState().resetSessionScoped();
+    const owned = captureSelection(false);
+    try {
+      const detail = await fetchDetail(sessionId);
+      if (!owned()) return null;
+      applyDetail(detail);
+      return detail;
+    } catch (error) {
+      if (!owned()) return null;
+      throw error;
+    }
+  };
+
   const reconcile = async (sessionId: string) => {
-    const detail = await getSession(sessionId);
+    if (useSessions.getState().selectedSessionId !== sessionId) return;
+    const owned = captureStream();
+    let detail: SessionDetail;
+    try { detail = await fetchDetail(sessionId); }
+    catch (error) { if (!owned()) return; throw error; }
+    if (!owned()) return;
     // The store is the live source of truth (no stale-closure issue), so read the
     // just-finished status straight from it and re-apply it after applyDetail
     // (which would otherwise clear it, since the run is no longer active).
@@ -195,7 +286,7 @@ export function useProofStream() {
       ? useProofSession.getState().runResultKindById[currentRunId]
       : undefined;
     applyDetail(detail);
-    if (finished) useProofSession.getState().setRunStatus(finished);
+    if (finished && !detail.active_run) useProofSession.getState().setRunStatus(finished);
     if (currentRunId && finishedResultKind) {
       useProofSession.getState().setRunResultKindById((prev) => ({
         ...prev,
@@ -210,19 +301,12 @@ export function useProofStream() {
   // settles quietly if it finished while we were away; gives up with an error
   // banner past the attempt cap. Reads setters via getState() to stay stale-free.
   const scheduleReconnect = (runId: string, sessionId: string) => {
-    const { setReconnecting, setError, setIsRunning, setCurrentRunId } =
-      useProofSession.getState();
+    if (useSessions.getState().selectedSessionId !== sessionId) return;
+    const owned = captureStream();
+    const { setReconnecting } = useProofSession.getState();
     const prev = reconnectRef.current;
     const attempt = prev.runId === runId ? prev.count + 1 : 1;
     reconnectRef.current = { runId, count: attempt };
-    if (attempt > RECONNECT_MAX_ATTEMPTS) {
-      reconnectRef.current = { runId: '', count: 0 };
-      setReconnecting(undefined);
-      setIsRunning(false);
-      setCurrentRunId(undefined);
-      setError('Lost connection to the Lea backend.');
-      return;
-    }
     // B3: a browser EventSource cannot read an HTTP status, so the adapter's honest
     // capacity 409 ("Lea is at capacity, try again shortly") reaches us as a bare
     // `onerror` — indistinguishable from a dropped connection. But the run row tells
@@ -232,13 +316,15 @@ export function useProofStream() {
     const queued = useProofSession.getState().runStatus === 'pending';
     setReconnecting(
       queued
-        ? `Waiting for a free run slot… (attempt ${attempt}/${RECONNECT_MAX_ATTEMPTS})`
-        : `Reconnecting to the live run… (attempt ${attempt}/${RECONNECT_MAX_ATTEMPTS})`,
+        ? 'Waiting for a free run slot…'
+        : 'Waiting for the adapter to reconnect…',
     );
     reconnectTimerRef.current = setTimeout(() => {
       reconnectTimerRef.current = null;
-      getSession(sessionId)
+      if (!owned()) return;
+      fetchDetail(sessionId)
         .then((detail) => {
+          if (!owned()) return;
           const active = detail.active_run;
           if (active && (active.status === 'running' || active.status === 'pending')) {
             // Still live → applyDetail reattaches; the new stream's onopen resets
@@ -253,20 +339,34 @@ export function useProofStream() {
             useSessions.getState().refreshSessions().catch(() => {});
           }
         })
-        .catch(() => scheduleReconnect(runId, sessionId));
+        .catch(() => { if (owned()) scheduleReconnect(runId, sessionId); });
     }, reconnectDelay(attempt));
   };
 
   const attachStream = (runId: string, sessionId: string) => {
-    closeStream();
+    if (useSessions.getState().selectedSessionId !== sessionId) return;
+    closeStream(false);
+    const owned = captureStream();
     const source = new EventSource(`/api/runs/${runId}/events`);
     eventSourceRef.current = source;
+    const listen = (type: string, handler: (event: Event) => void) => {
+      source.addEventListener(type, (event) => {
+        if (owned() && eventSourceRef.current === source) handler(event);
+      });
+    };
     const liveId = `live-${runId}`;
     let sawDone = false;
+    listen('resync', () => {
+      source.close();
+      eventSourceRef.current = null;
+      fetchDetail(sessionId).then((detail) => { if (owned()) applyDetail(detail); })
+        .catch(() => { if (owned()) scheduleReconnect(runId, sessionId); });
+    });
 
     // A real open means any prior backoff succeeded: reset it and drop the
     // reconnecting chip, so a later drop starts fresh from the base delay.
     source.onopen = () => {
+      if (!owned() || eventSourceRef.current !== source) return;
       reconnectRef.current = { runId, count: 0 };
       useProofSession.getState().setReconnecting(undefined);
     };
@@ -281,11 +381,12 @@ export function useProofStream() {
       setRunStatus,
       setRunStatusById,
       setRunResultKindById,
+      setRunStopReasonById,
       setCurrentRunId,
       setError,
     } = useProofSession.getState();
 
-    source.addEventListener('assistant_delta', (event) => {
+    listen('assistant_delta', (event) => {
       const { text } = JSON.parse((event as MessageEvent).data) as { text: string };
       setMessages((current) => {
         const existing = current.find((m) => m.id === liveId);
@@ -307,7 +408,7 @@ export function useProofStream() {
       });
     });
 
-    source.addEventListener('message', (event) => {
+    listen('message', (event) => {
       const payload = JSON.parse((event as MessageEvent).data) as ChatMessage;
       if (typeof payload.seq === 'number') lastSeqRef.current = Math.max(lastSeqRef.current, payload.seq);
       setMessages((current) => {
@@ -322,7 +423,7 @@ export function useProofStream() {
       });
     });
 
-    source.addEventListener('code_step', (event) => {
+    listen('code_step', (event) => {
       const payload = JSON.parse((event as MessageEvent).data) as CodeStep;
       if (typeof payload.seq === 'number') lastSeqRef.current = Math.max(lastSeqRef.current, payload.seq);
       const current = useProofSession.getState().codeSteps;
@@ -351,7 +452,7 @@ export function useProofStream() {
       }
     });
 
-    source.addEventListener('status', (event) => {
+    listen('status', (event) => {
       const payload = JSON.parse((event as MessageEvent).data) as Partial<StatusEvent>;
       setStatusEvents((current) => [
         ...current,
@@ -372,7 +473,7 @@ export function useProofStream() {
     // Server-side queue (Phase 2): a pending run's stream opens with its FIFO
     // position. Surface it on the status timeline so waiting reads as an
     // honest "queued behind N" instead of a bare spinner.
-    source.addEventListener('queued', (event) => {
+    listen('queued', (event) => {
       let position: number | null = null;
       try {
         const payload = JSON.parse((event as MessageEvent).data || '{}') as { position?: number };
@@ -399,7 +500,7 @@ export function useProofStream() {
       ]);
     });
 
-    source.addEventListener('approval_requested', (event) => {
+    listen('approval_requested', (event) => {
       const payload = JSON.parse((event as MessageEvent).data) as PendingApproval;
       approvalCounterRef.current += 1;
       // The gate must sort BELOW everything currently rendered — it's the pending next
@@ -422,7 +523,7 @@ export function useProofStream() {
       setApprovalBusy(false);
     });
 
-    source.addEventListener('approval_resolved', (event) => {
+    listen('approval_resolved', (event) => {
       const payload = JSON.parse((event as MessageEvent).data) as { approval_id?: string; decision?: string };
       setApprovals((prev) =>
         prev.map((a) =>
@@ -432,7 +533,7 @@ export function useProofStream() {
       setApprovalBusy(false);
     });
 
-    source.addEventListener('subagent_started', (event) => {
+    listen('subagent_started', (event) => {
       // D1: a child sub-agent was just spawned and the adapter has persisted it as a
       // RUNNING child session (a running run row → derived status 'running'). Refresh so
       // it lands in the store: the sidebar's Sub-agents block and the parent thread's
@@ -455,7 +556,7 @@ export function useProofStream() {
       useSessions.getState().refreshSessions().catch(() => {});
     });
 
-    source.addEventListener('subagent_progress', (event) => {
+    listen('subagent_progress', (event) => {
       // E1: a running child emitted one of its own steps. Fold it into that child's
       // ephemeral live state (rendered on its spawn-node row) so the user watches it
       // work — text streams, the current tool + latest check show. Visibility only; the
@@ -482,7 +583,7 @@ export function useProofStream() {
       });
     });
 
-    source.addEventListener('subagent_finished', (event) => {
+    listen('subagent_finished', (event) => {
       // A child sub-agent finished and the adapter has already persisted it as its own
       // session (item 24). Refresh the list so the child lands in the store — the
       // sidebar's Sub-agents block and the parent thread's spawn node both derive from
@@ -533,7 +634,7 @@ export function useProofStream() {
 
     // v2.4: every backend failure arrives here — anchored, coded, and already
     // persisted server-side, so this listener only has to merge it in.
-    source.addEventListener('diagnostic', (event) => {
+    listen('diagnostic', (event) => {
       const data = (event as MessageEvent).data;
       if (!data) return;
       try {
@@ -554,7 +655,7 @@ export function useProofStream() {
 
     // D4: a spawned child cleared the concurrency semaphore and actually started.
     // Until this arrives the child is queued, not running.
-    source.addEventListener('subagent_running', (event) => {
+    listen('subagent_running', (event) => {
       const data = (event as MessageEvent).data;
       if (!data) return;
       try {
@@ -570,16 +671,22 @@ export function useProofStream() {
       }
     });
 
-    source.addEventListener('done', (event) => {
+    listen('done', (event) => {
       sawDone = true;
       source.close();
       eventSourceRef.current = null;
       let status: RunStatus = 'proved';
       let resultKind: string | null | undefined;
+      let stopReason: string | null | undefined;
+      let recoveryState: string | null | undefined;
+      let recoveryReason: string | null | undefined;
       try {
         const payload = JSON.parse((event as MessageEvent).data || '{}');
         status = (payload.status as RunStatus) || 'proved';
         resultKind = payload.result_kind;
+        stopReason = payload.stop_reason;
+        recoveryState = payload.recovery_state;
+        recoveryReason = payload.recovery_reason;
       } catch {
         /* keep default */
       }
@@ -587,18 +694,22 @@ export function useProofStream() {
       setRunStatus(status);
       setRunStatusById((prev) => ({ ...prev, [runId]: status }));
       setRunResultKindById((prev) => ({ ...prev, [runId]: resultKind }));
+      setRunStopReasonById((prev) => ({ ...prev, [runId]: stopReason }));
+      useProofSession.getState().setRunRecoveryById((prev) => ({
+        ...prev, [runId]: { state: recoveryState, reason: recoveryReason },
+      }));
       setCurrentRunId(undefined);
       setApprovals((prev) => prev.filter((a) => a.decision));
       setApprovalBusy(false);
       reconcile(sessionId)
         .then(() => useSessions.getState().refreshSessions())
-        .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+        .catch((err) => { if (owned()) setError(err instanceof Error ? err.message : String(err)); });
     });
 
     source.onerror = () => {
       // Ignore errors from a stream we've already replaced/closed, and the benign
       // error that follows a normal `done` close.
-      if (eventSourceRef.current !== source) return;
+      if (!owned() || eventSourceRef.current !== source) return;
       if (sawDone) {
         source.close();
         eventSourceRef.current = null;
@@ -616,5 +727,5 @@ export function useProofStream() {
     };
   };
 
-  return { attachStream, applyDetail, reconcile, closeStream };
+  return { attachStream, applyDetail, reconcile, closeStream, loadSession, captureSelection };
 }

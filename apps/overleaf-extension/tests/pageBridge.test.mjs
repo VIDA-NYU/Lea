@@ -468,6 +468,237 @@ test("page bridge opens a different file and selects the block on cross-file nav
     assert.deepEqual(dispatched[0].selection, { anchor: markerIndex, head: markerIndex });
     const result = posted.find((message) => message.type === "OL_LEAN_NAVIGATE_RESULT");
     assert.ok(result && result.ok === true);
+
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("page bridge uses current Overleaf editor tabs when the private IDE API is unavailable", async () => {
+  const otherSource = "Other file contents.";
+  const targetSource = [
+    "\\begin{theorem}\\label{thm:target}",
+    "% lea: formalize label=target_theorem",
+    "A target theorem.",
+    "\\end{theorem}"
+  ].join("\n");
+  const markerIndex = targetSource.indexOf("% lea");
+  const listeners = new Map();
+  const extensions = [];
+  const dispatched = [];
+  const posted = [];
+  let activePath = "other.tex";
+  let activeSource = otherSource;
+  let targetTabClicks = 0;
+
+  function editorTab(path) {
+    return {
+      getAttribute(name) {
+        if (name === "aria-selected") return activePath === path ? "true" : "false";
+        return null;
+      },
+      querySelector(selector) {
+        return selector === ".editor-file-tab-path" ? { textContent: `\u200e${path}` } : null;
+      },
+      click() {
+        if (path === "sections/target.tex") targetTabClicks += 1;
+        activePath = path;
+        activeSource = path === "sections/target.tex" ? targetSource : otherSource;
+      }
+    };
+  }
+
+  const tabs = [editorTab("other.tex"), editorTab("sections/target.tex")];
+  globalThis.window = {
+    CodeMirror: null,
+    // Regression: current Overleaf does not expose window._ide.
+    document: {
+      querySelectorAll(selector) {
+        if (selector.includes(".editor-file-tab")) {
+          return selector.includes('aria-selected="true"')
+            ? tabs.filter((tab) => tab.getAttribute("aria-selected") === "true")
+            : tabs;
+        }
+        return [];
+      }
+    },
+    addEventListener(type, listener) {
+      const current = listeners.get(type) || [];
+      current.push(listener);
+      listeners.set(type, current);
+    },
+    postMessage(message) { posted.push(message); },
+    setTimeout(callback) { callback(); return 0; },
+    setInterval() {}
+  };
+
+  try {
+    await import(`${pathToFileURL(pageBridgePath).href}?uiTabs=${Date.now()}`);
+    const [installBridge] = listeners.get("UNSTABLE_editor:extensions") || [];
+    installBridge({
+      detail: {
+        extensions,
+        CodeMirror: {
+          ViewPlugin: { fromClass(PluginClass, spec) { return { PluginClass, spec }; } },
+          Decoration: { mark() { return { range(from, to) { return { from, to }; } }; }, set(ranges) { return ranges; } }
+        }
+      }
+    });
+
+    const doc = {
+      get length() { return activeSource.length; },
+      toString() { return activeSource; }
+    };
+    const view = {
+      state: { doc },
+      coordsAtPos() { return null; },
+      dispatch(transaction) { dispatched.push(transaction); },
+      focus() {}
+    };
+    new extensions[0].PluginClass(view);
+
+    const [onMessage] = listeners.get("message") || [];
+    onMessage({
+      source: globalThis.window,
+      data: {
+        type: "OL_LEAN_NAVIGATE",
+        sourceFile: "sections/target.tex",
+        line: 2,
+        from: 0,
+        to: targetSource.length,
+        leanLabel: "target_theorem",
+        latexLabel: "thm:target"
+      }
+    });
+
+    assert.equal(targetTabClicks, 1);
+    assert.equal(activePath, "sections/target.tex");
+    assert.deepEqual(dispatched.at(-1)?.selection, { anchor: markerIndex, head: markerIndex });
+    const result = posted.find((message) => message.type === "OL_LEAN_NAVIGATE_RESULT");
+    assert.ok(result && result.ok === true);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("page bridge opens a nested file through the current Overleaf file tree", async () => {
+  const otherSource = "Other file contents.";
+  const targetSource = [
+    "\\begin{lemma}\\label{lem:nested}",
+    "% lea: formalize label=nested_lemma",
+    "A nested lemma.",
+    "\\end{lemma}"
+  ].join("\n");
+  const markerIndex = targetSource.indexOf("% lea");
+  const listeners = new Map();
+  const extensions = [];
+  const dispatched = [];
+  let activePath = "other.tex";
+  let activeSource = otherSource;
+  let fileClicks = 0;
+
+  const selectedTab = {
+    getAttribute(name) { return name === "aria-selected" ? "true" : null; },
+    querySelector(selector) {
+      return selector === ".editor-file-tab-path" ? { textContent: `\u200e${activePath}` } : null;
+    },
+    click() {}
+  };
+  const folder = {
+    parentElement: null,
+    getAttribute(name) {
+      if (name === "role") return "treeitem";
+      if (name === "aria-label") return "sections";
+      if (name === "aria-expanded") return "true";
+      return null;
+    },
+    querySelector(selector) {
+      return selector === '[data-file-type="folder"]' ? {} : null;
+    }
+  };
+  const group = { parentElement: folder, getAttribute() { return null; } };
+  const clickTarget = {
+    click() {
+      fileClicks += 1;
+      activePath = "sections/result.tex";
+      activeSource = targetSource;
+    }
+  };
+  const file = {
+    parentElement: group,
+    getAttribute(name) {
+      if (name === "role") return "treeitem";
+      if (name === "aria-label") return "result.tex";
+      return null;
+    },
+    querySelector(selector) {
+      if (selector === '[data-file-type="doc"]') return {};
+      if (selector === ".entity-name") return clickTarget;
+      return null;
+    }
+  };
+
+  globalThis.window = {
+    CodeMirror: null,
+    document: {
+      querySelectorAll(selector) {
+        if (selector.includes('aria-selected="true"')) return [selectedTab];
+        if (selector.includes(".editor-file-tab")) return [selectedTab];
+        if (selector.includes("file-tree-list-root")) return [folder, file];
+        return [];
+      }
+    },
+    addEventListener(type, listener) {
+      const current = listeners.get(type) || [];
+      current.push(listener);
+      listeners.set(type, current);
+    },
+    postMessage() {},
+    setTimeout(callback) { callback(); return 0; },
+    setInterval() {}
+  };
+
+  try {
+    await import(`${pathToFileURL(pageBridgePath).href}?uiTree=${Date.now()}`);
+    const [installBridge] = listeners.get("UNSTABLE_editor:extensions") || [];
+    installBridge({
+      detail: {
+        extensions,
+        CodeMirror: {
+          ViewPlugin: { fromClass(PluginClass, spec) { return { PluginClass, spec }; } },
+          Decoration: { mark() { return { range(from, to) { return { from, to }; } }; }, set(ranges) { return ranges; } }
+        }
+      }
+    });
+
+    const doc = {
+      get length() { return activeSource.length; },
+      toString() { return activeSource; }
+    };
+    const view = {
+      state: { doc },
+      coordsAtPos() { return null; },
+      dispatch(transaction) { dispatched.push(transaction); },
+      focus() {}
+    };
+    new extensions[0].PluginClass(view);
+
+    const [onMessage] = listeners.get("message") || [];
+    onMessage({
+      source: globalThis.window,
+      data: {
+        type: "OL_LEAN_NAVIGATE",
+        sourceFile: "sections/result.tex",
+        from: 0,
+        to: targetSource.length,
+        leanLabel: "nested_lemma",
+        latexLabel: "lem:nested"
+      }
+    });
+
+    assert.equal(fileClicks, 1);
+    assert.equal(activePath, "sections/result.tex");
+    assert.deepEqual(dispatched.at(-1)?.selection, { anchor: markerIndex, head: markerIndex });
   } finally {
     delete globalThis.window;
   }
@@ -570,6 +801,24 @@ test("page bridge resolves nested file-tree entities and opens by doc id", async
     assert.deepEqual(dispatched[0].selection, { anchor: markerIndex, head: markerIndex });
     const result = posted.find((message) => message.type === "OL_LEAN_NAVIGATE_RESULT");
     assert.ok(result && result.ok === true);
+
+    // A generated label has no text anchor. Once the requested file is active,
+    // its recorded range still lets the pane navigate to the statement.
+    currentDocId = "doc-main";
+    onMessage({
+      source: globalThis.window,
+      data: {
+        type: "OL_LEAN_NAVIGATE",
+        sourceFile: "sections/supp.tex",
+        line: 2,
+        from: 0,
+        to: source.length,
+        leanLabel: "lea_auto_theorem_1234",
+        labelSource: "generated",
+        latexLabel: ""
+      }
+    });
+    assert.deepEqual(dispatched.at(-1)?.selection, { anchor: 0, head: source.length });
   } finally {
     delete globalThis.window;
   }

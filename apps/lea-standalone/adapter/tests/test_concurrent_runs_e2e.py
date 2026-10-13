@@ -1,5 +1,6 @@
 """Verdict-integrity under concurrency — v2.3 item 17, the adapter acceptance test.
 
+
 Six runs execute at once through the REAL bridge pipeline: real per-session git
 repos, real concurrent DB writes, real `timeline` ordering, and the real *derived*
 session status (D14 — status is the latest code row's verdict, never stored). Three
@@ -22,6 +23,8 @@ verdicts commit. Then: exactly the three provable sessions must derive `proved`,
 three false ones `error`, and every session's stored proof must carry its OWN marker
 and no other run's.
 """
+
+import pytest
 
 import threading
 from pathlib import Path
@@ -191,3 +194,7 @@ def test_timeline_positions_stay_unique_across_concurrent_runs(tmp_path, monkeyp
     with db.connect() as conn:
         ids = [r["id"] for r in conn.execute("select id from timeline").fetchall()]
     assert len(ids) == len(set(ids)), "two timeline rows shared a position under concurrency"
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

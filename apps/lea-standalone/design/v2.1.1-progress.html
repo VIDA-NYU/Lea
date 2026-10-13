@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="refresh" content="8" />
+<title>LeaUI v2.1.1 — Skill & MCP Factories Progress (backend + frontend)</title>
+<style>
+  :root {
+    --bg: #f5f4ef; --panel: #fffefb; --ink: #2a2724; --muted: #8a847c;
+    --line: #e6e2da; --accent: #c96442; --green: #4f8a5b; --red: #c0564a;
+    --amber: #b8842a; --blue: #4a6fa5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    padding: 32px 0 80px;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+  header { margin-bottom: 8px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .intro { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 13px 16px; margin: 18px 0 8px; font-size: 13px; color: #4a463f; }
+  .intro b { color: var(--ink); }
+  .gaps { background: #fbf4e6; border: 1px solid #ecdcbb; border-left: 3px solid var(--amber);
+    border-radius: 10px; padding: 12px 16px; margin: 14px 0 26px; font-size: 12.5px; color: #5a4a2a; }
+  .gaps h3 { margin: 0 0 7px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--amber); }
+  .gaps b { color: var(--ink); }
+  .gaps .fix { color: #7a6a44; }
+  .bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 18px 0 6px; }
+  .bar > i { display: block; height: 100%; background: var(--green); }
+  .counts { color: var(--muted); font-size: 12.5px; margin-bottom: 26px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 14px 0 28px; font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 99px; display: inline-block; }
+  .d-queued { background: #cdc8be; } .d-planned { background: var(--amber); }
+  .d-prog { background: var(--blue); } .d-tested { background: #7aa37f; } .d-done { background: var(--green); }
+  .d-unplanned { background: #b79ad0; }
+
+  .group { margin-bottom: 30px; }
+  .group > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+    margin: 0 0 4px; font-weight: 600; }
+  .group > .ghint { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+
+  .todo { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 13px 15px; margin-bottom: 9px; }
+  .todo.is-planned { border-color: var(--amber); box-shadow: 0 0 0 1px rgba(184,132,42,.15); }
+  .todo.is-done { opacity: .62; }
+  .todo .top { display: flex; align-items: center; gap: 10px; }
+  .id { font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+  .id.fe { color: var(--accent); border-color: #e7cabd; background: #fbf1ec; }
+  .title { font-weight: 550; flex: 1; }
+  .tag { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+    padding: 1px 7px; border-radius: 99px; }
+  .tag.be { background: #eef0ec; color: #6a7d63; }
+  .tag.fe { background: #fbf1ec; color: var(--accent); }
+  .dec { color: var(--muted); font-size: 11.5px; font-family: ui-monospace, monospace; }
+  .badge { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 99px; white-space: nowrap; }
+  .b-queued { background: #efece6; color: #8a847c; }
+  .b-planned { background: #f7ecd6; color: var(--amber); }
+  .b-prog { background: #e4ecf6; color: var(--blue); }
+  .b-built { background: #e4ecf6; color: var(--blue); }
+  .b-tested { background: #e2efe4; color: #5a8a62; }
+  .b-done { background: #dcefe1; color: var(--green); }
+  .b-unplanned { background: #efe7f3; color: #7a5a9a; }
+  .id.issue { color: #7a5a9a; border-color: #d8c8e6; background: #f5eef9; }
+  .scope { color: var(--muted); font-size: 13px; margin: 6px 0 0 0; }
+  code { background: #f0ede6; border-radius: 4px; padding: 1px 5px; font: 12px ui-monospace, monospace; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 40px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>LeaUI v2.1.1 — Skill Factory + open-issue backlog</h1>
+    <div class="sub">Live progress · <b>backend + frontend interleaved</b>, built in vertical slices · backend
+      <code>v2.1.1-factories-architecture.md</code> (D44–D57) · UI <code>v2.1.1-factories-ui.md</code> (D51–D58) ·
+      <b>MCP Factory deferred</b> · also tracks the <b>open GitHub issues</b> (#10/#11/#14) as a plan-first backlog ·
+      auto-refreshes every 8s</div>
+  </header>
+
+  <div class="intro">
+    <b>Build rhythm:</b> one slice at a time, each ending in something <b>clickable on the UI</b> — backend
+    todo(s) (<code class="dec">W1…W4</code>) then the frontend that consumes them (<code class="dec">F10/F11</code>):
+    plan → your input → build + tests → tested → done. A <b>factory</b> is an adapter-side <b>catalog</b> over the
+    prover's <i>existing</i> skill support — the prover already takes <code>cfg.skills</code> (md → system prompt);
+    the adapter just never populates it today. A <b>skill</b> is a DB row (markdown body in a column) — not git
+    (D45). One <b>scope model</b>: global (all projects) · per-project · <b>loose sessions get neither</b> (D47). The
+    headline Add gesture is <b>paste a GitHub link → Add → choose scope</b> (D56/D58). <b>No prover changes.</b>
+    <b>MCP Factory is designed but deferred</b> — see the box below.
+  </div>
+
+  <div class="bar"><i style="width:100%"></i></div>
+  <div class="counts"><b>6 / 6 tested</b> · 4 backend + 2 frontend · <b>Slice 8 complete</b> (MCP slice deferred) ·
+    <b>Slice 8 in progress</b> — Skill Factory: the <code>skills</code> table (body + <code>is_global</code> + <code>source_url</code>)
+    + <code>skill_projects</code> join + store queries incl. the <code>global ∪ assigned</code> resolution read
+    (<b>W1 ✓ tested</b>, commit <code>121e74f</code>, 10 store tests) + the CRUD + assignment routes
+    (<b>W2 ✓ tested</b>, commit <code>c624290</code>, 9 route tests) + the bridge resolution that materializes
+    applicable skills to per-run temp <code>.md</code> → <code>cfg.skills</code>
+    (<b>W3 ✓ tested</b>, commit <code>0a3a450</code>, 5 catalog+bridge tests) +
+    <b>GitHub import</b> (<code>POST /api/skills/import</code>, <b>W4 ✓ tested</b>, commit <code>d3fcbff</code>, 18 tests);
+    then the frontend — the <b>Library</b> sidebar group + factory shell (<b>F10 ✓</b>) and the
+    Skill Factory page — <b>Add-from-GitHub</b> control + body editor + shared
+    <code>ScopeAssignment</code> (<b>F11 ✓</b>, commit <code>6e1cf99</code>). <b>Slice 8 ships end-to-end.</b>
+    Adapter suite <b>251 passed</b>; frontend <b>38 passed</b>; <code>tsc</code> clean.
+    <br><br><b>Backlog (plan-first):</b> the other open GitHub issues are tracked at the bottom as <b>Unplanned</b> —
+    SafeVerify follow-ups (<b>#10</b>: logs→Lea, canvas main-file + run-verify-on-a-chosen-file), the Lean syntax
+    highlighter (<b>#11</b>), and single-session download (<b>#14</b>) — each needs a design pass before it becomes
+    buildable slices. <b>#12</b> (Skill &amp; MCP factory) is this doc's Slices 8–9. Also still open: <b>6b/U3</b>
+    GitHub sharing (deferred in <code>v2.1-progress.html</code>, blocked on the <code>SettingsPage.tsx</code> fix).</div>
+
+  <div class="legend">
+    <span><i class="dot d-unplanned"></i> Unplanned (plan first)</span>
+    <span><i class="dot d-queued"></i> Queued</span>
+    <span><i class="dot d-planned"></i> Planned (next)</span>
+    <span><i class="dot d-prog"></i> Built (not yet confirmed)</span>
+    <span><i class="dot d-tested"></i> Tested ✓</span>
+    <span style="margin-left:auto"><span class="tag be">backend</span> &nbsp; <span class="tag fe">frontend</span></span>
+  </div>
+
+  <div class="gaps">
+    <h3>Deferred &amp; open · MCP parked, skills in focus</h3>
+    <b>⛔ The whole MCP Factory is deferred</b> (Slice 9 below — X1–X4, F12/F13; D46/D49/D53/D54/D57). Designed and
+    kept as the record; resume after the Skill Factory ships. It inherits the scope model (D47), the run-time
+    resolution seam (D48), gating (D49), and the GitHub-import skeleton (D56) — an additive build, not a redesign.
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Agent-assisted MCP setup — parked with MCP.</b> Idea: let the agent clone, read the README, install, and
+    <b>validate</b> a server (start it, confirm <code>list_tools</code>) for a known-working spec. <span class="fix">Blocker:
+    it runs untrusted repo code (<code>npm install</code> postinstall, build scripts) at import — needs a <b>sandbox</b>
+    (or the per-command gate) first. The sandbox-vs-gate call gates this feature.</span>
+    <hr style="border:none;border-top:1px solid #ecdcbb;margin:11px 0">
+    <b>Skills GitHub import leans on the <code>github_token</code> (6b/U3, deferred) for private/rate-limited repos
+    (D56).</b> <span class="fix">Public-repo import works tokenless, so W4 lands now; the private path lights up once
+    6b ships.</span> Also logged (arch §10A): a <b>per-session skill picker</b> for loose sessions; <b>re-sync from
+    <code>source_url</code></b> as a fast follow.
+  </div>
+
+  <!-- ============ SLICE 8 ============ -->
+  <div class="group">
+    <h2>Slice 8 · Skill Factory</h2>
+    <div class="ghint">Author a skill once, mark it global or attach it to projects. Ends with: a Library group in the sidebar and a Skill Factory page where a skill is created, edited, and assigned — picked up automatically by that project's runs.</div>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id">W1</span><span class="title">Schema + store queries (skills + skill_projects)</span>
+        <span class="tag be">backend</span><span class="dec">D45/D47/D56</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope"><code>skills(id, name, slug, body, is_global, source_url, source_ref, created_at, updated_at)</code> + <code>skill_projects(skill_id, project_id)</code> join (<code>db.py</code> migration + <code>store.py</code> queries: list/get/upsert/delete, assign/unassign, and the <b>project-resolution read</b> = <code>global ∪ assigned</code> keyed by <code>project_id</code>). Markdown <b>body in a column</b> — the deliberate non-git exception to D7/D8 (skills are small user-authored prose, not diffed proof bytes). <code>source_url</code>/<code>source_ref</code> record GitHub provenance for later re-sync. Store tests.</div>
+    </div>
+    <div class="todo is-done">
+      <div class="top"><span class="id">W2</span><span class="title">Skills CRUD + assignment routes</span>
+        <span class="tag be">backend</span><span class="dec">D50</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope"><code>routes/skills.py</code>: <code>GET/POST /api/skills</code>, <code>GET/PUT/DELETE /api/skills/{id}</code>, <code>PUT /api/skills/{id}/assignment {is_global, project_ids[]}</code>. Slug uniqueness; assignment rejects unknown <code>project_id</code>s; delete cascades the join. Route tests.</div>
+    </div>
+    <div class="todo is-done">
+      <div class="top"><span class="id">W3</span><span class="title">Resolution wiring → cfg.skills</span>
+        <span class="tag be">backend</span><span class="dec">D48</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope"><code>skills_catalog.py</code> + <code>bridge.py</code>: at run start, if the session has a <code>project_id</code>, materialize each applicable skill's <code>body</code> to a <b>per-run temp <code>.md</code></b> (a tempdir, <b>not</b> inside any project repo — avoids git pollution) and set <code>cfg.skills = [paths]</code>; loose sessions resolve to <code>[]</code>. Cleanup in the run's <code>finally</code>. Smoke: a project run picks up an assigned skill in its system prompt. <b>No prover changes.</b></div>
+    </div>
+    <div class="todo is-done">
+      <div class="top"><span class="id">W4</span><span class="title">GitHub import (skills) — paste a link → Add</span>
+        <span class="tag be">backend</span><span class="dec">D56</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope"><code>ghimport.py</code> + <code>POST /api/skills/import {url, is_global, project_ids[]}</code>: normalize the GitHub URL (repo · <code>tree</code>/<code>blob</code> path · <code>raw</code> · gist) → <b>shallow-clone</b> (<code>git clone --depth 1</code>, <code>github_token</code> injected for private repos — public repos tokenless) → locate the skill md (<code>SKILL.md</code> → <code>README.md</code> → first <code>*.md</code>) → snapshot into <code>body</code>, set <code>source_url</code>/<code>source_ref</code>, create + assign in one call. Depth/size/timeout guards; tempdir cleanup. Tests (public-repo fixture).</div>
+    </div>
+    <div class="todo is-done">
+      <div class="top"><span class="id fe">F10</span><span class="title">factories store + Library sidebar group + factory shell</span>
+        <span class="tag fe">frontend</span><span class="dec">D51</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope"><code>stores/factories.ts</code> (skills + servers lists, selection, CRUD/assignment actions; no prop-drilling, mirrors <code>stores/projects.ts</code>) + a <b>Library</b> group in <code>Sidebar.tsx</code> (Skills · MCP) + the <code>factory:skills</code> / <code>factory:mcp</code> views added to the <code>App.tsx</code> routing switch (a factory page replaces chat+canvas, like the project window, D36).</div>
+    </div>
+    <div class="todo is-done">
+      <div class="top"><span class="id fe">F11</span><span class="title">Skill Factory page (Add-from-GitHub + list + MarkdownDoc + ScopeAssignment)</span>
+        <span class="tag fe">frontend</span><span class="dec">D52/D55/D58</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope"><code>SkillFactory.tsx</code> + <code>AddFromGitHub.tsx</code>: the page leads with the <b>Add-from-GitHub</b> control (URL input + scope + Add → <code>/import</code>; one-click; "or write from scratch" fallback). Below it, a two-pane catalog — list (name + global/▣-projects badge) + detail (name, the <b>markdown body via the existing <code>MarkdownDoc</code></b> D39 incl. expand-to-modal, and the shared <code>ScopeAssignment</code> control: a Global toggle + project multi-select, emitting <code>{is_global, project_ids[]}</code>). Fetching/success/error states; friendly empty state.</div>
+    </div>
+  </div>
+
+  <!-- ============ SLICE 9 (DEFERRED) ============ -->
+  <div class="group">
+    <h2>Slice 9 · MCP Factory &nbsp;·&nbsp; ⛔ Deferred</h2>
+    <div class="ghint">Designed (D46/D49/D53/D54/D57) and kept as the record — <b>not in the current cut</b>. Resume after the Skill Factory ships and the agent-assisted-setup safety call (sandbox vs. gate) is made. Inherits the scope model (D47), the resolution seam (D48), gating (D49), and the GitHub-import skeleton (D56) — an additive build, not a redesign.</div>
+
+    <div class="todo is-done">
+      <div class="top"><span class="id">X1</span><span class="title">Schema + redacted-secret store (mcp_servers + join)</span>
+        <span class="tag be">backend</span><span class="dec">D46</span><span class="badge b-queued">Deferred</span></div>
+      <div class="scope"><code>mcp_servers</code> + <code>mcp_server_projects</code> + resolution read; <code>env</code>/<code>headers</code> secrets via the mask/validate/redact path (D34/U3). Open at resume: MCP-mirrors-skills scoping + secret-at-rest.</div>
+    </div>
+    <div class="todo is-done">
+      <div class="top"><span class="id">X2</span><span class="title">MCP CRUD + assignment routes (specs redacted)</span>
+        <span class="tag be">backend</span><span class="dec">D50</span><span class="badge b-queued">Deferred</span></div>
+      <div class="scope"><code>routes/mcp_servers.py</code> (specs redacted on read) + assignment + <code>GET /api/projects/{id}/attachments</code> (feeds F13).</div>
+    </div>
+    <div class="todo is-done">
+      <div class="top"><span class="id">X3</span><span class="title">Resolution wiring → cfg.mcp_servers + gate the MCP tools</span>
+        <span class="tag be">backend</span><span class="dec">D48/D49</span><span class="badge b-queued">Deferred</span></div>
+      <div class="scope">Merge specs → <code>cfg.mcp_servers</code>; <b>union the run's MCP tool names into the approval gate</b> (gating keys on names — the registry is type-flat, one <code>Tool</code> dataclass, no MCP subclass). Autonomous runs keep the gate off (D19).</div>
+    </div>
+    <div class="todo is-done">
+      <div class="top"><span class="id">X4</span><span class="title">GitHub import (MCP) — prefill spec, confirm-on-launch</span>
+        <span class="tag be">backend</span><span class="dec">D57</span><span class="badge b-queued">Deferred</span></div>
+      <div class="scope"><code>ghimport</code> derives a <b>draft</b> launch spec from the repo (manifest or infer <code>npx</code>/<code>uvx</code>) → user confirms before save. Confirm-on-import is the trust boundary on the launch command. (Agent-assisted setup parked — see box above.)</div>
+    </div>
+    <div class="todo is-done">
+      <div class="top"><span class="id fe">F12</span><span class="title">MCP Factory page (spec form + redacted secrets + ScopeAssignment)</span>
+        <span class="tag fe">frontend</span><span class="dec">D53/D55</span><span class="badge b-queued">Deferred</span></div>
+      <div class="scope"><code>McpFactory.tsx</code>: transport-switched spec form (stdio | remote) + redacted secret fields (D43) + shared <code>ScopeAssignment</code>. Adds the <b>MCP</b> entry to the sidebar Library group.</div>
+    </div>
+    <div class="todo is-done">
+      <div class="top"><span class="id fe">F13</span><span class="title">Project-window "Attached" indicator (read-only)</span>
+        <span class="tag fe">frontend</span><span class="dec">D54</span><span class="badge b-queued">Deferred</span></div>
+      <div class="scope"><code>ProjectAttachments.tsx</code>: read-only list of the skills + servers that resolve for a project (<code>/attachments</code>).</div>
+    </div>
+  </div>
+
+  <!-- ============ OPEN-ISSUE BACKLOG (plan-first) ============ -->
+  <div class="group">
+    <h2>Open-issue backlog · plan-first &nbsp;·&nbsp; 🟣 Unplanned</h2>
+    <div class="ghint">The other open GitHub issues, tracked here so nothing is lost. Each is <b>Unplanned</b> — it needs a design pass (decisions + slices, like we did for the factory) <b>before</b> implementation. The <code>#n</code> chip links each to its GitHub issue.</div>
+
+    <div class="todo">
+      <div class="top"><span class="id issue">#10</span><span class="title">SafeVerify — make SafeVerify logs visible to Lea</span>
+        <span class="tag be">backend</span><span class="dec">SafeVerify</span><span class="badge b-unplanned">Unplanned</span></div>
+      <div class="scope">Kevin's ask #1: surface SafeVerify logs (and other UI-generated logs, later) to the agent so it can read and act on them. <b>Builds on</b> the merged SafeVerify work (PR #7: sibling-import LEAN_PATH fix + Proved-vs-audited graph) but is a new surface. <b>Plan first:</b> where logs are captured, how they reach the agent (a tool? injected context?), scope/size limits.</div>
+    </div>
+    <div class="todo is-done">
+      <div class="top"><span class="id issue">#10</span><span class="title">SafeVerify — canvas main-file restore + run verify on a chosen file</span>
+        <span class="tag fe">frontend</span><span class="dec">SafeVerify</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope"><b>✓ DONE</b> (commit <code>be25489</code>). A <b>file selector</b> (dropdown) in the canvas header — main files first, dimmed <b>scratch</b> group, the main proof tagged; picking one jumps the stepper to that file's latest snapshot. The Edit / Run SafeVerify / verdict gate moved from "newest step overall" → "newest snapshot of the <b>shown</b> file" (<code>isFileCurrent</code>), so they stay live on the main proof even when a scratch write came after. SafeVerify + lean_check now act on the shown file's <code>path</code> (threaded through <code>onVerify</code>/<code>onSaveAndCheck</code>; the backend already took a <code>path</code> — no server change). Sessions open on the main proof's latest snapshot, not a leftover scratch (<code>useProofStream</code>); live runs still auto-follow. New <code>canvasFiles.mjs</code> helpers + 5 tests; frontend suite <b>42 pass</b>; tsc + build clean.</div>
+    </div>
+    <div class="todo is-done">
+      <div class="top"><span class="id issue">#11</span><span class="title">Proper Lean syntax highlighter in the Canvas</span>
+        <span class="tag fe">frontend</span><span class="dec">highlighter</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope"><b>✓ DONE</b> (commit <code>cd0446e</code>). Replaced the hand-rolled regex tokenizer with <b>Shiki</b>, which ships the real Lean 4 TextMate grammar — multi-line <code>/- -/</code> block comments, tactics, attributes, unicode, char/hex literals all highlight correctly. Kept the per-line diff gutter by using Shiki's <code>codeToTokens</code> (not <code>codeToHtml</code>), mapped by new-file line number; colors inline from the <code>vitesse-light</code> theme (fits the cream <code>--code-bg</code>). Fine-grained Shiki (core + <b>pure-JS engine, no WASM</b>) <b>dynamically imported</b> so it code-splits and lazy-loads only when the canvas first shows Lean (~26 kB gzip of chunks; ~56 kB gzip trimmed off the main bundle). 4 rewritten tests; tsc clean; production build green.</div>
+    </div>
+    <div class="todo is-done">
+      <div class="top"><span class="id issue">#14</span><span class="title">Download files for a single session + Projects discoverability hint</span>
+        <span class="tag be">backend</span><span class="tag fe">frontend</span><span class="dec">download</span><span class="badge b-tested">Tested ✓</span></div>
+      <div class="scope"><b>✓ DONE</b> (commit <code>248ac4b</code>). (1) <code>GET /api/sessions/{id}/export</code> resolves the session's repo (loose → <code>proofs/&lt;id&gt;</code>) and reuses the project zip plumbing (<code>export_zip</code>; <code>.git</code>/<code>.lake</code> excluded), served as an attachment named from the session title (slug, or <code>session-&lt;id8&gt;</code> fallback); 404 when unknown or fileless. A <b>Download</b> button in the session (ChatThread) header — loose sessions with ≥1 file only. (2) Projects Overview gained a one-click hint that jumps to the <b>Filesystem</b> tab where the project Export lives. 3 route tests; adapter suite <b>254 passed</b>, tsc clean. Verified live: real session → 200 zip; bogus → 404.</div>
+    </div>
+    <div class="todo is-done">
+      <div class="top"><span class="id">6b/U3</span><span class="title">GitHub sharing — remote + push + github_token in Settings</span>
+        <span class="tag be">backend</span><span class="tag fe">frontend</span><span class="dec">v2.1 · D34</span><span class="badge b-tested">Built ✓</span></div>
+      <div class="scope"><b>✓ DONE.</b> First unblocked <code>SettingsPage.tsx</code> by reconciling it to the real settings contract (the orphaned permission-tier UI was wired to a <b>2-mode</b> approval system — <code>stepwise</code>/<code>none</code> → the run gate; <code>max_turns</code> dropped from the UI; a <b>+ Add another provider</b> control for any <code>*_API_KEY</code>; restyled to the warm <code>settings-scope</code>). Then: redacted <code>github_token</code> in <code>config.py</code>/<code>settings.py</code> (presence-only, validated), <code>PUT /git/remote</code> + <code>POST /git/push</code> (a <code>GitStore.push_to_github</code> helper that injects the token into the push URL only — never <code>.git/config</code> — and scrubs it from output), and a <b>Share bar</b> in <code>FilesystemTab.tsx</code> (set remote + confirm-gated Push, disabled w/o token). <b>7 new adapter tests (incl. a functional push to a local bare repo); full 193-test suite + tsc green.</b> <b>Cross-link:</b> the token now also unblocks v2.1.1 <b>W4</b> (private-repo skill import).</div>
+    </div>
+  </div>
+
+  <footer>LeaUI v2.1.1 · backend + frontend interleaved · factories are adapter-side catalogs over the prover's existing cfg.skills / cfg.mcp_servers — no prover changes</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,212 @@
+[
+  {
+    "module": "tests.agent.test_gate",
+    "exit_code": 0,
+    "seconds": 1.98
+  },
+  {
+    "module": "tests.agent.test_lea_status",
+    "exit_code": 0,
+    "seconds": 1.8
+  },
+  {
+    "module": "tests.agent.test_project_library",
+    "exit_code": 0,
+    "seconds": 1.52
+  },
+  {
+    "module": "tests.agent.test_run_events",
+    "exit_code": 0,
+    "seconds": 1.61
+  },
+  {
+    "module": "tests.agent.test_stalled",
+    "exit_code": 0,
+    "seconds": 1.54
+  },
+  {
+    "module": "tests.condenser.test_condenser",
+    "exit_code": 0,
+    "seconds": 1.62
+  },
+  {
+    "module": "tests.events.test_diagnostics",
+    "exit_code": 0,
+    "seconds": 1.48
+  },
+  {
+    "module": "tests.events.test_events",
+    "exit_code": 0,
+    "seconds": 1.43
+  },
+  {
+    "module": "tests.events.test_meaning_emit",
+    "exit_code": 0,
+    "seconds": 1.54
+  },
+  {
+    "module": "tests.interface.test_check",
+    "exit_code": 0,
+    "seconds": 1.44
+  },
+  {
+    "module": "tests.interface.test_facade",
+    "exit_code": 0,
+    "seconds": 1.43
+  },
+  {
+    "module": "tests.interface.test_rebuild",
+    "exit_code": 0,
+    "seconds": 1.41
+  },
+  {
+    "module": "tests.interface.test_verify",
+    "exit_code": 0,
+    "seconds": 1.6
+  },
+  {
+    "module": "tests.lsp.test_dispatch_unit",
+    "exit_code": 0,
+    "seconds": 0.08
+  },
+  {
+    "module": "tests.lsp.test_lsp_daemon",
+    "exit_code": 0,
+    "seconds": 0.08
+  },
+  {
+    "module": "tests.lsp.test_recovery",
+    "exit_code": 0,
+    "seconds": 1.7
+  },
+  {
+    "module": "tests.mcp.test_mcp",
+    "exit_code": 0,
+    "seconds": 1.98
+  },
+  {
+    "module": "tests.prompt.test_domain_cascades",
+    "exit_code": 0,
+    "seconds": 1.37
+  },
+  {
+    "module": "tests.prompt.test_import_policy",
+    "exit_code": 0,
+    "seconds": 0.03
+  },
+  {
+    "module": "tests.prompt.test_namespace",
+    "exit_code": 0,
+    "seconds": 0.03
+  },
+  {
+    "module": "tests.providers.test_litellm_stream",
+    "exit_code": 0,
+    "seconds": 1.37
+  },
+  {
+    "module": "tests.providers.test_usage_details",
+    "exit_code": 0,
+    "seconds": 1.39
+  },
+  {
+    "module": "tests.registry.test_http_boundaries",
+    "exit_code": 0,
+    "seconds": 1.52
+  },
+  {
+    "module": "tests.registry.test_registry",
+    "exit_code": 0,
+    "seconds": 1.36
+  },
+  {
+    "module": "tests.registry.test_registry_scope",
+    "exit_code": 0,
+    "seconds": 1.42
+  },
+  {
+    "module": "tests.skills.test_skills",
+    "exit_code": 0,
+    "seconds": 0.04
+  },
+  {
+    "module": "tests.subagents.test_subagent_depth_budget",
+    "exit_code": 0,
+    "seconds": 1.4
+  },
+  {
+    "module": "tests.subagents.test_subagent_overrides",
+    "exit_code": 0,
+    "seconds": 1.4
+  },
+  {
+    "module": "tests.subagents.test_subagent_parallel",
+    "exit_code": 0,
+    "seconds": 3.47
+  },
+  {
+    "module": "tests.subagents.test_subagent_permissions",
+    "exit_code": 0,
+    "seconds": 1.46
+  },
+  {
+    "module": "tests.subagents.test_subagent_profile_loading",
+    "exit_code": 0,
+    "seconds": 1.42
+  },
+  {
+    "module": "tests.subagents.test_subagent_prompt_composition",
+    "exit_code": 0,
+    "seconds": 0.03
+  },
+  {
+    "module": "tests.subagents.test_subagent_result_envelope",
+    "exit_code": 0,
+    "seconds": 1.42
+  },
+  {
+    "module": "tests.subagents.test_subagent_started",
+    "exit_code": 0,
+    "seconds": 1.41
+  },
+  {
+    "module": "tests.subagents.test_subagent_streaming",
+    "exit_code": 0,
+    "seconds": 1.39
+  },
+  {
+    "module": "tests.tools.test_fallback_bounds",
+    "exit_code": 0,
+    "seconds": 1.76
+  },
+  {
+    "module": "tests.tools.test_import_policy",
+    "exit_code": 0,
+    "seconds": 1.44
+  },
+  {
+    "module": "tests.tools.test_read_sandbox",
+    "exit_code": 0,
+    "seconds": 1.46
+  },
+  {
+    "module": "tests.tools.test_rebuild_module",
+    "exit_code": 0,
+    "seconds": 1.41
+  },
+  {
+    "module": "tests.tools.test_run_context",
+    "exit_code": 0,
+    "seconds": 1.75
+  },
+  {
+    "module": "tests.tools.test_safeverify_scratch",
+    "exit_code": 0,
+    "seconds": 2.02
+  },
+  {
+    "module": "tests.tools.test_write_sandbox",
+    "exit_code": 0,
+    "seconds": 1.45
+  }
+]

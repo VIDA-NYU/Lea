@@ -27,6 +27,7 @@ from pathlib import Path
 
 from . import diagnostics
 from . import store
+from . import project_coordination
 from .gitstore import GitStore
 from .projects import project_repo_dir
 
@@ -366,11 +367,16 @@ def ensure_overleaf_gitignore(project: dict, proofs_root: Path) -> bool:
 def commit_mirror(project: dict, proofs_root: Path) -> str:
     """Commit the project repo after a mirror reconcile (run as a deferred background
     task by the route, so the request returns before git runs)."""
-    repo = project_repo_dir(project, proofs_root)
-    # The whole mirror subtree is this operation's unit of work, but nothing outside it.
-    return GitStore(proofs_root).commit_all(
-        repo, "overleaf: mirror LaTeX sources", paths=[f".lea/files/{OVERLEAF_SUBDIR}"],
-    )
+    # A queued commit can outlive its route's reservation. Wait for any intervening
+    # rename and resolve the current repo, rather than committing the old path.
+    with project_coordination.mutation(project["id"], wait=True):
+        project = store.get_project(project["id"])
+        if project is None:
+            return ""
+        repo = project_repo_dir(project, proofs_root)
+        return GitStore(proofs_root).commit_all(
+            repo, "overleaf: mirror LaTeX sources", paths=[f".lea/files/{OVERLEAF_SUBDIR}"],
+        )
 
 
 def sync_overleaf_tex(

@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lea Standalone — Architecture Figure (current snapshot)</title>
+<style>
+  :root {
+    --bg: #f5f4ef; --panel: #fffefb; --ink: #2a2724; --muted: #8a847c;
+    --line: #e6e2da; --accent: #c96442; --green: #4f8a5b; --red: #c0564a;
+    --amber: #b8842a; --blue: #4a6fa5; --violet: #7a5a9a;
+    --chip: #efece6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    padding: 34px 0 90px;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+  header { margin-bottom: 6px; }
+  h1 { font-size: 23px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+       margin: 40px 0 12px; font-weight: 600; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+  .intro { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 17px; margin: 18px 0 6px; font-size: 13px; color: #4a463f; }
+  .intro b { color: var(--ink); }
+  .intro p { margin: 0 0 9px; } .intro p:last-child { margin-bottom: 0; }
+  code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg);
+         border: 1px solid var(--line); border-radius: 4px; padding: 0.5px 5px; }
+
+  /* ---- figure ---- */
+  .fig { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+         padding: 22px 22px 26px; }
+  .tier { border: 1px solid var(--line); border-radius: 11px; padding: 13px 15px 15px;
+          background: #fdfcf9; position: relative; }
+  .tier + .flow { margin: 0; }
+  .tlabel { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; font-weight: 700;
+            color: var(--muted); margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .port { font: 600 10.5px ui-monospace, monospace; color: #fff; border-radius: 5px; padding: 1px 7px; }
+  .port.ui { background: var(--accent); } .port.api { background: var(--blue); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .box { flex: 1 1 0; min-width: 150px; background: var(--panel); border: 1px solid var(--line);
+         border-radius: 9px; padding: 10px 12px; }
+  .box.tight { flex: 0 1 auto; }
+  .box h4 { margin: 0 0 5px; font-size: 13px; font-weight: 600; }
+  .box .k { font: 11.5px ui-monospace, monospace; color: var(--muted); }
+  .box ul { margin: 7px 0 0; padding-left: 16px; }
+  .box li { font-size: 12px; color: #4a463f; margin: 2px 0; }
+  .box.accent { border-left: 3px solid var(--accent); }
+  .box.blue { border-left: 3px solid var(--blue); }
+  .box.green { border-left: 3px solid var(--green); }
+  .box.violet { border-left: 3px solid var(--violet); }
+  .box.amber { border-left: 3px solid var(--amber); }
+
+  /* arrows / flow between tiers */
+  .flow { display: flex; align-items: center; justify-content: center; gap: 14px;
+          padding: 9px 0; color: var(--muted); font-size: 11.5px; }
+  .flow .down, .flow .up { display: flex; align-items: center; gap: 7px; }
+  .flow .glyph { font-size: 17px; line-height: 1; }
+  .flow .down .glyph { color: var(--accent); } .flow .up .glyph { color: var(--green); }
+  .flow .lbl { max-width: 430px; }
+  .flow .lbl b { color: var(--ink); font-weight: 600; }
+  .flow .sep { width: 1px; height: 26px; background: var(--line); }
+
+  /* persistence rail laid beside the adapter */
+  .split { display: grid; grid-template-columns: 1fr 280px; gap: 14px; align-items: stretch; }
+  @media (max-width: 760px) { .split { grid-template-columns: 1fr; } }
+  .rail { border: 1px dashed #d8d2c7; border-radius: 11px; padding: 13px 14px; background: #faf8f3; }
+  .rail h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .rail .item { font-size: 12px; color: #4a463f; margin: 6px 0; }
+  .rail .item b { color: var(--ink); }
+
+  /* event band */
+  .events { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .ev { font: 600 10.5px ui-monospace, monospace; padding: 2px 8px; border-radius: 99px;
+        background: var(--chip); color: #6a645b; border: 1px solid var(--line); }
+  .ev.act { background: #eaf1ec; color: #4f7a5b; border-color: #cfe0d3; }
+  .ev.ctl { background: #fbf1ec; color: var(--accent); border-color: #e7cabd; }
+
+  /* I/O tables */
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; background: var(--panel);
+          border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: #faf8f3; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  tr:last-child td { border-bottom: none; }
+  td.c0 { font-weight: 600; white-space: nowrap; }
+  td .in { color: var(--blue); } td .out { color: var(--green); }
+  .arrow-in::before { content: "▸ in  "; color: var(--blue); font-weight: 700; }
+  .arrow-out::before { content: "◂ out "; color: var(--green); font-weight: 700; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  footer { margin-top: 40px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); padding-top: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Lea Standalone — Architecture Figure</h1>
+    <div class="sub">Current snapshot · <code>apps/lea-standalone</code> (React UI + FastAPI adapter + vendored prover) · 2026-06-29</div>
+  </header>
+
+  <div class="intro">
+    <p><b>What this shows.</b> The standalone app as it runs <i>today</i> — the live wiring between
+      the browser UI, the one backend, and the in-process prover, with every <span class="in" style="color:var(--blue)">input</span>
+      and <span class="out" style="color:var(--green)">output</span> labelled at the boundary it crosses. It is a
+      <b>where-are-we-now map</b>, not a roadmap.</p>
+    <p><b>The one idea to hold.</b> There is <b>no HTTP boundary between the adapter and the prover</b> —
+      the adapter imports the vendored prover and calls <code>lea.interface.run_events(...)</code>
+      <b>in-process</b>, pattern-matching its <i>typed events</i> onto the browser's SSE stream. One process, one backend port (<code>:8001</code>).</p>
+    <p><b>The persistence split is deliberate.</b> <b>Git owns proof content</b> (every file change is committed);
+      <b>SQLite is a rebuildable index</b> (sessions/runs/steps/usage — never proof bytes). A session has
+      <b>no stored status</b> — it is <i>derived</i> from the latest code-step's check verdict, so it can't drift.</p>
+  </div>
+
+  <h2>The figure — data flow, top to bottom</h2>
+  <div class="fig">
+
+    <!-- TIER 1: user -->
+    <div class="tier">
+      <div class="tlabel">① User &nbsp;·&nbsp; mathematician at the browser</div>
+      <div class="row">
+        <div class="box tight accent">
+          <h4>Inputs to the system</h4>
+          <ul>
+            <li>Natural-language theorem statement</li>
+            <li>Model / provider choice · API keys (Settings)</li>
+            <li>Optional <b>project context</b>: instructions, memory, files, blueprint</li>
+            <li>Live canvas edits · per-tool approve / deny</li>
+          </ul>
+        </div>
+        <div class="box tight green">
+          <h4>What the user gets back</h4>
+          <ul>
+            <li>A compiling Lean 4 proof (0 errors, 0 <code>sorry</code>)</li>
+            <li>Live proof progress · check &amp; <b>SafeVerify</b> verdicts</li>
+            <li>Blueprint dependency graph · token/cost usage</li>
+            <li>Downloadable repo (zip / git bundle)</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="flow">
+      <div class="down"><span class="glyph">▼</span><span class="lbl"><b>HTTP/JSON</b> requests (REST)</span></div>
+      <div class="sep"></div>
+      <div class="up"><span class="glyph">▲</span><span class="lbl"><b>SSE</b> event stream (live)</span></div>
+    </div>
+
+    <!-- TIER 2: UI -->
+    <div class="tier">
+      <div class="tlabel">② Front end <span class="port ui">Vite :5173</span> &nbsp;·&nbsp; React + TypeScript</div>
+      <div class="row">
+        <div class="box">
+          <h4>App shell &amp; routing</h4>
+          <div class="k">App.tsx · Sidebar</div>
+          <ul><li>Chat view ↔ project window (D36)</li><li>Zustand <code>stores/</code>, <code>hooks/</code></li></ul>
+        </div>
+        <div class="box">
+          <h4>Session surfaces</h4>
+          <div class="k">canvas · chat · approvals</div>
+          <ul><li>Lean canvas (writeable)</li><li>Streamed assistant text + tool calls</li><li>Approve/deny prompts</li></ul>
+        </div>
+        <div class="box">
+          <h4>Project surfaces</h4>
+          <div class="k">MarkdownDoc · graph</div>
+          <ul><li>Instructions · Memory · Files</li><li>Blueprint graph (shape=kind, color=status)</li><li>Filesystem tab</li></ul>
+        </div>
+        <div class="box">
+          <h4>Settings</h4>
+          <div class="k">redacted fields (D43)</div>
+          <ul><li>Provider keys (presence-only)</li><li>Model defaults · usage stats</li></ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="flow">
+      <div class="down"><span class="glyph">▼</span><span class="lbl"><b>POST /api/runs</b>, sessions, projects, settings, lean-check, verify, approvals</span></div>
+      <div class="sep"></div>
+      <div class="up"><span class="glyph">▲</span><span class="lbl"><b>GET …/events</b> SSE: snapshots, verdicts, usage, approvals</span></div>
+    </div>
+
+    <!-- TIER 3: adapter + persistence rail -->
+    <div class="split">
+      <div class="tier">
+        <div class="tlabel">③ Backend — FastAPI adapter <span class="port api">:8001</span></div>
+        <div class="row" style="margin-bottom:10px">
+          <div class="box blue tight" style="flex:1 1 100%">
+            <h4>Routes <span class="k">(adapter/app/routes/)</span></h4>
+            <ul style="columns:2">
+              <li><code>runs</code> — start / interrupt / approvals / events</li>
+              <li><code>sessions</code> — list · file edit · lean-check · verify</li>
+              <li><code>projects</code> — CRUD · instructions · memory · files · blueprint · graph · tree · export</li>
+              <li><code>settings</code> · <code>search</code> · <code>models</code> · <code>stats</code> · <code>health</code></li>
+            </ul>
+          </div>
+        </div>
+        <div class="row">
+          <div class="box accent">
+            <h4>bridge.py <span class="k">— the prover seam</span></h4>
+            <ul>
+              <li>Composes project context → <code>messages</code></li>
+              <li>Builds <code>LeaConfig</code> (config.py)</li>
+              <li>Calls <code>run_events(cfg, …)</code> <b>in-process</b></li>
+              <li>Maps typed events → SSE; runs the per-tool gate</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="rail">
+        <h4>Persistence (source of truth)</h4>
+        <div class="item"><b>Git store</b> <span class="k">gitstore.py</span><br/>proof content — commit on every <code>FileChanged</code>; per-session &amp; per-project repos</div>
+        <div class="item"><b>SQLite</b> <span class="k">db.py · store.py</span><br/>index only: <code>sessions · runs · code_steps · messages · projects · project_files · run_usage_breakdown · status_events</code></div>
+        <div class="item"><b>Derived status</b><br/>session state = latest code-step's check verdict (never stored)</div>
+      </div>
+    </div>
+
+    <div class="flow">
+      <div class="down"><span class="glyph">▼</span><span class="lbl">in-process call · <b>run_events(cfg, messages)</b></span></div>
+      <div class="sep"></div>
+      <div class="up"><span class="glyph">▲</span><span class="lbl"><b>typed events</b> (see band below)</span></div>
+    </div>
+
+    <!-- TIER 4: prover -->
+    <div class="tier">
+      <div class="tlabel">④ Vendored prover — in-process library <span class="port" style="background:var(--violet)">prover/lea</span></div>
+      <div class="row">
+        <div class="box violet">
+          <h4>Agent loop</h4>
+          <div class="k">6 tools · provider streaming</div>
+          <ul><li><code>read_file · write_file · edit_file</code></li><li><code>lean_check · bash · search_mathlib</code></li><li>write → compile → read errors → edit, repeat</li></ul>
+        </div>
+        <div class="box violet">
+          <h4>LSP daemon</h4>
+          <div class="k">lsp_daemon.py</div>
+          <ul><li><code>lean_check</code> fast path</li><li>warm Mathlib oleans (~0.2s edits)</li></ul>
+        </div>
+        <div class="box violet">
+          <h4>SafeVerify</h4>
+          <div class="k">third_party/SafeVerify</div>
+          <ul><li>kernel replay + axiom whitelist</li><li><code>verify</code> — catches structural cheats</li></ul>
+        </div>
+        <div class="box violet">
+          <h4>Mathlib search</h4>
+          <div class="k">search_mathlib</div>
+          <ul><li>lemma lookup (budget: 20/problem)</li></ul>
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <div class="tlabel" style="margin-bottom:6px">Typed events emitted back to the bridge</div>
+        <div class="events">
+          <span class="ev">AssistantTextDelta</span><span class="ev">TurnStarted</span><span class="ev">ToolCalled</span><span class="ev">ToolResulted</span>
+          <span class="ev act">FileChanged</span><span class="ev act">CheckResult</span><span class="ev act">VerifyResult</span><span class="ev act">UsageUpdated</span><span class="ev act">Finished</span><span class="ev act">Error</span>
+          <span class="ev ctl">ToolApprovalRequested ⇄</span>
+        </div>
+        <div class="legend">
+          <span><i class="sw" style="background:var(--chip);border:1px solid var(--line)"></i> display</span>
+          <span><i class="sw" style="background:#eaf1ec;border:1px solid #cfe0d3"></i> acted-on (drives git/DB/canvas)</span>
+          <span><i class="sw" style="background:#fbf1ec;border:1px solid #e7cabd"></i> two-way control (approval gate)</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="flow">
+      <div class="down"><span class="glyph">▼</span><span class="lbl">compile / search / model calls</span></div>
+    </div>
+
+    <!-- TIER 5: resources -->
+    <div class="tier">
+      <div class="tlabel">⑤ Resources &amp; externals</div>
+      <div class="row">
+        <div class="box amber">
+          <h4>Lean workspace</h4>
+          <div class="k">workspace/ — Lake project</div>
+          <ul><li>Lean v4.29 + pinned Mathlib</li><li>proofs written to <code>proofs/</code></li></ul>
+        </div>
+        <div class="box amber">
+          <h4>Model providers</h4>
+          <div class="k">via shared catalog</div>
+          <ul><li>Gemini · Anthropic · OpenAI</li><li>keys from root <code>.env</code> / Settings</li></ul>
+        </div>
+        <div class="box amber">
+          <h4>Model catalog</h4>
+          <div class="k">packages/lea-model-catalog</div>
+          <ul><li><code>models.json</code> — provider/model list</li><li>read by UI + adapter</li></ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <h2>Inputs &amp; outputs — system boundary</h2>
+  <table>
+    <thead><tr><th style="width:130px">Boundary</th><th>Input ▸</th><th>Output ◂</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="c0">User ⇄ App</td>
+        <td>NL statement; model/provider + API keys; project context (instructions, memory, files, blueprint); canvas edits; tool approvals</td>
+        <td>Compiling proof (0 errors / 0 <code>sorry</code>); live progress; check + SafeVerify verdicts; blueprint graph; usage/cost; downloadable repo</td>
+      </tr>
+      <tr>
+        <td class="c0">UI ⇄ Adapter</td>
+        <td>REST: <code>POST /api/runs</code>, sessions, projects, settings, <code>lean-check</code>, <code>verify</code>, approvals</td>
+        <td>SSE event stream: file snapshots, check/verify verdicts, assistant text + tool calls, usage, approval prompts</td>
+      </tr>
+      <tr>
+        <td class="c0">Adapter ⇄ Prover</td>
+        <td>In-process <code>run_events(cfg, messages)</code> — config + composed message list</td>
+        <td>Typed events (FileChanged, CheckResult, VerifyResult, UsageUpdated, ToolApprovalRequested, Finished, Error, …)</td>
+      </tr>
+      <tr>
+        <td class="c0">Prover ⇄ Resources</td>
+        <td>Lean source to compile; Mathlib search queries; prompts to model providers</td>
+        <td>Compile diagnostics; lemma matches; streamed model tokens</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Inputs &amp; outputs — per component</h2>
+  <table>
+    <thead><tr><th style="width:160px">Component</th><th>Reads / receives ▸</th><th>Writes / emits ◂</th></tr></thead>
+    <tbody>
+      <tr><td class="c0">React UI <span class="k">:5173</span></td>
+        <td>User actions; SSE stream; REST responses</td>
+        <td>REST requests; rendered canvas, graph, chat, settings</td></tr>
+      <tr><td class="c0">FastAPI routes</td>
+        <td>HTTP requests from the UI</td>
+        <td>JSON responses; an SSE response for <code>…/events</code></td></tr>
+      <tr><td class="c0">bridge.py</td>
+        <td>Session + project from DB/git; <code>LeaConfig</code>; prover typed events</td>
+        <td>Composed <code>messages</code> into the prover; SSE events out; gate decisions</td></tr>
+      <tr><td class="c0">gitstore.py</td>
+        <td><code>FileChanged</code> payloads; file edits</td>
+        <td>Commits to the session/project repo; returns commit SHA + diff</td></tr>
+      <tr><td class="c0">db.py / store.py</td>
+        <td>Row writes (sessions, runs, code_steps, usage); queries</td>
+        <td>Index rows (SHA + path, not bytes); derived session status; usage stats</td></tr>
+      <tr><td class="c0">Agent loop</td>
+        <td><code>messages</code> + config; tool results; model tokens</td>
+        <td>Tool calls; file writes; typed events</td></tr>
+      <tr><td class="c0">LSP daemon</td>
+        <td>A <code>.lean</code> file path (<code>lean_check</code>)</td>
+        <td>Compile verdict + diagnostics (warm, ~0.2s)</td></tr>
+      <tr><td class="c0">SafeVerify</td>
+        <td>A <code>.lean</code> file path (<code>verify</code>)</td>
+        <td>Kernel-replay verdict + axiom audit (cheat-proof pass/fail)</td></tr>
+      <tr><td class="c0">Lean / Mathlib workspace</td>
+        <td>Lean source under <code>proofs/</code></td>
+        <td>Compilation results; importable sibling lemmas (projects)</td></tr>
+      <tr><td class="c0">Model catalog</td>
+        <td>—</td>
+        <td><code>models.json</code> provider/model list to UI + adapter</td></tr>
+    </tbody>
+  </table>
+
+  <footer>
+    Scope: standalone app, current snapshot — Overleaf path and forward roadmap intentionally excluded.
+    Decision refs (D1/D3/D4/D7/D16/D17/D36/D43) live in <code>design/v2-architecture.md</code>,
+    <code>v2.1-projects-architecture.md</code>, and the UI design docs.
+  </footer>
+</div>
+</body>
+</html>
