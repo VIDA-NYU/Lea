@@ -416,21 +416,25 @@ def create_run(
     focus_formalization_id: str | None = None,
     focus_source_hash: str | None = None,
     purpose: str = "general",
+    approval_mode: str | None = None,
 ) -> dict:
+    if approval_mode not in {None, "stepwise", "none"}:
+        raise ValueError("unsupported approval mode")
+    approval_mode = "none" if autonomous else (approval_mode or "stepwise")
     now = utc_now()
     run_id = str(uuid4())
     with connect() as conn:
         conn.execute(
             """
             insert into runs (
-                id, session_id, project_id, status, autonomous, model, provider,
+                id, session_id, project_id, status, autonomous, approval_mode, model, provider,
                 max_turns, focus_formalization_id, focus_source_hash, purpose, usage_status, created_at, updated_at
             )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
             """,
             (
                 run_id, session_id, project_id, "pending",
-                1 if autonomous else 0, model, provider, max_turns,
+                1 if autonomous else 0, approval_mode, model, provider, max_turns,
                 focus_formalization_id, focus_source_hash, purpose, now, now,
             ),
         )
@@ -933,6 +937,28 @@ def create_run_bundle(
                 )
                 formalization["source_hash"] = source_hash
 
+        # Resolve approvals only after all session/formalization membership checks.
+        # The linkage update shares this transaction, so failed admissions cannot
+        # change another project's policy. Session origin remains provenance.
+        overleaf_origin = any(
+            str(origin or "").strip() == "overleaf"
+            for origin in (
+                session.get("origin"), session_origin,
+                (formalization or {}).get("origin"),
+                (new_formalization or {}).get("origin"),
+            )
+        )
+        project_row = None
+        if project_id:
+            project_row = (
+                mark_project_overleaf_linked(project_id, conn=conn)
+                if overleaf_origin else conn.execute(
+                    "select * from projects where id = ?", (project_id,),
+                ).fetchone()
+            )
+        linked_project = bool(project_row and project_row["overleaf_linked"])
+        approval_mode = "none" if autonomous or overleaf_origin or linked_project else "stepwise"
+
         run_id = str(uuid4())
         if dependency_id:
             from .project_dependencies import admit_worker
@@ -943,14 +969,14 @@ def create_run_bundle(
         conn.execute(
             """
             insert into runs (
-                id, session_id, project_id, status, autonomous, model, provider,
+                id, session_id, project_id, status, autonomous, approval_mode, model, provider,
                 max_turns, focus_formalization_id, focus_source_hash, purpose, allow_source_pause, usage_status,
                 client_request_id, client_request_hash, resumes_run_id, resume_checkpoint_id, continuation_best_effort, deadline_at, source_context_ref,
                 created_at, updated_at
-            ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                run_id, session_id, project_id, 1 if autonomous else 0,
+                run_id, session_id, project_id, 1 if autonomous else 0, approval_mode,
                 model, provider, max_turns, focus_formalization_id,
                 str(focus_source_hash or "").strip() or None, purpose,
                 1 if allow_source_pause else 0, client_request_id, client_request_hash, resumes_run_id,
@@ -995,6 +1021,32 @@ def create_run_bundle(
     }
 
 
+def _normalize_project(row: dict) -> dict:
+    row["overleaf_linked"] = bool(row.get("overleaf_linked"))
+    return row
+
+
+def mark_project_overleaf_linked(
+    project_id: str, *, conn: sqlite3.Connection | None = None,
+) -> dict | None:
+    """Establish durable linkage, optionally inside an admission transaction.
+
+    A conditional update makes repeated/concurrent calls harmless and preserves
+    updated_at on a no-op. Removing source files or chats does not unlink a project.
+    """
+    transaction = nullcontext(conn) if conn is not None else write()
+    with transaction as db_conn:
+        changed = db_conn.execute(
+            "update projects set overleaf_linked = 1, updated_at = ? "
+            "where id = ? and overleaf_linked = 0",
+            (utc_now(), project_id),
+        ).rowcount
+        row = db_conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
+    if changed and conn is None:
+        _bump_sessions_changed()
+    return _normalize_project(row_to_dict(row)) if row else None
+
+
 def list_projects() -> list[dict]:
     """All projects, newest first, each with a `session_count` (the sidebar shows
     it). Proof/node counts + status mix come from the live Lean state in later
@@ -1009,27 +1061,27 @@ def list_projects() -> list[dict]:
             order by p.updated_at desc, p.title asc
             """
         ).fetchall()
-    return [row_to_dict(row) for row in rows]
+    return [_normalize_project(row_to_dict(row)) for row in rows]
 
 
 def get_project(project_id: str) -> dict | None:
     with connect() as conn:
         row = conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
-    return row_to_dict(row) if row else None
+    return _normalize_project(row_to_dict(row)) if row else None
 
 
 def get_project_by_slug(slug: str) -> dict | None:
     value = validate_project_slug(slug)
     with connect() as conn:
         row = conn.execute("select * from projects where slug = ?", (value,)).fetchone()
-    return row_to_dict(row) if row else None
+    return _normalize_project(row_to_dict(row)) if row else None
 
 
 def get_project_by_namespace(namespace: str) -> dict | None:
     value = validate_project_namespace(namespace)
     with connect() as conn:
         row = conn.execute("select * from projects where namespace = ?", (value,)).fetchone()
-    return row_to_dict(row) if row else None
+    return _normalize_project(row_to_dict(row)) if row else None
 
 
 def validate_project_namespace(namespace: str) -> str:
@@ -1102,7 +1154,7 @@ def create_project(
             (project_id, slug, project_title, description, ns, repo, remote_url, now, now),
         )
         row = conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
-    return row_to_dict(row)
+    return _normalize_project(row_to_dict(row))
 
 
 def update_project(
@@ -1135,7 +1187,7 @@ def update_project(
             ),
         )
         updated = conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
-    return row_to_dict(updated)
+    return _normalize_project(row_to_dict(updated))
 
 
 def update_project_identity(
@@ -1162,7 +1214,7 @@ def update_project_identity(
             ((title or "").strip() or row["title"], ns, repo_path, now, project_id),
         )
         updated = conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
-    return row_to_dict(updated)
+    return _normalize_project(row_to_dict(updated))
 
 
 def create_project_file(
@@ -2953,11 +3005,12 @@ def get_run_status(run_id: str) -> dict | None:
                       attempt_id, recovery_state, recovery_reason, recovery_count,
                       checkpoint_at, deadline_at, resumes_run_id, resume_checkpoint_id,
                       session_id, focus_formalization_id, purpose, created_at,
-                      dependency_id, waiting_dependencies_json, automation_budget_json, project_id
+                      dependency_id, waiting_dependencies_json, automation_budget_json, project_id,
+                      autonomous, approval_mode
                from runs where id = ?""",
             (run_id,),
         ).fetchone()
-    return usage_metadata.decode(run_detail(row_to_dict(row))) if row else None
+    return usage_metadata.decode(run_detail(_normalize_run_policy(row_to_dict(row)))) if row else None
 
 
 def list_runs_by_status(status: str) -> list[dict]:
@@ -4143,7 +4196,7 @@ def session_detail(session_id: str) -> dict | None:
             "select id, status, result_kind, result_detail,"
             " input_tokens, output_tokens, cost_usd, usage_details_json, focus_formalization_id,"
             " focus_source_hash, attempt_id, recovery_state, recovery_reason, checkpoint_at, resumes_run_id,"
-            " session_id, purpose, recoverable, stop_reason, created_at, client_request_id"
+            " session_id, purpose, recoverable, stop_reason, created_at, client_request_id, autonomous, approval_mode"
             " from runs where session_id = ? order by created_at asc, id asc",
             (session_id,),
         ).fetchall()
@@ -4226,9 +4279,9 @@ def session_detail(session_id: str) -> dict | None:
         "review_events": review_events_for_session(session_id),
         "usage_breakdown": usage_breakdown_for_session(session_id),
         "active_run": _normalize_run(row_to_dict(active_run)) if active_run else None,
-        "runs": [row_to_dict(r) for r in runs],
+        "runs": [_normalize_run_policy(row_to_dict(r)) for r in runs],
         "safe_verify": _safe_verify_summary(row_to_dict(latest_run)) if latest_run else None,
-        "project": row_to_dict(project) if project else None,
+        "project": _normalize_project(row_to_dict(project)) if project else None,
     }
 
 
@@ -4639,7 +4692,13 @@ def _normalize_usage_breakdown_row(row: dict) -> dict:
     return row
 
 
+def _normalize_run_policy(row: dict) -> dict:
+    row["autonomous"] = bool(row.get("autonomous"))
+    return row
+
+
 def _normalize_run(row: dict) -> dict:
+    row = _normalize_run_policy(row)
     row = usage_metadata.decode(run_detail(row))
     raw_pending = row.get("pending_approval")
     if isinstance(raw_pending, str) and raw_pending:

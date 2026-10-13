@@ -230,6 +230,7 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
                 config=config,
                 events=broker,
                 autonomous=bool(run.get("autonomous")),
+                approval_mode=str(run.get("approval_mode") or "stepwise"),
                 purpose=str(run.get("purpose") or "general"),
                 allow_source_pause=bool(run.get("allow_source_pause")),
             )
@@ -483,6 +484,9 @@ class RunnerContext:
     autonomous: bool = False
     purpose: str = "general"
     allow_source_pause: bool = False
+    # Snapshotted independently: Overleaf-linked chats stay conversational while
+    # skipping per-tool approvals. Autonomous execution always skips them too.
+    approval_mode: str = "stepwise"
 
 
 def emit(events: "runbroker.RunBroker | Queue[dict[str, Any]]",
@@ -1134,7 +1138,10 @@ def _start_subagent(
         role=ev.subagent_type,
         spawned_at_turn=turn,
     )
-    child_run = store.create_run(child["id"], cfg.model, None, cfg.max_turns, project_id=project_id)
+    child_run = store.create_run(
+        child["id"], cfg.model, None, cfg.max_turns,
+        project_id=project_id, approval_mode="none",
+    )
     store.update_run(child_run["id"], "running")
     # Record the delegated task as the child's first message NOW, not when it finishes.
     # The child's transcript only replays on SubagentFinished, so until then its session
@@ -2014,8 +2021,8 @@ def _run_lea(context: RunnerContext) -> None:
         # Drive the generator manually (not `for`): the per-tool gate (D19) is a
         # two-way exchange — the prover yields ToolApprovalRequested and we feed the
         # human's decision back via gen.send(). A plain for-loop can't send.
-        # Autonomous (D19): gate=None → no tool ever pauses for human approval, so
-        # the run is fully unattended. Interactive UI runs keep the per-tool gate.
+        # Approval policy is separate from prompt/subagent selection: linked
+        # Overleaf chats can use the collaborator prompt with gate=None.
         from . import lea_status, lea_status_store
         reporting_started = time.monotonic()
         reporting_last_accepted = None
@@ -2092,7 +2099,7 @@ def _run_lea(context: RunnerContext) -> None:
         event_options = {
             "namespace": namespace, "session_id": session_id, "working_dir": str(repo),
             "should_stop": should_stop_run,
-            "gate": None if context.autonomous else _make_gate(session_id),
+            "gate": None if context.autonomous or context.approval_mode == "none" else _make_gate(session_id),
         }
         signature = inspect.signature(run_events)
         if "resume_state" in signature.parameters or any(

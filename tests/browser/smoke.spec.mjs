@@ -25,7 +25,7 @@ test.beforeAll(async () => {
   await fs.writeFile(path.join(prover, 'workspace/lean-toolchain'), 'leanprover/lean4:v4.0.0\n');
   await fs.writeFile(path.join(prover, 'workspace/lakefile.lean'), '-- browser fixture\n');
   await fs.mkdir(path.join(home, 'config'));
-  await fs.writeFile(path.join(home, 'config/lea.local.toml'), `model="o4-mini"\nlea_root=${JSON.stringify(prover)}\n`);
+  await fs.writeFile(path.join(home, 'config/lea.local.toml'), `model="o4-mini"\nlea_root=${JSON.stringify(prover)}\npermission_tier="stepwise"\nOPENAI_API_KEY="browser-stub"\n`);
   const probe = net.createServer();
   await new Promise(r => probe.listen(0, '127.0.0.1', r));
   const port = probe.address().port;
@@ -84,6 +84,67 @@ test('settings expose gateway routing and render the current catalog', async ({p
   await search.press('Enter');
   await expect(page.getByLabel('Gateway URL')).toBeVisible();
   await expect(page.locator('body')).not.toContainText('Failed to load');
+});
+
+test('Overleaf chats stay approval-free through LeaChat reloads and new project chats', async ({page}) => {
+  const start = async (payload) => {
+    const response = await fetch(`${base}/api/runs`, {
+      method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(payload),
+    });
+    const result = await response.json();
+    expect(response.ok, JSON.stringify(result)).toBe(true);
+    return result;
+  };
+  const finish = async (run) => {
+    const response = await fetch(`${base}/api/runs/${run.run_id}/events`);
+    const events = await response.text();
+    expect(events).toContain('event: done');
+    expect(events).not.toContain('event: approval_requested');
+  };
+  const initial = await start({
+    message:'Formalize the Overleaf theorem labeled linked_proof. [stub:approvals]',
+    project_slug:'linked-browser', origin:'overleaf', autonomous:true,
+  });
+  await finish(initial);
+  await page.goto(`${base}/?session=${initial.session_id}`);
+  const send = async (label) => {
+    const submitted = page.waitForResponse(response => response.url() === `${base}/api/runs` && response.request().method() === 'POST');
+    await page.locator('.composer textarea').fill(`Update the proof labeled ${label}. [stub:approvals]`);
+    await page.getByTitle('Send', {exact:true}).click();
+    const response = await submitted;
+    const run = await response.json();
+    expect(response.ok(), JSON.stringify(run)).toBe(true);
+    expect(run.autonomous).toBe(false);
+    expect(run.approval_mode).toBe('none');
+    await expect.poll(async () => (await (await fetch(`${base}/api/runs/${run.run_id}`)).json()).status).toBe('proved');
+    await expect(page.locator('.approval:not(.resolved)')).toHaveCount(0);
+    await expect(page.getByTitle('Send', {exact:true})).toBeVisible();
+    const detail = await (await fetch(`${base}/api/sessions/${run.session_id}`)).json();
+    expect(detail.runs.at(-1).approval_mode).toBe('none');
+    expect(detail.approval_events).toHaveLength(0);
+    return run;
+  };
+  await send('linked_followup');
+  await page.reload();
+  await send('linked_reload');
+
+  const projectChat = await start({message:'Start a new chat. [stub:approvals]', project_slug:'linked-browser'});
+  expect(projectChat.autonomous).toBe(false);
+  expect(projectChat.approval_mode).toBe('none');
+  await finish(projectChat);
+  await page.goto(`${base}/?session=${projectChat.session_id}`);
+  await send('new_project_chat');
+
+  const ordinary = await start({message:'Change a file. [stub:approvals]'});
+  expect(ordinary.approval_mode).toBe('stepwise');
+  await page.goto(`${base}/?session=${ordinary.session_id}`);
+  await expect(page.locator('.approval:not(.resolved)')).toBeVisible();
+  const detail = await (await fetch(`${base}/api/sessions/${ordinary.session_id}`)).json();
+  expect(detail.active_run.pending_approval.tool_name).toBe('write_file');
+  const denied = await fetch(`${base}/api/runs/${ordinary.run_id}/approvals/${detail.active_run.pending_approval.approval_id}`, {
+    method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({decision:'deny'}),
+  });
+  expect(denied.ok).toBe(true);
 });
 
 test('vendored KaTeX renders math and rejects trusted HTML in a browser', async ({page}) => {

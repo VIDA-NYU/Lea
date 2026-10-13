@@ -3369,6 +3369,9 @@
     summaryActions.appendChild(formalizeButton);
     if (reviewing) summaryActions.appendChild(renderFormalizeButton(item, { id: 'reformalize', label: 'Re-formalize' }));
     summaryActions.appendChild(renderPaneItemIconAction(item, { id: "go-to-source", label: "Go to source" }));
+    if (leanPaneView.canViewPaneItemInLeaUi(item)) {
+      summaryActions.appendChild(renderPaneItemIconAction(item, { id: "view-in-lea", label: "Open in LeaChat" }));
+    }
     summary.appendChild(summaryActions);
     card.appendChild(summary);
     if (waiting && !expanded) {
@@ -3656,12 +3659,12 @@
     const otherActions = renderLeanPaneDetailSection("Other actions");
     const actions = document.createElement("div");
     actions.className = "ol-lean-project-detail-actions";
-    // Formalize and Go to source live in the compact summary at all times.
+    // Formalize, Go to source and Open in LeaChat live in the compact summary.
     // Repair and best-effort continuation remain here when they apply.
     if (primary && !['formalize', 'approve-result'].includes(primary.id)) actions.appendChild(renderPaneItemPrimaryAction(item, primary));
     const railElement = document.createElement("div");
     railElement.className = "ol-lean-icon-rail";
-    for (const action of rail.filter((entry) => entry.id !== "go-to-source")) {
+    for (const action of rail.filter((entry) => !["go-to-source", "view-in-lea"].includes(entry.id))) {
       railElement.appendChild(renderPaneItemIconAction(item, action));
     }
     const remainingOverflow = overflow.filter((entry) => entry.id !== "formalize");

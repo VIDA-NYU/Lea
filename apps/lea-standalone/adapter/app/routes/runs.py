@@ -79,7 +79,8 @@ class RunRequest(BaseModel):
     # Autonomous run (D19): when true the run uses no per-tool approval gate. Its
     # purpose selects the non-interactive prompt: ordinary autonomous work uses the
     # default autoformalizer; Overleaf translation uses overleaf_faithful. Defaults
-    # false, preserving the interactive UI's gated collaborator prompt.
+    # false, preserving the interactive UI's collaborator prompt. Approval policy
+    # is resolved separately; Overleaf-linked chats skip the per-tool gate.
     autonomous: bool = False
     # Project namespace (the Overleaf document slug). When present, a new session is
     # tagged with a project of this slug (created on first use) so per-document usage
@@ -385,6 +386,8 @@ def _creation_response(bundle: dict) -> dict:
         "session_id": session["id"],
         "run_id": run["id"],
         "model": run.get("model"),
+        "autonomous": bool(run.get("autonomous")),
+        "approval_mode": run["approval_mode"],
         "message": bundle.get("message"),
         "focus_formalization_id": run.get("focus_formalization_id"),
         "formalization": formalization,

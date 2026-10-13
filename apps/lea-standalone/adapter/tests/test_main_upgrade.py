@@ -33,7 +33,7 @@ def test_upgrade_preserves_deployed_history_and_requires_new_evidence(tmp_path, 
             snapshots[table] = (columns, conn.execute(f"select * from {table} order by rowid").fetchall())
 
     db.init_db()
-    assert migrations.current_revision() == "0033_formalization_reviews"
+    assert migrations.current_revision() == migrations.head_revision()
     with sqlite3.connect(path) as conn:
         assert conn.execute("pragma integrity_check").fetchone()[0] == "ok"
         for table, (columns, rows) in snapshots.items():
@@ -47,4 +47,4 @@ def test_upgrade_preserves_deployed_history_and_requires_new_evidence(tmp_path, 
     assert step["check_current"] is False
     assert step["check_stale_reason"]
     db.init_db()  # An already-current database is unchanged, including history.
-    assert migrations.current_revision() == "0033_formalization_reviews"
+    assert migrations.current_revision() == migrations.head_revision()

@@ -1296,6 +1296,7 @@ body.ol-lean-pane-resizing {
 }
 
 .ol-lean-project-item {
+  container-type: inline-size;
   margin-bottom: 8px;
   padding: 10px 12px;
   border: 1px solid var(--ol-line);
@@ -1321,6 +1322,13 @@ body.ol-lean-pane-resizing {
   grid-template-areas: "identity identity" "checks actions";
   align-items: end;
   gap: 8px 10px;
+}
+
+@container (max-width: 380px) {
+  .ol-lean-project-item-summary {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "identity" "checks" "actions";
+  }
 }
 
 .ol-lean-project-item-header {
@@ -1384,13 +1392,15 @@ body.ol-lean-pane-resizing {
 .ol-lean-project-summary-actions {
   grid-area: actions;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
   min-width: 0;
 }
 
-.ol-lean-project-summary-formalize {
+.ol-lean-project-summary-formalize,
+.ol-lean-project-summary-actions .ol-lean-open-chat {
   min-height: 30px;
   padding: 0 9px;
   font-size: 11.5px;

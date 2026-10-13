@@ -141,7 +141,7 @@ Both front ends talk to this one service.
 | File | Role |
 |---|---|
 | [main.py](../apps/lea-standalone/adapter/app/main.py) | FastAPI wiring: mounts the routers, CORS, serves the built UI in the Docker image. |
-| [bridge.py](../apps/lea-standalone/adapter/app/bridge.py) | **The prover seam.** Calls `lea.interface.run_events(...)` in-process and pattern-matches its typed events (`AssistantTextDelta`, `ToolCalled`, `FileChanged`, `CheckResult`, `UsageUpdated`, `Finished`, `ToolApprovalRequested`, …) into SSE frames. `autonomous` runs (the Overleaf path, design tag D19) disable the per-tool approval gate and use the non-interactive prompt variant. |
+| [bridge.py](../apps/lea-standalone/adapter/app/bridge.py) | **The prover seam.** Calls `lea.interface.run_events(...)` in-process and pattern-matches its typed events (`AssistantTextDelta`, `ToolCalled`, `FileChanged`, `CheckResult`, `UsageUpdated`, `Finished`, `ToolApprovalRequested`, …) into SSE frames. `autonomous` selects unattended execution; the persisted `approval_mode` independently controls the per-tool gate. Overleaf-linked chats remain approval-free when continued in LeaChat with its conversational prompt and subagent capability. |
 | [db.py](../apps/lea-standalone/adapter/app/db.py) | SQLite schema: `sessions`, `runs`, `code_steps`, messages, usage. Session status is **derived** from the latest `code_step` verdict — never stored. |
 | [gitstore.py](../apps/lea-standalone/adapter/app/gitstore.py) | Git owns proof content: every `FileChanged` becomes a commit in the session's repo; the DB row stores only SHA + path. |
 | [store.py](../apps/lea-standalone/adapter/app/store.py) | Higher-level persistence orchestration, usage stats rollups (`/api/stats`). |
@@ -150,6 +150,22 @@ Both front ends talk to this one service.
 | [routes/projects.py](../apps/lea-standalone/adapter/app/routes/projects.py) | Projects incl. the **by-slug** family the companion uses: `identity`, `share`, `export` (zip), `git/remote`, `git/push`, `mirror` (receives the `.tex` mirror), `namespace-preview`. |
 | [routes/settings.py](../apps/lea-standalone/adapter/app/routes/settings.py) | `GET/PUT /api/settings` — single source of truth (`config/lea.local.toml`) for model, max turns, spend cap, provider keys, GitHub token. Both settings UIs (standalone Settings page and the extension popover) read/write here, so they stay in lockstep. |
 | Others | [lsp_proxy.py](../apps/lea-standalone/adapter/app/lsp_proxy.py) (Lean LSP), [models_catalog.py](../apps/lea-standalone/adapter/app/models_catalog.py) (Python mirror of the model catalog), `artifacts.py`, `filesystem.py`, `graph.py`, `blueprint.py`, `ghimport.py`, `skills_catalog.py`, routes `search.py`/`skills.py`. Tests in [adapter/tests/](../apps/lea-standalone/adapter/tests) (pytest, run inside the app venv). |
+
+### Approval defaults across interfaces
+
+The adapter records `projects.overleaf_linked` from extension runs, source mirrors,
+project identity updates, and the companion's import/sync operations. Existing
+projects are backfilled from Overleaf-origin sessions/formalizations and mirrored
+file metadata. The association survives deletion of individual chats or sources;
+ordinary UI projects and autonomous runs alone do not establish it.
+
+Every new run snapshots `approval_mode` (`stepwise` or `none`). Chats in linked
+projects, and loose Overleaf-origin chats, use `none` in LeaChat without changing
+their conversational execution mode. Extension requests and the global `none`
+permission tier retain their existing autonomous behavior. The gate covers `bash`,
+`write_file`, and `edit_file`; reads already run without approval. The dispatcher
+uses the snapshot after queue recovery, and existing runs and pending approvals
+are not retroactively changed. Both interfaces continue using the same adapter.
 
 ### The vendored prover — `apps/lea-standalone/prover/`
 

@@ -752,8 +752,8 @@ export function canEditPaneItem(item) {
 
 // --- Item action hierarchy ---------------------------------------------------
 
-// The full action set for a pane item. The renderer keeps Formalize and Go to
-// source in the summary, with the remaining actions in expanded details:
+// The full action set for a pane item. The renderer keeps Formalize, Go to
+// source and Open in LeaChat in the summary, with the rest in expanded details:
 //   primary  -- at most ONE status-derived accented text button (repair wins
 //               over formalize: breakage attribution means the guided path).
 //   rail     -- always-relevant navigation, rendered as icon buttons.

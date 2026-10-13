@@ -17,6 +17,7 @@ Scenarios are selected per run by markers in the user message:
   (default)         happy path — writes a .lean file, checks ok, finishes proved
   [stub:fail]       raises mid-run — bridge surfaces run_error + done(failed)
   [stub:max_turns]  finishes with reason="max_turns"
+  [stub:approvals]  honors the configured write_file gate before writing
 
 The declaration name is parsed from the companion prompt's first line
 ("Formalize the Overleaf theorem labeled <label>."), falling back to
@@ -51,6 +52,7 @@ from lea.interface import (  # noqa: E402
     CheckResult,
     FileChanged,
     Finished,
+    ToolApprovalRequested,
     ToolCalled,
     TurnStarted,
     UsageUpdated,
@@ -81,6 +83,13 @@ def stub_run_events(config, messages, *, namespace=None, session_id=None,
         return
 
     proof_path = Path(working_dir) / f"{decl}.lean"
+    args = {"path": str(proof_path)}
+    if "[stub:approvals]" in task and gate and gate("write_file", args):
+        decision = yield ToolApprovalRequested("write_file", args)
+        if decision not in {"allow", "always_session"}:
+            yield Finished("completed", "Write declined.", 1, session_id, config.model,
+                           Usage(input_tokens=1, output_tokens=1), 0.0, {"messages": []})
+            return
     yield ToolCalled("write_file", {"path": str(proof_path)})
     proof_path.parent.mkdir(parents=True, exist_ok=True)
     proof_path.write_text(

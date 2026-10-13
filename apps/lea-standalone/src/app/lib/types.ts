@@ -50,6 +50,8 @@ export type RunStatus =
 export interface RunSummary {
   id: string;
   status: RunStatus | string;
+  autonomous?: boolean;
+  approval_mode?: ApprovalMode;
   focus_formalization_id?: string | null;
   focus_source_hash?: string | null;
   result_kind?: 'proved' | 'disproved' | 'needs_review' | string | null;
@@ -72,6 +74,7 @@ export interface RunSummary {
 // ── Per-tool approval gate (D19) ──────────────────────────────────────────────
 export type GatedTool = 'bash' | 'write_file' | 'edit_file';
 export type ApprovalDecision = 'allow' | 'deny' | 'always_session';
+export type ApprovalMode = 'stepwise' | 'none';
 
 export interface SessionSummary {
   id: string;
@@ -137,6 +140,7 @@ export interface Project {
   namespace: string;
   repo_path: string;
   remote_url?: string | null;
+  overleaf_linked?: boolean;
   created_at: string;
   updated_at: string;
   session_count?: number;
@@ -687,6 +691,8 @@ export interface UsageBreakdownRow {
 export interface ActiveRun {
   id: string;
   status: RunStatus | string;
+  autonomous?: boolean;
+  approval_mode?: ApprovalMode;
   stop_reason?: string | null;
   stop_requested_reason?: string | null;
   model?: string;

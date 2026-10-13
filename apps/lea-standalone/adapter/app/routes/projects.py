@@ -526,7 +526,9 @@ def preview_project_github_import_by_slug(
             if isinstance(exc, project_service.ProjectIdentityError):
                 raise _project_identity_error(exc)
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _preview_github_import(project, request)
+    result = _preview_github_import(project, request)
+    store.mark_project_overleaf_linked(project["id"])
+    return result
 
 
 @router.post("/api/projects/by-slug/{slug}/github-imports", status_code=202)
@@ -534,7 +536,10 @@ def preview_project_github_import_by_slug(
 def confirm_project_github_import_by_slug(
     slug: str, request: GithubImportConfirmRequest
 ) -> dict:
-    return _confirm_github_import(_require_project_by_slug(slug), request)
+    project = _require_project_by_slug(slug)
+    result = _confirm_github_import(project, request)
+    store.mark_project_overleaf_linked(project["id"])
+    return result
 
 
 @router.get("/api/projects/by-slug/{slug}/github-imports/{import_id}")
@@ -551,11 +556,13 @@ def sync_project_formalizations_by_slug(
     # This updates target metadata and SQL import bindings only. It must still
     # reserve the project against namespace changes, but cannot queue inventory
     # refreshes behind Lean checks or dependency builds.
-    return github_import_service.sync_targets(
+    result = github_import_service.sync_targets(
         project,
         _import_targets(request.targets),
         _proofs_root(),
     )
+    store.mark_project_overleaf_linked(project["id"])
+    return result
 
 
 # ── Git sharing: set remote + push to GitHub (6b/U3, D34) ─────────────────────────
@@ -698,6 +705,7 @@ def update_project_identity_by_slug(slug: str, request: ProjectIdentityUpdate) -
             raise _project_identity_error(exc)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
+        project = store.mark_project_overleaf_linked(project["id"])
         return {"identity": project_service.project_identity(project)}
 
     title = request.project_name.strip()
@@ -709,6 +717,7 @@ def update_project_identity_by_slug(slug: str, request: ProjectIdentityUpdate) -
             project = store.get_project(project["id"])
             project_service.refresh_project_title_docs(project, _proofs_root(), title)
             updated = store.update_project(project["id"], title=title)
+            updated = store.mark_project_overleaf_linked(updated["id"])
             return {"identity": project_service.project_identity(updated)}
 
     try:
@@ -722,6 +731,7 @@ def update_project_identity_by_slug(slug: str, request: ProjectIdentityUpdate) -
         )
     except project_service.ProjectIdentityError as exc:
         raise _project_identity_error(exc)
+    result["project"] = store.mark_project_overleaf_linked(result["project"]["id"])
     return {
         "identity": project_service.project_identity(result["project"]),
         "migration": result["migration"],
@@ -1177,6 +1187,7 @@ def mirror_overleaf_tex(slug: str, request: MirrorRequest, background_tasks: Bac
         summary = uploads.sync_overleaf_tex(project, proofs_root, incoming, commit=False, mode=mode)
     except uploads.UploadError as exc:
         raise HTTPException(status_code=_UPLOAD_ERROR_STATUS.get(exc.code, 400), detail=str(exc))
+    store.mark_project_overleaf_linked(project["id"])
     if summary.get("changed"):
         background_tasks.add_task(uploads.commit_mirror, project, proofs_root)
     return {"project_id": project["id"], "slug": project["slug"], **summary}

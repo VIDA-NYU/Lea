@@ -1695,7 +1695,7 @@ test("Lean pane expanded detail shows copy actions only for generated content", 
   assert.match(harness.bodyText(), /workspace\/proofs\/Main\.lean/);
 });
 
-test("Lean pane keeps a visible LeaChat button for a saved session whose status is unknown", async () => {
+test("Lean pane opens a saved LeaChat session from the collapsed summary even when its status is unknown", async () => {
   const harness = createContentHarness({ status: "unformalized" }, {}, {
     manifest: { ok: true, rootFile: "main.tex", diagnostics: [], items: [{
       id: "definition:CapacityEncoding", label: "CapacityEncoding", kind: "definition",
@@ -1708,14 +1708,21 @@ test("Lean pane keeps a visible LeaChat button for a saved session whose status 
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
-  harness.clickFirstPaneItem();
+  assert.equal(harness.countSelector(".ol-lean-project-item.is-expanded"), 0);
   assert.equal(harness.hasButtonText("Open in LeaChat"), true);
   assert.equal(harness.hasButtonLabel("Open in LeaChat"), true);
+  const summaryActions = harness.document.body.querySelector(".ol-lean-project-summary-actions");
+  assert.equal(summaryActions.querySelector(".ol-lean-open-chat")?.textContent, "Open in LeaChat");
   harness.clickButtonText("Open in LeaChat");
   await flushPromises();
   const opened = harness.runtimeMessages.find((message) => message.type === "OPEN_LEA_SESSION");
   assert.equal(new URL(opened.url).searchParams.get("session"), "saved-session");
   assert.ok(!harness.fetchCalls.some((call) => call.url.endsWith("/lean-pane/chat/session")));
+  assert.equal(harness.countSelector(".ol-lean-project-item.is-expanded"), 0);
+  harness.clickFirstPaneItem();
+  assert.equal(harness.countSelector(".ol-lean-open-chat"), 1);
+  const detailActions = harness.document.body.querySelector(".ol-lean-project-detail-actions");
+  assert.equal(detailActions?.querySelector(".ol-lean-open-chat") || null, null);
 });
 
 test("Lean pane shows navigable uses and used-by relationships across project files", async () => {

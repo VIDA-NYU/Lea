@@ -196,12 +196,13 @@ def configured_provider_keys(path: Path | None = None) -> dict[str, str]:
 
 
 # --- approval / permission tier (adapter-only; controls the run's gate) --------
-# The live system has one real approval axis: a per-tool gate (interactive) vs.
-# none (autonomous). `permission_tier` is the persisted default for *UI* runs:
+# `permission_tier` is the persisted default for ordinary UI runs:
 #   "stepwise" -> gate the mutating tools (bash/write_file/edit_file) — the default
 #   "none"     -> fully autonomous (no gate + the non-interactive prompt)
-# Overleaf runs force autonomous regardless (D19). This is an adapter concept, so
-# it lives here (a config-file getter), not on the prover's LeaConfig.
+# Extension runs request autonomous execution (D19). Overleaf-linked projects and
+# Overleaf-origin chats also skip the gate in LeaChat, independently of execution
+# mode: they retain the conversational prompt and subagents under `stepwise`.
+# Both policies are adapter concepts, not fields on the prover's LeaConfig.
 PERMISSION_TIERS = ("stepwise", "none")
 DEFAULT_PERMISSION_TIER = "stepwise"
 

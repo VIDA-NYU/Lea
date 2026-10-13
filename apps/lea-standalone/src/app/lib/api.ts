@@ -5,6 +5,7 @@
 // straight from ./types.
 
 import type {
+  ApprovalMode,
   ApprovalDecision,
   LeanCheckExecution,
   LeanCheckRuntime,
@@ -90,6 +91,8 @@ export async function createRun(
   session_id: string;
   run_id: string;
   model: string;
+  autonomous?: boolean;
+  approval_mode?: ApprovalMode;
   message: ChatMessage;
   focus_formalization_id?: string | null;
   formalization?: Formalization | null;
