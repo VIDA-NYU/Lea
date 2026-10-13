@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import threading
@@ -33,21 +34,76 @@ def file_version(path):
         return None
 
 
-def file_hash(path):
+def file_observation(path):
+    """Hash and identity from the same observation; reject a concurrent rewrite."""
     path = Path(path)
+    identity = None
     try:
         stat = path.stat()
         identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
         with _guard:
             previous = _hashes.get(str(path))
         if previous and previous[0] == identity:
-            return previous[1]
+            return previous[1], list(identity)
         value = digest(path.read_bytes())
+        if file_version(path) != list(identity):
+            return None, None
         with _guard:
             _hashes[str(path)] = (identity, value)
-        return value
+        return value, list(identity)
     except OSError:
-        return None
+        return None, (list(identity) if identity and file_version(path) == list(identity) else None)
+
+
+def file_hash(path):
+    return file_observation(path)[0]
+
+
+class ReadSnapshot:
+    """Deduplicate observations inside one read, never across returned responses.
+
+    A caller must validate `unchanged()` before publishing its projection. Compiler
+    checks and evidence persistence do not opt into this read-only optimization.
+    """
+    def __init__(self):
+        self.files = {}
+        self.executions = {}
+        self.environments = {}
+        self.topology = {}
+        self.checks = {}
+
+    def observation(self, path):
+        key = str(path)
+        if key not in self.files:
+            self.files[key] = file_observation(path)
+        return self.files[key]
+
+    def decode(self, raw):
+        if raw not in self.executions:
+            self.executions[raw] = json.loads(raw)
+        return self.executions[raw]
+
+    def environment_valid(self, execution):
+        key = id(execution)
+        if key not in self.environments:
+            self.environments[key] = (execution,
+                environment_hash(execution['environment']) == execution.get('environment_sha256'))
+        return self.environments[key][1]
+
+    def unchanged(self):
+        return (all(file_version(path) == observed[1] for path, observed in self.files.items())
+            and all(file_version(path) == version for path, version in self.topology.items()))
+
+    def watch_root(self, path, root):
+        # A newly created, nearer Lake file changes module resolution even when
+        # all files in the old manifest still exist and have identical bytes.
+        for parent in Path(path).resolve().parents:
+            for name in ('lakefile.lean', 'lakefile.toml'):
+                candidate = str(parent / name)
+                if candidate not in self.topology:
+                    self.topology[candidate] = file_version(candidate)
+            if parent == root:
+                break
 
 
 def lake_root(path):
@@ -329,29 +385,49 @@ def source_identity(path):
     return path.relative_to(root).as_posix() if root else str(path)
 
 
-def freshness(execution, path, content=None):
+def freshness(execution, path, content=None, *, snapshot=None):
+    if snapshot and content is None:
+        key = (id(execution), str(path))
+        if key not in snapshot.checks:
+            snapshot.checks[key] = (execution, _freshness(execution, path, content, snapshot=snapshot))
+        return snapshot.checks[key][1]
+    return _freshness(execution, path, content, snapshot=snapshot)
+
+
+def _freshness(execution, path, content=None, *, snapshot=None):
     if not execution or execution.get('evidence_version') != PROTOCOL_VERSION or not execution.get('environment'):
         return False, 'missing_evidence'
     path = Path(path)
     try:
-        if execution.get('source_identity') != source_identity(path):
+        root = lake_root(path)
+        if snapshot:
+            snapshot.watch_root(path, root)
+        identity = path.resolve().relative_to(root).as_posix() if root else str(path.resolve())
+        if execution.get('source_identity') != identity:
             return False, 'source_changed'
-        current = path.read_bytes() if content is None else content.encode() if isinstance(content, str) else content
-        if digest(current) != execution.get('content_sha256'):
+        observe = snapshot.observation if snapshot else file_observation
+        current_hash = observe(path)[0] if content is None else digest(
+            content.encode() if isinstance(content, str) else content)
+        if current_hash != execution.get('content_sha256'):
             return False, 'source_changed'
         env = execution['environment']
-        root = lake_root(path)
-        if env['configuration'] != (_configuration(root) if root else {}):
+        # Observe absent configuration files too: creating one changes the environment.
+        configuration = {name: observe(root / name)[0] for name in
+            ('lean-toolchain', 'lakefile.lean', 'lakefile.toml', 'lake-manifest.json')} if root else {}
+        if env['configuration'] != configuration:
             return False, 'environment_changed'
-        if root and env.get('configuration_versions') and any(file_version(root / name) != version for name, version in env['configuration_versions'].items()):
+        if root and env.get('configuration_versions') and any(observe(root / name)[1] != version for name, version in env['configuration_versions'].items()):
             return False, 'environment_changed'
+        root_path = str(root) if root else None
         for identity, record in env['files'].items():
-            actual = root / identity[len('workspace:'):] if root and identity.startswith('workspace:') else record['path']
-            if file_hash(actual) != record['sha256'] or record['sha256'] is None:
+            actual = os.path.join(root_path, identity[len('workspace:'):]) if root and identity.startswith('workspace:') else record['path']
+            observed_hash, observed_version = observe(actual)
+            if observed_hash != record['sha256'] or record['sha256'] is None:
                 return False, 'dependency_changed'
-            if record.get('version') and file_version(actual) != record['version']:
+            if record.get('version') and observed_version != record['version']:
                 return False, 'dependency_changed'
-        if environment_hash(env) != execution.get('environment_sha256'):
+        if not (snapshot.environment_valid(execution) if snapshot else
+                environment_hash(env) == execution.get('environment_sha256')):
             return False, 'missing_evidence'
     except (OSError, KeyError, TypeError, ValueError):
         return False, 'unavailable'

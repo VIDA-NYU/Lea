@@ -131,7 +131,12 @@ def project_repo_dir(project: dict, proofs_root: Path) -> Path:
 
 
 def project_identity(project: dict, *, overleaf_project_id: str | None = None) -> dict:
-    sessions = store.list_project_sessions(project["id"])
+    # This describes history existence, not whether a proof is currently valid.
+    with store.connect() as conn:
+        recorded = conn.execute("""select exists(select 1 from timeline t
+            join sessions s on s.id=t.session_id where s.project_id=?
+            and t.kind='code' and lower(t.path) not like '%scratch%')""",
+            (project['id'],)).fetchone()[0]
     return {
         **project_coordination.snapshot(project["id"]),
         "projectId": project["id"],
@@ -141,7 +146,7 @@ def project_identity(project: dict, *, overleaf_project_id: str | None = None) -
         "namespace": project["namespace"],
         "namespaceEditable": True,
         "repoPath": project.get("repo_path"),
-        "hasRecordedProofs": any(int(session.get("code_step_count") or 0) > 0 for session in sessions),
+        "hasRecordedProofs": bool(recorded),
         "exists": True,
     }
 

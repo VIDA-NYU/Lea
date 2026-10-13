@@ -189,6 +189,67 @@ def test_weakened_statement_and_missing_audit_never_publish(project, monkeypatch
     assert deps.publish_owned(run["id"], dep["path"]) is None
 
 
+def test_stats_projects_dependency_evidence_without_refreshing_or_building(project, monkeypatch):
+    p, repo = project
+    run = active_run(p)
+    allocation = deps.ensure(p, spec(), run_id=run["id"], mode="inline")
+    dep = allocation["dependency"]
+    path = repo / dep["path"]
+    path.parent.mkdir(parents=True)
+    path.write_text(allocation["skeleton"].replace("sorry", "trivial"))
+    install_inspection(monkeypatch, dep)
+    assert deps.publish_owned(run["id"], dep["path"])["ready"]
+    store.update_run(run["id"], "completed")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Reading stats must not refresh or compile project modules")
+    monkeypatch.setattr(library, "refresh", unexpected)
+    monkeypatch.setattr(library, "validate_module", unexpected)
+    from app import formalizations
+    assert formalizations.decorate([store.get_formalization(dep["formalization_id"])])[0]["check_current"]
+    assert store.usage_stats()["global"]["session_count"] >= 1
+    path.write_text(path.read_text() + "\n-- externally changed\n")
+    current = formalizations.decorate([store.get_formalization(dep["formalization_id"])])[0]
+    assert not current["check_current"]
+    assert current["validity_status"] not in {"proved", "defined"}
+    assert store.usage_stats()["global"]["session_count"] >= 1
+
+
+@pytest.mark.parametrize("single", [False, True])
+def test_dependency_inventory_reads_never_compile_or_wait_for_environment(project, monkeypatch, single):
+    from app.routes import project_library as routes
+    from lea.check_evidence import coordinator
+    p, repo = project
+    run = active_run(p)
+    allocation = deps.ensure(p, spec(), run_id=run["id"], mode="inline")
+    dep = allocation["dependency"]
+    path = repo / dep["path"]
+    path.parent.mkdir(parents=True)
+    path.write_text(allocation["skeleton"].replace("sorry", "trivial"))
+    install_inspection(monkeypatch, dep)
+    assert deps.publish_owned(run["id"], dep["path"])["ready"]
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Inventory reads must not refresh or compile project modules")
+    monkeypatch.setattr(library, "refresh", unexpected)
+    monkeypatch.setattr(library, "validate_module", unexpected)
+    def read():
+        return routes.get_dependency(p["slug"], dep["id"]) if single else routes.list_dependencies(p["slug"])["dependencies"][0]
+
+    # A running proof may hold the compiler environment exclusively. Metadata
+    # must still render, using filesystem freshness of the recorded evidence.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with coordinator(repo).lease(exclusive=True):
+            assert pool.submit(read).result(timeout=2)["ready"]
+    path.write_text(path.read_text() + "\n-- external edit\n")
+    current = read()
+    assert not current["ready"] and current["state"] == "stale"
+    with db.connect() as conn:
+        assert conn.execute("select state from project_dependencies where id=?", (dep["id"],)).fetchone()[0] == "ready"
+    path.unlink()
+    assert not read()["ready"]
+
+
 @pytest.mark.parametrize("final_reason,invalid", [("completed", None), ("completed", "signature"),
     ("completed", "audit"), ("completed", "axioms"), ("completed", "contents"), ("interrupted", None)])
 def test_deferred_worker_certifies_final_segment_before_done(project, monkeypatch, tmp_path, final_reason, invalid):

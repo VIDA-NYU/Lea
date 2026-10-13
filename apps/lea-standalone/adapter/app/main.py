@@ -4,6 +4,7 @@ the bundled frontend last so every `/api/*` route takes priority."""
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from . import alignment_store, bridge, formalize_batch_reports as batch_report_s
 from .config import load_config
 
 app = FastAPI(title="Lea Interface API")
+_startup_log = logging.getLogger("uvicorn.error")
 
 
 @app.middleware("http")
@@ -69,9 +71,12 @@ def startup() -> None:
     try:
         from lea import process_ownership
         os.environ["LEA_OWNED_PROCESS_DIR"] = str(runtime.owned_process_dir())
+        _startup_log.info("Startup: cleaning up previously owned workers.")
         process_ownership.reap_previous()
+        _startup_log.info("Startup: preparing the database.")
         init_db()
         runtime.set_state("recovering")
+        _startup_log.info("Startup: recovering interrupted work.")
         recovery.recover_running()
         alignment_store.recover_interrupted()
         batch_report_service.recover_interrupted()
@@ -79,10 +84,13 @@ def startup() -> None:
         from .project_dependencies import recover
         recover()
         from . import project_library, store
-        for project in store.list_projects():
-            project_library.refresh(project)
+        projects = store.list_projects()
+        _startup_log.info("Startup: indexing source files in %d projects; compiler checks deferred.", len(projects))
+        for project in projects:
+            project_library.refresh(project, resolve_environment=False)
         config = load_config()
         proofs_root = config.lea_root / "workspace" / "proofs" if config.lea_root else None
+        _startup_log.info("Startup: recovering interrupted GitHub imports.")
         github_import_service.recover_github_imports_at_startup(proofs_root)
         runtime.set_state("ready")
     except BaseException:

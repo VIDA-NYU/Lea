@@ -611,6 +611,43 @@ test("formalize returns a structured error when the spend cap is already reached
   assert.deepEqual(state.jobs, {});
 });
 
+test("inventory and badges batch current ledger reads without retaining certificates between polls", async () => {
+  const leaRepo = await makeLeaRepo();
+  const calls = [];
+  let current = true;
+  const fallback = makeAdapterApiFetch([]);
+  const state = await makeState({ leaRepoPath: leaRepo, fetchImpl: async (url, options) => {
+    const parsed = new URL(url);
+    if (parsed.pathname.endsWith('/target-status')) {
+      const names = parsed.searchParams.get('declarations').split(',');
+      calls.push(names);
+      return jsonResponse(200, { targets: names.map(name => ledgerEntry(name, {
+        check_current: current, validity_status: current ? 'proved' : 'unchecked',
+        content: `theorem ${name} : True := by trivial`,
+        check_stale_reason: current ? null : 'dependency_changed'
+      })) });
+    }
+    return fallback(url, options);
+  } });
+  const names = ['alpha', 'beta', 'gamma'];
+  const files = [{ path: 'main.tex', content: names.map(name =>
+    `\\begin{theorem}\n% lea: formalize label=${name}\nTrue.\n\\end{theorem}`).join('\n') }];
+  const payload = { overleafProjectId: 'project-1', files };
+  const first = await handleLeanPaneManifest(payload, state);
+  assert.equal(first.statusCode, 200);
+  assert.deepEqual(first.body.items.map(item => item.status), ['valid', 'valid', 'valid']);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], names);
+  current = false;
+  const second = await handleLeanPaneManifest(payload, state);
+  assert(second.body.items.every(item => item.status !== 'valid'));
+  assert.equal(calls.length, 2);
+  const badges = await handleGetStatuses({ overleafProjectId: 'project-1', targets:
+    names.map(targetLabel => ({ targetKind: 'theorem', targetLabel, targetText: 'True.' })) }, state);
+  assert.equal(badges.statusCode, 200);
+  assert.equal(calls.length, 3);
+});
+
 test("lean pane manifest returns missing-stub items without artifacts", async () => {
   const leaRepo = await makeLeaRepo();
   const state = await makeState({ leaRepoPath: leaRepo });
@@ -4636,7 +4673,7 @@ function makeLeaApiFetch(calls, options = {}) {
 // popover-usage path can be exercised without a live adapter.
 function makeStatsFetch(stats) {
   return async (url) => {
-    if (String(url).endsWith("/api/stats")) {
+    if (new URL(String(url)).pathname === "/api/stats") {
       return jsonResponse(200, stats);
     }
     return jsonResponse(404, { detail: "not found" });
@@ -5062,6 +5099,36 @@ test("blocked waits do not starve later verified consumers", async () => {
   await waitFor(() => state.jobs.A.status === "formalized");
   assert.deepEqual(resumed, ["A"]);
 });
+
+for (const available of [true, false]) {
+  test(`blocked dependency polling stays quiet without reusing readiness: available=${available}`, async () => {
+    const {state, add, dependencies, calls, resumed} = await dependencyRecoveryFixture();
+    add('blocked');
+    dependencies.get('L').ready = false;
+    dependencies.get('L').state = 'failed';
+    if (!available) dependencies.delete('L');
+    const events = [];
+    state.eventBus = createEventBus();
+    state.eventBus.subscribe(event => events.push(event));
+    await reconcileDependencyWaits(state);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].overleafProjectId, 'project-1');
+    events.length = 0;
+    await reconcileDependencyWaits(state);
+    assert.deepEqual(events, []);
+    assert.deepEqual(resumed, []);
+    assert.equal(calls.filter(call => call.url.endsWith('/dependencies/L')).length, 2);
+    const persisted = JSON.parse(await fs.readFile(state.jobsPath, 'utf8'));
+    assert.equal(persisted.blocked.dependencies[0].current, available);
+    if (available) {
+      dependencies.get('L').detail = 'Changed failure';
+      await reconcileDependencyWaits(state);
+      assert.equal(events.length, 1);
+      assert.equal(events[0].overleafProjectId, 'project-1');
+      assert.deepEqual(resumed, []);
+    }
+  });
+}
 
 test("stopping during readiness checks prevents observation and explicit Continue re-arms a canceled batch target", async () => {
   const { state, add, resumed, observed } = await dependencyRecoveryFixture();
@@ -7422,7 +7489,7 @@ test("rename snapshot: a busy target defers the whole status response instead of
     });
     if (String(url).includes("/target-status")) {
       const name = new URL(url).searchParams.get("declarations");
-      if (name === "beta") return jsonResponse(409, { detail: { error: "project_renaming", message: "Renaming project…" } });
+      if (name.split(",").includes("beta")) return jsonResponse(409, { detail: { error: "project_renaming", message: "Renaming project…" } });
       return jsonResponse(200, { targets: [ledgerEntry(name)], project_namespace: "Lea.Notes", namespace_revision: "revision-1" });
     }
     return jsonResponse(200, {});

@@ -1092,6 +1092,18 @@ body.ol-lean-pane-resizing {
   border-radius: var(--ol-radius-sm);
 }
 
+.ol-lean-project-pane-refresh-warning {
+  flex-shrink: 0;
+  margin: 12px 18px 0;
+  padding: 10px 12px;
+  color: var(--ol-ink);
+  background: var(--ol-amber-soft);
+  border: 1px solid var(--ol-amber);
+  border-radius: var(--ol-radius-sm);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .ol-lean-project-pane-diagnostics p {
   margin: 0;
 }

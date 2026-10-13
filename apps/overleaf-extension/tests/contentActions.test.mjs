@@ -518,6 +518,75 @@ test("settings popover defaults source pausing off and saves an explicit opt-in"
   assert.equal(harness.storageState.leaPauseOnSourceIssue, true);
 });
 
+test("settings populate before a slow model catalog and retain edits when it arrives", async () => {
+  let completeCatalog;
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    companionSettings: { leaModel: "gpt-5.6-sol", leaMaxTurns: 100, leaMaxSpendUsd: null },
+    storage: { leaMaxSpendUsd: 19 },
+    fetchOverride: async (url) => url.endsWith("/settings/models")
+      ? new Promise((resolve) => { completeCatalog = resolve; }) : undefined
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickButtonLabel("Open Lea settings and usage");
+  await flushPromises();
+  const popover = harness.settingsPopover();
+  assert.equal(popover.querySelector("[data-role='max-turns']").value, "100");
+  assert.equal(popover.querySelector("[data-role='max-spend']").value, "");
+  const input = popover.querySelector("[data-role='max-turns']");
+  input.value = "75";
+  input.dispatchEvent({ type: "input" });
+  completeCatalog({ ok: true, json: async () => ({ models: [{ id: "gpt-5.6-sol", family: "openai" }], degraded: false }) });
+  await flushPromises();
+  assert.equal(input.value, "75");
+  assert.equal(popover.querySelector("[data-role='save-settings']").disabled, false);
+});
+
+test("unavailable settings show cached values, block saves, and offer a working retry", async () => {
+  let unavailable = true;
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    storage: { leaMaxTurns: 77 },
+    companionSettings: { leaModel: "gpt-5.6-sol", leaMaxTurns: 100 },
+    fetchOverride: async (url) => {
+      if (url.endsWith("/settings") && unavailable) throw new Error("Connection refused");
+    }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickButtonLabel("Open Lea settings and usage");
+  await flushPromises();
+  const popover = harness.settingsPopover();
+  const input = popover.querySelector("[data-role='max-turns']");
+  assert.equal(input.value, "77");
+  assert.equal(input.disabled, true);
+  input.dispatchEvent({ type: "input" });
+  assert.equal(popover.querySelector("[data-role='save-settings']").disabled, true);
+  assert.match(popover.querySelector(".ol-lean-popover-status").textContent, /could not load|unable to load/i);
+  const retry = popover.querySelector("[data-role='retry-settings']");
+  assert.ok(retry && !retry.hidden);
+  unavailable = false;
+  retry.dispatchEvent({ type: "click" });
+  await flushPromises();
+  assert.equal(input.value, "100");
+  assert.equal(input.disabled, false);
+  assert.equal(retry.hidden, true);
+});
+
+test("a stalled settings request times out instead of leaving an editable empty form", async () => {
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    fetchOverride: async (url, options) => url.endsWith("/settings")
+      ? new Promise((_, reject) => options.signal?.addEventListener("abort", () => reject(new Error("Aborted"))))
+      : undefined
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickButtonLabel("Open Lea settings and usage");
+  await flushPromises();
+  const popover = harness.settingsPopover();
+  assert.equal(popover.querySelector("[data-role='max-turns']").disabled, true);
+  await harness.runTimersAt(10000);
+  await flushPromises();
+  assert.match(popover.querySelector(".ol-lean-popover-status").textContent, /timed out/i);
+  assert.equal(popover.querySelector("[data-role='retry-settings']").hidden, false);
+});
+
 test("settings popover renders an accessible persisted resize handle", async () => {
   const harness = createContentHarness({ status: "unformalized" });
   await harness.loadVisibleTheorems();
@@ -1360,6 +1429,165 @@ test("Lean pane file rows render proportional progress segments", async () => {
   harness.clickPaneItemHeaderText("t7");
   assert.match(harness.bodyText(), /Out of date.*LaTeX changed after this Lean artifact was generated/i);
 });
+
+for (const failure of ["timeout", "server", "network"]) {
+  test(`Lean pane ${failure} refresh preserves the loaded tree, edit draft and retries`, async () => {
+    let fail = false;
+    const harness = createContentHarness({ status: "unformalized" }, {}, {
+      locationPath: "/project/unknown",
+      manifest: { ok: true, rootFile: "main.tex", items: [editableItem({ inProgress: true })], diagnostics: [] },
+      fetchOverride: async (url, options) => {
+        if (!url.includes("/lean-pane/manifest") || !fail) return;
+        if (failure === "timeout") return new Promise((_, reject) => options.signal.addEventListener("abort", () => reject(new Error("Aborted"))));
+        if (failure === "network") throw new Error("Network unavailable");
+        return { ok: false, status: 503, json: async () => ({ message: "Inventory busy" }) };
+      }
+    });
+    await harness.loadVisibleTheorems();
+    harness.clickPaneTrigger();
+    await flushPromises();
+    harness.clickPaneTreeRowText("main.tex");
+    harness.clickFirstPaneItem();
+    harness.clickButtonText("Edit");
+    await flushPromises();
+    harness.setEditTextareaValue("theorem unsaved : True := by trivial");
+    const textarea = harness.editTextarea();
+    textarea.dispatchEvent({ type: "input" });
+    const tree = harness.document.body.querySelector(".ol-lean-project-tree");
+    const body = harness.document.body.querySelector(".ol-lean-project-pane-body");
+    body.scrollTop = 140;
+
+    fail = true;
+    await harness.runTimersAt(5000);
+    if (failure === "timeout") await harness.runTimersAt(10000);
+    assert.ok(harness.document.body.querySelector(".ol-lean-project-tree") === tree, "refresh must preserve tree DOM");
+    assert.ok(harness.editTextarea() === textarea, "refresh must preserve edit DOM");
+    assert.equal(textarea.value, "theorem unsaved : True := by trivial");
+    assert.equal(body.scrollTop, 140);
+    assert.match(harness.bodyText(), /last loaded inventory.*out of date/i);
+    assert.equal(harness.countSelector(".ol-lean-project-pane-refresh-warning"), 1);
+    assert.equal(harness.pendingTimers().filter((delay) => delay === 5000).length, 1);
+
+    fail = false;
+    await harness.runTimersAt(5000);
+    assert.equal(harness.countSelector(".ol-lean-project-pane-refresh-warning"), 0);
+    assert.ok(harness.document.body.querySelector(".ol-lean-project-tree"));
+    assert.equal(harness.editTextarea()?.value, "theorem unsaved : True := by trivial");
+  });
+}
+
+test("Lean pane initial inventory failure retries without a running item and stops when closed", async () => {
+  let fail = true;
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/unknown",
+    manifest: { ok: true, rootFile: "main.tex", items: [editableItem()], diagnostics: [] },
+    fetchOverride: async (url) => {
+      if (url.includes("/lean-pane/manifest") && fail) return { ok: false, status: 503, json: async () => ({ message: "Inventory busy" }) };
+    }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  assert.match(harness.bodyText(), /Inventory busy.*Retrying/i);
+  fail = false;
+  await harness.runTimersAt(5000);
+  assert.equal(harness.countSelector(".ol-lean-project-pane-refresh-warning"), 0);
+  assert.ok(harness.document.body.querySelector(".ol-lean-project-tree"));
+  fail = true;
+  harness.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  const count = harness.fetchCalls.filter((call) => call.url.includes("/lean-pane/manifest")).length;
+  harness.clickButtonLabel("Close Lean pane");
+  await harness.runTimersAt(5000);
+  assert.equal(harness.fetchCalls.filter((call) => call.url.includes("/lean-pane/manifest")).length, count);
+});
+
+test("inventory retries back off, pause while hidden, and recover on visibility", async () => {
+  let fail = true;
+  const harness = createContentHarness({}, {}, {
+    locationPath: "/project/unknown",
+    manifest: { ok: true, items: [], diagnostics: [] },
+    fetchOverride: async (url) => {
+      if (url.includes("/lean-pane/manifest") && fail) throw new Error("Connection refused");
+    }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  for (const delay of [5000, 10000, 20000, 30000]) {
+    assert.ok(harness.pendingTimers().includes(delay));
+    await harness.runTimersAt(delay);
+  }
+  assert.equal(harness.countSelector(".ol-lean-project-pane-refresh-warning"), 1);
+  await harness.setVisibility(true);
+  const count = harness.fetchCalls.filter((call) => call.url.includes("/lean-pane/manifest")).length;
+  await harness.runTimersAt(30000);
+  assert.equal(harness.fetchCalls.filter((call) => call.url.includes("/lean-pane/manifest")).length, count);
+  fail = false;
+  await harness.setVisibility(false);
+  assert.equal(harness.countSelector(".ol-lean-project-pane-refresh-warning"), 0);
+});
+
+test("a refresh failure suspends personal approval until a fresh inventory arrives", async () => {
+  let fail = false;
+  const harness = createContentHarness({}, {}, {
+    locationPath: "/project/unknown",
+    manifest: { ok: true, items: [editableItem({ approvalEligible: true, approvalRevision: "revision-1" })], diagnostics: [] },
+    fetchOverride: async (url) => {
+      if (url.includes("/lean-pane/manifest") && fail) throw new Error("Connection refused");
+    }
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickPaneTreeRowText("main.tex");
+  harness.clickFirstPaneItem();
+  assert.equal(harness.document.body.querySelector(".ol-lean-human-approval-pane").disabled, false);
+  fail = true;
+  harness.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  const button = harness.document.body.querySelector(".ol-lean-human-approval-pane");
+  assert.equal(button.disabled, true);
+  button.dispatchEvent({ type: "click" });
+  await flushPromises();
+  assert.equal(harness.storageSetCalls.length, 0);
+  fail = false;
+  await harness.runTimersAt(5000);
+  assert.equal(harness.document.body.querySelector(".ol-lean-human-approval-pane").disabled, false);
+});
+
+for (const superseding of ["refresh", "close", "navigation"]) {
+  test(`a delayed failed inventory cannot overwrite a newer ${superseding}`, async () => {
+    let delayed = false, rejectDelayed;
+    const harness = createContentHarness({}, {}, {
+      locationPath: "/project/unknown",
+      manifest: { ok: true, items: [editableItem()], diagnostics: [] },
+      fetchOverride: async (url) => {
+        if (url.includes("/lean-pane/manifest") && delayed) {
+          delayed = false;
+          return new Promise((_, reject) => { rejectDelayed = reject; });
+        }
+      }
+    });
+    await harness.loadVisibleTheorems();
+    harness.clickPaneTrigger();
+    await flushPromises();
+    delayed = true;
+    harness.clickButtonLabel("Refresh Lean pane");
+    await flushPromises();
+    assert.ok(rejectDelayed);
+    if (superseding === "refresh") harness.clickButtonLabel("Refresh Lean pane");
+    if (superseding === "close") harness.clickButtonLabel("Close Lean pane");
+    if (superseding === "navigation") harness.window.location.pathname = "/project/another-project";
+    await flushPromises();
+    const before = harness.paneText();
+    rejectDelayed(new Error("Old request failed"));
+    await flushPromises();
+    assert.equal(harness.paneText(), before);
+    assert.equal(harness.countSelector(".ol-lean-project-pane-refresh-warning"), 0);
+    assert.doesNotMatch(harness.bodyText(), /Old request failed/);
+  });
+}
 
 test("Lean pane polling refresh preserves expanded folder and file rows", async () => {
   let manifestCalls = 0;
@@ -3822,6 +4050,10 @@ class FakeElement {
       sourcePause.dataset.role = "source-pause";
       const save = this.appendChild(new FakeElement("button"));
       save.dataset.role = "save-settings";
+      const retry = this.appendChild(new FakeElement("button"));
+      retry.dataset.role = "retry-settings";
+      retry.hidden = true;
+      retry.textContent = "Retry loading";
       const githubPanel = this.appendChild(new FakeElement("section"));
       githubPanel.dataset.role = "github-token-panel";
       const githubCard = githubPanel.appendChild(new FakeElement("div"));
@@ -4001,6 +4233,7 @@ function walk(node, visit) {
 
 function matchesSelector(node, selector) {
   if (!(node instanceof FakeElement)) return false;
+  if (selector.includes(",")) return selector.split(",").some((part) => matchesSelector(node, part.trim()));
   const dataRoleMatch = selector.match(/^\[data-role=['"]?([^'"\]]+)['"]?\]$/);
   if (dataRoleMatch) {
     return node.dataset.role === dataRoleMatch[1];
@@ -4614,6 +4847,42 @@ test("rename display retains the populated Blueprint during retryable reads", as
     assert.match(h.paneText(), /demotheorem/);
   } finally { globalThis.document = oldDocument; }
 });
+
+for (const failed of [false, true]) {
+  test(`a delayed inventory ${failed ? "failure" : "response"} cannot replace the Blueprint view`, async () => {
+    const fixture = renameDisplayFixture();
+    const fetchNormal = fixture.options.fetchOverride;
+    let delayed = false, release;
+    fixture.options.fetchOverride = async (url, ...args) => {
+      if (delayed && url.includes("/lean-pane/manifest")) {
+        return new Promise((resolve, reject) => { release = () => failed
+          ? reject(new Error("Old inventory unavailable"))
+          : resolve(fixture.response({ items: [], namespaceRevision: "old" })); });
+      }
+      return fetchNormal(url, ...args);
+    };
+    const harness = createContentHarness({}, {}, fixture.options);
+    const oldDocument = globalThis.document;
+    globalThis.document = harness.document;
+    try {
+      await harness.loadVisibleTheorems();
+      harness.clickPaneTrigger();
+      await flushPromises();
+      delayed = true;
+      harness.clickButtonLabel("Refresh Lean pane");
+      await flushPromises();
+      assert.ok(release);
+      harness.clickButtonText("Blueprint");
+      await flushPromises();
+      const before = harness.paneText();
+      assert.match(before, /demotheorem/);
+      release();
+      await flushPromises();
+      assert.equal(harness.paneText(), before);
+      assert.equal(harness.countSelector(".ol-lean-project-pane-refresh-warning"), 0);
+    } finally { globalThis.document = oldDocument; }
+  });
+}
 
 for (const surface of ["manifest", "graph"]) {
   test(`rename display discards a delayed ${surface} instead of clearing the confirmed pane`, async () => {

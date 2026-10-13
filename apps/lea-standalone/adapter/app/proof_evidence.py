@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from lea.check_evidence import digest, freshness, coordinator, lake_root
 from . import db
+from .read_projections import current_snapshot, decode_evidence
 
 
 def canonical_path(step, execution, namespace=None, parent_id=None):
@@ -31,11 +32,11 @@ def project_step(step, record=None):
                 (evidence_id, step.get('blob_id'), step['session_id'], step['path'])).fetchone()
         record = dict(row) if row else {}
     try:
-        execution = json.loads(record.get('evidence_json') or '{}')
+        execution = decode_evidence(record.get('evidence_json') or '{}')
         if execution.get('content_sha256') != digest(step['code'].encode()):
             return {**step, 'check_current': False, 'check_stale_reason': 'source_changed'}
         absolute = canonical_path(step, execution, record.get('namespace'), record.get('parent_id'))
-        current, reason = freshness(execution, absolute)
+        current, reason = freshness(execution, absolute, snapshot=current_snapshot())
     except (KeyError, ValueError, TypeError, OSError):
         current, reason = False, 'missing_evidence'
     return {**step, 'check_current': current, 'check_stale_reason': reason}
@@ -121,9 +122,9 @@ def verification_current(event, step):
     if not event or not step or event.get('blob_id') != (step.get('blob_id') or step.get('after_blob_id')):
         return False
     try:
-        execution = json.loads(event.get('evidence_json') or '{}')
+        execution = decode_evidence(event.get('evidence_json') or '{}')
         with db.connect() as conn:
             owner = conn.execute('select p.namespace,s.parent_id from sessions s left join projects p on p.id=s.project_id where s.id=?', (step['session_id'],)).fetchone()
-        return bool(owner and freshness(execution, canonical_path(step, execution, owner['namespace'], owner['parent_id']))[0])
+        return bool(owner and freshness(execution, canonical_path(step, execution, owner['namespace'], owner['parent_id']), snapshot=current_snapshot())[0])
     except (KeyError, ValueError, TypeError):
         return False

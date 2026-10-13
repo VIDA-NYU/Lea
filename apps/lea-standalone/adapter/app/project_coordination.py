@@ -195,8 +195,13 @@ def file_edit(project_id: str | None):
             state.mutations -= 1
 
 
-def guarded(resolver, *, write=False, metadata=False, admission=False):
-    """Guard sync/async route functions without changing FastAPI's signature."""
+def guarded(resolver, *, write=False, metadata=False, admission=False, environment_write=True):
+    """Guard sync/async route functions without changing FastAPI's signature.
+
+    Database-only mutations can opt out of the compiler environment lease while
+    retaining their project reservation. Source and environment writes keep the
+    exclusive lease by default.
+    """
     def decorate(fn):
         signature = inspect.signature(fn, eval_str=True)
 
@@ -211,7 +216,7 @@ def guarded(resolver, *, write=False, metadata=False, admission=False):
                         state = _state(project_id)
                         with state.lock:
                             _available(state)
-                    if write and fn.__name__ not in {'write_file_session', 'write_project_file'} and not any(word in fn.__name__ for word in ('check', 'verify', 'rebuild')):
+                    if write and environment_write and fn.__name__ not in {'write_file_session', 'write_project_file'} and not any(word in fn.__name__ for word in ('check', 'verify', 'rebuild')):
                         from lea.check_evidence import mutation as environment_mutation
                         from .config import load_config
                         from pathlib import Path

@@ -15,6 +15,7 @@ from .target_completion import checked_target, target_declaration
 from .db import connect, row_to_dict
 from . import store
 from .public_errors import run_detail
+from .read_projections import read_projection
 
 
 def _certified_namespace_revision(formalization: dict, certified: dict, current: dict) -> bool:
@@ -192,6 +193,7 @@ def _rows_for_ids(conn, sql: str, ids: list[str]) -> list[dict]:
     return [row_to_dict(row) for row in rows]
 
 
+@read_projection
 def decorate(rows: list[dict]) -> list[dict]:
     ids = [str(row["id"]) for row in rows]
     if not ids:
@@ -392,7 +394,7 @@ def decorate(rows: list[dict]) -> list[dict]:
             from . import project_dependencies
             with connect() as conn:
                 dependency = conn.execute("select id from project_dependencies where formalization_id=?", (fid,)).fetchone()
-            shared = project_dependencies.get(dependency[0]) if dependency else None
+            shared = project_dependencies.get(dependency[0], validate=False) if dependency else None
             if shared and shared.get("ready"):
                 validity = "defined" if item.get("kind") == "definition" else "proved"
                 validity_reason = "The pinned shared declaration passed its current module build and kernel audit."

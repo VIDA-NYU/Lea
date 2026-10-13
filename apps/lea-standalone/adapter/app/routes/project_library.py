@@ -2,6 +2,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from .. import project_library as library, project_dependencies as dependencies, store
+from ..read_projections import read_projection
 
 router = APIRouter()
 PREFIX = "/api/projects/by-slug/{slug}"
@@ -14,8 +15,8 @@ def project(slug):
     return value
 
 
-def dependency(slug, dependency_id):
-    value = dependencies.get(dependency_id)
+def dependency(slug, dependency_id, *, validate=True):
+    value = dependencies.get(dependency_id, validate=validate)
     if not value or value["project_id"] != project(slug)["id"]:
         raise HTTPException(404, "Dependency not found in this project")
     return value
@@ -42,8 +43,11 @@ def search(slug: str, q: str = "", limit: int = 20, offset: int = 0, validate: b
 
 
 @router.get(PREFIX + "/dependencies")
+@read_projection
 def list_dependencies(slug: str, requester_id: str | None = None):
-    return {"dependencies": dependencies.list_dependencies(project(slug)["id"], requester_id)}
+    # Inventory reads project existing evidence without entering the compiler
+    # environment. Explicit dependency operations still prepare/validate it.
+    return {"dependencies": dependencies.list_dependencies(project(slug)["id"], requester_id, validate=False)}
 
 
 @router.get(PREFIX + "/library/declarations/{name:path}")
@@ -58,7 +62,7 @@ def inspect_declaration(slug: str, name: str):
 
 @router.get(PREFIX + "/dependencies/{dependency_id}")
 def get_dependency(slug: str, dependency_id: str):
-    return dependency(slug, dependency_id)
+    return dependency(slug, dependency_id, validate=False)
 
 
 @router.post(PREFIX + "/dependencies/ensure")

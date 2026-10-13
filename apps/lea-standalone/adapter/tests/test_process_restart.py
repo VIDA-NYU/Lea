@@ -172,6 +172,70 @@ def test_production_launchers_restart_or_reject_without_wedging(tmp_path, launch
             pipe.close()
 
 
+def test_canonical_startup_with_large_library_does_not_run_compiler(tmp_path, monkeypatch):
+    from app import db, store
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "data/lea-interface.sqlite3")
+    db.init_db()
+    project = store.get_or_create_project("startup", "Startup")
+    prover = tmp_path / "prover"
+    repo = prover / "workspace/proofs/Lea/Startup"
+    repo.mkdir(parents=True)
+    (prover / "workspace/lakefile.toml").write_text('name = "startup"\n')
+    for index in range(130):
+        (repo / f"Module{index:03}.lean").write_text(
+            f"import Mathlib\ntheorem result{index} : True := by trivial\n")
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "lea.local.toml").write_text(f"lea_root = {json.dumps(str(prover))}\n")
+    # A compiler invocation is a regression even if it fails quickly.
+    binary_dir = tmp_path / "bin"
+    binary_dir.mkdir()
+    marker = tmp_path / "compiler-invoked"
+    for name in ("lake", "lean"):
+        binary = binary_dir / name
+        binary.write_text('#!/bin/sh\n: > "$LEA_STARTUP_COMPILER_MARKER"\nexit 99\n')
+        binary.chmod(0o755)
+    port = _port()
+    adapter = Path(__file__).resolve().parents[1]
+    bootstrap = """
+import sys
+from pathlib import Path
+from app import config
+config.ROOT = Path(sys.argv[1])
+from run_api import main
+main(['--host', '127.0.0.1', '--port', sys.argv[2], '--log-level', 'info'])
+"""
+    env = dict(os.environ, LEA_SHARED_DATA_DIR=str(db.DB_PATH.parent),
+               LEA_STARTUP_COMPILER_MARKER=str(marker),
+               PATH=str(binary_dir) + os.pathsep + os.environ.get("PATH", ""))
+    process = subprocess.Popen([sys.executable, "-u", "-c", bootstrap, str(tmp_path), str(port)],
+        cwd=adapter, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        health = _wait_health(port, process, timeout=20)
+        assert health["ready"] and health["restart_supported"]
+        assert _json(f"http://127.0.0.1:{port}/api/ready")["ready"]
+        assert not marker.exists(), "Startup ran the compiler for the saved library"
+        with db.connect() as conn:
+            assert conn.execute("select count(*) from project_library_modules where project_id=?",
+                                (project["id"],)).fetchone()[0] == 130
+        _json(f"http://127.0.0.1:{port}/api/runtime/restart", {"shutdown": True})
+        _, logs = process.communicate(timeout=10)
+        assert process.returncode == 0, logs
+        assert "compiler checks deferred" in logs
+        assert "Application startup complete" in logs
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        for pipe in (process.stdout, process.stderr):
+            pipe.close()
+
+
 def test_process_startup_recovers_safe_boundary_and_pauses_uncertain_model(tmp_path, monkeypatch):
     from app import db, recovery, store
 

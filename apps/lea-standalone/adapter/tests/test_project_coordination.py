@@ -97,6 +97,8 @@ def test_reads_and_mutations_defer_for_entire_migration(tmp_path, monkeypatch, b
             artifact = store.list_artifacts_for_scope(project["id"])[0]
             assert_renaming(lambda: formalizations.formalization_current(artifact["formalization_id"]))
             assert_renaming(lambda: sessions.write_file_session(session["id"], FileWriteRequest(path="alpha.lean", content="x")))
+            assert_renaming(lambda: routes.sync_project_formalizations_by_slug(
+                project["slug"], routes.FormalizationTargetSyncRequest(targets=[])))
             assert routes.get_project_identity_by_slug(other["slug"])["renameInProgress"] is False
         finally:
             release.set()

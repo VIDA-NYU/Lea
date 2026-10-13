@@ -33,11 +33,12 @@ from .. import projects as project_service
 from .. import store, project_coordination, proof_files
 from .. import uploads
 from ..alignment_schemas import SourceBundle
+from ..read_projections import read_projection
 
 router = APIRouter()
 
 
-def _guard_project(*, by_slug=False, write=False, metadata=False):
+def _guard_project(*, by_slug=False, write=False, metadata=False, environment_write=True):
     def resolve(arguments):
         if by_slug:
             try:
@@ -46,7 +47,8 @@ def _guard_project(*, by_slug=False, write=False, metadata=False):
                 return None  # Preserve the route's existing invalid-slug response.
             return project["id"] if project else None
         return arguments["project_id"]
-    return project_coordination.guarded(resolve, write=write, metadata=metadata)
+    return project_coordination.guarded(resolve, write=write, metadata=metadata,
+                                        environment_write=environment_write)
 
 
 
@@ -541,11 +543,14 @@ def get_project_github_import_by_slug(slug: str, import_id: str) -> dict:
 
 
 @router.post("/api/projects/by-slug/{slug}/formalizations/sync")
-@_guard_project(by_slug=True, write=True, metadata=False)
+@_guard_project(by_slug=True, write=True, metadata=False, environment_write=False)
 def sync_project_formalizations_by_slug(
     slug: str, request: FormalizationTargetSyncRequest
 ) -> dict:
     project = _require_project_by_slug(slug)
+    # This updates target metadata and SQL import bindings only. It must still
+    # reserve the project against namespace changes, but cannot queue inventory
+    # refreshes behind Lean checks or dependency builds.
     return github_import_service.sync_targets(
         project,
         _import_targets(request.targets),
@@ -824,6 +829,7 @@ def _shared_artifact(project_id: str, proof_path: str, content: str, owners: lis
 
 @router.get("/api/projects/by-slug/{slug}/target-status")
 @_guard_project(by_slug=True, write=False, metadata=True)
+@read_projection
 def project_target_status_by_slug(slug: str, declarations: str = "", formalization_ids: str = "") -> dict:
     """Ledger-side target evidence (PLAN-system-hardening 4.4): for each named
     declaration, what the adapter's own records say — the artifact row, whether

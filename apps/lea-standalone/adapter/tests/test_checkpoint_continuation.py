@@ -522,7 +522,7 @@ def install_supported_predecessor(old, cfg, repo, release_index=0):
     return state, manifest, checkpoint_id
 
 
-@pytest.mark.parametrize("release_index", [1, 2, 3])
+@pytest.mark.parametrize("release_index", [1, 2, 3, 4])
 def test_reviewed_provider_change_requires_a_settled_exact_runtime(paused, release_index):
     old, cfg, repo, _ = paused
     state, manifest, _ = install_supported_predecessor(old, cfg, repo, release_index)

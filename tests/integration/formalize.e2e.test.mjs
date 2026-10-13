@@ -120,6 +120,7 @@ before(async () => {
   companionJobsPath = path.join(home, "companion", "jobs.json");
   companion = await createServer({
     settingsPath: path.join(home, "companion", "settings.json"),
+    envPath: path.join(home, ".env"),
     jobsPath: companionJobsPath,
     chatSessionsPath: path.join(home, "companion", "chatSessions.json"),
     env: {
@@ -161,6 +162,12 @@ async function postJson(url, body) {
 }
 
 async function pollStatus(overleafProjectId, target, wanted, { timeoutMs = 45000 } = {}) {
+  for (const job of Object.values(companion.leaState.jobs)) {
+    if (!job.logPath) continue;
+    const relative = path.relative(home, job.logPath);
+    assert(!relative.startsWith('..') && !path.isAbsolute(relative),
+      'Integration job logs must stay inside the disposable test home');
+  }
   return waitFor(async () => {
     const res = await postJson(`${companionBaseUrl}/statuses`, {
       overleafProjectId,

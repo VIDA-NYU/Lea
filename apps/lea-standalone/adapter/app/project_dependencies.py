@@ -107,7 +107,13 @@ def _decode(row):
     return result
 
 
-def get(dependency_id: str, *, reconcile: bool = True) -> dict | None:
+def get(dependency_id: str, *, reconcile: bool = True, validate: bool = True) -> dict | None:
+    """Project readiness from current evidence; readers can defer compilation.
+
+    Status projections use ``validate=False``: filesystem freshness remains
+    authoritative, but rendering a status must not rebuild the project library.
+    Explicit dependency coordination retains validation of changed modules.
+    """
     with connect() as conn:
         row = conn.execute("select * from project_dependencies where id=?", (dependency_id,)).fetchone()
         if not row:
@@ -120,8 +126,8 @@ def get(dependency_id: str, *, reconcile: bool = True) -> dict | None:
     if reconcile:
         project = store.get_project(result["project_id"])
         if project:
-            records = library.refresh(project)
-            if result["state"] == "ready" and not result["owner_run_id"]:
+            records = library.refresh(project) if validate else library.entries(project)
+            if validate and result["state"] == "ready" and not result["owner_run_id"]:
                 # Recheck changed bytes/environment, using the module cache.
                 # This refreshes evidence without creating another attempt.
                 try:
@@ -144,12 +150,12 @@ def get(dependency_id: str, *, reconcile: bool = True) -> dict | None:
     return result
 
 
-def list_dependencies(project_id: str, requester_id: str | None = None) -> list[dict]:
+def list_dependencies(project_id: str, requester_id: str | None = None, *, validate: bool = True) -> list[dict]:
     with connect() as conn:
         rows = conn.execute("""select d.id from project_dependencies d where d.project_id=? and
             (? is null or exists(select 1 from project_dependency_edges e where e.dependency_id=d.id and e.requester_id=?))
             order by d.created_at,d.id""", (project_id, requester_id, requester_id)).fetchall()
-    return [get(r[0]) for r in rows]
+    return [get(r[0], validate=validate) for r in rows]
 
 
 def _slug(value, fallback="Result"):

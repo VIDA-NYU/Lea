@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from . import formalizations, store
+from .read_projections import read_projection
 _IMPORT_LINE = re.compile(r"(?m)^\s*import\s+([^\n-]+)")
 
 def _imported_modules(code: str) -> list[str]:
@@ -54,6 +55,7 @@ def _transitive_project_dependencies(project_id: str | None, roots: list[dict]) 
     return dependencies
 
 
+@read_projection
 def _snapshot(formalization_id: str, *, run_id: str | None = None) -> tuple[dict, list[dict]] | None:
     current = formalizations.current_snapshot(formalization_id)
     if not current or not current.get("revision_token") or not current.get("files"):

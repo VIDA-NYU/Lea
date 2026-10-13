@@ -156,8 +156,8 @@ async def session_list_events() -> StreamingResponse:
 
 
 @router.get("/api/stats")
-def stats() -> dict:
-    return store.usage_stats()
+def stats(include_proof_status: bool = True) -> dict:
+    return store.usage_stats(include_proof_status=include_proof_status)
 
 
 @router.get("/api/sessions/{session_id}")

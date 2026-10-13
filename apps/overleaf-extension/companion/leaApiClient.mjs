@@ -73,7 +73,28 @@ function buildHeaders(apiKey, extra = {}) {
   return headers;
 }
 
-async function fetchJson(fetchImpl, url, options) {
+const ADAPTER_METADATA_TIMEOUT_MS = 5000;
+
+async function fetchJson(fetchImpl, url, options, { timeoutMs } = {}) {
+  if (!(timeoutMs > 0)) return readJson(fetchImpl, url, options);
+  const controller = new AbortController();
+  let timer;
+  try {
+    return await Promise.race([
+      readJson(fetchImpl, url, { ...options, signal: controller.signal }),
+      new Promise((resolve) => {
+        timer = setTimeout(() => {
+          resolve({ ok: false, timedOut: true, error: `Request to ${url} timed out.` });
+          controller.abort();
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readJson(fetchImpl, url, options) {
   let response;
   try {
     response = await fetchImpl(url, options);
@@ -107,32 +128,33 @@ async function fetchJson(fetchImpl, url, options) {
 // reads them here and writes them via `putAdapterSettings`, instead of keeping
 // its own divergent copies, so a change in either UI shows up in both.
 
-export function fetchAdapterHealth({ fetchImpl, baseUrl, apiKey }) {
-  return fetchJson(fetchImpl, `${baseUrl}/api/health`, { method: "GET", headers: buildHeaders(apiKey) });
+export function fetchAdapterHealth({ fetchImpl, baseUrl, apiKey, timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/health`, { method: "GET", headers: buildHeaders(apiKey) }, { timeoutMs });
 }
 
-export function fetchAdapterSettings({ fetchImpl, baseUrl }) {
+export function fetchAdapterSettings({ fetchImpl, baseUrl, timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/settings`, {
     method: "GET",
     headers: buildHeaders(null),
-  });
+  }, { timeoutMs });
 }
 
-export function fetchAdapterModelCatalog({ fetchImpl, baseUrl }) {
+export function fetchAdapterModelCatalog({ fetchImpl, baseUrl, timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/models`, {
     method: "GET",
     headers: buildHeaders(null),
-  });
+  }, { timeoutMs });
 }
 
-export function fetchAdapterModelRequirements({ fetchImpl, baseUrl, model }) {
+export function fetchAdapterModelRequirements({ fetchImpl, baseUrl, model, timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
   return fetchJson(
     fetchImpl,
     `${baseUrl}/api/models/requirements?model=${encodeURIComponent(String(model || ""))}`,
     {
       method: "GET",
       headers: buildHeaders(null),
-    }
+    },
+    { timeoutMs }
   );
 }
 
@@ -146,14 +168,14 @@ export function putAdapterSettings({ fetchImpl, baseUrl, body }) {
 
 // The adapter's GET /api/stats (store.usage_stats) is the single source of truth
 // for usage the lea-standalone Stats page renders: `global` all-time rollups and
-// per-`sessions` rows (each carrying `project_slug`). The companion reads it here
+// per-`sessions` accounting rows (each carrying `project_slug`). The companion reads it here
 // so the Overleaf popover shows the exact same numbers instead of its own
 // in-memory job tally.
-export function fetchAdapterUsageStats({ fetchImpl, baseUrl }) {
-  return fetchJson(fetchImpl, `${baseUrl}/api/stats`, {
+export function fetchAdapterUsageStats({ fetchImpl, baseUrl, timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/stats?include_proof_status=false`, {
     method: "GET",
     headers: buildHeaders(null),
-  });
+  }, { timeoutMs });
 }
 
 // Mirror the Overleaf project's .tex/.sty/.cls sources into the matching adapter project's
@@ -211,13 +233,13 @@ export function generateProjectBlueprintBySlug({ fetchImpl, baseUrl, slug }) {
 // file existence / sorry scan / newest check verdict, straight from the
 // adapter's own records. One of the two sources the ledger status engine
 // merges (the other is the companion's job overlay).
-export function fetchProjectTargetStatusBySlug({ fetchImpl, baseUrl, slug, declarations, formalizationIds = [] }) {
+export function fetchProjectTargetStatusBySlug({ fetchImpl, baseUrl, slug, declarations, formalizationIds = [], timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
   const query = encodeURIComponent((declarations || []).join(","));
   const ids = encodeURIComponent(formalizationIds.join(","));
   return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/target-status?declarations=${query}&formalization_ids=${ids}`, {
     method: "GET",
     headers: buildHeaders(null),
-  });
+  }, { timeoutMs });
 }
 
 // Single-writer retirement (PLAN-system-hardening 4.5): a retry asks the adapter
@@ -342,20 +364,20 @@ export function getGithubImportBySlug({ fetchImpl, baseUrl, slug, importId }) {
   );
 }
 
-export function syncProjectFormalizationTargetsBySlug({ fetchImpl, baseUrl, slug, targets = [] }) {
+export function syncProjectFormalizationTargetsBySlug({ fetchImpl, baseUrl, slug, targets = [], timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/formalizations/sync`, {
     method: "POST",
     headers: buildHeaders(null, { "Content-Type": "application/json" }),
     body: JSON.stringify({ targets }),
-  });
+  }, { timeoutMs });
 }
 
-export function fetchCurrentAlignmentCheck({ fetchImpl, baseUrl, formalizationId, sourceBundleHash = "" }) {
+export function fetchCurrentAlignmentCheck({ fetchImpl, baseUrl, formalizationId, sourceBundleHash = "", timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
   const query = sourceBundleHash ? `?source_bundle_hash=${encodeURIComponent(sourceBundleHash)}` : "";
   return fetchJson(
     fetchImpl,
     `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/alignment-checks/current${query}`,
-    { method: "GET", headers: buildHeaders(null) }
+    { method: "GET", headers: buildHeaders(null) }, { timeoutMs }
   );
 }
 
@@ -483,11 +505,11 @@ export function startApiContinuation({ fetchImpl, baseUrl, apiKey, runId, source
   });
 }
 
-export function projectDependencyRequest({ fetchImpl, baseUrl, apiKey, projectSlug, dependencyId, action = null, body = {} }) {
+export function projectDependencyRequest({ fetchImpl, baseUrl, apiKey, projectSlug, dependencyId, action = null, body = {}, timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(projectSlug)}/dependencies${dependencyId ? `/${encodeURIComponent(dependencyId)}` : ""}${action ? `/${action}` : ""}`, {
     method: action ? "POST" : "GET", headers: buildHeaders(apiKey, action ? { "Content-Type": "application/json" } : {}),
     ...(action ? { body: JSON.stringify(body) } : {}),
-  });
+  }, action ? {} : { timeoutMs });
 }
 
 export function interruptApiRun({ fetchImpl, baseUrl, apiKey, runId, reason = "user_stop", source = "user", signal }) {
@@ -558,10 +580,10 @@ export function writeApiSessionFile({
 // records a *new* code_step attributed to that author -- used for
 // re-verifying a project dependent that the edit itself didn't touch. See
 // docs/PLAN-overleaf-lean-pane-manual-edit.md Phase 1/2.
-export function fetchApiLeanCheckRuntime({ fetchImpl, baseUrl, apiKey, sessionId }) {
+export function fetchApiLeanCheckRuntime({ fetchImpl, baseUrl, apiKey, sessionId, timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/lean-check-runtime`, {
     method: "GET", headers: buildHeaders(apiKey)
-  });
+  }, { timeoutMs });
 }
 
 export function runApiSessionLeanCheck({
@@ -972,16 +994,16 @@ export async function runApiProofJob({
   };
 }
 
-export function fetchCurrentLeaStatus({ fetchImpl, baseUrl, apiKey, formalizationId, sourceIdentityHash, sourceBundleHash, sourceBundle, coverage = "partial" }) {
+export function fetchCurrentLeaStatus({ fetchImpl, baseUrl, apiKey, formalizationId, sourceIdentityHash, sourceBundleHash, sourceBundle, coverage = "partial", timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
   if (sourceBundle) return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/lea-status/compare`, {
     method: "POST", headers: buildHeaders(apiKey, { "Content-Type": "application/json" }), body: JSON.stringify({ source_bundle: sourceBundle, coverage })
-  });
+  }, { timeoutMs });
   const query = new URLSearchParams();
   if (sourceIdentityHash) query.set("source_identity_hash", sourceIdentityHash);
   if (sourceBundleHash) query.set("source_bundle_hash", sourceBundleHash);
   return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/lea-status?${query}`, {
     method: "GET", headers: buildHeaders(apiKey)
-  });
+  }, { timeoutMs });
 }
 
 export function prepareOverleafSource({ fetchImpl, baseUrl, apiKey, formalizationId }) {

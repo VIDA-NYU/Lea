@@ -102,6 +102,9 @@
     projectRenaming = false;
     clearTimeout(renameRetryTimer);
     renameRetryTimer = null;
+    clearTimeout(leanPanePollTimer);
+    leanPanePollTimer = null;
+    clearLeanPaneRefreshFailure();
     if (hadProject) {
       latestBaseStatuses = {};
       latestStatuses = {};
@@ -237,6 +240,8 @@
   let leanPaneResizeState = null;
   let leanPaneRefreshTimer = null;
   let leanPanePollTimer = null;
+  let leanPaneRefreshFailure = "";
+  let leanPaneRefreshFailures = 0;
   let leanPaneStartupWatchdogTimer = null;
   let leanPaneView = null;
   let leanPaneExpandedTreeNodeIds = new Set();
@@ -706,7 +711,7 @@
       clearTimeout(leanPaneStartupWatchdogTimer);
       leanPaneStartupWatchdogTimer = setTimeout(() => {
         if (leanPane && leanPaneStatus?.textContent === "Loading project inventory...") {
-          renderLeanPaneError(new Error(
+          renderLeanPaneRefreshError(new Error(
             "Pane startup stalled before the project manifest rendered. The extension resource or browser storage request did not settle."
           ));
         }
@@ -729,6 +734,8 @@
     leanPaneRefreshTimer = null;
     clearTimeout(leanPanePollTimer);
     leanPanePollTimer = null;
+    displayRequests.manifest = (displayRequests.manifest || 0) + 1;
+    clearLeanPaneRefreshFailure();
     clearTimeout(leanPaneStartupWatchdogTimer);
     leanPaneStartupWatchdogTimer = null;
     clearTimeout(leanPaneHighlightTimer);
@@ -1905,6 +1912,7 @@
     if (view === leanPaneMainView || !leanPane) return;
     leanPaneMainView = view;
     updateLeanPaneViewTabs();
+    renderLeanPaneRefreshWarning();
     if (view === "blueprint") {
       closeLeanPaneChat();
       closeActiveOverflowMenu();
@@ -2129,13 +2137,22 @@
   // `forceFetch` re-downloads the project archive; `background` skips the blanking
   // "Loading…" state and preserves scroll, for edit-driven and poll refreshes.
   async function refreshLeanPaneNow(options = {}) {
-    const request = displayRequest("manifest");
+    const request = { ...displayRequest("manifest"), view: leanPaneMainView };
     try { return await refreshLeanPaneSnapshot({ ...options, request }); }
     catch (error) {
-      if (!currentDisplayRequest(request)) return false;
-      if (error?.code !== "project_renaming") throw error;
-      markProjectRenaming();
-      return false;
+      if (!currentDisplayRequest(request) || request.view !== leanPaneMainView) return false;
+      if (error?.code === "project_renaming") {
+        markProjectRenaming();
+        return false;
+      }
+      if (leanPaneMainView !== "items") throw error;
+      renderLeanPaneRefreshError(error);
+      // Callers that need a successful inventory (e.g. import preview) must
+      // still receive a rejection. Presentation catches must not erase the
+      // pane again after the refresh failure has already been displayed.
+      const reported = new Error(normalizeErrorMessage(error));
+      reported.leanPaneRefreshHandled = true;
+      throw reported;
     }
   }
 
@@ -2196,7 +2213,7 @@
       timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
       timeoutMessage: "The Lea companion timed out while loading the project inventory."
     });
-    if (!currentDisplayRequest(request)) return false;
+    if (!currentDisplayRequest(request) || request.view !== leanPaneMainView) return false;
     if (!response.ok) throw companionRequestError(response, payload);
     if (!acceptDisplayResponse(request, payload.namespaceRevision)) return false;
     // The pane may load more files than the live editor resolver knew about.
@@ -2244,6 +2261,7 @@
         renderLeanPaneManifest(lastLeanPaneManifest);
       }
     }).catch(() => {});
+    clearLeanPaneRefreshFailure();
     renderLeanPaneManifest(payload);
     scheduleLeanPanePollIfNeeded(payload);
     return true;
@@ -2266,10 +2284,66 @@
 
   function scheduleLeanPanePollIfNeeded(manifest) {
     clearTimeout(leanPanePollTimer);
+    leanPanePollTimer = null;
+    if (leanPaneRefreshFailure) { scheduleLeanPaneRefreshRetry(); return; }
     if (!leanPane || document.hidden || (!manifest?.leanCheckRuntimePolling && !leanPaneView?.hasInProgressItems(manifest?.items))) return;
     leanPanePollTimer = setTimeout(() => {
       refreshLeanPaneNow({ background: true }).catch(renderLeanPaneError);
     }, 5000);
+  }
+
+  function clearLeanPaneRefreshFailure() {
+    leanPaneRefreshFailure = "";
+    leanPaneRefreshFailures = 0;
+    leanPane?.querySelector(".ol-lean-project-pane-refresh-warning")?.remove();
+  }
+
+  function leanPaneRefreshRetryDelay() {
+    return Math.min(30000, 5000 * 2 ** Math.min(3, Math.max(0, leanPaneRefreshFailures - 1)));
+  }
+
+  function scheduleLeanPaneRefreshRetry() {
+    clearTimeout(leanPanePollTimer);
+    leanPanePollTimer = null;
+    if (!leanPane || leanPaneMainView !== "items" || document.hidden || projectRenaming) return;
+    leanPanePollTimer = setTimeout(() => {
+      leanPanePollTimer = null;
+      refreshLeanPaneNow({ background: true }).catch(renderLeanPaneError);
+    }, leanPaneRefreshRetryDelay());
+  }
+
+  function renderLeanPaneRefreshWarning() {
+    if (!leanPane || !leanPaneStatus || !leanPaneRefreshFailure) return;
+    let notice = leanPane.querySelector(".ol-lean-project-pane-refresh-warning");
+    if (!notice) {
+      notice = document.createElement("p");
+      notice.className = "ol-lean-project-pane-refresh-warning";
+      notice.setAttribute("role", "status");
+      notice.setAttribute("aria-live", "polite");
+      leanPane.insertBefore(notice, leanPaneStatus);
+    }
+    notice.hidden = leanPaneMainView !== "items";
+    if (notice.hidden) return;
+    const loaded = lastLeanPaneManifest && lastLeanPaneManifestProjectId === extractOverleafProjectId();
+    notice.textContent = loaded
+      ? `Refresh delayed. Showing the last loaded inventory; statuses may be out of date. Retrying in ${leanPaneRefreshRetryDelay() / 1000} seconds.`
+      : `${leanPaneRefreshFailure} Retrying in ${leanPaneRefreshRetryDelay() / 1000} seconds.`;
+    notice.title = leanPaneRefreshFailure;
+    if (!loaded) leanPaneStatus.textContent = "Project inventory is temporarily unavailable.";
+    // Cached eligibility cannot authorize a new personal approval while the
+    // pane cannot confirm current evidence. The next snapshot recreates these.
+    for (const button of leanPaneBody?.querySelectorAll(".ol-lean-human-approval-pane") || []) {
+      button.disabled = true;
+      button.title = "Refresh the inventory before changing personal approval.";
+    }
+  }
+
+  function renderLeanPaneRefreshError(error) {
+    if (!leanPane || leanPaneMainView !== "items") return;
+    leanPaneRefreshFailure = normalizeErrorMessage(error);
+    leanPaneRefreshFailures += 1;
+    renderLeanPaneRefreshWarning();
+    scheduleLeanPaneRefreshRetry();
   }
 
   async function getLeanPaneProjectFiles({ projectId, forceFetch, deferArchiveFetch = false }) {
@@ -2455,6 +2529,7 @@
 
     if (statusFocus?.isConnected) statusFocus.focus({ preventScroll: true });
     leanPaneBody.scrollTop = prevScrollTop;
+    renderLeanPaneRefreshWarning();
     const projectId = extractOverleafProjectId();
     if (projectId && projectId !== "unknown" && leanPaneBatchReportsProjectId !== projectId) {
       leanPaneBatchReportsProjectId = projectId;
@@ -5851,6 +5926,7 @@
   }
 
   function renderLeanPaneError(error) {
+    if (error?.leanPaneRefreshHandled) return;
     if (error?.code === "superseded") return;
     if (error?.code === "project_renaming") { markProjectRenaming(); return; }
     if (!leanPaneBody || !leanPaneStatus) return;
@@ -6282,6 +6358,7 @@
             </div>
           </div>
           <p class="ol-lean-usage-cap" data-role="cost-cap-summary" hidden></p>
+          <p class="ol-lean-provider-note" data-role="usage-status" role="status" hidden></p>
         </section>
         <label class="ol-lean-settings-budget-field">
           <span>Maximum spend <small>All projects · USD · blank for no cap</small></span>
@@ -6292,7 +6369,7 @@
           <div class="ol-lean-provider-row">
             <div class="ol-lean-provider-row-head">
               <span data-role="project-name">Overleaf Project</span>
-              <strong data-role="project-exists">Not created</strong>
+              <strong data-role="project-exists">Loading…</strong>
             </div>
             <p class="ol-lean-provider-note" data-role="project-namespace">Lean namespace: --</p>
             <p class="ol-lean-provider-note" data-role="project-binding">Overleaf binding: --</p>
@@ -6344,7 +6421,7 @@
             <div class="ol-lean-provider-row" data-family="${family}">
               <div class="ol-lean-provider-row-head">
                 <span>${label}</span>
-                <strong data-role="provider-status">Missing</strong>
+                <strong data-role="provider-status">Loading…</strong>
               </div>
               <div class="ol-lean-provider-key-controls">
                 <button type="button" class="ol-lean-provider-key-button" data-role="provider-key-toggle" data-family="${family}">Add key</button>
@@ -6362,7 +6439,7 @@
                 <strong>Repository access</strong>
                 <span data-role="github-token-description">Add a token to push Lean projects to GitHub.</span>
               </div>
-              <strong class="ol-lean-github-token-status" data-role="github-token-status" aria-live="polite">Not set</strong>
+              <strong class="ol-lean-github-token-status" data-role="github-token-status" aria-live="polite">Loading…</strong>
             </div>
             <p class="ol-lean-github-token-storage-note">
               <svg class="ol-lean-github-token-lock" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
@@ -6396,6 +6473,7 @@
       </div>
       <div class="ol-lean-settings-footer">
         <p class="ol-lean-popover-status" role="status"></p>
+        <button type="button" class="ol-lean-provider-key-button" data-role="retry-settings" hidden>Retry loading</button>
         <button type="button" class="ol-lean-save-button" data-role="save-settings" disabled>Save changes</button>
       </div>
     `;
@@ -6536,6 +6614,9 @@
       }
     });
     saveButton.addEventListener("click", async () => {
+      if (popover.dataset.settingsState !== "ready") return;
+      popover.dataset.settingsState = "saving";
+      setSettingsControlsDisabled(popover, true);
       saveButton.disabled = true;
       status.textContent = "Saving Lea settings...";
       try {
@@ -6551,11 +6632,13 @@
         clearDynamicApiKeyInputs(popover);
         renderPopoverModelRequirements(popover, settings.leaModelRequirements || null);
         updateApiKeyNudge(settings);
-        markSettingsDirty();
         scheduleTexMirrorSync();
         status.textContent = "Settings saved.";
       } catch (error) {
         status.textContent = error instanceof Error ? error.message : String(error);
+      } finally {
+        popover.dataset.settingsState = "ready";
+        setSettingsControlsDisabled(popover, false);
         markSettingsDirty();
       }
     });
@@ -6567,19 +6650,42 @@
     if (!focusMissingCredential) {
       popover.querySelector("[data-group='usage'] > summary")?.focus({ preventScroll: true });
     }
-    loadPopoverSettings(popover)
-      .then(() => {
+    const retryButton = popover.querySelector("[data-role='retry-settings']");
+    async function loadSettings() {
+      popover.dataset.settingsState = "loading";
+      popover.setAttribute("aria-busy", "true");
+      setSettingsControlsDisabled(popover, true);
+      retryButton.hidden = true;
+      status.textContent = "Loading Lea settings…";
+      try {
+        await loadPopoverSettings(popover);
+        if (!popover.isConnected) return;
+        popover.dataset.settingsState = "ready";
+        setSettingsControlsDisabled(popover, false);
+        markSettingsDirty();
+        status.textContent = "";
         if (focusMissingCredential) focusFirstMissingCredential(popover);
-      })
-      .catch((error) => {
-        status.textContent = error instanceof Error ? error.message : String(error);
-      });
+      } catch (error) {
+        popover.dataset.settingsState = "unavailable";
+        setSettingsControlsDisabled(popover, true);
+        status.textContent = `Could not load Lea settings. ${error instanceof Error ? error.message : String(error)} Showing saved values; retry loading before editing.`;
+        retryButton.hidden = false;
+      } finally {
+        popover.setAttribute("aria-busy", "false");
+      }
+    }
+    retryButton.addEventListener("click", loadSettings);
+    void loadSettings();
     loadUsage(popover).catch((error) => {
-      status.textContent = error instanceof Error ? error.message : String(error);
+      showUsageError(popover, error);
     });
     scheduleUsageRefresh(popover);
 
     function markSettingsDirty() {
+      if (popover.dataset.settingsState !== "ready") {
+        saveButton.disabled = true;
+        return;
+      }
       const dirty = modelSelect.value !== popover.dataset.savedModel ||
         String(Number.parseInt(maxTurnsInput.value, 10) || DEFAULT_LEA_MAX_TURNS) !== popover.dataset.savedMaxTurns ||
         normalizeMaxSpendInput(maxSpendInput.value) !== (popover.dataset.savedMaxSpend || "") ||
@@ -6587,6 +6693,14 @@
         String(sourcePauseInput.checked) !== (popover.dataset.savedSourcePause || "false") ||
         hasProviderKeyInput(popover);
       saveButton.disabled = !dirty;
+    }
+  }
+
+  function setSettingsControlsDisabled(popover, disabled) {
+    for (const control of popover.querySelectorAll("input, button")) {
+      if (["close", "retry-settings"].includes(control.dataset.role) ||
+          control.classList.contains("ol-lean-settings-popover-resizer")) continue;
+      control.disabled = disabled;
     }
   }
 
@@ -7381,7 +7495,7 @@
       approved ? "ol-lean-human-approval-approved" : ""
     ].filter(Boolean).join(" ");
     button.textContent = "✓";
-    button.disabled = busy || !approved && !statusInfo?.approvalEligible;
+    button.disabled = (pane && Boolean(leanPaneRefreshFailure)) || busy || !approved && !statusInfo?.approvalEligible;
     button.setAttribute("aria-pressed", String(approved));
     button.setAttribute(
       "aria-label",
@@ -7399,6 +7513,7 @@
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (pane && leanPaneRefreshFailure) return;
       toggleHumanApproval(target, statusInfo).catch(() => {});
     });
     return button;
@@ -7755,22 +7870,28 @@
     });
   }
 
-  async function loadCompanionSettings() {
+  async function loadCompanionSettings({ includeCatalog = true, requireLive = false } = {}) {
     const stored = await getSettings();
     const baseUrl = String(stored.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
     try {
-      const response = await fetch(`${baseUrl}/settings`);
-      const payload = await response.json().catch(() => ({}));
+      const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/settings`, {}, {
+        timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+        timeoutMessage: "The companion settings request timed out."
+      });
       if (!response.ok) {
         throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
       }
       let catalogPayload = {};
-      try {
-        const catalogResponse = await fetch(`${baseUrl}/settings/models`);
-        catalogPayload = await catalogResponse.json().catch(() => ({}));
-        if (!catalogResponse.ok) catalogPayload = {};
-      } catch {
-        catalogPayload = {};
+      if (includeCatalog) {
+        try {
+          const result = await fetchJsonWithTimeout(`${baseUrl}/settings/models`, {}, {
+            timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+            timeoutMessage: "The model catalog request timed out."
+          });
+          if (result.response.ok) catalogPayload = result.payload;
+        } catch {
+          catalogPayload = {};
+        }
       }
       const settings = {
         companionUrl: baseUrl,
@@ -7779,7 +7900,7 @@
         leaUiBaseUrl: payload.leaUiBaseUrl || stored.leaUiBaseUrl || DEFAULT_LEA_UI_BASE_URL,
         leaModel: payload.leaModel || stored.leaModel || DEFAULT_LEA_MODEL,
         leaMaxTurns: payload.leaMaxTurns || stored.leaMaxTurns || DEFAULT_LEA_MAX_TURNS,
-        leaMaxSpendUsd: payload.leaMaxSpendUsd ?? stored.leaMaxSpendUsd ?? null,
+        leaMaxSpendUsd: Object.hasOwn(payload, "leaMaxSpendUsd") ? payload.leaMaxSpendUsd : stored.leaMaxSpendUsd ?? null,
         leaCurrentSpendUsd: payload.leaCurrentSpendUsd ?? 0,
         leaTexMirrorEnabled: payload.leaTexMirrorEnabled ?? stored.leaTexMirrorEnabled ?? DEFAULT_LEA_TEX_MIRROR_ENABLED,
         leaPauseOnSourceIssue: payload.leaPauseOnSourceIssue === true,
@@ -7806,7 +7927,8 @@
         leaPauseOnSourceIssue: settings.leaPauseOnSourceIssue
       });
       return settings;
-    } catch {
+    } catch (error) {
+      if (requireLive) throw error;
       return {
         ...stored,
         companionUrl: baseUrl,
@@ -7815,13 +7937,15 @@
         leaModelCatalogDegraded: true,
         leaProviderKeys: {},
         leaApiKeys: {},
-        leaModelRequirements: null
+        leaModelRequirements: null,
+        settingsLoadError: error instanceof Error ? error.message : String(error)
       };
     }
   }
 
   async function loadPopoverSettings(popover) {
-    const settings = await loadCompanionSettings();
+    const settings = await loadCompanionSettings({ includeCatalog: false });
+    if (!popover.isConnected) return;
     const modelSelect = popover.querySelector("[data-role='model']");
     const maxTurnsInput = popover.querySelector("[data-role='max-turns']");
     const maxSpendInput = popover.querySelector("[data-role='max-spend']");
@@ -7830,7 +7954,7 @@
     popover.dataset.modelOptions = JSON.stringify(settings.leaModelOptions || DEFAULT_MODEL_OPTIONS);
     popover.leaModelCatalog = settings.leaModelCatalog || settings.leaModelOptions || DEFAULT_MODEL_OPTIONS;
     popover.leaApiKeys = settings.leaApiKeys || {};
-    renderProviderKeys(popover, settings.leaProviderKeys || {});
+    if (!settings.settingsLoadError) renderProviderKeys(popover, settings.leaProviderKeys || {});
     renderModelOptions(
       modelSelect,
       popover.leaModelCatalog,
@@ -7848,20 +7972,56 @@
     maxSpendInput.value = settings.leaMaxSpendUsd == null ? "" : String(settings.leaMaxSpendUsd);
     texMirrorInput.checked = settings.leaTexMirrorEnabled !== false;
     sourcePauseInput.checked = settings.leaPauseOnSourceIssue === true;
-    renderGithubTokenStatus(popover, Boolean(settings.githubTokenConfigured));
+    if (!settings.settingsLoadError) renderGithubTokenStatus(popover, Boolean(settings.githubTokenConfigured));
     popover.dataset.savedModel = modelSelect.value;
     popover.dataset.savedMaxTurns = String(Number.parseInt(maxTurnsInput.value, 10) || DEFAULT_LEA_MAX_TURNS);
     popover.dataset.savedMaxSpend = settings.leaMaxSpendUsd == null ? "" : String(settings.leaMaxSpendUsd);
     popover.dataset.savedTexMirror = String(texMirrorInput.checked);
     popover.dataset.savedSourcePause = String(sourcePauseInput.checked);
     popover.querySelector("[data-role='save-settings']").disabled = true;
+    if (settings.settingsLoadError) {
+      for (const indicator of popover.querySelectorAll("[data-role='provider-status'], [data-role='github-token-status'], [data-role='project-exists']")) {
+        indicator.textContent = "Unavailable";
+      }
+      throw new Error(settings.settingsLoadError);
+    }
+    void loadPopoverModelCatalog(popover, settings);
+    void loadPopoverProjectIdentity(popover, settings);
+  }
+
+  async function loadPopoverProjectIdentity(popover, settings) {
     try {
       const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
       lastProjectIdentity = await loadProjectIdentity({ baseUrl, projectId: extractOverleafProjectId() });
+      if (!popover.isConnected) return;
       renderProjectSettingsSection(popover, lastProjectIdentity);
       renderLeanPaneProjectIdentity(lastProjectIdentity);
     } catch {
       renderProjectSettingsSection(popover, null);
+      const exists = popover.querySelector("[data-role='project-exists']");
+      if (exists) exists.textContent = "Unavailable";
+    }
+  }
+
+  async function loadPopoverModelCatalog(popover, settings) {
+    const status = popover.querySelector("[data-role='model-catalog-status']");
+    if (status) status.textContent = "Loading model catalog…";
+    try {
+      const { response, payload } = await fetchJsonWithTimeout(`${settings.companionUrl}/settings/models`, {}, {
+        timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+        timeoutMessage: "The model catalog request timed out."
+      });
+      if (!response.ok || !Array.isArray(payload.models) || !payload.models.length) throw new Error("Catalog unavailable");
+      if (!popover.isConnected) return;
+      popover.leaModelCatalog = payload.models;
+      const modelSelect = popover.querySelector("[data-role='model']");
+      renderModelOptions(modelSelect, payload.models, settings.leaModelOptions || DEFAULT_MODEL_OPTIONS, modelSelect.value);
+      if (status) status.textContent = payload.degraded
+        ? "Adapter catalog unavailable — using the offline fallback."
+        : `${payload.models.length.toLocaleString()} models available; search by ID or provider.`;
+      if (popover.dataset.settingsState !== "ready") setSettingsControlsDisabled(popover, true);
+    } catch {
+      if (status) status.textContent = "Adapter catalog unavailable — using the offline fallback.";
     }
   }
 
@@ -8090,14 +8250,14 @@
   }
 
   async function savePopoverSettings(popover) {
-    const current = await loadCompanionSettings();
+    const current = await loadCompanionSettings({ includeCatalog: false, requireLive: true });
     const baseUrl = String(current.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
     const leaModel = popover.querySelector("[data-role='model']").value || DEFAULT_LEA_MODEL;
     const leaMaxTurns = Number.parseInt(popover.querySelector("[data-role='max-turns']").value, 10) || DEFAULT_LEA_MAX_TURNS;
     const leaMaxSpendUsd = parseMaxSpendInput(popover.querySelector("[data-role='max-spend']").value);
     const leaTexMirrorEnabled = popover.querySelector("[data-role='tex-mirror']").checked;
     const leaPauseOnSourceIssue = popover.querySelector("[data-role='source-pause']").checked;
-    const response = await fetch(`${baseUrl}/settings/lea`, {
+    const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/settings/lea`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -8111,8 +8271,8 @@
         leaProviderApiKeys: collectProviderApiKeyPatch(popover),
         leaApiKeys: collectDynamicApiKeyPatch(popover)
       })
-    });
-    const payload = await response.json().catch(() => ({}));
+    }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+      timeoutMessage: "Saving settings timed out. Your edits are still here; reload settings to confirm whether they were saved." });
     if (!response.ok) {
       throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
     }
@@ -8135,14 +8295,25 @@
     if (!popover?.isConnected) return;
     const settings = await getSettings();
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
-    const response = await fetch(`${baseUrl}/usage?overleafProjectId=${encodeURIComponent(extractOverleafProjectId())}`);
-    const payload = await response.json().catch(() => ({}));
+    const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/usage?overleafProjectId=${encodeURIComponent(extractOverleafProjectId())}`, {}, {
+      timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+      timeoutMessage: "Usage could not load because the companion request timed out."
+    });
     if (!response.ok) {
       throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
     }
     renderUsage(popover, "project", payload.project);
     renderUsage(popover, "allTime", payload.allTime);
     renderCostCapSummary(popover, payload);
+    const usageStatus = popover.querySelector("[data-role='usage-status']");
+    if (usageStatus) usageStatus.hidden = true;
+  }
+
+  function showUsageError(popover, error) {
+    const status = popover.querySelector("[data-role='usage-status']");
+    if (!status) return;
+    status.textContent = `Usage unavailable. ${error instanceof Error ? error.message : String(error)}`;
+    status.hidden = false;
   }
 
   function scheduleUsageRefresh(popover) {
@@ -8154,8 +8325,7 @@
       try {
         await loadUsage(popover);
       } catch (error) {
-        const status = popover.querySelector(".ol-lean-popover-status");
-        if (status) status.textContent = error instanceof Error ? error.message : String(error);
+        showUsageError(popover, error);
       }
       scheduleUsageRefresh(popover);
       // 5s, not 1s (AUDIT M4): each refresh fans out to the adapter's

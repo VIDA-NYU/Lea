@@ -370,6 +370,306 @@ Normal services remain stopped, and nothing was pushed, published or changed on
 GitHub. This later report commit changes HEAD; regenerate a fresh preview before
 any future integration or exact-candidate gate.
 
+## Follow-up: startup with an existing project library
+
+A user-started `start-dev.sh` exposed a slow startup path on October 12. Before
+opening its listener, the adapter refreshed all project-library environments,
+invoking Lean dependency resolution for every saved module. The original process
+was still scanning imports after eight minutes with five projects and 105 indexed
+modules. The previous empty-library startup tests did not cover this dataset.
+
+Startup now performs a source inventory without compiler dependency resolution.
+Unchanged records retain their historical verdicts and evidence; new or changed
+sources remain unchecked. Current certification still uses the stored source and
+dependency evidence, so an imported source, compiled artifact, configuration or
+file deletion cannot retain a current certificate. Unrelated edits preserve it.
+Compiler resolution remains part of normal checks and library validation. Startup
+also logs its cleanup, database, recovery and inventory stages.
+
+The four initial regression cases failed before the fix. The affected startup,
+real-process lifecycle, project-library and real Lean evidence suites then passed
+47 tests; the expanded startup suite passed all eight cases, including dependency
+and configuration edits. Worker-thread exceptions were treated as errors. A new
+canonical-launcher test inventories 130 modules with tripwire compiler binaries,
+asserts readiness without invoking them, and checks clean shutdown.
+
+A disposable copy of the user's actual database and proof directories became
+ready in 1.665 seconds with five projects and 105 indexed modules, without invoking
+Lean. Recorded proof history remained identical in the copy and live database,
+all 641 inventoried live proof files remained identical, and the test process
+exited zero and was removed. The copy used the existing `0032` schema observed
+after the user's launch; this probe did not migrate or reset live data. These are
+focused follow-up results; the earlier complete validation remains historical.
+The probe did not restart the original user-started stack. After confirming no
+pending or running proof jobs, that stuck launch was stopped. Its startup handler
+did not finish after a graceful interruption, so the adapter and its verified
+compiler children were terminated; the supervisor cleaned up the frontend and
+companion. Recorded proof history remained identical. The normal stack remains
+stopped for the user's next launch with the fix.
+
+## Follow-up: Overleaf settings stalled on usage
+
+The next user launch reached readiness, but the Overleaf settings popover retained
+placeholders and a pending save. Adapter settings, health and model requirements
+returned promptly; companion `/settings` waited on `/api/stats`. A disposable
+database-copy traceback identified `formalizations.decorate` calling dependency
+reconciliation, which refreshed every project module and traversed Lean imports.
+
+Formalization status reads now project dependency readiness from recorded module
+evidence without refreshing or compiling the library. Filesystem freshness still
+applies, and explicit dependency coordination keeps its existing validation.
+A regression verifies both current and externally changed published modules while
+rejecting any refresh/build during formalization and stats reads. It failed before
+the fix. A read of the user's copied 153-session database now completes in 1.357
+seconds, renders its usual 100-session page, invokes neither refresh nor validation,
+and leaves the copied database byte-for-byte unchanged.
+
+Companion metadata requests now have five-second deadlines covering headers and
+response bodies. The popover loads saved settings before the optional model
+catalog, preserves edits when that catalog arrives, and uses separate usage-error
+feedback. Loading or unavailable settings cannot be saved; failures display cached
+values, unknown credential indicators and an explicit retry. Saves preserve drafts
+on failure and explain uncertainty after a timeout. Clearing a saved spending cap
+also takes precedence over an older Chrome cache. No new provider calls or retries
+were added.
+
+The three initial popover regressions failed before implementation. Validation
+passed 751 root JavaScript tests and 121 affected adapter tests; the final popover
+suite passed all 101 cases after the last UI adjustment. Remaining warnings are
+framework deprecations and Node's existing VM-loader warning, with no unhandled
+worker exceptions. A temporary browser fixture using the real content script
+confirmed populated model/turn/key state and a visible, save-disabled retry state
+at the existing 360-pixel panel width, without horizontal overflow. Its data were
+disposable; the user's open Overleaf tab and pending draft were not changed.
+
+The already-running user stack still needs to load the new code. Preserve any
+draft settings, reload the unpacked extension and refresh Overleaf to discard the
+old pending save before restarting the stack. Test processes are cleaned up; this
+follow-up does not start a replacement development stack or publish changes.
+
+## Follow-up: Lean pane inventory timeouts during Formalize all
+
+The user reported two inventory-refresh timeouts that replaced the entire pane
+during a running Formalize all batch. The manifest requested the adapter's
+dependency inventory, whose GET routes still called full library reconciliation
+and could resolve/build Lean modules or wait for the active compiler environment.
+The extension also cleared its existing tree on refresh errors and stopped its
+in-progress poll until another interaction triggered a refresh.
+
+Dependency GETs now project readiness from immutable recorded evidence and
+filesystem freshness, without refresh/build work or environment leases. Explicit
+dependency operations retain validation. Their companion reads have bounded
+five-second deadlines for headers and response bodies; proof operations retain
+their own deadlines. Edited/deleted sources still lose current readiness, and
+historical dependency outcomes remain stored unchanged.
+
+Inventory failures retain the loaded DOM, expanded rows, code, edit drafts and
+scroll position. An accessible warning identifies the last loaded inventory and
+potentially outdated statuses. Read retries back off from five to thirty seconds,
+pause while hidden, recover on visibility and stop when the pane closes. Personal
+approval is disabled until fresh inventory arrives. Superseded failures, project
+navigation and view switches cannot overwrite a newer display. Import-preview
+callers still receive failures rather than treating cached inventory as a
+successful refresh. These retries do not start proof/model jobs.
+
+The initial two dependency-read and four pane-failure regressions failed before
+implementation. Final validation passed **764 root JavaScript tests** (6 script,
+673 Overleaf and 85 frontend), **51 affected adapter tests**, including real Lean
+evidence cases, and **8 cross-layer integration tests**. The pane suite includes
+timeouts, HTTP/network failures, draft/DOM preservation, retry backoff, hidden and
+closed panes, approval suspension, late failures and Blueprint view switches.
+Dependency-read regressions hold an exclusive environment lease while reading,
+reject compiler calls, and exercise changed/deleted sources. No unhandled worker
+exceptions appeared. The root suite required permission for isolated localhost
+test listeners; normal service ports and the user's stack were left untouched.
+
+A disposable copy of the user's current database returned the project's one
+dependency in **1.318 seconds**, without compiler work or changes to the copied
+database. A temporary browser fixture using the actual content script confirmed
+the real ten-second timeout preserves expanded content, shows the warning,
+recovers successfully, and fits both 520- and 360-pixel pane widths without
+horizontal overflow. Its warning used the existing theme tokens and legible
+foreground/background colors. The fixture contained only example data.
+
+All isolated processes/tabs were cleaned up. The user-started adapter/companion
+were not stopped or restarted, and live proof/history/settings were not modified.
+The active batch can finish before activation: reload the unpacked extension,
+refresh Overleaf, and restart the development stack without `--fresh`. Changes
+remain local on `LeaCheckAddition`; nothing was merged, pushed or published.
+
+## Follow-up: remove repeated proof work from Overleaf reads (2026-10-12)
+
+The loading slowdown came from repeated current-evidence projections on metadata
+paths. The saved database contains 158 sessions, 109 library modules, and seven
+proof-check records with manifests containing 5,940–12,961 dependency entries.
+Profiling the accounting endpoint found 87,315 hash lookups and roughly 175,000
+filesystem stats per response, including duplicate projections of the same proof.
+Its warm execution took 3.626 seconds under the profiler; the companion settings
+response hit the five-second usage deadline. Project identity also projected full
+session validity just to answer whether recorded proof history existed.
+
+The fix separates historical existence and accounting from certification:
+
+- Project identity uses a project-scoped SQL existence query, including all
+  recorded nonscratch proof steps. It does not project proof validity.
+- `/api/stats?include_proof_status=false` returns complete accounting rows without
+  proof blobs or certification status. The companion uses this projection. The
+  normal Stats response retains its current certification fields. Cost totals,
+  pending/unconfirmed usage, provider accounting details and batch-report charges
+  remain authoritative; project usage no longer inherits the 100-session limit.
+- Current-status projections share decoded evidence, environment validation and
+  file observations within one synchronous response. Every recorded dependency
+  hash and identity is still checked. A final identity scan includes source files,
+  missing configuration candidates and nearer Lake-root candidates. Changes cause
+  one fresh projection; continuous changes return a retryable 503. Positive
+  certification decisions are never retained for a later response. Compiler
+  checking, final completion and evidence persistence use independent validation.
+- Hashes and file identities come from the same observation. A file changed
+  during an uncached hash read cannot populate the reusable content-hash cache.
+- Library freshness is checked once per module, rather than once per declaration.
+  Target-status and nested formalization/dependency reads share the response's
+  observation set.
+- Each inventory or badge response fetches target evidence in one batch, including
+  linked formalization IDs and alternate names. Namespace revision guards remain
+  in place. Action paths continue to fetch their own evidence. Metadata deadlines
+  cover target-status and Lean-runtime reads as well as usage/settings.
+- Checkpoint compatibility pins the reviewed checker source hash and permits the
+  preceding runtime only at the existing settled boundary. Evidence schemas and
+  checkpoint payloads have not changed; legacy evidence still requires rechecking
+  and ambiguous mutations cannot be replayed automatically.
+
+Initial isolated validation used the current project's saved Overleaf `main.tex`, a
+SQLite backup, copied companion state, and temporary adapter/companion ports.
+Live proof/config/database writes, external requests and compiler/model work
+were blocked during metadata requests. Five inventory responses and four rounds
+of overlapping inventory, badge, settings and usage requests retained all five
+items with their existing defined, paused, proved, disproved and missing outcomes.
+The final loaded run measured warm inventory responses at **1.06–1.68 seconds**,
+badges at **0.83–1.51 seconds**, settings at **22–200 milliseconds**, and usage at
+**100–190 milliseconds**. The first inventory took **2.93 seconds** while separate
+compiler and regression suites were running. All requests succeeded; there were
+exactly nine target-status requests for the five inventories and four badge
+responses, with no per-item duplicate requests or unexpected adapter errors.
+The later investigation below found that copied jobs retained their live adapter
+URLs: the probe's isolation guard rejected their Lea Status/alignment requests.
+These initial timings therefore cover an incomplete inventory path and must not
+be used as end-to-end performance evidence. The corrected probe rewrites copied
+job URLs and requires every per-item assessment request to complete.
+
+Four currently checked project files, including the shared dependency, were also
+checked from an APFS-cloned disposable copy of the entire Lean workspace. All
+eight cold/warm checks succeeded, retained their exact source bytes and produced
+fresh source/dependency evidence. Cold checks took 29–52 seconds and warm checks
+6–12 seconds on this Mathlib-sized project under concurrent test load. Those are
+compiler operations; metadata reads do not invoke them. The disposable workspace
+and its Lean workers were removed after validation.
+
+The final metadata probe verified byte-for-byte preservation of the live SQLite
+database, proof files, configuration and root `.env`, including 4,996 timeline
+rows, 785 immutable blobs, seven check-evidence records and 293 recorded runs.
+The existing companion continued its normal `jobs.json` bookkeeping. An existing
+integration-harness gap initially wrote seven new temporary test logs to the
+default companion log directory. Only those seven logs were removed. Job logs now
+follow the state's configured jobs directory, and the integration harness uses
+its own environment file and asserts that logs remain inside its disposable home.
+The user-started adapter and companion were not stopped or restarted. No model
+calls, proof rewrites, migrations, merges, pushes or publication were performed.
+
+Regression coverage includes repeated Mathlib-sized evidence projections, changes
+during a read, source/import deletion and replacement, configuration and Lake-root
+changes, continuous-change rejection, fresh observations on subsequent polls,
+large-history accounting, batched inventories and namespace guards. Final
+validation passed **1,045 adapter tests**, **765 root JavaScript tests** (6 script,
+674 Overleaf and 85 frontend), **8 cross-layer integration tests**, frontend
+typecheck and the production frontend build. Standalone interface check/rebuild,
+rebuild-tool, 31 recovery unit tests and five disposable real-Lean recovery,
+concurrency and warm-import regressions passed. The real-Lean recovery suite
+reported a warm median of 359 ms and p95 of 492 ms on its small fixtures, with zero
+healthy fallback checks. No unhandled worker-thread exceptions appeared. The
+existing frontend bundle-size and Python deprecation warnings remain.
+
+These initial changes were subsequently activated locally with data-preserving
+restarts. The additional inventory regression fixes and complete-path validation
+are recorded below. No new production container image was created or published.
+
+## Persistent inventory refresh regression follow-up
+
+The user's persistent “Refresh delayed” warning exposed three remaining causes:
+
+- Formalization inventory synchronization was classified as a source/environment
+  mutation. It waited for the exclusive compiler lease, although it only updates
+  database target/source-binding/import metadata. A timed-out HTTP client could
+  leave that worker waiting behind ongoing Lean checks or dependency builds.
+  This route now retains its project mutation reservation, including namespace
+  migration exclusion, while explicitly opting out of the compiler environment
+  lease. Actual proof saves, imports, renames and compiler mutations retain their
+  existing environment coordination.
+- Lea Status and alignment artifact snapshots independently projected the same
+  imported artifacts. The corrected complete inventory probe reproduced
+  **11–13 second** responses, beyond the extension's ten-second deadline. The
+  outer artifact snapshot now owns one read-projection scope, so nested source
+  and dependency checks reuse file observations within that snapshot. Every new
+  snapshot revalidates independently, and the final change scan remains in place.
+  Profiling one target reduced a warm snapshot from 2.324 to 0.829 seconds;
+  before the fix its nested scopes made 43,956 file observations. Synchronization,
+  Lea Status and alignment metadata clients now also have bounded five-second
+  deadlines covering headers and response bodies. Proof-action deadlines remain
+  unchanged.
+- Ninety-one historical usage-pending jobs and two blocked dependency workflows
+  from other projects repeatedly broadcast global inventory refreshes. Nine
+  refresh events were observed in fifteen seconds. Usage backoff/counters remain
+  durable, but unchanged accounting retries no longer send refresh events. Actual
+  accounting/outcome changes notify the affected project. Dependency polls still
+  request fresh readiness on every attempt; unchanged progress is quiet, while
+  changed progress and continuation notify the affected project. Legacy changes
+  lacking a project identity retain a global notification fallback.
+
+Regression tests failed before these fixes and now cover shared/exclusive
+compiler leases, retained proof-save locking and namespace reservations, shared
+artifact observations with fresh source/import checks on later reads, metadata
+header/body deadlines, durable silent accounting backoff, project-scoped changed
+accounting, and blocked/unavailable dependency polls that remain fresh without
+repeated refresh events. Existing continuation/cancellation tests also pass.
+
+The final corrected isolated probe used a SQLite backup, copied companion state
+and the current saved `main.tex` from Overleaf project
+`6acd52f285e713c960581c6d` (FeatureAgTest4). It blocked writes to live data and
+proof/config files, compiler/model calls and external network requests. Copied
+job URLs pointed exclusively to the isolated adapter. Under each of a held
+shared check lease and a held exclusive build lease, five inventories and four
+rounds of overlapping badge/settings/usage requests succeeded. Across both
+leases, all **ten inventories** included all five items and completed in
+**3.93–5.05 seconds**, with **50 Lea Status comparisons**, **50 alignment reads**,
+18 batched target-status reads, no assessment failures and no unexpected
+requests. Forced historical usage retries produced only the SSE `hello` event
+for the current project. Both isolated process groups exited and copied
+databases/configuration/companion state were removed. Live proof history,
+database bytes and root environment were unchanged by the final probe; the
+normal companion continued its own `jobs.json` bookkeeping.
+
+After activation, **five consecutive live inventory requests** completed in
+**3.86–4.04 seconds**, with all five items and no diagnostics. A separate
+twenty-second current-project event observation contained only `hello`. The
+existing Overleaf tab showed no delayed-refresh warning and retained **four
+verified items and one verified disproof**, with all five Lean checks current.
+No document edits, proof rewrites or model calls were made during this follow-up.
+
+Final validation passed **1,051 adapter tests**, **772 root JavaScript tests**
+(6 script, 681 Overleaf and 85 frontend), and **8 cross-layer integration tests**.
+There were no unhandled worker-thread exceptions. The adapter suite retains ten
+existing Python deprecation warnings. `git diff --check` passed. This follow-up
+does not replace the real-Lean and frontend build evidence recorded above.
+
+The adapter and companion were restarted only at an idle boundary, under the
+user's existing request to restore local Overleaf testing, without `--fresh`.
+Backups were taken before each restart; the final backup is
+`apps/lea-standalone/data/backups/inventory-lock-restart-20261013T005638Z`.
+Post-restart comparisons preserved **159 sessions, 5,007 timeline rows, 788
+immutable blobs, 10 proof-check evidence records, 295 runs, 690 proof working
+files and all existing job IDs**. The adapter is ready, the companion is running
+and Vite was not restarted. Work remains on **LeaCheckAddition**; nothing was
+merged, pushed or published, and GitHub settings were not changed.
+
 ## Local delivery
 
 - `aa87313`: previous proof-evidence and lifecycle fixes already committed at the

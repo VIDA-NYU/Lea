@@ -129,7 +129,9 @@ const JOBS_PATH = path.join(APP_DIR, "jobs.json");
 // recover a chat that exists before any formalization job; when a job already
 // records the session we prefer that (D: adapter owns sessions/runs/messages).
 const CHAT_SESSIONS_PATH = path.join(APP_DIR, "chatSessions.json");
-const JOB_LOG_DIR = path.join(APP_DIR, "jobs");
+function jobLogDir(state) {
+  return path.join(path.dirname(state.jobsPath || JOBS_PATH), "jobs");
+}
 const DEFAULT_LEA_API_BASE_URL = "http://127.0.0.1:8001";
 const DEFAULT_LEA_UI_BASE_URL = "http://localhost:5173";
 const DEFAULT_LEA_MAX_TURNS = 20;
@@ -474,6 +476,9 @@ async function getStatusesSnapshot(payload, state, identity) {
   const targets = Array.isArray(payload.targets) ? payload.targets : [];
   const statuses = {};
   const overleafProjectId = payload.overleafProjectId || "unknown";
+  const ledgerSnapshot = await fetchInventoryLedger({ state, overleafProjectId, identity,
+    targets: targets.map((item) => ({ targetKind: normalizeTargetKind(item?.targetKind),
+      targetLabel: String(item?.targetLabel || "") })) });
   const approvalContext = await loadFormalizationApprovalContext({
     state,
     overleafProjectId,
@@ -500,6 +505,7 @@ async function getStatusesSnapshot(payload, state, identity) {
       projectNamespace: identity.namespace,
       targetKind,
       targetLabel,
+      ledgerSnapshot,
       jobs: state.jobs || {}
     });
     // Freshness for version-2 jobs is keyed by the same source identity the
@@ -1696,6 +1702,9 @@ async function leanPaneManifestSnapshot(payload, state, identity) {
     projectNamespace: identity.namespace
   });
   const jobsBeforeEnrichment = new Set(Object.keys(state.jobs || {}));
+  const ledgerSnapshot = await fetchInventoryLedger({ state, overleafProjectId, identity,
+    targets: manifest.items.map((item) => ({ targetKind: item.leanKind === "def" ? "definition" : "theorem",
+      targetLabel: String(item.leanDeclarationName || "") })) });
   let currentDependencies = null;
   try {
     const result = await projectDependencyRequest({
@@ -1718,6 +1727,7 @@ async function leanPaneManifestSnapshot(payload, state, identity) {
       projectNamespace: identity.namespace,
       approvalContext,
       currentDependencies,
+      ledgerSnapshot,
       sourceCoverage: payload.sourceCoverage === "complete" ? "complete" : "partial"
     })
   );
@@ -2905,7 +2915,7 @@ async function runPostRunCascade({ state, overleafProjectId, targetLabel, snapsh
 async function createRepairJob({ state, target, linkedJob, breakage, leaSessionId }) {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const jobId = `repair-${target.targetKind}-${target.targetLabel}-${timestamp}`;
-  const logPath = path.join(JOB_LOG_DIR, `${jobId}.log`);
+  const logPath = path.join(jobLogDir(state), `${jobId}.log`);
   await fs.mkdir(path.dirname(logPath), { recursive: true });
   await fs.writeFile(logPath, "", "utf8");
   const modelInfo = configuredModelMetadata(state);
@@ -3938,17 +3948,23 @@ async function reconcileDependencyWaitsOnce(state) {
     if (!row || row.stop_reason !== "dependency_wait" || row.recovery_state === "review" || row.recoverable === false) continue;
     const ids = row.waiting_dependencies || JSON.parse(row.waiting_dependencies_json || "[]");
     if (!ids.length) continue;
+    const previousProgress = JSON.stringify([job.waitingForDependencies, job.dependencies]);
+    const persistProgress = async () => {
+      if (previousProgress !== JSON.stringify([job.waitingForDependencies, job.dependencies])) {
+        await persistJobs(state, { changedProjects: new Set([job.overleafProjectId]) });
+      }
+    };
     job.waitingForDependencies = ids;
     const deps = await Promise.all(ids.map(id => projectDependencyRequest({ ...api, dependencyId: id })));
     if (deps.some(result => !result.ok)) {
       for (let i = 0; i < ids.length; i++) {
         if (!deps[i].ok) job.dependencies = mergeDependencyProgress(job.dependencies, { id: ids[i], current: false });
       }
-      await persistJobs(state);
+      await persistProgress();
       continue;
     }
     for (const result of deps) job.dependencies = mergeDependencyProgress(job.dependencies, { ...result.body, current: true });
-    await persistJobs(state);
+    await persistProgress();
     if (deps.some(result => !result.body.ready && ["failed", "blocked", "stale", "needs_review", "interrupted"].includes(result.body.state))) continue;
     // A stop or a newer attempt can arrive while the adapter reads are pending.
     if (dependencyWorkflowCanceled(state, job) || job.status !== "paused"
@@ -3956,10 +3972,9 @@ async function reconcileDependencyWaitsOnce(state) {
           && String(other.startedAt) >= String(job.startedAt))) continue;
     job.status = "in_progress";
     job.finishedAt = null;
-    await persistJobs(state);
+    await persistJobs(state, { changedProjects: new Set([job.overleafProjectId]) });
     void resumePersistedJob(state, job);
     resumed += 1;
-    publishEvent(state, "jobs-changed", { overleafProjectId: job.overleafProjectId });
   }
 }
 
@@ -5850,13 +5865,15 @@ async function findReusableStubForFormalization({ state, leaRepoPath, target, jo
 // reach (see jobStore.mjs), so this is invisible to behavior. Each removed
 // job's log file goes with it — log files are 1:1 with jobIds.
 // The one jobs-persistence seam (PLAN 3.1): every job mutation flows through
-// here, so persisting doubles as the push signal — subscribers get one
-// coarse "jobs-changed" and refetch the (already batched, project-scoped)
-// statuses/pane payloads. Fine-grained events would save nothing: the
-// extension's refresh endpoints are per-project, not per-field.
-async function persistJobs(state) {
+// here. Normal mutations notify subscribers; bookkeeping-only reconciliation
+// passes an empty project set so durable retry counters do not reload panes.
+// Known changed projects can notify just their own subscribers.
+async function persistJobs(state, { changedProjects } = {}) {
   await writeJson(state.jobsPath, state.jobs);
-  publishEvent(state, "jobs-changed", {});
+  if (changedProjects === undefined) publishEvent(state, "jobs-changed", {});
+  else for (const overleafProjectId of changedProjects) {
+    publishEvent(state, "jobs-changed", overleafProjectId ? { overleafProjectId } : {});
+  }
 }
 
 async function pruneAndPersistJobs(state) {
@@ -5979,7 +5996,7 @@ async function createLeaJob({
 }) {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const jobId = `${target.targetKind}-${target.targetLabel}-${timestamp}`;
-  const logPath = path.join(JOB_LOG_DIR, `${jobId}.log`);
+  const logPath = path.join(jobLogDir(state), `${jobId}.log`);
   const declarationNameHint = inferLeanDeclarationName(targetText)
     || (labelSource === "generated" ? suggestLeanNameFromLatexLabel(latexLabel) : "");
   const previousSessionJob = findLatestJobWithLeaSession(state.jobs || {}, target.jobKey);
@@ -7359,6 +7376,7 @@ export async function reconcilePendingJobUsage(state, limit = 4) {
   const start = state.usageReconcileCursor || 0;
   state.usageReconcileCursor = (start + limit) % jobs.length;
   let changed = 0;
+  const changedProjects = new Set();
   for (let offset = 0; offset < Math.min(limit, jobs.length); offset++) {
     const job = jobs[(start + offset) % jobs.length];
     const runId = job.apiRunId;
@@ -7386,6 +7404,7 @@ export async function reconcilePendingJobUsage(state, limit = 4) {
                               status: snapshot.usageStatus, revision: snapshot.usageRevision,
                               updatedAt: snapshot.usageUpdatedAt };
       changed++;
+      changedProjects.add(job.overleafProjectId);
     }
     if (terminal) {
       const authoritativeStop = row.stop_requested_reason
@@ -7393,7 +7412,10 @@ export async function reconcilePendingJobUsage(state, limit = 4) {
       const nextPending = snapshot.usageStatus !== "final";
       if (job.settling || job.usageSyncPending !== nextPending
           || job.adapterOutcomeStatus !== row.status
-          || (authoritativeStop && authoritativeStop !== job.reconciledStopReason)) changed++;
+          || (authoritativeStop && authoritativeStop !== job.reconciledStopReason)) {
+        changed++;
+        changedProjects.add(job.overleafProjectId);
+      }
       job.usageSyncPending = nextPending;
       if (!nextPending) {
         job.usageSyncAttempts = 0;
@@ -7410,7 +7432,7 @@ export async function reconcilePendingJobUsage(state, limit = 4) {
       job.usageSyncPending = true;
     }
   }
-  if (changed) await persistJobs(state);
+  if (changed) await persistJobs(state, { changedProjects });
   return changed;
 }
 
@@ -7836,6 +7858,7 @@ async function getTargetStatus({
   projectNamespace = "",
   targetKind,
   targetLabel,
+  ledgerSnapshot,
   jobs = {}
 }) {
   const status = await getTheoremStatus({
@@ -7846,6 +7869,7 @@ async function getTargetStatus({
     projectNamespace,
     targetKind,
     theoremLabel: targetLabel,
+    ledgerSnapshot,
     jobs
   });
   return attachTransitiveStubbedUpstream({ state, leaRepoPath, overleafProjectId, status });
@@ -8153,6 +8177,7 @@ async function enrichLeanPaneItem({
   projectNamespace = "",
   approvalContext,
   currentDependencies = null,
+  ledgerSnapshot,
   sourceCoverage = "partial"
 }) {
   const targetKind = item.leanKind === "def" ? "definition" : "theorem";
@@ -8185,6 +8210,7 @@ async function enrichLeanPaneItem({
       projectNamespace,
       targetKind,
       targetLabel,
+      ledgerSnapshot,
       jobs: state.jobs || {}
     });
   } catch (error) {
@@ -8565,6 +8591,26 @@ function ledgerStatusBase({ leaRepoPath, target, entry }) {
   };
 }
 
+// One current ledger read per inventory response. This value is never cached in
+// state or reused by mutations, checks, or a later polling response.
+async function fetchInventoryLedger({ state, overleafProjectId, identity, targets }) {
+  const declarations = new Set();
+  const formalizationIds = new Set();
+  let target;
+  for (const item of targets) {
+    if (!item.targetKind || !isValidLeanIdentifier(item.targetLabel)) continue;
+    target = buildLeaTarget({ leaRepoPath: state.settings.leaRepoPath, overleafProjectId,
+      projectName: identity.projectName, projectNamespace: identity.namespace, ...item });
+    const linked = findLatestJobWithLeaSession(state.jobs || {}, target.jobKey);
+    for (const name of [target.targetLabel, linked?.declarationName, linked?.declarationNameHint]) {
+      if (name) declarations.add(name);
+    }
+    if (linked?.formalizationId) formalizationIds.add(linked.formalizationId);
+  }
+  return target ? fetchTargetStatusFromAdapter({ state, target,
+    declarations: [...declarations], formalizationIds: [...formalizationIds] }) : null;
+}
+
 async function fetchTargetStatusFromAdapter({ state, target, declarations, formalizationIds = [] }) {
   if (!target.projectSlug || (declarations.length === 0 && formalizationIds.length === 0)) return null;
   let baseUrl;
@@ -8598,6 +8644,7 @@ async function getTheoremStatus({
   projectNamespace = "",
   targetKind = "theorem",
   theoremLabel,
+  ledgerSnapshot,
   jobs = {}
 }) {
   const target = buildLeaTarget({ leaRepoPath, overleafProjectId, targetKind, targetLabel: theoremLabel, projectName, projectNamespace });
@@ -8613,8 +8660,10 @@ async function getTheoremStatus({
     linkedJob?.declarationNameHint,
     target.targetLabel
   ].filter(Boolean))];
-  const ledger = await fetchTargetStatusFromAdapter({ state, target, declarations: candidates,
-    formalizationIds: linkedJob?.formalizationId ? [linkedJob.formalizationId] : [] });
+  const ledger = ledgerSnapshot === undefined
+    ? await fetchTargetStatusFromAdapter({ state, target, declarations: candidates,
+        formalizationIds: linkedJob?.formalizationId ? [linkedJob.formalizationId] : [] })
+    : ledgerSnapshot;
   const evidence = (linkedJob?.formalizationId
     ? Object.values(ledger || {}).find((entry) => entry?.formalization_id === linkedJob.formalizationId)
     : null) || candidates.map((name) => ledger?.[name]).find((entry) => entry?.formalization_id || entry?.last_batch_outcome) || null;

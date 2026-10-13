@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 import {
   fetchAdapterModelCatalog,
   fetchAdapterModelRequirements,
+  fetchAdapterSettings,
+  fetchAdapterUsageStats,
+  fetchCurrentAlignmentCheck,
+  fetchCurrentLeaStatus,
+  projectDependencyRequest,
   previewGithubImportBySlug,
   confirmGithubImportBySlug,
   getGithubImportBySlug,
@@ -13,6 +18,54 @@ import {
 } from "../companion/leaApiClient.mjs";
 
 const encoder = new TextEncoder();
+
+for (const read of [fetchAdapterSettings, fetchAdapterUsageStats, projectDependencyRequest,
+  syncProjectFormalizationTargetsBySlug, fetchCurrentAlignmentCheck, fetchCurrentLeaStatus]) {
+  test(`${read.name} bounds stalled headers and response bodies`, async () => {
+    for (const stalledBody of [false, true]) {
+      let signal;
+      const result = await read({ baseUrl: "http://adapter.test", timeoutMs: 10,
+        fetchImpl: async (_url, options) => {
+          signal = options.signal;
+          return stalledBody ? { ok: true, text: () => new Promise(() => {}) } : new Promise(() => {});
+        }
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.timedOut, true);
+      assert.equal(signal.aborted, true);
+    }
+  });
+}
+
+test('source-comparison metadata also bounds stalled headers and bodies', async () => {
+  for (const stalledBody of [false, true]) {
+    let signal;
+    const result = await fetchCurrentLeaStatus({ baseUrl: 'http://adapter.test',
+      formalizationId: 'target', sourceBundle: {}, timeoutMs: 10,
+      fetchImpl: async (_url, options) => {
+        signal = options.signal;
+        assert.equal(options.method, 'POST');
+        return stalledBody ? { ok: true, text: () => new Promise(() => {}) } : new Promise(() => {});
+      }
+    });
+    assert.equal(result.timedOut, true);
+    assert.equal(signal.aborted, true);
+  }
+});
+
+test("explicit dependency work retains its own operation deadline", async () => {
+  let options;
+  const result = await projectDependencyRequest({ baseUrl: "http://adapter.test", projectSlug: "study", action: "ensure", timeoutMs: 1,
+    fetchImpl: async (_url, value) => {
+      options = value;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return jsonResponse({ ready: true });
+    }
+  });
+  assert.equal(result.ok, true);
+  assert.equal(options.method, "POST");
+  assert.equal(options.signal, undefined);
+});
 
 function jsonResponse(obj, ok = true, status = 200) {
   return { ok, status, async text() { return JSON.stringify(obj); } };

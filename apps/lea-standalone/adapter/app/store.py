@@ -17,6 +17,7 @@ from typing import Any
 
 from .db import ROOT, connect, row_to_dict, utc_now, write
 from .public_errors import redact, run_detail
+from .read_projections import read_projection
 
 
 RAW_EVENT_LOG_DIR = ROOT / "data" / "lea-api-events"
@@ -184,6 +185,7 @@ def search_sessions(query: str, limit: int = 30) -> list[dict]:
 DEFAULT_SESSION_PAGE = 100
 
 
+@read_projection
 def _list_sessions(
     extra_where: str = "", params: tuple = (), limit: int = DEFAULT_SESSION_PAGE
 ) -> list[dict]:
@@ -2708,6 +2710,7 @@ def persist_pinned_check(session_id: str, path: str, expected: dict | None, *,
     return True, result
 
 
+@read_projection
 def current_code_steps_for_formalization(
     formalization_id: str,
     *,
@@ -4066,6 +4069,7 @@ def usage_breakdown_for_session(session_id: str) -> list[dict]:
     return _usage_breakdown_from_raw_logs(session_id)
 
 
+@read_projection
 def session_detail(session_id: str) -> dict | None:
     session = get_session(session_id)
     if not session:
@@ -4354,11 +4358,33 @@ def global_usage() -> dict:
     }
 
 
-def usage_stats() -> dict:
+def accounting_sessions() -> list[dict]:
+    """Full accounting rows, without source blobs or certification projections."""
+    with connect() as conn:
+        rows = conn.execute("""select s.id,p.slug as project_slug,
+            coalesce(sum(r.input_tokens),0) as input_tokens,
+            coalesce(sum(r.output_tokens),0) as output_tokens,
+            coalesce(sum(r.cost_usd),0) as cost_usd,count(r.id) as run_count,
+            coalesce(sum(r.usage_status in ('pending','partial')),0) as incomplete_usage_runs,
+            coalesce(sum(r.id is not null and (r.usage_status is null or r.usage_status='unknown')),0)
+                as unconfirmed_usage_runs
+            from sessions s left join projects p on p.id=s.project_id
+            left join runs r on r.session_id=s.id group by s.id order by s.updated_at desc""").fetchall()
+        details = conn.execute("""select session_id,input_tokens,output_tokens,cost_usd,usage_details_json
+            from runs union all select session_id,input_tokens,output_tokens,cost_usd,usage_details_json
+            from alignment_checks""").fetchall()
+    grouped = {}
+    for row in details:
+        grouped.setdefault(row['session_id'], []).append(row)
+    return [{**dict(row), 'total_tokens': row['input_tokens'] + row['output_tokens'],
+             'usage_details': usage_metadata.aggregate(grouped.get(row['id'], []))} for row in rows]
+
+
+def usage_stats(*, include_proof_status: bool = True) -> dict:
     # `sessions` stays the (100-row) list the Stats table renders — truncating a
     # rendered list is fine. `global` and `origins` are full-table aggregates, so
     # they no longer inherit that truncation.
-    sessions = list_sessions()
+    sessions = list_sessions() if include_proof_status else accounting_sessions()
     with connect() as conn:
         daily_rows = conn.execute(
             """

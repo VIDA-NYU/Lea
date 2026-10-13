@@ -20,6 +20,7 @@ from lea.interface import rebuild, verify
 from . import store
 from .artifacts import scan_lean_declarations, scrub_lean_source
 from .db import connect, write, utc_now
+from .read_projections import read_projection, current_snapshot, decode_evidence
 
 EXCLUDED = {".lea", ".git", ".lake", "node_modules", "build", "dist", "__pycache__"}
 ALLOWED_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}
@@ -195,7 +196,15 @@ def audit_module(path: Path, declarations: list[dict]):
         return result
 
 
-def refresh(project: dict, *, repo: Path | None = None) -> list[dict]:
+def refresh(project: dict, *, repo: Path | None = None,
+            resolve_environment: bool = True) -> list[dict]:
+    """Refresh the source catalog; startup can defer compiler dependency resolution.
+
+    An inventory-only refresh preserves unchanged records, including their
+    historical outcomes and evidence. ``entries`` still checks that evidence
+    against current dependencies before exposing a certified declaration.
+    Changed/new source remains unchecked until an explicit validation.
+    """
     repo = repo or project_repo(project)
     pid = project["id"]
     from lea.check_evidence import coordinator
@@ -210,8 +219,11 @@ def refresh(project: dict, *, repo: Path | None = None) -> list[dict]:
             found.add(relative)
             code = path.read_text(errors="replace")
             source_hash = digest(path.read_bytes())
-            env_hash = environment_hash(project, repo, path)
             previous = old.get(relative)
+            if not resolve_environment and previous and previous["source_hash"] == source_hash:
+                continue
+            env_hash = (environment_hash(project, repo, path) if resolve_environment else
+                        digest({"source": source_hash, "environment": "unresolved"}))
             if previous and previous["source_hash"] == source_hash and previous["environment_hash"] == env_hash:
                 continue
             updates.append((pid, relative, source_hash, env_hash, dumps(_lexical(code)), utc_now()))
@@ -278,6 +290,7 @@ def validate_module(project: dict, relative: str, *, repo: Path | None = None) -
         return entries(project, repo=repo, path=relative)
 
 
+@read_projection
 def entries(project: dict, *, repo: Path | None = None, path: str | None = None) -> list[dict]:
     repo = repo or project_repo(project)
     with connect() as conn:
@@ -290,15 +303,15 @@ def entries(project: dict, *, repo: Path | None = None, path: str | None = None)
             on f.id=ff.formalization_id where f.project_id=?""", (project["id"],))}
     result = []
     for row in rows:
+        from lea.check_evidence import freshness
+        try:
+            evidence = decode_evidence(row['check_evidence_json'] or '{}')
+        except (ValueError, TypeError):
+            evidence = {}
+        current = freshness(evidence, repo / row['path'], snapshot=current_snapshot())[0]
         for declaration in json.loads(row["declarations_json"]):
             decl = dict(declaration)
             axioms = decl.get("axioms")
-            from lea.check_evidence import freshness
-            try:
-                evidence = json.loads(row['check_evidence_json'] or '{}')
-            except (ValueError, TypeError):
-                evidence = {}
-            current = freshness(evidence, repo / row['path'])[0]
             reusable = (current and row["build_status"] == "ok" and row["verify_status"] == "ok"
                 and decl.get("visibility") == "public" and axioms is not None
                 and not (set(axioms) - ALLOWED_AXIOMS) and decl["kind"] not in {"axiom", "recursor"})
