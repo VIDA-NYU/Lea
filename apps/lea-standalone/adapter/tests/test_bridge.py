@@ -211,6 +211,43 @@ def test_needs_review_proof_artifact_keeps_review_session_status(tmp_path, monke
     assert done["payload"]["result_kind"] == "needs_review"
 
 
+@pytest.mark.parametrize("kind,counterexample,outcome", [
+    ("theorem", False, "proved"), ("definition", False, "defined"),
+    ("theorem", True, "disproved"),
+])
+def test_focused_review_run_records_an_approvable_final_candidate(tmp_path, monkeypatch, kind, counterexample, outcome):
+    from app import formalization_reviews
+    ctx, _ = _context(tmp_path, monkeypatch)
+    target = store.create_formalization(project_id=None, loose_session_id=ctx.session_id,
+        display_title="t", declaration_name="t", kind=kind)
+    with db.write() as conn:
+        conn.execute("update runs set focus_formalization_id=? where id=?", (target["id"], ctx.run_id))
+
+    def script(proof_path):
+        if counterexample:
+            Path(proof_path).write_text("theorem counterexample : ¬False := by simp\n")
+        elif kind == "definition":
+            Path(proof_path).write_text("def t : Nat := 1\n")
+        yield TurnStarted(1)
+        yield FileChanged(proof_path)
+        yield CheckResult(proof_path, "ok", None)
+        yield Finished("completed", "Please review.", 1, ctx.session_id, "gemini/test",
+            Usage(input_tokens=1, output_tokens=1), 0.0, {}, result_kind="needs_review",
+            result_detail="NEEDS_REVIEW", candidate_path=proof_path if counterexample else None)
+
+    monkeypatch.setattr(bridge, "run_events", _fake_run_events(script))
+    bridge.run_lea(ctx)
+    context = formalization_reviews.context(target["id"])
+    assert context["review"]["eligible"]
+    assert any(f["role"] == "primary" for f in context["formalization"]["files"])
+    before = store.get_run(ctx.run_id)
+    result = formalization_reviews.decide(target["id"], dict(action="approve", outcome=outcome,
+        revision_token=context["review"]["revision_token"], idempotency_key="bridge-approval"))
+    assert result["formalization"]["validity_status"] == outcome
+    assert store.get_run(ctx.run_id) == before
+    assert before["result_kind"] == "needs_review"
+
+
 def test_focused_run_cannot_certify_a_compiling_helper_instead_of_target(tmp_path, monkeypatch):
     ctx, queue = _context(tmp_path, monkeypatch, task="Prove thmB")
     target = store.create_formalization(
@@ -236,8 +273,8 @@ def test_focused_run_cannot_certify_a_compiling_helper_instead_of_target(tmp_pat
     run = store.get_run(ctx.run_id)
     assert run["status"] == run["result_kind"] == "needs_review"
     assert "thmB" in run["result_detail"]
-    assert store.session_detail(ctx.session_id)["status"] == "needs_review"
-    assert formalizations.get(target["id"])["validity_status"] == "needs_review"
+    assert store.session_detail(ctx.session_id)["status"] == "unchecked"
+    assert formalizations.get(target["id"])["validity_status"] == "unchecked"
     assert not any(item["declaration_name"] == "thmB" for item in store.list_artifacts_for_scope(ctx.session_id))
     assert any(item["role"] == "support" for item in formalizations.get(target["id"])["files"])
     assert _drain(queue)[-1]["payload"]["result_kind"] == "needs_review"

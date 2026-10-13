@@ -878,7 +878,8 @@ def _run_events_inner(
             kind, detail = 'needs_review', 'Saved completion has no current proof evidence. Recheck the current revision.'
         yield Finished("completed", final["text"], turn, session_id, model,
                        total_usage, total_cost, transcript(turn),
-                       result_kind=kind, result_detail=detail)
+                       result_kind=kind, result_detail=detail,
+                       candidate_path=proof_state.latest_proof_path)
         return
     if resume_state and reporting_stop == "stalled":
         yield Finished("stalled", stall.explanation(proof_state), turn, session_id, model,
@@ -1200,7 +1201,8 @@ def _run_events_inner(
             final_transcript = transcript(turn)
             yield Finished("completed", final_text, turn, session_id, model,
                            total_usage, total_cost, final_transcript,
-                           result_kind=result_kind, result_detail=result_detail)
+                           result_kind=result_kind, result_detail=result_detail,
+                           candidate_path=proof_state.latest_proof_path)
             return
 
         def _exec_tool(tc):

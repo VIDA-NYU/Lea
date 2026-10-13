@@ -1011,6 +1011,20 @@ export function prepareOverleafSource({ fetchImpl, baseUrl, apiKey, formalizatio
     method: "POST", headers: buildHeaders(apiKey), signal: AbortSignal.timeout(50000)
   });
 }
+
+export function fetchFormalizationReview({ fetchImpl, baseUrl, apiKey, formalizationId, sourceContextRef }) {
+  const query = new URLSearchParams();
+  if (sourceContextRef) query.set('source_context_ref', sourceContextRef);
+  return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/review?${query}`, {
+    method: 'GET', headers: buildHeaders(apiKey)
+  }, { timeoutMs: ADAPTER_METADATA_TIMEOUT_MS });
+}
+
+export function submitFormalizationReview({ fetchImpl, baseUrl, apiKey, formalizationId, decision }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/review-decisions`, {
+    method: 'POST', headers: buildHeaders(apiKey, { 'Content-Type': 'application/json' }), body: JSON.stringify(decision)
+  }, { timeoutMs: ADAPTER_METADATA_TIMEOUT_MS });
+}
 export function fetchLeaStatusHistory({ fetchImpl, baseUrl, apiKey, formalizationId, after }) {
   const query = new URLSearchParams({ limit: "50" });
   if (after) query.set("after", after);

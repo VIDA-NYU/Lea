@@ -904,6 +904,7 @@ def _record_run_artifacts(
     focus_formalization_id: str | None = None,
     source_hash: str | None = None,
     completion_verified: bool = True,
+    review_candidate_path: str | None = None,
 ) -> None:
     """Write the structured artifact index rows for this run's checked files
     (PLAN-system-hardening 4.1). Only files whose latest step verdict is ok
@@ -930,15 +931,17 @@ def _record_run_artifacts(
             focused_declaration = (
                 focused.get("declaration_name") if focused else None
             )
+            named_target = target_declaration(code, focused_declaration, focused.get("kind") or "theorem") if focused else None
+            review_candidate = rel == review_candidate_path
             if focus_formalization_id and (
-                not completion_verified or not focused_declaration
-                or not target_declaration(code, focused_declaration, focused.get("kind") or "theorem")
+                (not completion_verified and not review_candidate) or not focused_declaration
+                or (not named_target and not review_candidate)
             ):
                 store.link_formalization_file(
                     focus_formalization_id, rel, "support"
                 )
                 continue
-            declaration = focused_declaration or extract_declaration_name(code)
+            declaration = focused_declaration if named_target else extract_declaration_name(code)
             if not declaration:
                 continue
             formalization = focused
@@ -2675,12 +2678,29 @@ def _run_lea(context: RunnerContext) -> None:
                                  lambda: store.set_run_transcript(run_id, ev.transcript.get("messages", [])))
                     # Structured artifact index (4.1): record which declarations this
                     # run's checked files hold, keyed to the run's own FileChanged set.
+                    review_candidate_path = None
+                    if focus_formalization_id and ev.reason == "completed" and final_result_kind == "needs_review":
+                        # Preserve a technically checked target independently of the
+                        # classifier's human-review outcome. Different-name results
+                        # require the prover's explicit final artifact association.
+                        candidate_path = _relativize(ev.candidate_path, repo) if ev.candidate_path else None
+                        target_step, _ = checked_target(focused_formalization or {}, [s for s in current_checks if s])
+                        if candidate_path is None and target_step:
+                            candidate_path = target_step["path"]
+                        candidate = next((s for s in current_checks if s and s["path"] == candidate_path), None)
+                        if candidate and candidate.get("check_current") and candidate.get("check_status") == "ok" and "scratch" not in candidate_path.lower():
+                            try:
+                                if (repo / candidate_path).read_bytes().decode("utf-8") == candidate.get("code"):
+                                    review_candidate_path = candidate_path
+                            except (OSError, UnicodeDecodeError):
+                                pass
                     _best_effort("artifact index", run_id,
                                  lambda: _record_run_artifacts(
                                      session_id, run_id, project, namespace,
                                      dict(step_id_by_path),
                                      focus_formalization_id=focus_formalization_id,
                                      completion_verified=final_result_kind in {"proved", "defined"},
+                                     review_candidate_path=review_candidate_path,
                                      source_hash=focus_source_hash))
 
     except recovery.CheckpointWriteError as exc:

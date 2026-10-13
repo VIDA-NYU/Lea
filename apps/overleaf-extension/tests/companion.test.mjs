@@ -15,6 +15,7 @@ import {
   handleChatMessage,
   handleChatPoll,
   handleChatSession,
+  handleReview,
   handleFormalize,
   handleFormalizeAll,
   handleDependencyRetry,
@@ -989,6 +990,49 @@ test("manifest preserves batch explanations and honors newer authoritative compl
   const newerWork = (await handleLeanPaneManifest(payload, state)).body.items[0];
   assert.equal(newerWork.leanCheck.status, "checked");
   assert.equal(newerWork.lastBatchOutcome, undefined);
+});
+
+test('review transport refreshes source and never admits a prover run or rewrites jobs', async () => {
+  const calls = [];
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+    calls.push({ url: String(url), options });
+    if (String(url).endsWith('/overleaf-source/prepare')) return jsonResponse(200, { source_context_ref: 'fresh-source' });
+    if (String(url).includes('/review?')) return jsonResponse(200, { review: { eligible: true } });
+    if (String(url).endsWith('/review-decisions')) return jsonResponse(200, { formalization: { validity_status: 'proved' } });
+    throw new Error(`Unexpected request: ${url}`);
+  } });
+  state.jobs.review = { jobId: 'review', jobKey: 'project-1:theorem:claim', targetLabel: 'claim', targetKind: 'theorem',
+    formalizationId: 'formalization-1', leaSessionId: 'session-1', status: 'needs_review', finishedAt: '2026-01-01' };
+  const before = structuredClone(state.jobs);
+  const target = { overleafProjectId: 'project-1', targetKind: 'theorem', targetLabel: 'claim' };
+  assert.equal((await handleReview({ target }, state)).body.review.eligible, true);
+  const approval = { action: 'approve', outcome: 'proved', revision_token: 'revision', idempotency_key: 'one' };
+  assert.equal((await handleReview({ target, decision: approval }, state, { decision: true })).body.formalization.validity_status, 'proved');
+  const forwarded = JSON.parse(calls.find(call => call.url.endsWith('/review-decisions')).options.body);
+  assert.deepEqual(forwarded, { ...approval, source_context_ref: 'fresh-source' });
+  const beforeWithdrawal = calls.length;
+  await handleReview({ target, decision: { action: 'withdraw', approval_id: 'one', idempotency_key: 'withdraw' } }, state, { decision: true });
+  assert.equal(calls.length, beforeWithdrawal + 1, 'withdrawal does not prepare source or create a run');
+  assert.deepEqual(state.jobs, before);
+  state.jobs.review.settling = true;
+  assert.equal((await handleReview({ target }, state)).statusCode, 409);
+});
+
+test('adapter user approval supersedes cached review while batch history remains unchanged', async () => {
+  const name = 'approved_claim';
+  const approval = { id: 'user-approval', outcome: 'proved', created_at: '2026-01-02' };
+  const entry = ledgerEntry(name, { review: { approval }, certification: { source: 'user_review', outcome: 'proved' } });
+  const { state } = await makeLedgerState({ [name]: entry });
+  state.jobs.review = { jobId: 'review', jobKey: `project-1:theorem:${name}`, targetLabel: name, targetKind: 'theorem',
+    formalizationId: entry.formalization_id, leaSessionId: 'session-1', status: 'needs_review', finishedAt: '2026-01-01' };
+  const payload = { overleafProjectId: 'project-1', files: [{ path: 'main.tex', content:
+    `\\begin{theorem}\n% lea: formalize label=${name}\nTrue.\n\\end{theorem}` }] };
+  const result = await handleLeanPaneManifest(payload, state);
+  assert.equal(result.body.items[0].status, 'valid');
+  assert.equal(result.body.items[0].review.approval.id, approval.id);
+  assert.equal(state.jobs.review.status, 'needs_review');
+  Object.assign(entry, { validity_status: 'needs_review', review: { eligible: true, approval: null }, certification: null });
+  assert.equal((await handleLeanPaneManifest(payload, state)).body.items[0].status, 'needs-review');
 });
 
 test("lean pane manifest surfaces needs_review as a visible review state", async () => {
@@ -4143,6 +4187,18 @@ test("formalize all cannot bypass the shared-file guard", async () => {
   assert.equal(result.body.error, "shared_artifact");
   assert.equal(await fs.readFile(path.join(leaRepo, proofPath), "utf8"), original);
   assert.ok(!calls.some((call) => String(call.url).endsWith("/api/runs")));
+});
+
+test('formalize all leaves a review-ready target awaiting approval without a new run', async () => {
+  const calls = [];
+  const { state } = await makeLedgerState({ awaiting: ledgerEntry('awaiting', { validity_status: 'needs_review', review: { eligible: true } }) }, {
+    fetchImpl: makeAdapterApiFetch(calls, { targetStatus: { awaiting: ledgerEntry('awaiting', { validity_status: 'needs_review' }) } })
+  });
+  const result = await handleFormalize({ overleafProjectId: 'project-1', targetKind: 'theorem', targetLabel: 'awaiting', targetText: 'True.' }, state, { batch: true });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.status, 'awaiting_approval');
+  assert.ok(!calls.some(call => String(call.url).endsWith('/api/runs')));
+  assert.deepEqual(state.jobs, {});
 });
 
 test("formalize all refuses to complete a stub stored beside another proof", async () => {

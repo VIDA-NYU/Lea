@@ -42,6 +42,7 @@ class _State:
     mutations: int = 0
     edits: int = 0
     admissions: int = 0
+    reviews: int = 0
     workers: set[str] = field(default_factory=set)
     condition: Condition = field(init=False)
 
@@ -98,7 +99,7 @@ def mutation(project_id: str | None, *, wait=False, admission=False):
                 raise ProjectRenaming()
             state.condition.wait()
         _available(state)
-        if admission and state.edits:
+        if admission and (state.edits or state.reviews):
             raise HTTPException(409, detail={"error": "project_busy", "message": "A project file is being saved. Retry shortly."})
         state.mutations += 1
         if admission:
@@ -182,7 +183,7 @@ def file_edit(project_id: str | None):
     state = _state(project_id)
     with state.lock:
         _available(state)
-        if state.workers or state.admissions:
+        if state.workers or state.admissions or state.reviews:
             raise HTTPException(409, detail={"error": "project_busy",
                 "message": "Wait for active project work before editing files."})
         state.edits += 1
@@ -192,6 +193,36 @@ def file_edit(project_id: str | None):
     finally:
         with state.lock:
             state.edits -= 1
+            state.mutations -= 1
+
+
+def review_busy(project_id: str | None, run_id: str | None) -> bool:
+    if not project_id:
+        return False
+    state = _state(project_id)
+    with state.lock:
+        return bool(state.edits or state.admissions or state.mutations > state.reviews or run_id in state.workers)
+
+
+@contextmanager
+def review_decision(project_id: str | None, run_id: str | None):
+    """Reserve a correspondence decision against admission and unfinished saves."""
+    if not project_id:
+        yield
+        return
+    state = _state(project_id)
+    with state.lock:
+        _available(state)
+        if state.edits or state.admissions or state.mutations > state.reviews or run_id in state.workers:
+            raise HTTPException(409, detail={"error": "review_busy",
+                "message": "Wait for the current target operation to finish before approving."})
+        state.reviews += 1
+        state.mutations += 1
+    try:
+        yield
+    finally:
+        with state.lock:
+            state.reviews -= 1
             state.mutations -= 1
 
 

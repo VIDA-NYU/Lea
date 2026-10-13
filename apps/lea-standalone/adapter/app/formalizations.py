@@ -115,16 +115,15 @@ def _validity(
     match, reason = checked_target(formalization, current_steps)
     check_current = any(step.get("check_status") == "ok" and step.get("check_current") for step in current_steps)
     kind = declaration.kind if declaration else None
-    # A review result is a verdict about this target. No later chat, file
-    # classification or manual check may promote it.
+    # Review decisions are projected below, independently of run history.
     if result_kind == "needs_review":
         return "needs_review", (latest_run or {}).get("result_detail") or reason or "Lea requested review.", check_current, kind
     if not current_steps:
         if result_kind in {"proved", "defined"}:
-            return "needs_review", "No current checked artifact contains the requested declaration.", False, kind
+            return "planned", "No current checked artifact contains the requested declaration.", False, kind
         return ("draft" if not name and primary is None else "planned"), "No current artifact is linked to this target.", False, kind
     if not declaration:
-        return "needs_review", f"The artifact does not declare the requested {name or 'target'}.", check_current, None
+        return "unchecked", f"The artifact does not declare the requested {name or 'target'}.", check_current, None
     if any(step.get("check_status") == "error" and step.get("check_current") for step in current_steps):
         return "failing", "The current artifact failed its Lean check.", False, kind
     if contains_sorry_marker(next((step.get("code") or "" for step in current_steps if target_declaration(step.get("code"), name, formalization.get("kind") or "theorem")), "")):
@@ -135,16 +134,16 @@ def _validity(
         return "stale", "The source statement changed after this artifact was recorded.", False, kind
     if not check_current:
         if "ambiguous" in reason:
-            return "needs_review", reason, False, kind
+            return "unchecked", reason, False, kind
         return "unchecked", reason, False, kind
     if match is None:
         if "ambiguous" in reason:
-            return "needs_review", reason, check_current, kind
+            return "unchecked", reason, check_current, kind
         return "unchecked", reason, check_current, kind
     if result_kind not in {"proved", "defined"}:
         return "unchecked", "No successful target run has certified this artifact.", True, kind
     if formalization.get("kind") != "definition" and result_kind != "proved":
-        return "needs_review", "The run reported a definition rather than proving this theorem.", True, kind
+        return "unchecked", "The run reported a definition rather than proving this theorem.", True, kind
     if match.get("run_id") != latest_run.get("id"):
         # A manual check of identical bytes may become the latest timeline
         # row. Verify the successful run's own checked snapshot by content (or
@@ -374,10 +373,7 @@ def decorate(rows: list[dict]) -> list[dict]:
         if not current_steps and completion_run:
             with connect() as conn:
                 raw_steps = conn.execute(
-                    """select t.*, b.content as blob_content from timeline t
-                       left join artifact_blobs b on b.id = t.after_blob_id
-                       where t.kind = 'code' and t.run_id = ?
-                       order by t.created_at desc, t.id desc""",
+                    store.TIMELINE_WITH_BLOB + " where t.kind = 'code' and t.run_id = ? order by t.created_at desc, t.id desc",
                     (completion_run["id"],),
                 ).fetchall()
             seen_paths = set()
@@ -389,6 +385,18 @@ def decorate(rows: list[dict]) -> list[dict]:
             item, primary=primary, artifact=artifact,
             latest_step=step, latest_run=completion_run, steps=current_steps,
         )
+        from . import formalization_reviews
+        review, _, _, technical = formalization_reviews.project(
+            {**item, 'files': item_files}, current_steps, primary, artifact, completion_run, active,
+            requested=validity == 'needs_review')
+        if technical is not None:
+            validity, validity_reason, check_current, declaration_kind = technical
+        certification = None
+        if review.get('approval'):
+            certification = {'source': 'user_review', 'outcome': review['approval']['outcome'],
+                'review_event_id': review['approval']['id'], 'run_id': review.get('run_id')}
+        elif validity in {'proved', 'defined', 'disproved'}:
+            certification = {'source': 'run', 'outcome': validity, 'run_id': (completion_run or {}).get('id')}
         verification = verify_by_id.get(fid)
         if item.get("origin") == "project_dependency":
             from . import project_dependencies
@@ -426,6 +434,8 @@ def decorate(rows: list[dict]) -> list[dict]:
                 "completion_run_id": completion_run["id"] if completion_run else None,
                 "declaration_kind": declaration_kind,
                 "check_current": check_current,
+                "review": review,
+                "certification": certification,
                 "activity": _activity(active),
                 "primary_path": (
                     primary["path"] if primary else (artifact or {}).get("path")
@@ -535,6 +545,8 @@ def current_snapshot(
             if conversation_session_id else None
         ),
         "validity_status": formalization["validity_status"],
+        "review": formalization.get('review'),
+        "certification": formalization.get('certification'),
         "safe_verify": formalization.get("safe_verify"),
     }
 

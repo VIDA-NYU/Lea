@@ -530,7 +530,7 @@ export function hasInProgressItems(items) {
 // work stays out of a batch even though its per-item Re-formalize action remains
 // available.
 const BATCH_FORMALIZABLE_PANE_STATUSES = new Set([
-  "missing-stub", "stub-generated", "invalid", "unknown", "error", "paused", "needs-review"
+  "missing-stub", "stub-generated", "invalid", "unknown", "error", "paused"
 ]);
 
 // Whether the pane should offer a Formalize / Re-formalize action for an item.
@@ -663,7 +663,7 @@ export function githubImportMatchedTargetKeys(preview, targets) {
 // item's status: navigation to its history does not certify the formalization.
 const LEA_UI_VIEWABLE_PANE_STATUSES = new Set([
   "valid", "defined", "disproved", "in-progress",
-  "stub-generated", "stale", "invalid", "paused"
+  "stub-generated", "stale", "invalid", "paused", "needs-review"
 ]);
 
 // Whether the pane should offer a "View in Lea UI" action for an item. Needs a
@@ -780,7 +780,9 @@ export function paneItemActions(item, { editing = false } = {}) {
   const bestEffortAction = { id: "best-effort", label: "Continue best effort" };
 
   let primary = null;
-  if (!editing && wait) {
+  if (!editing && item?.review?.eligible && item.status === 'needs-review') {
+    primary = { id: 'approve-result', label: 'Approve result' };
+  } else if (!editing && wait) {
     primary = dependencyWaitAction(wait);
   } else if (!editing && canRepairPaneItem(item)) {
     primary = { id: "repair", label: "Repair with Lea" };
@@ -795,6 +797,7 @@ export function paneItemActions(item, { editing = false } = {}) {
   if (canViewPaneItemInLeaUi(item)) rail.push({ id: "view-in-lea", label: "Open in LeaChat" });
 
   const overflow = [];
+  if (item?.review?.approval) overflow.push({ id: 'withdraw-approval', label: 'Withdraw approval' });
   if (wait && !editing) {
     if (primary?.id !== "dependency-view") overflow.push({ id: "dependency-view", label: "View supporting result" });
     if (primary?.id !== "dependency-refresh") overflow.push({ id: "dependency-refresh", label: "Refresh status" });
@@ -1012,7 +1015,8 @@ export function formatRepairOutcome(entry, operation = "repair") {
     case "incomplete": return entry.reason === "dependency_wait"
       ? `${label}: waiting for a supporting result.${entry.detail ? ` ${entry.detail}` : ""} Inspect Shared mathematics for the result and its next action.`
       : `${label}: incomplete${entry.reason ? ` — ${String(entry.reason).replaceAll("_", " ")}` : "."}${entry.detail ? ` · ${entry.detail}` : ""}${entry.recoverable ? " · Resume available." : ""}`;
-    case "needs_review": return operation === "formalize"
+    case "needs_review": return entry.reason === 'awaiting_approval'
+      ? `${label}: awaiting approval.` : operation === "formalize"
       ? `${label}: Needs review${entry.reason ? ` — ${entry.reason}` : "."}`
       : `${label}: repaired, but the statement changed -- review required.`;
     case "canceled": return `${label}: stopped.`;

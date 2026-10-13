@@ -35,7 +35,7 @@ def test_target_identity_rejects_helpers_claims_comments_and_ambiguous_names():
     assert match is None and "thmD" in reason
 
 
-def test_partial_target_is_reviewed_until_successful_target_run(tmp_path, monkeypatch):
+def test_partial_helper_is_unchecked_until_successful_target_run(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
     db.init_db()
     proof_root = tmp_path / "proofs"
@@ -72,15 +72,15 @@ def test_partial_target_is_reviewed_until_successful_target_run(tmp_path, monkey
         )["targets"][0]
 
     initial_read = formalizations.get(target["id"])
-    assert initial_read["validity_status"] == "needs_review"
-    assert initial_read["check_current"] is True
+    assert initial_read["validity_status"] == "unchecked"
+    assert initial_read["check_current"] is False
     partial = status()
-    assert partial["validity_status"] == "needs_review"
+    assert partial["validity_status"] == "unchecked"
     assert partial["recorded"] is False
     assert partial["exists"] is True
     assert partial["declaration_present"] is False
     assert partial["check_current"] is True  # The helper itself passed Lean.
-    assert project_target_status_by_slug(project["slug"], declarations="thmB")["targets"][0]["validity_status"] == "needs_review"
+    assert project_target_status_by_slug(project["slug"], declarations="thmB")["targets"][0]["validity_status"] == "unchecked"
 
     # A later chat turn and a manual check cannot clear the review verdict.
     chat = store.create_run(session["id"], "model", None, 3,
@@ -88,15 +88,15 @@ def test_partial_target_is_reviewed_until_successful_target_run(tmp_path, monkey
     store.update_run(chat["id"], "answered", result_kind="answered")
     store.add_code_step(session["id"], None, "Helper.lean", content=helper,
                         check_status="ok", author="user", formalization_id=target["id"])
-    assert formalizations.get(target["id"])["validity_status"] == "needs_review"
-    assert status()["validity_status"] == "needs_review"
+    assert formalizations.get(target["id"])["validity_status"] == "unchecked"
+    assert status()["validity_status"] == "unchecked"
 
     # Editing the file on disk invalidates the recorded passing check.
     theorem = "import Mathlib\n\ntheorem thmB : True := by trivial\n"
     artifact.write_text(theorem)
     stale = status()
     assert stale["check_current"] is False
-    assert stale["validity_status"] == "needs_review"
+    assert stale["validity_status"] == "unchecked"
 
     # Only a later successful target run can certify the new current revision.
     second = store.create_run(session["id"], "model", None, 3,
@@ -211,9 +211,9 @@ def test_historical_compile_promoted_definition_is_now_reviewed_without_rewritin
                         artifact_kind="definition", formalization_id=target["id"])
     store.update_run(run["id"], "proved", result_kind="defined")
 
-    assert formalizations.get(target["id"])["validity_status"] == "needs_review"
-    assert store.session_detail(session["id"])["status"] == "needs_review"
-    assert next(item for item in store.list_sessions() if item["id"] == session["id"])["status"] == "needs_review"
+    assert formalizations.get(target["id"])["validity_status"] == "unchecked"
+    assert store.session_detail(session["id"])["status"] == "unchecked"
+    assert next(item for item in store.list_sessions() if item["id"] == session["id"])["status"] == "unchecked"
     assert store.get_run(run["id"])["result_kind"] == "defined"
 
     # A historical definition result cannot certify even a present theorem.
@@ -224,6 +224,7 @@ def test_historical_compile_promoted_definition_is_now_reviewed_without_rewritin
                         artifact_kind="proof", formalization_id=target["id"])
     store.update_run(second["id"], "proved", result_kind="defined")
     assert formalizations.get(target["id"])["validity_status"] == "needs_review"
+    assert formalizations.get(target["id"])["review"]["eligible"]
 
 
 # This module mocks compiler behavior; bind those mock verdicts to their inputs.

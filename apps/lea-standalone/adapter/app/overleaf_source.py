@@ -105,7 +105,7 @@ def respond(request_id: str, source: dict | None, error: str | None = None, docu
                          (value["sourceIdentityHash"], now.isoformat(), row["formalization_id"]))
 
 
-def resolve(conn, reference: str, formalization_id: str) -> dict:
+def resolve(conn, reference: str, formalization_id: str, *, bind_source: bool = True) -> dict:
     row = conn.execute("select * from overleaf_source_requests where id = ?", (reference,)).fetchone()
     if not row or row["formalization_id"] != formalization_id or row["state"] != "ready" or row["expires_at"] <= db.utc_now():
         raise ValueError("Current Overleaf source is unavailable or expired. Refresh and send again.")
@@ -117,7 +117,8 @@ def resolve(conn, reference: str, formalization_id: str) -> dict:
     form = conn.execute("select * from formalizations where id = ?", (formalization_id,)).fetchone()
     if not form or form["source_hash"] != source["sourceIdentityHash"]:
         raise ValueError("The selected formalization source changed. Refresh and send again.")
-    bind(conn, dict(form), source)
+    if bind_source:
+        bind(conn, dict(form), source)
     if row["mirror_files_json"]:
         _check_mirror(conn, dict(form), json.loads(row["mirror_files_json"]))
     return source

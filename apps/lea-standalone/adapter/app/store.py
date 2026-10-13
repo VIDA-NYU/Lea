@@ -373,7 +373,7 @@ def _list_sessions(
                 f"select * from formalizations where id in ({marks})", target_ids
             ).fetchall()]
         target_verdicts = {item['id']: item['validity_status'] for item in formalization_service.decorate(raw)
-                           if item['validity_status'] in {'needs_review', 'disproved'}}
+                           if item['validity_status'] in {'needs_review', 'disproved'} or item.get('review', {}).get('reason')}
         for session, fid in zip(sessions, status_targets):
             if fid in target_verdicts:
                 session["status"] = target_verdicts[fid]
@@ -394,13 +394,15 @@ def sessions_digest() -> str:
                 (select count(*) from sessions) as session_count,
                 (select coalesce(max(updated_at), '') from sessions) as max_updated_at,
                 (select count(*) from runs where status in ('pending', 'running')) as active_runs,
-                (select coalesce(max(updated_at), '') from runs) as max_run_updated_at
+                (select coalesce(max(updated_at), '') from runs) as max_run_updated_at,
+                (select count(*) from formalization_review_events) as review_count,
+                (select coalesce(max(created_at), '') from formalization_review_events) as max_review_at
             """
         ).fetchone()
     data = row_to_dict(row)
     return "|".join(
         str(data.get(key, ""))
-        for key in ("session_count", "max_updated_at", "active_runs", "max_run_updated_at")
+        for key in ("session_count", "max_updated_at", "active_runs", "max_run_updated_at", "review_count", "max_review_at")
     )
 
 
@@ -1290,6 +1292,8 @@ def delete_project_cascade(project_id: str) -> bool:
             )
         if formalization_ids:
             status_marks = ",".join("?" for _ in formalization_ids)
+            conn.execute(f"delete from formalization_review_requests where formalization_id in ({status_marks})", formalization_ids)
+            conn.execute(f"delete from formalization_review_events where formalization_id in ({status_marks})", formalization_ids)
             for status_table in ("lea_status_updates", "lea_status_run_contexts"):
                 conn.execute(f"delete from {status_table} where formalization_id in ({status_marks})", formalization_ids)
             form_marks = ",".join("?" for _ in formalization_ids)
@@ -1315,6 +1319,8 @@ def delete_project_cascade(project_id: str) -> bool:
             )
         if session_ids:
             marks = ",".join("?" for _ in session_ids)
+            conn.execute(f"delete from formalization_review_requests where event_id in (select id from formalization_review_events where session_id in ({marks}))", session_ids)
+            conn.execute(f"delete from formalization_review_events where session_id in ({marks})", session_ids)
             # `messages`/`code_steps` are pre-cutover rows kept until the contract
             # step drops them; they're still cleared so a delete doesn't leave half
             # a session behind in tables that are still readable.
@@ -1330,6 +1336,7 @@ def delete_project_cascade(project_id: str) -> bool:
                 "delete from artifact_blobs where id not in "
                 "(select after_blob_id from timeline where after_blob_id is not null "
                 "union select blob_id from proof_check_evidence "
+                "union select json_extract(value, '$.blob_id') from formalization_review_events, json_each(evidence_json) where json_extract(value, '$.blob_id') is not null "
                 "union select blob_id from verification_events where blob_id is not null)"
             )
         # The artifact index is scoped by project OR by session (`scope` is whichever
@@ -4205,7 +4212,7 @@ def session_detail(session_id: str) -> dict | None:
     if latest_formalization_id:
         from . import formalizations as formalization_service
         target = formalization_service.get(latest_formalization_id)
-        if target and target["validity_status"] in {"needs_review", "disproved"}:
+        if target and (target['validity_status'] in {'needs_review', 'disproved'} or target.get('review', {}).get('reason')):
             derived_status = target["validity_status"]
     return {
         **session,
@@ -4216,6 +4223,7 @@ def session_detail(session_id: str) -> dict | None:
         "diagnostics": diagnostics_out,
         "status_events": [row_to_dict(row) for row in status_events],
         "approval_events": approval_events_for_session(session_id),
+        "review_events": review_events_for_session(session_id),
         "usage_breakdown": usage_breakdown_for_session(session_id),
         "active_run": _normalize_run(row_to_dict(active_run)) if active_run else None,
         "runs": [row_to_dict(r) for r in runs],
@@ -4685,6 +4693,13 @@ def _usage_breakdown_from_raw_logs(session_id: str) -> list[dict]:
             row["ordinal"] = ordinal
         rows.extend(_normalize_usage_breakdown_row(row) for row in run_rows)
     return rows
+
+
+def review_events_for_session(session_id: str) -> list[dict]:
+    with connect() as conn:
+        return [dict(row) for row in conn.execute('''select id, formalization_id, run_id, action, outcome,
+            approval_id, revision_token, created_at from formalization_review_events
+            where session_id=? order by rowid''', (session_id,))]
 
 
 def approval_events_for_session(session_id: str) -> list[dict]:

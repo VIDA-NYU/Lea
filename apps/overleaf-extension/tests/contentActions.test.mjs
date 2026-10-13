@@ -3051,6 +3051,158 @@ test("Lean pane edit 'Save' posts the edited content and renders the cascade imp
   assert.match(harness.bodyText(), /corollary_a: broken by this edit\./);
 });
 
+function reviewResponse(body, status = 200) {
+  return { ok: status < 400, status, async json() { return body; } };
+}
+
+function reviewFixture(outcomes = ['proved', 'disproved']) {
+  return { ok: true, review: { eligible: true, revision_token: 'revision-1', allowed_outcomes: outcomes,
+    reason: 'Lean check passed.', candidate_declaration: 'claim' },
+    source_snapshot: { statement: 'Full current LaTeX.', proof: 'Associated author proof.', context: 'Source context.' },
+    artifacts: [{ path: 'Claim.lean', content: 'theorem claim : True := by trivial\n' + '-- full content\n'.repeat(400) }] };
+}
+
+function reviewButton(h, text) {
+  const button = h.document.body.querySelectorAll('button').find(button => button.textContent === text);
+  assert.ok(button, `Expected ${text}`);
+  return button;
+}
+
+test('review approval loads full evidence, requires a theorem outcome, and never formalizes', async () => {
+  const status = { status: 'needs_review', review: { eligible: true }, leaSessionId: 'session-1' };
+  const fixture = reviewFixture();
+  const h = createContentHarness(status, {}, { fetchOverride(url, options) {
+    if (url.endsWith('/review/context')) return reviewResponse(fixture);
+    if (url.endsWith('/review/decision')) {
+      const request = JSON.parse(options.body).decision;
+      assert.equal(request.outcome, 'disproved');
+      assert.equal(request.revision_token, 'revision-1');
+      Object.assign(status, { status: 'disproved', review: { approval: { id: 'approval-1', outcome: 'disproved', created_at: '2026-01-01' } } });
+      return reviewResponse({ formalization: { validity_status: 'disproved' } });
+    }
+  } });
+  await h.loadVisibleTheorems();
+  h.openTargetPopover();
+  assert.equal(h.hasViewInLeaUiButton(), true);
+  assert.equal(h.hasButtonText('Re-formalize'), true);
+  reviewButton(h, 'Approve result').click();
+  await flushPromises();
+  const dialog = h.document.querySelector('.ol-lean-review-dialog');
+  assert.equal(dialog.attributes.role, 'dialog');
+  assert.equal(dialog.attributes['aria-modal'], 'true');
+  assert.ok(dialog.textContent.includes(fixture.artifacts[0].content));
+  assert.equal(reviewButton(h, 'Choose an outcome').disabled, true);
+  const radios = dialog.querySelectorAll('input');
+  assert.equal(radios.length, 2);
+  assert.ok(radios.every(radio => !radio.checked));
+  radios.find(radio => radio.value === 'disproved').dispatchEvent({ type: 'change' });
+  reviewButton(h, 'Approve as counterexample').click();
+  await flushPromises();
+  assert.equal(h.document.querySelector('.ol-lean-review-dialog'), null);
+  assert.equal(h.hasButtonText('Withdraw approval'), true);
+  assert.match(h.bodyText(), /Approved by user/);
+  assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/formalize')));
+  assert.equal(h.storageSetCalls.length, 0, 'approval does not set personal audit notes');
+  reviewButton(h, 'Withdraw approval').click();
+  await flushPromises();
+  const decisions = h.fetchCalls.filter(call => call.url.endsWith('/review/decision'));
+  assert.equal(JSON.parse(decisions[1].options.body).decision.action, 'withdraw');
+});
+
+test('definition approval has a fixed outcome and cancel or Escape restores trigger focus', async () => {
+  for (const escape of [false, true]) {
+    const h = createContentHarness({ status: 'needs_review', review: { eligible: true } }, { targetKind: 'definition' }, {
+      fetchOverride(url) { if (url.endsWith('/review/context')) return reviewResponse(reviewFixture(['defined'])); }
+    });
+    await h.loadVisibleTheorems();
+    h.openTargetPopover();
+    const trigger = reviewButton(h, 'Approve result');
+    trigger.click();
+    await flushPromises();
+    const dialog = h.document.querySelector('.ol-lean-review-dialog');
+    assert.equal(dialog.querySelectorAll('input').length, 0);
+    assert.equal(reviewButton(h, 'Approve as defined').disabled, false);
+    if (escape) dialog.dispatchEvent({ type: 'cancel' });
+    else reviewButton(h, 'Cancel').click();
+    assert.equal(h.document.querySelector('.ol-lean-review-dialog'), null);
+    assert.equal(trigger.focused, true);
+    assert.ok(!h.fetchCalls.some(call => /\/(formalize|review\/decision)$/.test(call.url)));
+  }
+});
+
+test('approval offline retry retains outcome and stale revision reload requires fresh selection', async () => {
+  let submissions = 0;
+  let loads = 0;
+  const h = createContentHarness({ status: 'needs_review', review: { eligible: true } }, {}, {
+    fetchOverride(url) {
+      if (url.endsWith('/review/context')) {
+        const fixture = reviewFixture();
+        fixture.review.revision_token = `revision-${++loads}`;
+        return reviewResponse(fixture);
+      }
+      if (url.endsWith('/review/decision')) {
+        return reviewResponse({ ok: false, message: ++submissions === 1 ? 'Offline. Retry.' : 'Inputs changed.' }, submissions === 1 ? 503 : 409);
+      }
+    }
+  });
+  await h.loadVisibleTheorems();
+  h.openTargetPopover();
+  reviewButton(h, 'Approve result').click();
+  await flushPromises();
+  h.document.querySelector('.ol-lean-review-dialog').querySelectorAll('input')[0].dispatchEvent({ type: 'change' });
+  reviewButton(h, 'Approve as formalized').click();
+  await flushPromises();
+  assert.match(h.bodyText(), /Offline/);
+  assert.equal(reviewButton(h, 'Approve as formalized').disabled, false);
+  reviewButton(h, 'Approve as formalized').click();
+  await flushPromises();
+  assert.equal(loads, 2);
+  assert.equal(reviewButton(h, 'Choose an outcome').disabled, true);
+  const calls = h.fetchCalls.filter(call => call.url.endsWith('/review/decision'));
+  assert.equal(JSON.parse(calls[0].options.body).decision.idempotency_key, JSON.parse(calls[1].options.body).decision.idempotency_key);
+  assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/formalize')));
+});
+
+test('pane approval opens the shared dialog and Escape leaves the pane open', async () => {
+  const h = createContentHarness({ status: 'needs_review', review: { eligible: true } }, {}, {
+    locationPath: '/project/unknown',
+    manifest: { ok: true, rootFile: 'main.tex', diagnostics: [], items: [{ id: 'review-item', label: 'demo_theorem',
+      kind: 'theorem', status: 'needs-review', review: { eligible: true }, formalizable: true,
+      leanKind: 'theorem', naturalLanguageLatex: 'A theorem.', sourceFile: 'main.tex' }] },
+    fetchOverride(url) { if (url.endsWith('/review/context')) return reviewResponse(reviewFixture()); }
+  });
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  h.clickPaneTreeRowText('main.tex');
+  const trigger = reviewButton(h, 'Approve result');
+  assert.ok(trigger);
+  assert.equal(h.hasButtonText('Re-formalize'), true);
+  trigger.click();
+  await flushPromises();
+  const dialog = h.document.querySelector('.ol-lean-review-dialog');
+  assert.ok(dialog);
+  dialog.dispatchEvent({ type: 'keydown', key: 'Escape' });
+  assert.equal(h.document.querySelector('.ol-lean-review-dialog'), null);
+  assert.ok(h.document.querySelector('.ol-lean-project-pane'));
+  assert.equal(trigger.focused, true);
+  assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/formalize')));
+});
+
+test('review loading failure exposes reload and update-required errors without retrying formalization', async () => {
+  const h = createContentHarness({ status: 'needs_review', review: { eligible: true } }, {}, {
+    fetchOverride(url) { if (url.endsWith('/review/context')) return reviewResponse({}, 404); }
+  });
+  await h.loadVisibleTheorems();
+  h.openTargetPopover();
+  reviewButton(h, 'Approve result').click();
+  assert.equal(reviewButton(h, 'Choose an outcome').disabled, true);
+  await flushPromises();
+  assert.match(h.bodyText(), /updated Lea companion and adapter/);
+  assert.equal(reviewButton(h, 'Reload result').hidden, false);
+  assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/formalize')));
+});
+
 function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
   const document = new FakeDocument();
   const timers = [];
@@ -3874,6 +4026,10 @@ class FakeDocument {
     return new FakeElement(tagName);
   }
 
+  querySelector(selector) { return this.body.querySelector(selector); }
+
+  querySelectorAll(selector) { return this.body.querySelectorAll(selector); }
+
   createElementNS(_namespace, tagName) {
     return this.createElement(tagName);
   }
@@ -3933,7 +4089,7 @@ class FakeElement {
     this.scrollIntoViewOptions = null;
   }
 
-  focus() {}
+  focus() { this.focused = true; }
 
   blur() {}
 
@@ -4211,6 +4367,15 @@ class FakeElement {
 
   querySelector(selector) {
     return this.querySelectorAll(selector)[0] || null;
+  }
+
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (matchesSelector(node, selector)) return node;
+      node = node.parentNode;
+    }
+    return null;
   }
 
   querySelectorAll(selector) {

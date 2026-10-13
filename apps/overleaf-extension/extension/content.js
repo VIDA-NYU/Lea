@@ -8,7 +8,7 @@
   const DEFAULT_LEA_MAX_TURNS = 20;
   const DEFAULT_LEA_TEX_MIRROR_ENABLED = true;
   const REFORMALIZE_HELP_TEXT = "Try again using the previous attempt and current LaTeX, keeping existing Lean work.";
-  const LEA_UI_VIEW_STATUSES = new Set(["formalized", "defined", "disproved", "in_progress", "paused", "sorry_stub", "stale"]);
+  const LEA_UI_VIEW_STATUSES = new Set(["formalized", "defined", "disproved", "needs_review", "in_progress", "paused", "sorry_stub", "stale"]);
   const TEX_MIRROR_SYNC_DELAY_MS = 1500;
   const TEX_MIRROR_FULL_SYNC_INTERVAL_MS = 10 * 60 * 1000;
   const MAX_SPEND_ERROR_CODE = "max_spend_reached";
@@ -3351,7 +3351,8 @@
 
     const summaryActions = document.createElement("div");
     summaryActions.className = "ol-lean-project-summary-actions";
-    const formalizeAction = leanPaneView.paneItemFormalizeAction(item);
+    const reviewing = item.status === 'needs-review' && item.review?.eligible;
+    const formalizeAction = reviewing ? { id: 'approve-result', label: 'Approve result' } : leanPaneView.paneItemFormalizeAction(item);
     const formalizeButton = renderPaneItemPrimaryAction(item, formalizeAction);
     formalizeButton.className += " ol-lean-project-summary-formalize";
     const editing = leanPaneEditingItemId === item.id;
@@ -3366,6 +3367,7 @@
       formalizeButton.title = "This item has no formalization target";
     }
     summaryActions.appendChild(formalizeButton);
+    if (reviewing) summaryActions.appendChild(renderFormalizeButton(item, { id: 'reformalize', label: 'Re-formalize' }));
     summaryActions.appendChild(renderPaneItemIconAction(item, { id: "go-to-source", label: "Go to source" }));
     summary.appendChild(summaryActions);
     card.appendChild(summary);
@@ -3641,6 +3643,12 @@
       progress.appendChild(review);
     }
     if (item.leaCheck?.report) progress.appendChild(renderLeaCheckReport(item));
+    if (item.review?.approval) {
+      const approved = document.createElement('p');
+      approved.className = 'ol-lean-review-provenance';
+      approved.textContent = reviewApprovalText(item.review.approval);
+      progress.appendChild(approved);
+    }
     detail.appendChild(progress);
 
     const editing = leanPaneEditingItemId === item.id;
@@ -3650,7 +3658,7 @@
     actions.className = "ol-lean-project-detail-actions";
     // Formalize and Go to source live in the compact summary at all times.
     // Repair and best-effort continuation remain here when they apply.
-    if (primary && primary.id !== "formalize") actions.appendChild(renderPaneItemPrimaryAction(item, primary));
+    if (primary && !['formalize', 'approve-result'].includes(primary.id)) actions.appendChild(renderPaneItemPrimaryAction(item, primary));
     const railElement = document.createElement("div");
     railElement.className = "ol-lean-icon-rail";
     for (const action of rail.filter((entry) => entry.id !== "go-to-source")) {
@@ -4163,7 +4171,8 @@
     if (leanPaneRepairBatch) return null;
     const stubbable = leanPaneView.stubbableItems(items);
     const formalizable = leanPaneView.formalizableItems(items);
-    if (stubbable.length === 0 && formalizable.length === 0) return null;
+    const awaiting = items.filter(item => item.status === 'needs-review').length;
+    if (stubbable.length === 0 && formalizable.length === 0 && awaiting === 0) return null;
     const row = document.createElement("div");
     row.className = "ol-lean-project-batch-actions";
     if (stubbable.length > 0) {
@@ -4183,6 +4192,11 @@
       formalizeAll.title = "Run Lea to formalize every theorem and definition that has no verified proof yet.";
       formalizeAll.addEventListener("click", () => { formalizeAllItems(); });
       row.appendChild(formalizeAll);
+    }
+    if (awaiting) {
+      const note = document.createElement('span');
+      note.textContent = `${awaiting} ${awaiting === 1 ? 'result awaits' : 'results await'} approval.`;
+      row.appendChild(note);
     }
     return row;
   }
@@ -5190,6 +5204,18 @@
   };
 
   function renderPaneItemPrimaryAction(item, action) {
+    if (action.id === 'approve-result') {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'ol-lean-primary-button ol-lean-item-primary-action';
+      button.textContent = action.label;
+      button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        showResultReview(leanPaneView.paneItemToChatTarget(item, extractOverleafProjectId()), button);
+      });
+      return button;
+    }
     if (action.id.startsWith("dependency-")) {
       const button = document.createElement("button");
       button.type = "button";
@@ -5342,6 +5368,10 @@
   // Formalize/stub reuse the same companion paths as the primary button and
   // the in-document popover.
   async function runPaneOverflowAction(item, action) {
+    if (action.id === 'withdraw-approval') {
+      await withdrawResultApproval(leanPaneView.paneItemToChatTarget(item, extractOverleafProjectId()), item.review.approval);
+      return;
+    }
     if (action.id.startsWith("dependency-")) return runDependencyAction(item, action);
     if (action.id === "edit") {
       openLeanPaneEdit(item);
@@ -5990,6 +6020,10 @@
     renderTargetActions(actions, target, currentStatus, status, leanStatement, actionStatus, statusInfo);
     if (currentStatus === "in_progress") {
       status.textContent = inProgressMessage(latestStatuses[key], target);
+    } else if (currentStatus === 'needs_review') {
+      status.textContent = statusInfo.review?.reason || 'Lean check passed. Your approval is needed to confirm this result against the LaTeX.';
+    } else if (statusInfo.review?.approval) {
+      status.textContent = reviewApprovalText(statusInfo.review.approval);
     } else if (isExtensionContextInvalidated()) {
       status.textContent = "Extension was reloaded. Refresh this Overleaf tab.";
     }
@@ -6057,7 +6091,12 @@
         button.dataset.primary = "true";
       }
       button.disabled = disabled;
+      if (spec.disabled) button.disabled = true;
       button.addEventListener("click", async () => {
+        if (spec.review) {
+          showResultReview(target, button);
+          return;
+        }
         for (const actionButton of actions.querySelectorAll("button")) {
           actionButton.disabled = true;
         }
@@ -6129,6 +6168,201 @@
     closeButton.textContent = "Close";
     closeButton.addEventListener("click", closePopover);
     actions.appendChild(closeButton);
+  }
+
+  function reviewApprovalText(approval) {
+    const outcome = { proved: 'formalized', defined: 'defined', disproved: 'counterexample found' }[approval.outcome] || approval.outcome;
+    return `Approved by user · ${outcome} · ${new Date(approval.created_at).toLocaleString()}`;
+  }
+
+  async function resultReviewRequest(route, target, decision) {
+    const baseUrl = await chatCompanionBaseUrl();
+    const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/lean-pane/review/${route}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target: { ...target, overleafProjectId: target.overleafProjectId || extractOverleafProjectId(),
+        naturalLanguageLatex: target.naturalLanguageLatex || target.targetText || '' }, ...(decision ? { decision } : {}) })
+    }, { timeoutMs: 65000, timeoutMessage: 'Result approval timed out. Retry without starting another formalization.' });
+    if (!response.ok || payload.ok === false) {
+      if (response.status === 404) {
+        payload.message = 'Result approval requires the updated Lea companion and adapter. Update and restart them, then retry.';
+      }
+      const error = companionRequestError(response, payload);
+      error.status = response.status;
+      throw error;
+    }
+    return payload;
+  }
+
+  async function refreshResultReviewSurfaces() {
+    await refreshStatusesNow();
+    if (leanPane) await refreshLeanPaneNow({ background: true });
+  }
+
+  async function withdrawResultApproval(target, approval) {
+    const result = await resultReviewRequest('decision', target, {
+      action: 'withdraw', approval_id: approval.id,
+      idempotency_key: `withdraw:${approval.id}`
+    });
+    await refreshResultReviewSurfaces();
+    return { ...result, status: 'needs_review' };
+  }
+
+  function showResultReview(target, trigger) {
+    const existing = document.querySelector('.ol-lean-review-dialog');
+    if (existing) return;
+    const triggerItemId = trigger?.closest('.ol-lean-project-item')?.dataset.itemId;
+    const dialog = document.createElement('dialog');
+    dialog.className = 'ol-lean-review-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', 'ol-lean-review-title');
+    const title = document.createElement('h2');
+    title.id = 'ol-lean-review-title';
+    title.textContent = 'Approve result';
+    const explanation = document.createElement('p');
+    explanation.textContent = 'Confirm how this checked result relates to the current LaTeX. Approval records your judgment without modifying or rerunning the proof.';
+    const evidence = document.createElement('div');
+    evidence.className = 'ol-lean-review-evidence';
+    const choices = document.createElement('fieldset');
+    const legend = document.createElement('legend');
+    legend.textContent = 'What does the checked artifact establish?';
+    choices.appendChild(legend);
+    const status = document.createElement('p');
+    status.className = 'ol-lean-review-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    const actions = document.createElement('div');
+    actions.className = 'ol-lean-review-actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'ol-lean-secondary-button';
+    cancel.textContent = 'Cancel';
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'ol-lean-secondary-button';
+    retry.textContent = 'Reload result';
+    retry.hidden = true;
+    const submit = document.createElement('button');
+    submit.type = 'button';
+    submit.className = 'ol-lean-primary-button';
+    submit.textContent = 'Choose an outcome';
+    submit.disabled = true;
+    actions.append(cancel, retry, submit);
+    dialog.append(title, explanation, evidence, choices, status, actions);
+    let context = null;
+    let selected = '';
+    let busy = false;
+    let closed = false;
+    let submission = null;
+    const close = () => {
+      closed = true;
+      dialog.close?.();
+      dialog.remove();
+      if (trigger?.isConnected !== false) trigger?.focus?.();
+      else {
+        const item = triggerItemId && [...document.querySelectorAll('.ol-lean-project-item')].find(item => item.dataset.itemId === triggerItemId);
+        const replacement = item?.querySelector('.ol-lean-project-summary-formalize')
+          || activePopover?.querySelector('[data-primary="true"]')
+          || [...document.querySelectorAll('.ol-lean-status')].find(badge => badge.dataset.targetKey === targetKey(target))
+          || document.querySelector('.ol-lean-pane-trigger');
+        replacement?.focus?.();
+      }
+    };
+    cancel.addEventListener('click', close);
+    dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
+    dialog.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    });
+    dialog.addEventListener('click', event => event.stopPropagation());
+    const update = () => {
+      submit.textContent = busy ? 'Saving approval…' : { proved: 'Approve as formalized', defined: 'Approve as defined', disproved: 'Approve as counterexample' }[selected] || 'Choose an outcome';
+      submit.disabled = busy || !context?.review?.eligible || !selected;
+      for (const input of choices.querySelectorAll('input')) input.disabled = busy;
+    };
+    const block = (label, content) => {
+      if (!content) return;
+      const heading = document.createElement('h3');
+      heading.textContent = label;
+      const pre = document.createElement('pre');
+      pre.textContent = content;
+      evidence.append(heading, pre);
+    };
+    const load = async (changed = false) => {
+      context = null;
+      submit.disabled = true;
+      retry.hidden = true;
+      status.setAttribute('role', 'status');
+      status.textContent = changed ? 'The reviewed inputs changed. Loading the current result; review it again before approving.' : 'Loading current LaTeX and checked artifact…';
+      try {
+        const loaded = await resultReviewRequest('context', target);
+        if (closed) return;
+        context = loaded;
+        evidence.replaceChildren();
+        const source = context.source_snapshot || {};
+        block('Current LaTeX statement', source.statement);
+        block('Associated proof', source.proof);
+        block('Source context', source.context);
+        block('Checked declaration', context.review.candidate_declaration);
+        for (const artifact of context.artifacts || []) block(artifact.path, artifact.content);
+        choices.replaceChildren(legend);
+        selected = '';
+        submission = null;
+        for (const [outcome, label] of [['proved', 'Proof of the stated claim'], ['disproved', 'Counterexample to the stated claim'], ['defined', 'Definition']]) {
+          if (!context.review.allowed_outcomes.includes(outcome)) continue;
+          if (outcome === 'defined') {
+            selected = outcome;
+            const definition = document.createElement('p');
+            definition.textContent = label;
+            choices.appendChild(definition);
+          } else {
+            const option = document.createElement('label');
+            const radio = document.createElement('input');
+            radio.type = 'radio';
+            radio.name = 'ol-lean-review-outcome';
+            radio.value = outcome;
+            radio.addEventListener('change', () => { selected = outcome; submission = null; update(); });
+            option.append(radio, document.createTextNode(label));
+            choices.appendChild(option);
+          }
+        }
+        const reason = context.review.reason && context.review.reason.trim().toUpperCase() !== 'NEEDS_REVIEW'
+          ? context.review.reason : 'Lean check passed. Your approval is needed to confirm this result against the LaTeX.';
+        status.textContent = (changed ? 'The reviewed inputs changed. Review the current evidence and choose again. ' : '') + reason;
+        update();
+      } catch (error) {
+        if (closed) return;
+        status.setAttribute('role', 'alert');
+        status.textContent = normalizeErrorMessage(error);
+        retry.hidden = false;
+      }
+    };
+    retry.addEventListener('click', () => load());
+    submit.addEventListener('click', async () => {
+      if (submit.disabled || busy || !context) return;
+      submission ||= { action: 'approve', outcome: selected, revision_token: context.review.revision_token,
+        idempotency_key: globalThis.crypto?.randomUUID?.() || `review:${Date.now()}:${Math.random()}` };
+      busy = true;
+      update();
+      try {
+        await resultReviewRequest('decision', target, submission);
+        await refreshResultReviewSurfaces();
+        if (!closed) close();
+      } catch (error) {
+        if (closed) return;
+        if (error.status === 409) await load(true);
+        else {
+          status.setAttribute('role', 'alert');
+          status.textContent = normalizeErrorMessage(error);
+        }
+      } finally { busy = false; if (!closed) update(); }
+    });
+    document.body.appendChild(dialog);
+    dialog.showModal?.();
+    cancel.focus?.();
+    load();
   }
 
   function renderPopoverActionStatus(status, message) {
@@ -6242,6 +6476,18 @@
 
   function actionSpecsForStatus(status, target, statusInfo = {}) {
     const definition = isDefinitionTarget(target);
+    if (status === 'needs_review') {
+      return [{ role: 'approve-result', label: 'Approve result', primary: true, review: true,
+        disabled: statusInfo.review?.eligible === false },
+      { role: 'theorem-reformalize-action', label: definition ? 'Regenerate definition' : 'Re-formalize',
+        pendingText: 'Starting Lea...', run: formalize }];
+    }
+    if (statusInfo.review?.approval) {
+      return [{ role: 'theorem-action', label: definition ? 'Regenerate definition' : 'Re-formalize',
+        primary: true, pendingText: 'Starting Lea...', run: formalize },
+      { role: 'withdraw-result-approval', label: 'Withdraw approval', pendingText: 'Withdrawing approval…',
+        run: current => withdrawResultApproval(current, statusInfo.review.approval) }];
+    }
     const wait = statusInfo.dependencyWait;
     if (wait) {
       const action = wait.state === "stopped" ? { id: "dependency-arm", label: "Continue when ready" }
@@ -6748,7 +6994,7 @@
     const currentStatus = getDisplayStatus(statusInfo);
     const actionStatus = getActionStatus(statusInfo);
     const chip = popover.querySelector(".ol-lean-status-chip");
-    const detail = popover.querySelector(".ol-lean-popover-detail");
+    const detail = popover.querySelector(".ol-lean-popover-detail") || popover.querySelector('.ol-lean-popover-status');
     const actions = popover.querySelector("[data-role='theorem-actions']");
     const leanStatement = popover.querySelector(".ol-lean-popover-lean");
     const stubbedWarning = popover.querySelector(".ol-lean-popover-warning");
@@ -6767,6 +7013,10 @@
     if (detail) {
       if (isExtensionContextInvalidated()) {
         detail.textContent = "Extension was reloaded. Refresh this Overleaf tab.";
+      } else if (statusInfo.review?.approval) {
+        detail.textContent = reviewApprovalText(statusInfo.review.approval);
+      } else if (currentStatus === 'needs_review') {
+        detail.textContent = 'Lean check passed. Your approval is needed to confirm this result against the LaTeX.';
       } else if (statusInfo.message) {
         detail.textContent = statusInfo.message;
       } else if (statusInfo.relativePath) {
@@ -7576,6 +7826,7 @@
       const status = getDisplayStatus(statusInfo);
       const badge = document.createElement("button");
       badge.className = `ol-lean-status ol-lean-status-${status}`;
+      badge.dataset.targetKey = targetKey(target);
       badge.type = "button";
       badge.appendChild(document.createTextNode(formatStatus(status, statusInfo)));
       if (hasStubbedTheoremUses(statusInfo)) {
@@ -7764,7 +8015,7 @@
       case "unknown":
         return "Check status";
       case "needs_review":
-        return definition ? "Review definition" : "Review proof";
+        return 'Approve result';
       case "sorry_stub":
       case "unformalized":
       default:

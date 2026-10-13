@@ -164,6 +164,13 @@ export interface FormalizationFile {
   role: 'primary' | 'support' | 'generated';
 }
 
+export interface ResultApproval {
+  id: string;
+  outcome: 'proved' | 'defined' | 'disproved';
+  created_at: string;
+  revision_token: string;
+}
+
 export interface Formalization {
   id: string;
   project_id?: string | null;
@@ -180,6 +187,15 @@ export interface Formalization {
   completion_run_id?: string | null;
   declaration_kind?: string | null;
   check_current?: boolean;
+  review?: {
+    eligible: boolean;
+    reason: string;
+    revision_token: string | null;
+    allowed_outcomes: Array<'proved' | 'defined' | 'disproved'>;
+    approval: ResultApproval | null;
+    run_id?: string | null;
+  };
+  certification?: { source: 'run' | 'user_review'; outcome: string; run_id?: string | null; review_event_id?: string } | null;
   latest_check?: {
     code_step_id: string;
     path: string;
@@ -226,6 +242,8 @@ export interface FormalizationCurrentSnapshot {
     is_current: boolean;
   } | null;
   validity_status: FormalizationValidity | string;
+  review?: Formalization['review'];
+  certification?: Formalization['certification'];
   safe_verify?: Formalization['safe_verify'];
 }
 

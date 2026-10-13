@@ -288,6 +288,7 @@ function FormalizationsTab({
                     ? `${item.activity.status} · ${item.validity_status === 'needs_review' ? 'Needs review' : item.validity_status}`
                     : item.validity_status === 'needs_review' ? 'Needs review' : item.validity_status}
                   {item.validity_status === 'needs_review' && item.check_current ? ' · Lean check passed' : ''}
+                  {item.certification?.source === 'user_review' ? ' · Approved by user' : ''}
                 </span>
               </button>
               <button

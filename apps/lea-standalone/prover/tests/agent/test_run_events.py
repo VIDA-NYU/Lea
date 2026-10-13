@@ -298,6 +298,7 @@ def test_run_events_sequence():
     check("Finished cumulative usage", fin.usage == Usage(122, 51))
     check("Finished cumulative cost", abs(fin.cost - 0.0041) < 1e-9)
     check("Finished result kind proved", fin.result_kind == "proved")
+    check("Finished names the final checked candidate", fin.candidate_path is not None and fin.candidate_path.endswith("Basic.lean"))
     check("transcript turns", fin.transcript["turns"] == 2)
     check("transcript has messages", len(fin.transcript["messages"]) >= 3)
 

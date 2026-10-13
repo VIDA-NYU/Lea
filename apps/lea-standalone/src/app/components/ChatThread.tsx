@@ -414,9 +414,15 @@ export function ChatThread({
   const latestStopReason = stopReasons.length ? stopReasons[stopReasons.length - 1] : undefined;
   const runIds = Object.keys(runStatusById);
   const latestRunId = runIds.length ? runIds[runIds.length - 1] : undefined;
+  const currentTarget = formalizations.find(item =>
+    (formalizationScope === item.id || (formalizationScope === 'project' && formalizations.length === 1)));
   const headChip = isRunning
     ? { cls: 'run', text: currentRunId && runRecoveryById[currentRunId]?.state === 'recovering'
       ? '● recovering saved progress' : '● proving' }
+    : currentTarget?.review?.reason
+    ? { cls: formalizationStatusClass(currentTarget.validity_status, 'idle'),
+        text: (currentTarget.validity_status === 'needs_review' ? 'Needs review' : currentTarget.validity_status)
+          + (currentTarget.certification?.source === 'user_review' ? ' · Approved by user' : '') }
     : (session?.status === 'needs_review' || formalizations.some((item) =>
         item.validity_status === 'needs_review' &&
         (formalizationScope === item.id || (formalizationScope === 'project' && formalizations.length === 1))))
@@ -680,7 +686,7 @@ export function ChatThread({
                 {finished && completion === 'defined' && <DefinedCard steps={steps} session={session} />}
                 {finished && completion === 'disproved' && <DisprovedCard steps={steps} session={session} />}
                 {finished && completion === 'stubbed' && <StubCard steps={steps} session={session} />}
-                {finished && resultKind === 'needs_review' && <ReviewNote />}
+                {finished && resultKind === 'needs_review' && <ReviewNote approval={focused?.review?.run_id === group.runId ? focused?.review?.approval : undefined} />}
               </Fragment>
             );
           })}
@@ -941,6 +947,7 @@ function FormalizationScope({ session }: { session?: SessionSummary }) {
             <small title={item.validity_reason || undefined}>
               {item.activity.status !== 'idle' ? item.activity.status : item.validity_status === 'needs_review' ? 'Needs review' : item.validity_status}
               {item.validity_status === 'needs_review' && item.check_current ? ' · Lean check passed' : ''}
+              {item.certification?.source === 'user_review' ? ' · Approved by user' : ''}
             </small>
           </button>
         ))}
@@ -1470,10 +1477,12 @@ function DisprovedCard({ steps, session }: { steps: number; session?: SessionSum
   );
 }
 
-function ReviewNote() {
+function ReviewNote({ approval }: { approval?: { outcome: string; created_at: string } | null }) {
   return (
     <div className="final review">
-      <div className="fhead">○ Review note — Lean checked this artifact, but Lea could not confirm it exactly matches the original request.</div>
+      <div className="fhead">{approval
+        ? `This run requested review. Approved by user as ${approval.outcome} on ${new Date(approval.created_at).toLocaleString()}.`
+        : 'Review requested — inspect the current artifact and its verification status before approving its relationship to the original request.'}</div>
     </div>
   );
 }

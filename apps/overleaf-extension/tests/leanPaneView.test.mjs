@@ -152,7 +152,7 @@ test("canViewPaneItemInLeaUi requires a target identity and a real run or artifa
   assert.equal(canViewPaneItemInLeaUi(base), true);
   assert.equal(canViewPaneItemInLeaUi({ ...base, status: "defined" }), true);
   assert.equal(canViewPaneItemInLeaUi({ ...base, status: "disproved" }), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "needs-review" }), false);
+  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "needs-review" }), true);
   assert.equal(canViewPaneItemInLeaUi({ ...base, status: "in-progress" }), true);
   assert.equal(canViewPaneItemInLeaUi({ ...base, status: "stub-generated" }), true);
   assert.equal(canViewPaneItemInLeaUi({ ...base, status: "stale" }), true);
@@ -958,8 +958,9 @@ test("stubbableItems / formalizableItems skip completed work in project-level ba
   // restarted in bulk.
   assert.deepEqual(
     formalizableItems(items).map((i) => i.targetLabel),
-    ["fresh_thm", "fresh_def", "stubbed_thm", "broken_thm", "review_thm"]
+    ["fresh_thm", "fresh_def", "stubbed_thm", "broken_thm"]
   );
+  assert.equal(canFormalizePaneItem(items.find(item => item.targetLabel === "review_thm")), true);
 });
 
 // --- Stale-offer reconciliation (docs/PLAN-self-repair-stale-offers.md) ----

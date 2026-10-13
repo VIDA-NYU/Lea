@@ -883,9 +883,8 @@ def project_target_status_by_slug(slug: str, declarations: str = "", formalizati
             continue
         steps = store.current_code_steps_for_formalization(formalization["id"]) if formalization else []
         proof_path = row["path"] if row else ((formalization or {}).get("primary_path") or (steps[0]["path"] if steps else None))
-        if formalization and formalization.get("completion_run_id") and (
-            not proof_path or formalization.get("validity_status") == "needs_review"
-        ):
+        proof_path = ((formalization or {}).get('review') or {}).get('candidate_path') or proof_path
+        if formalization and formalization.get("completion_run_id") and not proof_path:
             from ..db import connect
             with connect() as conn:
                 partial = conn.execute(
@@ -943,7 +942,7 @@ def project_target_status_by_slug(slug: str, declarations: str = "", formalizati
         if validity in {"proved", "defined"} and not check_current:
             validity, validity_reason = "unchecked", "The current file contents do not match a passing Lean check."
         if validity in {"proved", "defined"} and not declared:
-            validity, validity_reason = "needs_review", "The current file does not declare the requested target."
+            validity, validity_reason = "unchecked", "The current file does not declare the requested target."
         targets.append({
             "declaration_name": name,
             "recorded": bool(row),
@@ -962,6 +961,8 @@ def project_target_status_by_slug(slug: str, declarations: str = "", formalizati
             "formalization_id": (formalization or {}).get("id") or (row or {}).get("formalization_id"),
             "validity_status": validity,
             "validity_reason": validity_reason,
+            "review": (formalization or {}).get('review'),
+            "certification": (formalization or {}).get('certification'),
             "completion_run_id": (formalization or {}).get("completion_run_id"),
             "declaration_kind": declared.kind if declared else (formalization or {}).get("declaration_kind"),
             "check_current": check_current,

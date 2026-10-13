@@ -1,7 +1,7 @@
 ---
 title: Install Lea
 description: Run Lea from VIDA's prebuilt Docker image, or use a local development install. Includes the Overleaf extension, first-proof walkthrough, and troubleshooting.
-updated: 2026-08-13
+updated: 2026-10-13
 ---
 
 Lea runs on your own machine: the web client, adapter, companion, prover, Lean, and Mathlib.
@@ -124,20 +124,18 @@ git clone https://github.com/VIDA-NYU/Lea.git
 cd Lea
 ```
 
-3. **Bootstrap and provision.** For the leanest install — web client only, skipping the
-   SafeVerify audit build:
-
-```bash
-./install.sh --target ui --skip-verify
-```
-
-Or the full stack, both applications with SafeVerify:
+3. **Bootstrap and provision.** Install the full stack: the standalone web client, Overleaf companion, and SafeVerify audit build:
 
 ```bash
 ./install.sh
 ```
 
 The first run downloads Mathlib and takes several minutes.
+
+> **Note.** For a faster UI-only install, use `./install.sh --target ui --skip-verify`.
+> `--target ui` skips Overleaf setup, so this install does not support the Overleaf extension.
+> `--skip-verify` skips the SafeVerify audit build, leaving `/verify` unavailable.
+> Re-run `./install.sh` without these flags later to enable both.
 
 4. **Add your key** to the root `.env` (`OPENAI_API_KEY=…`, or the matching `ANTHROPIC_API_KEY` /
    `GEMINI_API_KEY`) — or skip this and paste it into Settings once the app is running.
@@ -181,75 +179,21 @@ there is one backend and not two.
 
 ## Overleaf extension
 
-The extension needs the local install above, and the adapter running on `:8001`.
+The extension needs the adapter on `:8001` and the companion on `:31245`.
+Both `./start-dev.sh` and the Docker setup start these services for you.
+Keep Lea running while using the extension.
 
-1. **Start the companion** (from the monorepo root):
+> **Note.** If you started the web client separately with `npm run dev:ui`, start the companion
+> with `npm run dev:overleaf` from the monorepo root in another terminal.
 
-```bash
-npm run dev:overleaf
-```
+**Load the extension in Chrome:**
 
-It listens on `http://127.0.0.1:31245` and expects the adapter at `LEA_API_BASE_URL`.
+1. Open `chrome://extensions`.
+2. Enable **Developer Mode**.
+3. Choose **Load unpacked** and select `apps/overleaf-extension/extension/`.
 
-2. **Load the extension in Chrome:**
-
-- Open `chrome://extensions`
-- Enable **Developer Mode**
-- Choose **Load unpacked** and select `apps/overleaf-extension/extension/`
-
-3. **Check the options page.** Open the extension's options and confirm:
-
-- Companion URL — `http://127.0.0.1:31245`
-- Lea repo path — `apps/lea-standalone/prover`
-- Lea UI base URL — `http://localhost:5173`
-
-4. **Mark a theorem** in your Overleaf source with a `% lea:` comment:
-
-```tex
-\begin{theorem}\label{thm:finite-tree-leaves}
-% lea: formalize label=finite_tree_leaves
-Every finite tree has at least two leaves.
-\end{theorem}
-```
-
-The `label=` value becomes the Overleaf identifier and the fallback Lean declaration name, so it
-must be a valid Lean identifier: letters, digits and underscores, no leading digit.
-
-A badge appears on the marked block. **Formalize** starts an autonomous run; **View in Lea UI**
-deep-links to the same session in the web client.
-
-### Declaring dependencies and hints
-
-`uses={…}` names earlier theorems this one builds on, by their Overleaf labels — not their Lean
-names. Each referenced theorem must already be formalized, or at least have a saved stub, before
-the run starts; otherwise the extension blocks the run and tells you which one to do first.
-
-`context={…}` passes natural-language guidance for this theorem: proof strategy, notation, a
-lemma worth trying, or a warning about how to read the statement.
-
-```tex
-\begin{proposition}\label{prop:main-bound}
-% lea: formalize label=main_bound uses={auxiliary_bound, monotonicity_lemma} context={Start from auxiliary_bound, then apply monotonicity_lemma to compare the two sides.}
-The desired main bound holds.
-\end{proposition}
-```
-
-Marked blocks are recognized inside `theorem`, `lemma`, `proposition`, `corollary` and
-`definition` environments. For a custom environment — `claim`, `conjecture`, a journal-specific
-name — use an inline tag instead, which states its own kind:
-
-```tex
-\usepackage{lea-tags}
-...
-\begin{claim}\label{clm:even-square}
-\leatheorem{label=even_square, uses={even_def}, context={Use the parity definition first.}}
-If $n$ is even, then $n^2$ is even.
-\end{claim}
-```
-
-`lea-tags.sty` is available from the extension's options page, either as a download or as a
-copy-paste preamble snippet that needs no `\usepackage` line. Use a comment marker *or* a tag per
-block, never both — the extension reports that as a `duplicate_marker` error.
+Next: [Overleaf extension usage guide](/overleaf/) — mark your mathematical content, formalize
+it from the Lean pane, and review or refine the results.
 
 ## Your first proof
 
