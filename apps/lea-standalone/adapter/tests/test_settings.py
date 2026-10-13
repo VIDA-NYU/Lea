@@ -515,12 +515,14 @@ def test_a_value_with_control_characters_stays_parseable(tmp_path, monkeypatch, 
     assert settings_service.settings_payload(config_path)["model"] == "mistral/mistral-large-latest"
 
 
-def test_a_corrupt_config_degrades_to_defaults_instead_of_500ing(tmp_path):
+def test_a_corrupt_config_degrades_to_defaults_instead_of_500ing(tmp_path, monkeypatch):
     """Every reader re-parses this file on every call, so an unparseable one turned
     into a 500 on essentially every endpoint — including the Settings page the user
     would need in order to repair it."""
     from app.config import github_token, load_config, permission_tier
 
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
     config_path = tmp_path / "lea.local.toml"
     config_path.write_text('model = "unterminated\n')
 

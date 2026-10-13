@@ -356,9 +356,11 @@ def test_lean_transport_does_not_start_if_ownership_record_fails(tmp_path, monke
     assert not list((tmp_path / "owned").glob("*.json"))
 
 
-def test_manifest_detects_manual_proof_and_configuration_changes(tmp_path):
+def test_manifest_detects_manual_proof_and_configuration_changes(tmp_path, monkeypatch):
     from app.config import LeaConfig
 
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "recovery.sqlite3")
+    db.init_db()
     repo = tmp_path / "proofs"
     repo.mkdir()
     source = repo / "Target.lean"
