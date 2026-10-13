@@ -508,7 +508,10 @@
     settingsButton.setAttribute("aria-label", "Open Lea settings and usage");
     settingsButton.title = "Lea settings and usage";
     settingsButton.innerHTML = `
-      <span class="ol-lean-trigger-mark">L</span>
+      <svg class="ol-lean-trigger-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+        <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831 2.34 2.34 0 0 1 2.33-4.033 2.34 2.34 0 0 0 3.32-1.915" />
+        <circle cx="12" cy="12" r="3" />
+      </svg>
     `;
     settingsButton.addEventListener("click", (event) => {
       event.preventDefault();
@@ -575,7 +578,8 @@
     leanPaneButton.title = "Lean project pane";
     const mark = document.createElement("span");
     mark.className = "ol-lean-trigger-mark";
-    mark.textContent = "Π";
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = "L";
     leanPaneButton.appendChild(mark);
     leanPaneButton.addEventListener("click", (event) => {
       event.preventDefault();

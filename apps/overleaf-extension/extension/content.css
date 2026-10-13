@@ -425,6 +425,13 @@
   background: var(--ol-accent-ink);
 }
 
+.ol-lean-trigger-icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  color: var(--ol-ink);
+}
+
 .ol-lean-trigger-mark {
   display: grid;
   place-items: center;
