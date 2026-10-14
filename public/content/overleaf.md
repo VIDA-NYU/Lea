@@ -32,16 +32,27 @@ You can keep your existing theorem environments and document layout.
 
 ### Inline tags
 
-If you already use `lea-tags`, keep using those commands. Otherwise, open the extension's
-options page and choose **Download style** under **Inline Lea tags**. Upload `lea-tags.sty`
-to your Overleaf project and load it in the preamble:
+If you already use `lea-tags`, keep using those commands. Otherwise, click **Add Lea tags**
+below the **Items / Blueprint** tabs in the Lean pane. The extension creates `lea-tags.sty`
+in the project root, loads it in the configured main document, and verifies that the
+changes were saved. Recompile your project once setup finishes.
+
+Setup uses your existing Overleaf session and works even when the Lea companion is
+unavailable. Repeating it does not duplicate the file or package line. Existing styles
+and inline command definitions are preserved.
+
+If automatic setup cannot finish, its message identifies what remains. Use **Download
+style** to upload the package manually and **Copy package line** to add this line before
+`\begin{document}` in your main document:
 
 ```tex
 \usepackage{lea-tags}
 ```
 
-The same options section offers **Copy preamble** if you prefer to paste the command
-definitions into your preamble instead of adding a package file.
+The extension's options page still offers **Download style** under **Inline Lea tags**.
+Its **Copy preamble** alternative lets you paste the command definitions into your
+preamble instead of adding a package file. For a customized style or a preamble that
+loads definitions from other files, review the existing setup before adding another load.
 
 Place a tag inside the mathematical block:
 
@@ -77,6 +88,18 @@ Tags can also take the statement as a second argument, without an enclosing envi
 ```tex
 \leatheorem{label=even_square}{If $n$ is an even integer, then $n^2$ is even.}
 ```
+
+Metadata can span multiple lines, and `%` comments may separate the arguments:
+
+```tex
+\leatheorem{
+  context={Use the parity definition first.}
+}% The statement follows on the next line.
+{If $n$ is an even integer, then $n^2$ is even.}
+```
+
+Commented-out tags and command definitions are ignored. `leacode` metadata follows
+the same rules; its body is preserved as a verbatim code listing.
 
 ### Comment markers
 
@@ -219,7 +242,9 @@ proofs are checked before their results are treated as ready.
 
 - **No L button:** confirm the extension is enabled in Chrome, then reload the Overleaf tab. Reload the tab again after reloading or updating the extension itself.
 - **No mathematical items:** add a Lea tag or comment marker. A normal `\label{…}` alone is not enough. Check the pane for malformed-marker diagnostics.
-- **Undefined Lea commands in the PDF build:** upload and load `lea-tags.sty`, or paste the definitions from **Copy preamble**. Comment markers need no package.
+- **A malformed-tag warning:** check for a missing metadata argument or an unclosed brace. Metadata may span lines, and comments between arguments are allowed. After updating or reloading the extension, refresh the Overleaf tab; the existing `lea-tags.sty` can stay in place.
+- **Undefined Lea commands in the PDF build:** click **Add Lea tags** in the Lean pane, then recompile. If setup needs manual completion, follow its message or paste the definitions from **Copy preamble**. Comment markers need no package.
+- **Tag setup stops or needs review:** keep the project in Code mode while setup runs. Switching files stops the operation. Existing custom styles are never replaced; use the download and package-line controls to finish manually when needed.
 - **Connection errors:** keep the adapter and companion running. The standard companion address is `http://127.0.0.1:31245`; the adapter uses `:8001`. Check the extension's options only if you changed the defaults or need to troubleshoot.
 - **An unavailable action:** expand the item and read its status. An active run, pending import check, malformed marker, or dependency wait can change which actions are offered.
 

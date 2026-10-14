@@ -162,12 +162,22 @@ argument both renders as the statement and is what's sent to Lea:
 squares of the other two sides.}
 ```
 
-The two arguments don't need to be on the same line -- whitespace (including
-blank lines) between them is fine, matching ordinary TeX argument scanning.
+Metadata may span multiple lines, and whitespace or `%` comments may separate
+any of the arguments. For example:
+
+```tex
+\leatheorem{
+  context={Use the parity definition first.}
+}% The statement follows on the next line.
+{If $n$ is even, then $n^2$ is even.}
+```
+
+Commented-out tags and command definitions are ignored by the extension.
+The same multiline metadata rules apply to `\begin{leacode}{...}`.
 One caveat that follows directly from that: a tag with **no** intended body,
-placed with nothing but whitespace before an unrelated `{...}` group, will
+placed with only whitespace or comments before an unrelated `{...}` group, will
 have that group absorbed as its body. If you don't want a second argument,
-keep something other than blank lines between the tag and the next braced
+keep actual prose or another command between the tag and the next braced
 group (the normal case of actual prose in between is never a problem).
 
 If you load `lea-tags.sty` but the extension finds a tag command with nothing

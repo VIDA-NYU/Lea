@@ -30,6 +30,7 @@ const SUSPICIOUS_TAG_ENVIRONMENTS = new Set([
 ]);
 
 export function parseTargetDocument(source, { sourcePath = "" } = {}) {
+  if (/\.(?:sty|cls)$/i.test(sourcePath)) return { targets: [], diagnostics: [] };
   const text = String(source || "");
   const markerResult = parseMarkedTargets(text, sourcePath);
   return {
@@ -61,38 +62,30 @@ function generatedTargetLabel({ sourcePath, targetKind, latexLabel, ordinal }) {
 
 function parseMarkedTargets(source, sourcePath) {
   const diagnostics = [];
-  const commentEnvironments = findSupportedEnvironments(source);
+  const scan = scanLatexSource(source);
+  const commentEnvironments = findSupportedEnvironments(source, scan.activeSource);
   let genericEnvironments = null; // computed lazily; only needed if a tag is present
   const getGenericEnvironments = () => {
     if (!genericEnvironments) {
-      genericEnvironments = findEnvironments(source, { names: null });
+      genericEnvironments = findEnvironmentsInSource(source, null, scan.activeSource);
     }
     return genericEnvironments;
   };
 
-  // A "% lea: ..." line (or \leatheorem{...} tag) inside a verbatim-like
-  // environment is never a real marker -- LaTeX itself never treats "%" as a
-  // comment character there, and a tag command would print literally rather
-  // than execute. Both scanners below run against the masked source (see
-  // maskOpaqueSpans), so such a line simply can't match at all -- no
-  // diagnostic, no target, exactly as if it weren't there. For any *real*
-  // marker (outside every opaque span), masked text is byte-identical to the
-  // original, so this changes nothing about genuine detection.
-  const maskedSource = maskOpaqueSpans(source);
-  const commentGroups = findLeaCommentGroups(maskedSource)
+  // Intentional "% lea:" markers have their own view. Ordinary comments,
+  // declarations and verbatim contents are inactive for tag/structure scans.
+  const commentGroups = findLeaCommentGroups(scan.markerSource)
     .filter((group) => group.hasTargetMarker)
     .map((group) => ({ ...group, syntax: "comment" }));
-  const tagDetection = findLeaTagGroups(maskedSource);
+  const tagDetection = findLeaTagGroups(source, scan.activeSource);
   diagnostics.push(...tagDetection.diagnostics);
-  // leacode reads the RAW source: its interior is masked out of maskedSource
-  // (it is a verbatim-like environment), so the tag/comment scanners above
-  // never see it, and it is recovered here instead.
-  const codeDetection = findLeaCodeEnvironments(source);
+  // leacode bodies remain raw; the scanner records only executable openers.
+  const codeDetection = findLeaCodeEnvironments(source, scan);
   diagnostics.push(...codeDetection.diagnostics);
 
   const packageDependentGroups = [...tagDetection.groups, ...codeDetection.groups]
     .sort((a, b) => a.from - b.from);
-  if (packageDependentGroups.length > 0 && !hasLeaTagPackageLoaded(source)) {
+  if (packageDependentGroups.length > 0 && !hasLeaTagPackageLoaded(scan)) {
     const firstTag = packageDependentGroups[0];
     diagnostics.push(buildDiagnostic({
       code: "tag_package_not_loaded",
@@ -244,41 +237,34 @@ function parseMarkedTargets(source, sourcePath) {
   return { targets, diagnostics };
 }
 
-// Tag usage is only meaningful in the document body. Restricting detection to
-// after \begin{document} (when present) avoids false-positive matches against
-// the package's own \NewDocumentCommand{\lea}{m}{} *definition* in the
-// preamble (or a user's pasted inline-fallback snippet), which contains the
-// literal substring "\lea}" but is not a tag invocation.
+// A chapter fragment needs no document wrapper. When there is a wrapper,
+// only its executable opener (not a commented example) ends the preamble.
 function documentBodyOffset(source) {
-  const marker = "\\begin{document}";
-  const index = source.indexOf(marker);
-  return index === -1 ? 0 : index + marker.length;
+  const match = /\\begin\s*\{\s*document\s*\}/.exec(source);
+  return match ? match.index + match[0].length : 0;
 }
 
-// Expects `source` to already be masked (see maskOpaqueSpans) by the caller
-// -- a tag command's literal text inside a verbatim-like environment (e.g. a
-// documentation example showing \leatheorem{...} syntax) is never really
-// invoked by LaTeX, and masked text simply can't match the tag pattern
-// there, so no malformed_tag/missing_environment diagnostic is generated for
-// it at all.
-function findLeaTagGroups(source) {
+function findLeaTagGroups(source, activeSource) {
   const groups = [];
   const diagnostics = [];
-  const offset = documentBodyOffset(source);
+  const offset = documentBodyOffset(activeSource);
   const body = source.slice(offset);
+  const activeBody = activeSource.slice(offset);
   const pattern = new RegExp(TAG_COMMAND_PATTERN_SOURCE, "g");
   let match;
 
-  while ((match = pattern.exec(body))) {
+  while ((match = pattern.exec(activeBody))) {
     const commandStart = match.index;
     const commandName = match[1];
     const afterCommand = pattern.lastIndex;
-    const argumentStart = skipInlineWhitespace(body, afterCommand);
-    const argument = body[argumentStart] === "{" ? parseBalancedSuffix(body, argumentStart) : { ok: false };
+    const argumentStart = skipLatexTrivia(body, afterCommand);
+    const argument = readLatexGroup(body, argumentStart);
     if (!argument.ok) {
       diagnostics.push(buildDiagnostic({
         code: "malformed_tag",
-        message: `\\${commandName}{...} must be followed by a single balanced { } argument on the same line.`,
+        message: argument.reason === "unterminated"
+          ? `\\${commandName}{...} metadata argument is missing its closing brace.`
+          : `\\${commandName} requires a metadata argument in braces; use {} when no metadata is needed.`,
         from: offset + commandStart,
         to: offset + afterCommand
       }));
@@ -286,7 +272,7 @@ function findLeaTagGroups(source) {
     }
 
     const argumentInner = body.slice(argumentStart + 1, argument.end - 1);
-    const metadata = parseMetadata(argumentInner);
+    const metadata = parseMetadata(stripLatexComments(argumentInner));
     const impliedKind = TAG_COMMAND_KINDS[commandName];
     if (impliedKind) {
       // The command name is authoritative over any kind=... the argument
@@ -294,21 +280,12 @@ function findLeaTagGroups(source) {
       metadata.kind = impliedKind;
     }
 
-    // Optional second (body) argument -- the standalone form:
-    // \leatheorem{label=foo}{Statement text...}. lea-tags.sty defines this
-    // as an xparse `g` argument, which typesets it and needs no enclosing
-    // environment. Mirrors real TeX argument-scanning exactly: it skips
-    // *all* whitespace (including newlines/blank lines, not just inline
-    // whitespace) looking for the next "{", verified against actual
-    // pdflatex output. That means a single-argument tag immediately
-    // followed by an unrelated standalone {...} group, with nothing but
-    // whitespace between them, really does get absorbed -- both in real
-    // compilation and here. See docs/FEATURE-overleaf-inline-lea-tags.md
-    // ("Standalone form") for the caveat this implies for authors.
-    const bodyArgumentStart = skipWhitespace(body, argument.end);
+    // xparse's optional `g` argument skips whitespace and TeX comments.
+    // An adjacent unrelated brace group is therefore still absorbed.
+    const bodyArgumentStart = skipLatexTrivia(body, argument.end);
     let bodyArgument = null;
     if (body[bodyArgumentStart] === "{") {
-      const parsedBody = parseBalancedSuffixMultiline(body, bodyArgumentStart);
+      const parsedBody = readLatexGroup(body, bodyArgumentStart);
       if (!parsedBody.ok) {
         diagnostics.push(buildDiagnostic({
           code: "malformed_tag",
@@ -355,141 +332,128 @@ function findLeaTagGroups(source) {
   return { groups, diagnostics };
 }
 
-// Detects \begin{leacode}{metadata}...\end{leacode} blocks (lea-tags.sty). The
-// body between the metadata argument and \end{leacode} is Lean code, read
-// verbatim and used as the target's statement text -- the same role the body
-// of a standalone \leatheorem{...}{...} tag plays, so this produces the same
-// synthetic-environment group shape and flows through the identical downstream
-// pipeline (kind inference, label validation, extractEnvironmentText). `kind=`
-// is honored exactly as the generic \lea{...} command honors it.
-//
-// Runs against the RAW source (not the masked source the other scanners use),
-// because leacode's own interior is masked out of that for everyone else. A
-// leacode block shown *inside* another verbatim-like environment (e.g. a
-// documentation example) is not a real block, so matches inside those other
-// opaque spans are skipped.
-function findLeaCodeEnvironments(source) {
+// The lexical scan records real leacode openers without interpreting their
+// verbatim bodies. Metadata uses the same argument reader as inline tags.
+function findLeaCodeEnvironments(source, scan) {
   const groups = [];
   const diagnostics = [];
-  const offset = documentBodyOffset(source);
-  const otherOpaqueSpans = findOpaqueSpans(source, OPAQUE_ENVIRONMENT_NAMES);
-  const beginPattern = new RegExp(`\\\\begin\\s*\\{\\s*${LEA_CODE_ENVIRONMENT}\\s*\\}`, "g");
-  let match;
-
-  while ((match = beginPattern.exec(source))) {
-    const beginStart = match.index;
-    if (beginStart < offset) continue;
-    if (otherOpaqueSpans.some((span) => beginStart >= span.contentFrom && beginStart < span.contentTo)) continue;
-
-    const afterBegin = beginPattern.lastIndex;
-    // Metadata argument: a single balanced { } on the same line as \begin, the
-    // same single-line convention the tag commands' metadata argument uses.
-    const metaStart = skipInlineWhitespace(source, afterBegin);
-    const metaArg = source[metaStart] === "{" ? parseBalancedSuffix(source, metaStart) : { ok: false };
-    if (!metaArg.ok) {
-      diagnostics.push(buildDiagnostic({
-        code: "malformed_tag",
-        message: `\\begin{${LEA_CODE_ENVIRONMENT}} requires a metadata argument; use {} when no metadata is needed.`,
-        from: beginStart,
-        to: afterBegin
-      }));
+  const offset = documentBodyOffset(scan.activeSource);
+  for (const environment of scan.codeEnvironments) {
+    const { from, openerEnd, metaStart, metadataArgument, bodyFrom, bodyTo, to } = environment;
+    if (from < offset) continue;
+    if (!metadataArgument.ok || bodyTo === null) {
+      const message = !metadataArgument.ok
+        ? metadataArgument.reason === "unterminated"
+          ? "\\begin{leacode}{...} metadata argument is missing its closing brace."
+          : "\\begin{leacode} requires a metadata argument; use {} when no metadata is needed."
+        : "\\begin{leacode} is missing its \\end{leacode}.";
+      diagnostics.push(buildDiagnostic({ code: "malformed_tag", message, from, to: openerEnd }));
       continue;
     }
-
-    const endPattern = new RegExp(`\\\\end\\s*\\{\\s*${LEA_CODE_ENVIRONMENT}\\s*\\}`, "g");
-    endPattern.lastIndex = metaArg.end;
-    const endMatch = endPattern.exec(source);
-    if (!endMatch) {
-      diagnostics.push(buildDiagnostic({
-        code: "malformed_tag",
-        message: `\\begin{${LEA_CODE_ENVIRONMENT}} is missing its \\end{${LEA_CODE_ENVIRONMENT}}.`,
-        from: beginStart,
-        to: afterBegin
-      }));
-      continue;
-    }
-
-    const bodyFrom = metaArg.end;
-    const bodyTo = endMatch.index;
-    const metadata = parseMetadata(source.slice(metaStart + 1, metaArg.end - 1));
-
     groups.push({
-      from: beginStart,
-      to: endPattern.lastIndex,
+      from, to,
       syntax: "leacode",
       command: LEA_CODE_ENVIRONMENT,
       hasFormalize: true,
       hasDefine: false,
       hasTargetMarker: true,
-      metadata,
+      metadata: parseMetadata(stripLatexComments(source.slice(metaStart + 1, metadataArgument.end - 1))),
       standaloneEnvironment: {
-        name: LEA_CODE_ENVIRONMENT,
-        from: beginStart,
-        to: endPattern.lastIndex,
-        badgeFrom: beginStart,
-        bodyFrom,
-        bodyTo
+        name: LEA_CODE_ENVIRONMENT, from, to, badgeFrom: from, bodyFrom, bodyTo
       }
     });
-    beginPattern.lastIndex = endPattern.lastIndex;
   }
-
   return { groups, diagnostics };
 }
 
-// Like skipInlineWhitespace, but crosses newlines/blank lines -- used only to
-// check for a tag's optional body argument, matching real TeX argument
-// scanning (which skips arbitrary whitespace between macro arguments, not
-// just whitespace on the same line). Every *other* same-line convention in
-// this parser (the metadata argument itself, \label) deliberately keeps
-// using skipInlineWhitespace; this one helper is the sole, deliberate
-// exception, because it needs to match what Overleaf will actually compile.
-function skipWhitespace(source, cursor) {
-  while (cursor < source.length && /\s/.test(source[cursor])) {
-    cursor += 1;
+// Read a TeX control word or control symbol as one token. In particular, \\ is
+// one token: a following brace or percent sign is NOT escaped by that token.
+function readLatexCommand(source, cursor) {
+  let end = cursor + 1;
+  if (/[A-Za-z@]/.test(source[end] || "")) {
+    while (/[A-Za-z@]/.test(source[end] || "")) end += 1;
+  } else if (end < source.length) {
+    end += 1;
+  }
+  return { name: source.slice(cursor + 1, end), end };
+}
+
+function commentEnd(source, cursor, includeNewline = false) {
+  while (cursor < source.length && !isLineBreak(source[cursor])) cursor += 1;
+  if (includeNewline) {
+    if (source[cursor] === "\r") cursor += 1;
+    if (source[cursor] === "\n") cursor += 1;
   }
   return cursor;
 }
 
-// Like parseBalancedSuffix, but tolerates newlines inside the matched span.
-// Used only for a tag's body argument, which is routinely a multi-line or
-// multi-paragraph statement; the metadata argument stays single-line via
-// parseBalancedSuffix, unchanged.
-function parseBalancedSuffixMultiline(source, cursor) {
-  const opener = source[cursor];
-  const closer = opener === "{" ? "}" : opener === "[" ? "]" : "";
-  if (!closer) {
-    return { ok: false };
+function skipLatexTrivia(source, cursor) {
+  while (cursor < source.length) {
+    if (/\s/.test(source[cursor])) cursor += 1;
+    else if (source[cursor] === "%") cursor = commentEnd(source, cursor, true);
+    else break;
   }
-
-  let depth = 1;
-  for (let index = cursor + 1; index < source.length; index += 1) {
-    const char = source[index];
-    const previous = source[index - 1];
-    if (char === opener && previous !== "\\") {
-      depth += 1;
-    } else if (char === closer && previous !== "\\") {
-      depth -= 1;
-      if (depth === 0) {
-        return { ok: true, end: index + 1 };
-      }
-    }
-  }
-
-  return { ok: false };
+  return cursor;
 }
 
-function hasLeaTagPackageLoaded(source) {
-  const documentStart = source.indexOf("\\begin{document}");
-  const preamble = documentStart === -1 ? source : source.slice(0, documentStart);
+// Lea arguments may span lines. Comments cannot close a group, and control
+// symbols such as \{ and \} do not affect its depth. The exported same-line
+// parseBalancedSuffix remains unchanged for environment titles/labels.
+function readLatexGroup(source, cursor, opener = "{") {
+  if (source[cursor] !== opener) return { ok: false, reason: "missing" };
+  const closer = opener === "{" ? "}" : "]";
+  let depth = 1;
+  let braceDepth = 0;
+  for (let index = cursor + 1; index < source.length;) {
+    const char = source[index];
+    if (char === "\\") {
+      index = readLatexCommand(source, index).end;
+      continue;
+    }
+    if (char === "%") {
+      index = commentEnd(source, index, true);
+      continue;
+    }
+    if (opener === "[" && char === "{") braceDepth += 1;
+    else if (opener === "[" && char === "}") braceDepth = Math.max(0, braceDepth - 1);
+    else if (braceDepth === 0 && char === opener) depth += 1;
+    else if (braceDepth === 0 && char === closer) {
+      depth -= 1;
+      if (depth === 0) return { ok: true, end: index + 1 };
+    }
+    index += 1;
+  }
+  return { ok: false, reason: "unterminated" };
+}
+
+// TeX removes both a comment and its line ending, rather than inserting a
+// space. This preserves e.g. label=ex% comment\nample as label=example.
+function stripLatexComments(source) {
+  const parts = [];
+  let from = 0;
+  for (let cursor = 0; cursor < source.length;) {
+    if (source[cursor] === "\\") {
+      cursor = readLatexCommand(source, cursor).end;
+    } else if (source[cursor] === "%") {
+      parts.push(source.slice(from, cursor));
+      cursor = commentEnd(source, cursor, true);
+      from = cursor;
+    } else cursor += 1;
+  }
+  parts.push(source.slice(from));
+  return parts.join("");
+}
+
+function hasLeaTagPackageLoaded(scan) {
+  const bodyOffset = documentBodyOffset(scan.activeSource);
+  const preambleEnd = bodyOffset || scan.activeSource.length;
+  const preamble = stripLatexComments(scan.markerSource.slice(0, preambleEnd));
   return (
-    /\\usepackage(?:\[[^\]]*\])?\{[^}]*\blea-tags\b[^}]*\}/.test(preamble)
+    /\\usepackage\s*(?:\[[^\]]*\]\s*)?\{[^}]*\blea-tags\b[^}]*\}/.test(preamble)
     || /\\input\s*\{\s*lea-tags\s*\}/.test(preamble)
-    || /\\(?:New|Renew|Provide)DocumentCommand\s*\{\s*\\lea\s*\}/.test(preamble)
-    || /\\(?:new|renew|provide)command\*?\s*\{\s*\\lea\s*\}/.test(preamble)
-    // Inline-snippet users who only use the code-block form define just the
-    // `leacode` environment, without any \lea command -- recognize that too.
-    || new RegExp(`\\\\(?:lst)?newenvironment\\s*\\{\\s*${LEA_CODE_ENVIRONMENT}\\s*\\}`).test(preamble)
+    || scan.definitions.some(({ from, name, kind }) => from < preambleEnd && (
+      kind === "command" ? Object.hasOwn(TAG_COMMAND_KINDS, name) : name === LEA_CODE_ENVIRONMENT
+    ))
   );
 }
 
@@ -536,8 +500,8 @@ function mismatchMessage(markerKind, environment) {
   return `Lea ${markerKind} marker does not match the ${environment.name} environment.`;
 }
 
-function findSupportedEnvironments(source) {
-  return findEnvironments(source, { names: SUPPORTED_ENVIRONMENTS }).map((environment) => ({
+function findSupportedEnvironments(source, activeSource) {
+  return findEnvironmentsInSource(source, SUPPORTED_ENVIRONMENTS, activeSource).map((environment) => ({
     ...environment,
     targetKind: DEFINITION_ENVIRONMENTS.has(environment.name) ? "definition" : "theorem"
   }));
@@ -593,56 +557,158 @@ const VERBATIM_LIKE_ENVIRONMENTS = new Set([...OPAQUE_ENVIRONMENT_NAMES, LEA_COD
 // verbatim-like names are included too (level 1 above).
 const NON_TARGET_ENVIRONMENTS = new Set(["document", ...VERBATIM_LIKE_ENVIRONMENTS]);
 
-// Finds every [contentFrom, contentTo) span whose text lies strictly between
-// a \begin{name}...\end{name} pair for a verbatim-like name -- i.e. text
-// LaTeX itself would never tokenize as \begin/\end/%.
-function findOpaqueSpans(source, names = VERBATIM_LIKE_ENVIRONMENTS) {
-  const spans = [];
-  for (const name of names) {
-    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const beginPattern = new RegExp(`\\\\begin\\s*\\{\\s*${escapedName}\\s*\\}`, "g");
-    let beginMatch;
-    while ((beginMatch = beginPattern.exec(source))) {
-      const contentFrom = beginPattern.lastIndex;
-      const endPattern = new RegExp(`\\\\end\\s*\\{\\s*${escapedName}\\s*\\}`, "g");
-      endPattern.lastIndex = contentFrom;
-      const endMatch = endPattern.exec(source);
-      if (!endMatch) break; // unterminated -- nothing real to mask, stop scanning this name
-      spans.push({ contentFrom, contentTo: endMatch.index });
-      beginPattern.lastIndex = endMatch.index + endMatch[0].length;
+const DOCUMENT_COMMAND_DEFINITIONS = /^(?:New|Renew|Provide|Declare)DocumentCommand$/;
+const DOCUMENT_ENVIRONMENT_DEFINITIONS = /^(?:New|Renew|Provide|Declare)DocumentEnvironment$/;
+const COMMAND_DEFINITIONS = /^(?:new|renew|provide)command$/;
+const ENVIRONMENT_DEFINITIONS = /^(?:(?:new|renew|provide)environment|lstnewenvironment)$/;
+
+function readDefinition(source, command) {
+  const documentCommand = DOCUMENT_COMMAND_DEFINITIONS.test(command.name);
+  const documentEnvironment = DOCUMENT_ENVIRONMENT_DEFINITIONS.test(command.name);
+  const classicCommand = COMMAND_DEFINITIONS.test(command.name);
+  const classicEnvironment = ENVIRONMENT_DEFINITIONS.test(command.name);
+  if (!documentCommand && !documentEnvironment && !classicCommand && !classicEnvironment) return null;
+  const kind = documentCommand || classicCommand ? "command" : "environment";
+  let cursor = skipLatexTrivia(source, command.end);
+  if (source[cursor] === "*") cursor = skipLatexTrivia(source, cursor + 1);
+  const nameGroup = readLatexGroup(source, cursor);
+  let name;
+  if (nameGroup.ok) {
+    name = stripLatexComments(source.slice(cursor + 1, nameGroup.end - 1)).trim();
+    cursor = nameGroup.end;
+  } else if (kind === "command" && source[cursor] === "\\") {
+    const token = readLatexCommand(source, cursor);
+    name = source.slice(cursor, token.end);
+    cursor = token.end;
+  } else return null;
+  if (kind === "command") {
+    if (!/^\\[A-Za-z@]+$/.test(name)) return null;
+    name = name.slice(1);
+  }
+  // Classic declarations allow an argument count and an optional default.
+  // xparse declarations have a required argument specification instead.
+  if (classicCommand || classicEnvironment) {
+    for (let index = 0; index < 2; index += 1) {
+      cursor = skipLatexTrivia(source, cursor);
+      if (source[cursor] !== "[") break;
+      const option = readLatexGroup(source, cursor, "[");
+      if (!option.ok) return { name, kind, to: cursor };
+      cursor = option.end;
     }
   }
-  return spans;
+  const requiredGroups = (documentCommand || documentEnvironment ? 1 : 0) + (kind === "environment" ? 2 : 1);
+  for (let index = 0; index < requiredGroups; index += 1) {
+    cursor = skipLatexTrivia(source, cursor);
+    const group = readLatexGroup(source, cursor);
+    // Hide the declaration name even while an author is editing its body,
+    // without consuming the next real tag after an incomplete declaration.
+    if (!group.ok) return { name, kind, to: cursor };
+    cursor = group.end;
+  }
+  return { name, kind, to: cursor };
 }
 
-// Returns a string the exact same length as `source`, with every opaque
-// span's interior replaced by spaces (newlines preserved, so line/column
-// math elsewhere stays correct). Once masked, no "\begin", "\end", "%", or
-// "\lea..." tag can ever be found inside a verbatim-like environment's
-// interior, at *any* nesting depth or by *any* scanner -- not just the
-// environment-pair matcher below. This is deliberately a single, blunt
-// primitive rather than scattered "is this position inside a span?" checks
-// at each call site: an earlier version of this fix only masked the
-// environment-pair matcher, which still let a legitimately real *outer*
-// environment (e.g. \begin{enumerate}, in a real false positive) have its
-// raw captured body text -- taken as a plain substring of the ORIGINAL
-// source by leanPaneManifest.mjs's extractLeaMarkerLabel -- independently
-// re-discover a marker nested inside a verbatim sub-block within it. Every
-// scanner in this module, and leanPaneManifest.mjs's own marker-detection
-// slice, now runs against this masked text instead. Offsets are unaffected
-// (same length), so callers that need the *real* displayed text for a
-// legitimately matched environment still slice the original source.
-export function maskOpaqueSpans(source) {
-  const text = String(source || "");
-  const spans = findOpaqueSpans(text);
-  if (spans.length === 0) return text;
-  const chars = text.split("");
-  for (const { contentFrom, contentTo } of spans) {
-    for (let i = contentFrom; i < contentTo; i += 1) {
-      if (chars[i] !== "\n") chars[i] = " ";
-    }
+function maskRange(chars, from, to) {
+  for (let index = from; index < to; index += 1) {
+    if (!isLineBreak(chars[index])) chars[index] = " ";
   }
-  return chars.join("");
+}
+
+// Both views retain every original offset and line ending. markerSource keeps
+// ordinary comments for the opt-in "% lea:" grammar; activeSource hides them
+// for executable tags, environment matching and the pane's loose fallback.
+// No view is used as the stored/displayed statement or verbatim code body.
+export function scanLatexSource(source) {
+  const text = String(source || "");
+  const active = text.split("");
+  const markers = text.split("");
+  const codeEnvironments = [];
+  const definitions = [];
+  for (let cursor = 0; cursor < text.length;) {
+    if (text[cursor] === "%") {
+      const end = commentEnd(text, cursor);
+      maskRange(active, cursor, end);
+      cursor = end;
+      continue;
+    }
+    if (text[cursor] !== "\\") {
+      cursor += 1;
+      continue;
+    }
+    const command = readLatexCommand(text, cursor);
+    const definition = readDefinition(text, command);
+    if (definition) {
+      definitions.push({ from: cursor, ...definition });
+      maskRange(active, cursor, definition.to);
+      maskRange(markers, cursor, definition.to);
+      cursor = definition.to;
+      continue;
+    }
+    if (command.name === "\\") {
+      // Otherwise a regex could rediscover the second slash of \\lea.
+      maskRange(active, cursor, command.end);
+      maskRange(markers, cursor, command.end);
+    }
+    if (Object.hasOwn(TAG_COMMAND_KINDS, command.name)) {
+      const metaStart = skipLatexTrivia(text, command.end);
+      const metadataArgument = readLatexGroup(text, metaStart);
+      if (metadataArgument.ok) {
+        maskRange(markers, metaStart, metadataArgument.end);
+        // Metadata is not executed, but retain its plain label text for the
+        // pane's fallback inventory of invalid (e.g. unsupported-kind) tags.
+        for (let index = command.end; index < metadataArgument.end;) {
+          if (text[index] === "%") {
+            const end = commentEnd(text, index);
+            maskRange(active, index, end);
+            index = end;
+          } else if (text[index] === "\\") {
+            const end = readLatexCommand(text, index).end;
+            maskRange(active, index, end);
+            index = end;
+          } else index += 1;
+        }
+        cursor = metadataArgument.end;
+        continue;
+      }
+    }
+    if (command.name === "begin") {
+      const nameStart = skipLatexTrivia(text, command.end);
+      const nameArgument = readLatexGroup(text, nameStart);
+      const name = nameArgument.ok ? stripLatexComments(text.slice(nameStart + 1, nameArgument.end - 1)).trim() : "";
+      if (VERBATIM_LIKE_ENVIRONMENTS.has(name)) {
+        const openerEnd = nameArgument.end;
+        const metaStart = skipLatexTrivia(text, openerEnd);
+        const metadataArgument = name === LEA_CODE_ENVIRONMENT ? readLatexGroup(text, metaStart) : null;
+        const bodyFrom = metadataArgument?.ok ? metadataArgument.end : openerEnd;
+        const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const endPattern = new RegExp(`\\\\end\\s*\\{\\s*${escapedName}\\s*\\}`, "g");
+        endPattern.lastIndex = bodyFrom;
+        const endMatch = endPattern.exec(text);
+        const bodyTo = endMatch ? endMatch.index : null;
+        const to = endMatch ? endPattern.lastIndex : text.length;
+        if (name === LEA_CODE_ENVIRONMENT) {
+          codeEnvironments.push({ from: cursor, openerEnd, metaStart, metadataArgument, bodyFrom, bodyTo, to });
+        }
+        if (!endMatch) {
+          // An incomplete block is not runnable. Continue discovery after its
+          // opener so it cannot hide a later valid tag while the source is edited.
+          cursor = bodyFrom;
+          continue;
+        }
+        maskRange(active, openerEnd, bodyTo);
+        maskRange(markers, openerEnd, bodyTo);
+        cursor = to;
+        continue;
+      }
+    }
+    cursor = command.end;
+  }
+  return { activeSource: active.join(""), markerSource: markers.join(""), codeEnvironments, definitions };
+}
+
+// Compatibility export for callers that need the comment-marker view.
+export function maskOpaqueSpans(source) {
+  return scanLatexSource(source).markerSource;
 }
 
 // Generic environment finder, shared by the comment-marker path above (via
@@ -654,16 +720,17 @@ export function maskOpaqueSpans(source) {
 // the environment name, for the allowlisted case, or from marker metadata,
 // for the tag/generic case).
 export function findEnvironments(source, { names } = {}) {
+  return findEnvironmentsInSource(source, names, scanLatexSource(source).activeSource);
+}
+
+function findEnvironmentsInSource(source, names, activeSource) {
   const environments = [];
   const stack = [];
   const pattern = buildEnvironmentPattern(names);
-  // Matched against the masked text (see maskOpaqueSpans) so no \begin/\end
-  // pair can ever be found inside a verbatim-like environment's interior.
-  // Offsets are identical to the original source (masking preserves length).
-  const maskedSource = maskOpaqueSpans(source);
+  // Match executable structure while retaining offsets into the raw source.
   let match;
 
-  while ((match = pattern.exec(maskedSource))) {
+  while ((match = pattern.exec(activeSource))) {
     const [, command, name] = match;
     if (command === "begin") {
       const openerEnd = pattern.lastIndex;
@@ -764,7 +831,10 @@ function parseLeaCommentLine(line) {
 function extractEnvironmentText(source, environment) {
   const body = source.slice(environment.bodyFrom, environment.bodyTo);
   const labelMatch = source.slice(environment.from, environment.bodyTo).match(/\\label\s*\{([^}]*)\}/);
-  return { targetText: stripLeaTargetText(body), latexLabel: labelMatch ? labelMatch[1].trim() : "" };
+  return {
+    targetText: environment.name === LEA_CODE_ENVIRONMENT ? body.trim() : stripLeaTargetText(body),
+    latexLabel: environment.name === LEA_CODE_ENVIRONMENT ? "" : labelMatch ? labelMatch[1].trim() : ""
+  };
 }
 
 // Canonical natural-language text of a marked environment body: the same text the
@@ -772,25 +842,37 @@ function extractEnvironmentText(source, environment) {
 // surfaces hash byte-identical input and can never drift (see
 // shared/leanPaneManifest.mjs and PLAN-overleaf-lean-pane-improvements.md item 1).
 export function stripLeaTargetText(body) {
-  return stripLeaTagCalls(String(body || ""))
-    .replace(/^[ \t]*%\s*lea:.*(?:\r?\n|$)/gmi, "")
-    .replace(/\\label\s*\{[^}]*\}/g, "")
-    .trim();
+  const text = stripLeaTagCalls(String(body || ""));
+  const scan = scanLatexSource(text);
+  const spans = [
+    ...scan.markerSource.matchAll(/^[ \t]*%\s*lea:.*(?:\r?\n|$)/gmi),
+    ...scan.activeSource.matchAll(/\\label\s*\{[^}]*\}/g)
+  ].map(match => ({ from: match.index, to: match.index + match[0].length }))
+    .sort((a, b) => a.from - b.from);
+  let result = "";
+  let cursor = 0;
+  for (const { from, to } of spans) {
+    if (from < cursor) continue;
+    result += text.slice(cursor, from);
+    cursor = to;
+  }
+  return (result + text.slice(cursor)).trim();
 }
 
 // Removes \lea{...}/\leatheorem{...}/etc calls from a body of text. Brace-aware
 // (not a fixed-width regex) because context={...} can itself contain braces.
 function stripLeaTagCalls(body) {
+  const activeSource = scanLatexSource(body).activeSource;
   const pattern = new RegExp(TAG_COMMAND_PATTERN_SOURCE, "g");
   let result = "";
   let cursor = 0;
   let match;
 
-  while ((match = pattern.exec(body))) {
+  while ((match = pattern.exec(activeSource))) {
     if (match.index < cursor) continue;
     const afterCommand = pattern.lastIndex;
-    const argumentStart = skipInlineWhitespace(body, afterCommand);
-    const argument = body[argumentStart] === "{" ? parseBalancedSuffix(body, argumentStart) : { ok: false };
+    const argumentStart = skipLatexTrivia(body, afterCommand);
+    const argument = readLatexGroup(body, argumentStart);
     const spanEnd = argument.ok ? argument.end : afterCommand;
     result += body.slice(cursor, match.index);
     cursor = spanEnd;
@@ -932,14 +1014,17 @@ function splitMetadataEntries(source) {
 
   for (let index = 0; index < source.length; index += 1) {
     const char = source[index];
-    const previous = source[index - 1];
-    if (char === "{" && previous !== "\\") {
+    if (char === "\\") {
+      index = readLatexCommand(source, index).end - 1;
+      continue;
+    }
+    if (char === "{") {
       depth += 1;
-    } else if (char === "}" && previous !== "\\") {
+    } else if (char === "}") {
       depth = Math.max(0, depth - 1);
-    } else if (char === "[" && previous !== "\\" && depth === 0) {
+    } else if (char === "[" && depth === 0) {
       bracketDepth += 1;
-    } else if (char === "]" && previous !== "\\" && depth === 0 && bracketDepth > 0) {
+    } else if (char === "]" && depth === 0 && bracketDepth > 0) {
       bracketDepth -= 1;
     } else if (isMetadataSeparator(source, index, depth, bracketDepth)) {
       parts.push(source.slice(partStart, index));
@@ -975,14 +1060,17 @@ function splitTopLevel(source, separator) {
 
   for (let index = 0; index < source.length; index += 1) {
     const char = source[index];
-    const previous = source[index - 1];
-    if (char === "{" && previous !== "\\") {
+    if (char === "\\") {
+      index = readLatexCommand(source, index).end - 1;
+      continue;
+    }
+    if (char === "{") {
       depth += 1;
-    } else if (char === "}" && previous !== "\\") {
+    } else if (char === "}") {
       depth = Math.max(0, depth - 1);
-    } else if (char === "[" && previous !== "\\" && depth === 0) {
+    } else if (char === "[" && depth === 0) {
       bracketDepth += 1;
-    } else if (char === "]" && previous !== "\\" && depth === 0 && bracketDepth > 0) {
+    } else if (char === "]" && depth === 0 && bracketDepth > 0) {
       bracketDepth -= 1;
     } else if (char === separator && depth === 0 && bracketDepth === 0) {
       parts.push(source.slice(partStart, index));

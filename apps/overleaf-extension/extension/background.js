@@ -1,4 +1,19 @@
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "READ_LEA_TAGS_STYLE") {
+    if (sender.id !== chrome.runtime.id || !sender.tab || sender.frameId !== 0
+      || !/^https:\/\/www\.overleaf\.com\/project\/[a-f0-9]{24}(?:[/?#]|$)/.test(sender.url || "")) {
+      sendResponse({ ok: false, message: "Style access is restricted to the Overleaf project extension." });
+      return false;
+    }
+    fetch(chrome.runtime.getURL("assets/lea-tags.sty"))
+      .then(response => {
+        if (!response.ok) throw new Error("The bundled Lea style could not be loaded.");
+        return response.text();
+      })
+      .then(text => sendResponse({ ok: true, text }))
+      .catch(error => sendResponse({ ok: false, message: error.message }));
+    return true;
+  }
   if (message?.type === "OPEN_LEA_SESSION") {
     openLeaSessionTab(message)
       .then(() => sendResponse({ ok: true }))

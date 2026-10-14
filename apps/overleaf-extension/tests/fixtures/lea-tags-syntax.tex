@@ -1,0 +1,52 @@
+\documentclass{article}
+\usepackage{amsthm}
+\usepackage{lea-tags}
+\newtheorem{claim}{Claim}
+\begin{document}
+% \leatheorem{label=commented}{This is not a target.}
+% \lea{label=unfinished
+\lea% Generic definition metadata.
+{kind=definition,
+ label=syntax_generic,
+ context={Use {nested} groups and \{literal\} braces.}
+}% The body follows.
+{An even natural number is a multiple of two.}
+
+\leatheorem{
+ label=syntax_theorem,
+ context={Use elementary arithmetic.}% } This brace is commented out.
+}% The statement may start after a comment.
+{For every natural number $n$, $n+0=n$.}
+
+\lealemma
+{label=syntax_lemma}% Statement follows.
+{For every natural number $n$, $0+n=n$.}
+
+\leaproposition{label=syntax_proposition}
+{For every natural number $n$, $n=n$.}
+
+\leacorollary{label=syntax_corollary}
+{For every natural number $n$, $n+1=n+1$.}
+
+\leadefinition{label=syntax_definition}
+{The successor of a natural number $n$ is $n+1$.}
+
+\begin{claim}\label{clm:syntax}
+\leatheorem
+{
+ label=syntax_environment,
+ context={Use the identity property.}
+}
+For every natural number $n$, $n=n$.
+\end{claim}
+
+\begin{leacode}% Metadata may start on the next line.
+{
+ label=syntax_code,
+ context={Use reflexivity.}
+}
+theorem syntax_code (n : Nat) : n % 2 = n % 2 := by rfl
+-- Literal \lea{label=not_a_tag}, \label{not_a_label}, and { }.
+% lea: formalize label=not_a_marker
+\end{leacode}
+\end{document}

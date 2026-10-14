@@ -3750,6 +3750,29 @@ body.ol-lean-settings-resizing {
    standalone (a wide page, side-by-side), the pane is narrow, so the graph stacks:
    canvas on top, legend + node detail below. */
 
+.ol-lean-tags-setup {
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--ol-line);
+}
+.ol-lean-tags-setup-hint,
+.ol-lean-tags-setup-status {
+  margin: 5px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ol-lean-tags-setup-hint { color: var(--ol-muted); }
+.ol-lean-tags-setup-status:empty { display: none; }
+.ol-lean-tags-setup-status.is-error { color: var(--ol-red); }
+.ol-lean-tags-setup-fallback {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.ol-lean-tags-setup-fallback[hidden] { display: none; }
+.ol-lean-tags-setup-fallback code { flex-basis: 100%; overflow-wrap: anywhere; }
+
 .ol-lean-pane-viewtabs {
   display: flex;
   gap: 2px;

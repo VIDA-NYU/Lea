@@ -261,6 +261,7 @@
   let leanPaneSharePanel = null;
   let leanPaneShareState = null;
   let leanPaneShareBusy = false;
+  let leaTagsSetupControls = null;
   // GitHub pushes use a Lea-owned confirmation surface. Browser-native confirm
   // dialogs cannot inherit the extension's typography, spacing, or theme.
   let githubPushDialogState = null;
@@ -697,6 +698,25 @@
     header.appendChild(controls);
 
     const viewTabs = buildLeanPaneViewTabs();
+    const tagsSetupSlot = document.createElement("div");
+    const ownerPane = leanPane;
+    import(chrome.runtime.getURL("leaTagsSetupUI.mjs"))
+      .then(({ mountLeaTagsSetup }) => {
+        if (leanPane !== ownerPane) return;
+        leaTagsSetupControls = mountLeaTagsSetup({
+          slot: tagsSetupSlot, window, document, chrome,
+          getProjectId: extractOverleafProjectId,
+          onChanged: () => {
+            lastLeanPaneFiles = null;
+            lastMirrorFiles = null;
+            leanPaneArchiveLoad = null;
+            texMirrorDirty = true;
+            requestTargets();
+            refreshLeanPaneNow({ forceFetch: true }).catch(renderLeanPaneError);
+          }
+        });
+      })
+      .catch(() => { tagsSetupSlot.textContent = "Reload the extension to enable Lea tag setup."; });
 
     leanPaneStatus = document.createElement("p");
     leanPaneStatus.className = "ol-lean-project-pane-status";
@@ -706,6 +726,7 @@
     leanPane.appendChild(resizer);
     leanPane.appendChild(header);
     leanPane.appendChild(viewTabs);
+    leanPane.appendChild(tagsSetupSlot);
     leanPane.appendChild(leanPaneStatus);
     leanPane.appendChild(leanPaneBody);
     document.body.appendChild(leanPane);
@@ -730,6 +751,8 @@
   }
 
   function closeLeanPane() {
+    leaTagsSetupControls?.dispose();
+    leaTagsSetupControls = null;
     closeGithubPushConfirmation({ restoreFocus: false });
     if (projectIdentityEditorState?.source === "lean-pane") {
       closeProjectIdentityEditor({ restoreFocus: false });

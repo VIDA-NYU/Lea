@@ -27,6 +27,10 @@ for (const base of ["/Lea/", "/"]) {
     assert.ok(guide.includes(`href="${base}install/#overleaf-extension"`));
     assert.ok(guide.includes('href="#formalize-an-item"'));
     assert.ok(guide.includes('id="formalize-an-item"'));
+    assert.ok(guide.includes("<strong>Add Lea tags</strong>"),
+      "the guide documents the automatic setup action");
+    assert.ok(guide.includes("<strong>Copy package line</strong>"),
+      "the guide retains manual completion instructions");
     assert.ok(guide.includes(`href="https://vida-nyu.github.io${base}overleaf/"`),
       "the guide has its own canonical URL");
     assert.ok(read("sitemap.xml").includes(`https://vida-nyu.github.io${base}overleaf/`));

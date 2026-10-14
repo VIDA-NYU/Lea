@@ -1,4 +1,5 @@
 import { parseTargetDocument } from "./targetParserCore.mjs";
+import { installLeaTagsEditorBridge } from "./leaTagsEditorBridge.mjs";
 
 (function () {
   let activeView = null;
@@ -93,6 +94,8 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
       return;
     }
   });
+
+  installLeaTagsEditorBridge({ window, getView: () => activeView, openDocByPath, getActiveDocPath });
 
   // Item 11: jump the editor to a source block. Same-file navigation may fall back
   // to byte offsets, but cross-file navigation only trusts marker/label anchors

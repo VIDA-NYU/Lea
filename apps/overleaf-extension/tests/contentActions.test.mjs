@@ -3210,6 +3210,27 @@ test('review loading failure exposes reload and update-required errors without r
   assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/formalize')));
 });
 
+test("Lea tag setup remains available when an empty inventory cannot reach the companion", async () => {
+  const h = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/unknown",
+    fetchOverride(url) {
+      if (String(url).endsWith("/lean-pane/manifest")) {
+        return { ok: false, status: 503, json: async () => ({ message: "Companion is offline" }) };
+      }
+    }
+  });
+  await h.loadVisibleTheorems({ activeTex: "" });
+  h.clickPaneTrigger();
+  await flushPromises();
+  await flushPromises();
+  assert.equal(h.hasButtonText("Add Lea tags"), true);
+  const setup = h.document.querySelector(".ol-lean-tags-setup");
+  assert.ok(setup);
+  const status = setup.querySelector(".ol-lean-tags-setup-status");
+  assert.equal(status.attributes["aria-live"], "polite");
+  assert.match(h.bodyText(), /Companion is offline/);
+});
+
 function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
   const document = new FakeDocument();
   const timers = [];
