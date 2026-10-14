@@ -1134,6 +1134,9 @@ def create_project(
     namespace: str | None = None,
     repo_path: str | None = None,
     remote_url: str | None = None,
+    *,
+    name_source: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> dict:
     """Insert a project index row (D21/D30). `namespace`/`repo_path` default to the
     slug-derived values so the Overleaf tag-only path keeps working; P2's project
@@ -1144,16 +1147,21 @@ def create_project(
     project_title = (title or slug).strip() or slug
     ns = validate_project_namespace(namespace) if namespace else project_namespace_for_slug(slug)
     repo = repo_path or repo_path_for_namespace(ns)
-    with connect() as conn:
-        conn.execute(
+    transaction = nullcontext(conn) if conn is not None else write()
+    with transaction as db_conn:
+        name_column = ", name_source" if name_source is not None else ""
+        name_placeholder = ", ?" if name_source is not None else ""
+        values = (project_id, slug, project_title, description, ns, repo, remote_url, now, now)
+        if name_source is not None:
+            values += (name_source,)
+        db_conn.execute(
             """
             insert into projects
-                (id, slug, title, description, namespace, repo_path, remote_url, created_at, updated_at)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (project_id, slug, project_title, description, ns, repo, remote_url, now, now),
+                (id, slug, title, description, namespace, repo_path, remote_url, created_at, updated_at"""
+            + name_column + ") values (?, ?, ?, ?, ?, ?, ?, ?, ?" + name_placeholder + ")",
+            values,
         )
-        row = conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
+        row = db_conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
     return _normalize_project(row_to_dict(row))
 
 
@@ -1167,7 +1175,7 @@ def update_project(
     slug → namespace → repo_path chain is immutable (D22), so those never change
     here. Pass a field as None to leave it untouched."""
     now = utc_now()
-    with connect() as conn:
+    with write() as conn:
         row = conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
         if not row:
             return None
@@ -1175,7 +1183,8 @@ def update_project(
         conn.execute(
             """
             update projects
-            set title = ?, description = ?, remote_url = ?, updated_at = ?
+            set title = ?, description = ?, remote_url = ?, updated_at = ?,
+                name_source = case when ? is not null then 'custom' else name_source end
             where id = ?
             """,
             (
@@ -1183,6 +1192,7 @@ def update_project(
                 description if description is not None else current["description"],
                 remote_url if remote_url is not None else current["remote_url"],
                 now,
+                title,
                 project_id,
             ),
         )
@@ -1208,7 +1218,7 @@ def update_project_identity(
         conn.execute(
             """
             update projects
-            set title = ?, namespace = ?, repo_path = ?, updated_at = ?
+            set title = ?, namespace = ?, repo_path = ?, updated_at = ?, name_source = 'custom'
             where id = ?
             """,
             ((title or "").strip() or row["title"], ns, repo_path, now, project_id),

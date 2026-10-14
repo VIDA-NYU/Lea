@@ -88,6 +88,7 @@ class RunRequest(BaseModel):
     # the interactive UI path, which stays project-less.
     project_slug: str | None = None
     project_title: str | None = None
+    overleaf_project_title: str | None = None
     project_namespace: str | None = None
     # Session origin / providence. 'overleaf' (with `origin_url` = the canonical
     # Overleaf document URL) marks a formalization spawned from the Overleaf
@@ -263,6 +264,7 @@ def create_run(request: RunRequest) -> dict:
                 proofs_root,
                 title=request.project_title,
                 namespace=request.project_namespace,
+                overleaf_project_title=request.overleaf_project_title,
             )
             project_id = project["id"]
         except ValueError as exc:

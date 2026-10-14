@@ -74,6 +74,11 @@ class ProjectIdentityUpdate(BaseModel):
     namespace: str | None = None
     expected_namespace: str | None = None
     create_if_missing: bool = False
+    overleaf_project_title: str | None = None
+
+
+class OverleafDefaultNameRequest(BaseModel):
+    overleaf_project_title: str
 
 
 class SessionCreate(BaseModel):
@@ -97,6 +102,7 @@ class MirrorFile(BaseModel):
 class MirrorRequest(BaseModel):
     files: list[MirrorFile]
     source: str = "overleaf"
+    overleaf_project_title: str | None = None
     # "reconcile" (default) treats the payload as the full truth set — absent
     # files are deleted. "upsert" writes only the provided files (the active-
     # buffer tier of the tex mirror, PLAN-system-hardening 3.2).
@@ -685,12 +691,23 @@ def get_project_identity_by_slug(slug: str) -> dict:
 
 @router.put("/api/projects/by-slug/{slug}/identity")
 def update_project_identity_by_slug(slug: str, request: ProjectIdentityUpdate) -> dict:
-    if request.mode not in {"display-only", "rename-namespace"}:
-        raise HTTPException(status_code=422, detail="mode must be 'display-only' or 'rename-namespace'")
+    if request.mode not in {"display-only", "rename-namespace", "default-name"}:
+        raise HTTPException(status_code=422, detail="mode must be 'display-only', 'rename-namespace', or 'default-name'")
     try:
         project = store.get_project_by_slug(slug)
     except ValueError:
         project = None
+    if request.mode == "default-name":
+        if project is None and not request.create_if_missing:
+            raise HTTPException(status_code=404, detail="No Lea project exists for this document yet.")
+        try:
+            project = project_service.ensure_project(
+                slug, _proofs_root(), overleaf_project_title=request.overleaf_project_title or "",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        project = store.mark_project_overleaf_linked(project["id"])
+        return {"identity": project_service.project_identity(project)}
     if project is None:
         if not request.create_if_missing:
             raise HTTPException(status_code=404, detail="No Lea project exists for this document yet.")
@@ -700,6 +717,7 @@ def update_project_identity_by_slug(slug: str, request: ProjectIdentityUpdate) -
                 _proofs_root(),
                 title=request.project_name,
                 namespace=request.namespace,
+                name_source="custom",
             )
         except project_service.ProjectIdentityError as exc:
             raise _project_identity_error(exc)
@@ -736,6 +754,20 @@ def update_project_identity_by_slug(slug: str, request: ProjectIdentityUpdate) -
         "identity": project_service.project_identity(result["project"]),
         "migration": result["migration"],
     }
+
+
+@router.post("/api/projects/by-slug/{slug}/identity/default-name")
+@_guard_project(by_slug=True, write=True, environment_write=False)
+def initialize_overleaf_default_name(slug: str, request: OverleafDefaultNameRequest) -> dict:
+    try:
+        previous = store.get_project_by_slug(slug)
+        project = project_service.adopt_overleaf_project_name(slug, _proofs_root(), request.overleaf_project_title)
+    except project_service.ProjectIdentityError as exc:
+        raise _project_identity_error(exc)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    changed = previous is not None and (previous["title"], previous["name_source"]) != (project["title"], project["name_source"])
+    return {"identity": project_service.project_identity(project), "changed": changed}
 
 
 @router.get("/api/projects/by-slug/{slug}/share")
@@ -1178,7 +1210,7 @@ def mirror_overleaf_tex(slug: str, request: MirrorRequest, background_tasks: Bac
     is **deferred** to a background task so the formalize path never waits on git."""
     proofs_root = _proofs_root()
     try:
-        project = project_service.ensure_project(slug, proofs_root)
+        project = project_service.ensure_project(slug, proofs_root, overleaf_project_title=request.overleaf_project_title)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     incoming = [{"path": f.path, "content": f.content} for f in request.files]
@@ -1190,7 +1222,8 @@ def mirror_overleaf_tex(slug: str, request: MirrorRequest, background_tasks: Bac
     store.mark_project_overleaf_linked(project["id"])
     if summary.get("changed"):
         background_tasks.add_task(uploads.commit_mirror, project, proofs_root)
-    return {"project_id": project["id"], "slug": project["slug"], **summary}
+    return {"project_id": project["id"], "slug": project["slug"],
+            "identity": project_service.project_identity(project), **summary}
 
 
 async def _read_capped(file: UploadFile, cap: int) -> bytes:

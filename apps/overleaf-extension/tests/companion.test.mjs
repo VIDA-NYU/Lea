@@ -34,6 +34,7 @@ import {
   handleLeanPaneManifest,
   handleMirrorTex,
   handleProjectIdentity,
+  handleProjectDefaultName,
   handleProjectIdentityPreview,
   handleProjectIdentityUpdate,
   handleProjectExport,
@@ -207,6 +208,28 @@ test("project identity endpoints proxy adapter state without creating on missing
   assert.equal(state.jobs.old.projectName, "Fourier Notes");
   assert.equal(state.jobs.old.projectNamespace, "Lea.OldName");
   assert.equal(calls.find((call) => call.options.method === "PUT").body.create_if_missing, true);
+});
+
+test("default-name initialization refreshes cached titles and remains existing-project-only", async () => {
+  const calls = [];
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    if (String(url).includes("/missing/")) return jsonResponse(404, { detail: { error: "project_missing" } });
+    return jsonResponse(200, { identity: { projectId: "p1", slug: "project-1", projectName: "Readable Title",
+      namespace: "Lea.P1", nameSource: "overleaf", exists: true } });
+  } });
+  state.jobs.old = { overleafProjectId: "project-1", projectSlug: "project-1", projectNamespace: "Lea.P1",
+    projectName: "project-1", requestPrompt: "Historical text", recordedProofPath: "proofs/Lea/P1/saved.lean" };
+  const named = await handleProjectDefaultName({ overleafProjectId: "project-1", overleafProjectTitle: "Readable Title" }, state);
+  assert.equal(named.body.identity.nameSource, "overleaf");
+  assert.equal(state.jobs.old.projectName, "Readable Title");
+  assert.equal(state.jobs.old.requestPrompt, "Historical text");
+  assert.equal(state.jobs.old.recordedProofPath, "proofs/Lea/P1/saved.lean");
+  assert.equal(state.projectIdentities["project-1"].projectName, "Readable Title");
+  const missing = await handleProjectDefaultName({ overleafProjectId: "missing", overleafProjectTitle: "Untouched" }, state);
+  assert.equal(missing.statusCode, 404);
+  assert.ok(calls.every(call => call.url.endsWith("/identity/default-name")));
+  assert.deepEqual(calls[0].body, { overleaf_project_title: "Readable Title" });
 });
 
 test("namespace migration rebases cached job artifact pointers without rewriting history", async () => {
@@ -533,6 +556,7 @@ test("mirror-tex forwards the project's .tex set to the adapter by slug", async 
 
   const res = await handleMirrorTex({
     overleafProjectId: "Project-1",
+    overleafProjectTitle: "Source Title",
     files: [
       { path: "main.tex", content: "A" },
       { path: "", content: "dropped" },
@@ -545,6 +569,7 @@ test("mirror-tex forwards the project's .tex set to the adapter by slug", async 
   assert.equal(captured.length, 1);
   assert.match(captured[0].url, /\/api\/projects\/by-slug\/Project-1\/mirror$/);
   assert.equal(captured[0].body.source, "overleaf");
+  assert.equal(captured[0].body.overleaf_project_title, "Source Title");
   assert.deepEqual(captured[0].body.files.map((file) => file.path), ["main.tex", "sections/intro.tex"]);
   assert.equal(res.body.mirroredFiles["main.tex"], createHash("sha256").update("A").digest("hex"));
   assert.equal(state.texMirrorSnapshots["Project-1"].mirrorRevision, res.body.mirrorRevision);
@@ -5403,6 +5428,45 @@ test("formalize on the /api backend posts to /api/runs and runs autonomously (no
   assert.equal(runCall.body.project_namespace, "Lea.RenamedProject");
   assert.ok(!calls.some((c) => String(c.url).includes("/v1/")));
 });
+
+for (const handler of [handleFormalize, handleStub]) {
+  test(`${handler.name} resolves an automatic namespace before prompting without mirroring`, async () => {
+    const calls = [];
+    const leaRepo = await makeLeaRepo();
+    const code = "namespace Lea.SourceTitle2\ntheorem t_api : True := by\n  sorry\nend Lea.SourceTitle2\n";
+    if (handler === handleStub) await writeLeaProjectProof(leaRepo,
+      "workspace/proofs/Lea/SourceTitle2/GeneratedStub.lean", code);
+    const fallback = makeAdapterApiFetch(calls, { projectNamespace: "Lea.SourceTitle2",
+      ...(handler === handleStub ? { doneStatus: "answered", sessionDetail: {
+        project_namespace: "Lea.SourceTitle2", runs: [{ id: "api-run-1" }],
+        code_steps: [{ id: "step-1", seq: 1, path: "GeneratedStub.lean", code, check_status: "ok" }]
+      } } : {}) });
+    const state = await makeState({ leaRepoPath: leaRepo, env: { OPENAI_API_KEY: "test-key" },
+      leaTexMirrorEnabled: false, fetchImpl: async (url, options = {}) => {
+        if (String(url).endsWith("/api/projects/by-slug/project-1/identity") && options.method === "PUT") {
+          calls.push({ url: String(url), options, body: JSON.parse(options.body) });
+          return jsonResponse(200, { identity: { projectId: "p1", slug: "project-1", projectName: "Source Title (2)",
+            nameSource: "overleaf", namespace: "Lea.SourceTitle2", exists: true } });
+        }
+        return fallback(url, options);
+      }
+    });
+    const result = await handler({ overleafProjectId: "project-1", targetKind: "theorem", targetLabel: "t_api",
+      targetText: "A theorem.", projectName: "Old generated title", projectNamespace: "Lea.OpaqueId",
+      overleafProjectTitle: "Source Title" }, state);
+    assert.equal(result.statusCode, 200);
+    await waitFor(() => calls.some(c => String(c.url).endsWith("/api/runs") && c.options.method === "POST"));
+    const run = calls.find(c => String(c.url).endsWith("/api/runs") && c.options.method === "POST");
+    assert.equal(run.body.overleaf_project_title, "Source Title");
+    assert.equal(run.body.project_title, "Source Title (2)");
+    assert.equal(run.body.project_namespace, "Lea.SourceTitle2");
+    assert.match(run.body.message, /Lean namespace: Lea\.SourceTitle2/);
+    assert.ok(!run.body.message.includes("Lea.OpaqueId"));
+    const identity = calls.find(c => c.options.method === "PUT");
+    assert.equal(identity.body.mode, "default-name");
+    assert.equal(identity.body.create_if_missing, true);
+  });
+}
 
 test("source pause setting is opt-in and persists without changing adapter settings", async () => {
   const leaRepo = await makeLeaRepo();

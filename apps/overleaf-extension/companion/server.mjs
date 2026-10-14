@@ -94,6 +94,7 @@ import {
   restoreProjectArtifactBySlug,
   retireProjectArtifactBySlug,
   fetchProjectIdentityBySlug,
+  initializeOverleafDefaultName,
   fetchProjectShareStatus,
   interruptApiRun,
   mirrorProjectTexFiles,
@@ -622,14 +623,16 @@ async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
     return errorResponse(402, "max_spend_reached", MAX_SPEND_BLOCK_MESSAGE);
   }
 
-  const currentIdentity = await resolveRunProjectIdentity({ state, overleafProjectId, projectName, projectNamespace, refresh: true });
+  const currentIdentity = await resolveRunProjectIdentity({ state, overleafProjectId, projectName, projectNamespace,
+    overleafProjectTitle: payload.overleafProjectTitle ?? null, refresh: true });
   const target = buildLeaTarget({
     leaRepoPath: state.settings.leaRepoPath,
     overleafProjectId,
     targetKind,
     targetLabel,
     projectName: currentIdentity.projectName,
-    projectNamespace: currentIdentity.namespace
+    projectNamespace: currentIdentity.namespace,
+    overleafProjectTitle: payload.overleafProjectTitle ?? null
   });
   const activeJob = findActiveJob(state.jobs || {}, target.jobKey);
   if (activeJob) {
@@ -941,14 +944,16 @@ export async function handleStub(payload, state) {
     return errorResponse(402, "max_spend_reached", MAX_SPEND_BLOCK_MESSAGE);
   }
 
-  const currentIdentity = await resolveRunProjectIdentity({ state, overleafProjectId, projectName, projectNamespace, refresh: true });
+  const currentIdentity = await resolveRunProjectIdentity({ state, overleafProjectId, projectName, projectNamespace,
+    overleafProjectTitle: payload.overleafProjectTitle ?? null, refresh: true });
   const target = buildLeaTarget({
     leaRepoPath: state.settings.leaRepoPath,
     overleafProjectId,
     targetKind,
     targetLabel,
     projectName: currentIdentity.projectName,
-    projectNamespace: currentIdentity.namespace
+    projectNamespace: currentIdentity.namespace,
+    overleafProjectTitle: payload.overleafProjectTitle ?? null
   });
   const activeJob = findActiveJob(state.jobs || {}, target.jobKey);
   if (activeJob) {
@@ -1048,6 +1053,7 @@ export async function handleMirrorTex(payload, state) {
     baseUrl,
     slug: slugProjectId(overleafProjectId),
     files,
+    overleafProjectTitle: payload.overleafProjectTitle ?? null,
     // "upsert" is the extension's active-buffer tier (PLAN 3.2): only the
     // provided files are written, nothing is deleted. Anything else falls
     // back to the full-truth reconcile.
@@ -1056,6 +1062,8 @@ export async function handleMirrorTex(payload, state) {
   if (!result.ok) {
     return errorResponse(result.status || 502, "mirror_failed", result.error || "Could not mirror .tex to the Lea adapter.");
   }
+  const identity = result.body?.identity ? normalizeCompanionIdentity(result.body.identity, overleafProjectId) : null;
+  if (identity) await cacheProjectIdentity(state, identity);
   const slug = slugProjectId(overleafProjectId);
   const previousFiles = state.texMirrorSnapshots?.[slug]?.files || {};
   const nextFiles = payload.mode === "upsert" ? { ...previousFiles } : {};
@@ -1080,6 +1088,7 @@ export async function handleMirrorTex(payload, state) {
     body: {
       ok: true,
       summary: result.body,
+      ...(identity ? { identity } : {}),
       mirrorRevision,
       mirroredFiles: nextFiles
     }
@@ -1130,6 +1139,7 @@ function normalizeCompanionIdentity(identity, overleafProjectId) {
       overleafProjectId,
       slug: identity.slug || slug,
       projectName: identity.projectName || identity.title || identity.slug || slug,
+      nameSource: identity.nameSource || "custom",
       namespace: identity.namespace || projectNamespaceFromSlug(slug),
       namespaceEditable: identity.namespaceEditable !== false,
       repoPath: identity.repoPath || null,
@@ -1144,6 +1154,7 @@ function normalizeCompanionIdentity(identity, overleafProjectId) {
     overleafProjectId,
     slug,
     projectName: suggestedProjectName({ overleafProjectId }),
+    nameSource: "generated",
     namespace: projectNamespaceFromSlug(slug),
     namespaceEditable: true,
     repoPath: null,
@@ -1169,6 +1180,20 @@ export async function handleProjectIdentity(payload, state) {
   return { statusCode: 200, body: { ok: true, identity } };
 }
 
+export async function handleProjectDefaultName(payload, state) {
+  const target = resolveShareTarget(payload, state);
+  if (target.error) return target.error;
+  const result = await initializeOverleafDefaultName({ ...target,
+    overleafProjectTitle: String(payload.overleafProjectTitle || "").trim() });
+  if (!result.ok) return errorResponse(result.status || 502,
+    adapterErrorCode(result, "project_identity_failed"), adapterDetail(result, "Could not initialize the project name."));
+  const identity = normalizeCompanionIdentity(result.body?.identity, payload.overleafProjectId);
+  await cacheProjectIdentity(state, identity);
+  if (result.body?.changed) publishEvent(state, "project-identity-changed", {
+    overleafProjectId: payload.overleafProjectId, phase: "finished", namespaceChanged: false });
+  return { statusCode: 200, body: { ok: true, identity } };
+}
+
 async function cacheProjectIdentity(state, identity) {
   state.projectIdentities ||= {};
   state.projectIdentities[identity.slug] = identity;
@@ -1178,6 +1203,9 @@ async function cacheProjectIdentity(state, identity) {
     if (job.projectNamespace && job.projectNamespace !== identity.namespace) {
       changed = rebaseJobProjectIdentity(job, { oldNamespace: job.projectNamespace,
         newNamespace: identity.namespace, projectName: identity.projectName }) || changed;
+    } else if (job.projectName !== identity.projectName) {
+      job.projectName = identity.projectName;
+      changed = true;
     }
   }
   if (changed) await persistJobs(state);
@@ -1211,13 +1239,26 @@ function fallbackRunProjectIdentity({ overleafProjectId, projectSlug = "", proje
   };
 }
 
-async function resolveRunProjectIdentity({ state, overleafProjectId, projectSlug = "", projectName = "", projectNamespace = "", refresh = false, requireFresh = false }) {
+async function resolveRunProjectIdentity({ state, overleafProjectId, projectSlug = "", projectName = "", projectNamespace = "", overleafProjectTitle = null, refresh = false, requireFresh = false }) {
   const slug = projectSlug || slugProjectId(overleafProjectId);
   const cached = cachedProjectIdentity({ state, overleafProjectId, projectSlug: slug });
   if (!refresh && isAuthoritativeProjectIdentity(cached)) return cached;
 
   const target = resolveShareTarget({ overleafProjectId }, state);
   if (!target.error) {
+    // Run-starting actions need the authoritative namespace before composing a
+    // prompt, including when LaTeX mirroring is disabled. Tab reads never pass
+    // this metadata, so they cannot create a project here.
+    if (overleafProjectTitle != null) {
+      const initialized = await updateProjectIdentityBySlug({ ...target,
+        projectName: overleafProjectTitle || "Overleaf Project", mode: "default-name",
+        overleafProjectTitle, createIfMissing: true });
+      throwIfProjectRenaming(initialized);
+      if (!initialized.ok) throw new Error(adapterDetail(initialized, "Could not initialize project identity."));
+      const identity = normalizeCompanionIdentity(initialized.body?.identity, overleafProjectId);
+      await cacheProjectIdentity(state, identity);
+      return identity;
+    }
     const result = await fetchProjectIdentityBySlug(target);
     throwIfProjectRenaming(result);
     if (result.ok) {
@@ -1919,6 +1960,7 @@ function normalizeChatTarget(rawTarget, state) {
     targetKind,
     targetLabel,
     projectSlug: slugProjectId(overleafProjectId),
+    overleafProjectTitle: rawTarget?.overleafProjectTitle ?? null,
     // Identical to the job store's jobKey, so a chat resolves to the same session
     // any formalization run recorded for this target.
     targetKey: chatTargetKey({ overleafProjectId, targetKind, targetLabel }),
@@ -2193,6 +2235,7 @@ export async function handleChatMessage(payload, state) {
     state,
     overleafProjectId: target.overleafProjectId,
     projectSlug: target.projectSlug,
+    overleafProjectTitle: target.overleafProjectTitle ?? null,
     refresh: true
   });
   target.projectName = currentIdentity.projectName;
@@ -4301,6 +4344,7 @@ function startChatRun({
     allowSourcePause: Boolean(target.sourceBundle) && state.settings.leaPauseOnSourceIssue === true,
     projectSlug: target.projectSlug || null,
     projectTitle: target.projectName || target.projectSlug || null,
+    overleafProjectTitle: target.overleafProjectTitle ?? null,
     projectNamespace: target.projectNamespace || null,
     origin: "overleaf",
     originUrl: buildOverleafDocumentUrl(target.overleafProjectId),
@@ -4931,6 +4975,12 @@ async function routeRequest(request, response, state) {
     const result = await handleProjectIdentity({
       overleafProjectId: url.searchParams.get("overleafProjectId") || ""
     }, state);
+    sendJson(response, result.statusCode, result.body);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/project/identity/default-name") {
+    const result = await handleProjectDefaultName(await readBodyJson(request), state);
     sendJson(response, result.statusCode, result.body);
     return;
   }
@@ -5861,7 +5911,7 @@ function targetKey({ targetKind, targetLabel }) {
   return `${targetKind}:${targetLabel}`;
 }
 
-function buildLeaTarget({ leaRepoPath, overleafProjectId, targetKind, targetLabel, projectName = "", projectNamespace = "" }) {
+function buildLeaTarget({ leaRepoPath, overleafProjectId, targetKind, targetLabel, projectName = "", projectNamespace = "", overleafProjectTitle = null }) {
   const projectSlug = slugProjectId(overleafProjectId);
   const projectMarkdownPath = buildLeaProjectMarkdownPath({ leaRepoPath, overleafProjectId });
   return {
@@ -5870,6 +5920,7 @@ function buildLeaTarget({ leaRepoPath, overleafProjectId, targetKind, targetLabe
     projectSlug,
     leaRepoPath,
     projectName: suggestedProjectName({ overleafProjectId, projectName }),
+    overleafProjectTitle,
     projectNamespace: String(projectNamespace || "").trim() || null,
     targetKind,
     targetLabel,
@@ -6374,6 +6425,7 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
     autoApprove: true,
     projectSlug: target.projectSlug || null,
     projectTitle: target.projectName || target.projectSlug || null,
+    overleafProjectTitle: target.overleafProjectTitle ?? null,
     projectNamespace: target.projectNamespace || job.projectNamespace || null,
     origin: "overleaf",
     originUrl: buildOverleafDocumentUrl(target.overleafProjectId),

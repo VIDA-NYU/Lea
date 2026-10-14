@@ -183,13 +183,14 @@ export function fetchAdapterUsageStats({ fetchImpl, baseUrl, timeoutMs = ADAPTER
 // The adapter reconciles synchronously and defers the git commit, so this returns
 // quickly; `files` is `[{ path, content }]`. Best-effort: a transport
 // failure surfaces as `{ ok:false }` and the caller logs/ignores it.
-export function mirrorProjectTexFiles({ fetchImpl, baseUrl, slug, files, mode = "reconcile" }) {
+export function mirrorProjectTexFiles({ fetchImpl, baseUrl, slug, files, mode = "reconcile", overleafProjectTitle = null }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/mirror`, {
     method: "POST",
     headers: buildHeaders(null, { "Content-Type": "application/json" }),
     // mode "upsert" (PLAN 3.2) writes only the provided files — the active-
     // buffer tier; "reconcile" treats the payload as the full truth set.
-    body: JSON.stringify({ source: "overleaf", mode, files: files || [] }),
+    body: JSON.stringify({ source: "overleaf", mode, files: files || [],
+      ...(overleafProjectTitle != null ? { overleaf_project_title: overleafProjectTitle } : {}) }),
   });
 }
 
@@ -276,6 +277,14 @@ export function fetchProjectIdentityBySlug({ fetchImpl, baseUrl, slug }) {
   });
 }
 
+export function initializeOverleafDefaultName({ fetchImpl, baseUrl, slug, overleafProjectTitle }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/identity/default-name`, {
+    method: "POST",
+    headers: buildHeaders(null, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ overleaf_project_title: overleafProjectTitle }),
+  });
+}
+
 export function previewProjectNamespace({ fetchImpl, baseUrl, projectName, namespace = null, excludeProjectId = null }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/projects/namespace-preview`, {
     method: "POST",
@@ -297,6 +306,7 @@ export function updateProjectIdentityBySlug({
   namespace = null,
   expectedNamespace = null,
   createIfMissing = false,
+  overleafProjectTitle = null,
 }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/identity`, {
     method: "PUT",
@@ -306,7 +316,8 @@ export function updateProjectIdentityBySlug({
       mode,
       namespace,
       expected_namespace: expectedNamespace,
-      create_if_missing: Boolean(createIfMissing)
+      create_if_missing: Boolean(createIfMissing),
+      ...(overleafProjectTitle != null ? { overleaf_project_title: overleafProjectTitle } : {})
     }),
   });
 }
@@ -429,6 +440,7 @@ export async function startApiRun({
   autonomous = true,
   projectSlug = null,
   projectTitle = null,
+  overleafProjectTitle = null,
   projectNamespace = null,
   origin = null,
   originUrl = null,
@@ -471,6 +483,7 @@ export async function startApiRun({
   if (projectSlug) {
     body.project_slug = projectSlug;
     body.project_title = projectTitle || projectSlug;
+    if (overleafProjectTitle != null) body.overleaf_project_title = overleafProjectTitle;
     if (projectNamespace) body.project_namespace = projectNamespace;
   }
   if (origin) body.origin = origin;
@@ -803,6 +816,7 @@ export async function runApiProofJob({
   autonomous = true,
   projectSlug = null,
   projectTitle = null,
+  overleafProjectTitle = null,
   projectNamespace = null,
   origin = null,
   originUrl = null,
@@ -832,6 +846,7 @@ export async function runApiProofJob({
     autonomous,
     projectSlug,
     projectTitle,
+    overleafProjectTitle,
     projectNamespace,
     origin,
     originUrl,

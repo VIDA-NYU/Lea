@@ -64,7 +64,7 @@ def test_overleaf_policy_backfills_only_recorded_provenance(tmp_path, monkeypatc
     assert historical_row["pending_approval"]["approval_id"] == "keep"
     assert historical_row["status"] == "pending"
     db.init_db()
-    assert migrations.current_revision() == "0034_overleaf_approval_policy"
+    assert migrations.current_revision() == "0035_overleaf_project_names"
     assert store.get_run("historical-run")["approval_mode"] == "stepwise"
 
 

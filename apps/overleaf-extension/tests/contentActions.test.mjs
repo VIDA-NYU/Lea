@@ -3468,8 +3468,109 @@ test("Lea tag setup remains available when an empty inventory cannot reach the c
   assert.match(h.bodyText(), /Companion is offline/);
 });
 
+test("opening an Overleaf project adopts its browser title without downloading or creating source mirrors", async () => {
+  const identity = { projectId: "existing", slug: "project-1", overleafProjectId: "project-1",
+    projectName: "project-1", nameSource: "generated", namespace: "Lea.Project1", exists: true };
+  const h = createContentHarness({ status: "unformalized" }, {}, {
+    documentTitle: "Topology Notes — Overleaf", projectIdentity: identity,
+    fetchOverride(url, options) {
+      if (url.endsWith("/project/identity/default-name")) return { ok: true, status: 200,
+        json: async () => ({ identity: { ...identity, projectName: "Topology Notes", nameSource: "overleaf" } }) };
+    }
+  });
+  await h.loadVisibleTheorems({ activeTex: "\\title{Different paper title}\nText" });
+  await flushPromises();
+  const call = h.fetchCalls.find(c => c.url.endsWith("/project/identity/default-name"));
+  assert.ok(call);
+  assert.deepEqual(JSON.parse(call.options.body), { overleafProjectId: "project-1", overleafProjectTitle: "Topology Notes" });
+  assert.equal(h.fetchCalls.some(c => /download\/zip|mirror-tex|\/formalize$/.test(c.url)), false);
+  h.clickPaneTrigger();
+  await flushPromises();
+  assert.match(h.document.querySelector(".ol-lean-project-pane-titlewrap").textContent, /Topology Notes/);
+});
+
+test("opening a previously untouched named project uses only the existing-project endpoint", async () => {
+  const h = createContentHarness({ status: "unformalized" }, {}, {
+    documentTitle: "Untouched - Overleaf",
+    projectIdentity: { exists: false, nameSource: "generated", projectName: "Overleaf Project" },
+    fetchOverride(url) {
+      if (url.endsWith("/project/identity/default-name")) return { ok: false, status: 404,
+        json: async () => ({ error: "project_missing" }) };
+    }
+  });
+  await h.loadVisibleTheorems();
+  assert.equal(h.fetchCalls.filter(c => c.options?.method === "PUT").length, 0);
+  assert.equal(h.fetchCalls.some(c => /download\/zip|mirror-tex/.test(c.url)), false);
+});
+
+for (const [documentTitle, activeTitle, expected, mirrorEnabled] of [
+  ["Source Name - Overleaf", "Other Title", "Source Name", true],
+  ["Overleaf", "Paper Title", "Paper Title", true],
+  ["", "", "", true],
+  ["No Mirror – Overleaf", "Other Title", "No Mirror", false],
+]) {
+  test(`formalization carries the source title separately (${documentTitle || "missing title"}, mirror ${mirrorEnabled})`, async () => {
+    const h = createContentHarness({ status: "unformalized" }, {}, {
+      documentTitle, companionSettings: { leaTexMirrorEnabled: mirrorEnabled },
+      fetchOverride(url) {
+        if (url.includes("/download/zip")) {
+          // Stored main.tex entry; collectProjectTexFiles overlays the live buffer.
+          const zip = Buffer.from("UEsDBBQAAAAAAPW5TV0AAAAAAAAAAAAAAAAIAAAAbWFpbi50ZXhQSwECFAMUAAAAAAD1uU1dAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAgAEAAAAAbWFpbi50ZXhQSwUGAAAAAAEAAQA2AAAAJgAAAAAA", "base64");
+          return { ok: true, arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength) };
+        }
+      }
+    });
+    await h.loadVisibleTheorems({ activeTex: `${activeTitle ? `\\title{${activeTitle}}\n` : ""}\\begin{theorem}\n% lea: formalize label=demo_theorem\nA theorem.\n\\end{theorem}` });
+    h.openTargetPopover();
+    h.clickButtonText("Formalize");
+    await flushPromises();
+    const call = h.fetchCalls.find(c => c.url.endsWith("/formalize"));
+    assert.ok(call);
+    const body = JSON.parse(call.options.body);
+    assert.equal(body.overleafProjectTitle, expected);
+    assert.notEqual(body.projectName, undefined);
+    const mirrors = h.fetchCalls.filter(c => c.url.endsWith("/mirror-tex"));
+    if (mirrorEnabled) {
+      assert.ok(mirrors.length);
+      assert.equal(JSON.parse(mirrors[0].options.body).overleafProjectTitle, expected);
+      await h.loadVisibleTheorems({ activeTex: "\\title{Changed paper title}\nEdited source" });
+      await h.runScheduledTimers();
+      const upsert = h.fetchCalls.find(c => c.url.endsWith("/mirror-tex") && JSON.parse(c.options.body).mode === "upsert");
+      assert.ok(upsert, "activated mirroring should send the edited active buffer");
+      assert.equal(JSON.parse(upsert.options.body).overleafProjectTitle,
+        documentTitle && documentTitle !== "Overleaf" ? expected : "Changed paper title");
+    } else assert.equal(mirrors.length, 0);
+  });
+}
+
+test("Formalize all carries the Overleaf title on every queued item without source mirroring", async () => {
+  const items = ["first", "second"].map((label, index) => ({
+    id: `theorem:${label}:${index}`, kind: "theorem", label, status: "missing-stub",
+    sourceFile: "main.tex", sourceStartLine: index + 1, sourceEndLine: index + 1,
+    naturalLanguageLatex: `Theorem ${label}.`, leanKind: "theorem", formalizable: true
+  }));
+  const h = createContentHarness({ status: "unformalized" }, {}, {
+    documentTitle: "Batch Notes - Overleaf", companionSettings: { leaTexMirrorEnabled: false },
+    manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
+    targetBatch: { ok: true, batchId: "batch", operation: "formalize", done: false, running: true,
+      items: items.map(item => ({ targetKind: "theorem", targetLabel: item.label, state: "pending" })) }
+  });
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  h.clickButtonText("Formalize all (2)");
+  await flushPromises();
+  const call = h.fetchCalls.find(c => c.url.endsWith("/formalize/all"));
+  assert.ok(call);
+  const body = JSON.parse(call.options.body);
+  assert.equal(body.items.length, 2);
+  assert.ok(body.items.every(item => item.overleafProjectTitle === "Batch Notes" && item.projectName === "Test Project"));
+  assert.equal(h.fetchCalls.some(c => c.url.endsWith("/mirror-tex")), false);
+});
+
 function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
   const document = new FakeDocument();
+  document.title = options.documentTitle || "";
   const timers = [];
   const fetchCalls = [];
   const runtimeMessages = [];

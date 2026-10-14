@@ -114,14 +114,55 @@ def namespace_preview(
     }
 
 
-def unique_namespace_for_project_name(name: str) -> str:
+def unique_namespace_for_project_name(name: str, *, conn=None, proofs_root: Path | None = None) -> str:
     base = namespace_from_project_name(name)
-    if store.get_project_by_namespace(base) is None:
-        return base
-    n = 2
-    while store.get_project_by_namespace(f"{base}{n}") is not None:
-        n += 1
-    return f"{base}{n}"
+
+    def available(candidate):
+        if conn is not None:
+            taken = any(row[0].casefold() == candidate.casefold()
+                        for row in conn.execute("select namespace from projects"))
+        else:
+            taken = store.get_project_by_namespace(candidate) is not None
+        return not taken and (proofs_root is None or not (proofs_root / Path(candidate.replace('.', '/'))).exists())
+
+    candidate, n = base, 2
+    while not available(candidate):
+        candidate, n = f"{base}{n}", n + 1
+    return candidate
+
+
+def _unique_default_name(conn, title: str, *, exclude_project_id: str | None = None) -> str:
+    taken = {row["title"].strip().casefold() for row in conn.execute(
+        "select id, title from projects") if row["id"] != exclude_project_id}
+    candidate, n = title, 2
+    while candidate.casefold() in taken:
+        candidate, n = f"{title} ({n})", n + 1
+    return candidate
+
+
+def _adopt_overleaf_name(conn, project: dict, title: str, proofs_root: Path | None) -> dict:
+    title = str(title or "").strip()
+    if not title or project["name_source"] != "generated":
+        return project
+    title = _unique_default_name(conn, title, exclude_project_id=project["id"])
+    if proofs_root is not None:
+        refresh_project_title_docs(project, proofs_root, title)
+    conn.execute("update projects set title = ?, name_source = 'overleaf', updated_at = ? where id = ?",
+                 (title, store.utc_now(), project["id"]))
+    return store._normalize_project(store.row_to_dict(
+        conn.execute("select * from projects where id = ?", (project["id"],)).fetchone()))
+
+
+def adopt_overleaf_project_name(slug: str, proofs_root: Path | None, title: str) -> dict:
+    """Initialize an existing generated name once; never create on a tab open."""
+    existing = store.get_project_by_slug(slug)
+    if existing is None:
+        raise ProjectIdentityError("project_missing", "No Lea project exists for this document yet.", status=404)
+    with project_coordination.mutation(existing["id"]), store.write() as conn:
+        row = conn.execute("select * from projects where id = ?", (existing["id"],)).fetchone()
+        if row is None:
+            raise ProjectIdentityError("project_missing", "Project no longer exists.", status=404)
+        return _adopt_overleaf_name(conn, store._normalize_project(store.row_to_dict(row)), title, proofs_root)
 
 
 def project_repo_dir(project: dict, proofs_root: Path) -> Path:
@@ -143,6 +184,7 @@ def project_identity(project: dict, *, overleaf_project_id: str | None = None) -
         "overleafProjectId": overleaf_project_id or project["slug"],
         "slug": project["slug"],
         "projectName": project["title"],
+        "nameSource": project["name_source"],
         "namespace": project["namespace"],
         "namespaceEditable": True,
         "repoPath": project.get("repo_path"),
@@ -460,16 +502,18 @@ def provision_project(
 
     Row first, then disk; if the repo build fails the row is rolled back so a failed
     provision leaves nothing behind."""
-    slug = unique_slug(title)
-    namespace = store.project_namespace_for_slug(slug)
-    repo_path = store.repo_path_for_namespace(namespace)
-    project = store.create_project(
-        slug,
-        title=title.strip() or slug,
-        description=(description or None),
-        namespace=namespace,
-        repo_path=repo_path,
-    )
+    with store.write() as conn:
+        base, slug, n = slugify(title), slugify(title), 2
+        while conn.execute("select 1 from projects where slug = ?", (slug,)).fetchone():
+            slug, n = f"{base[:79-len(str(n))]}-{n}", n + 1
+        namespace = store.project_namespace_for_slug(slug)
+        taken = {row[0].casefold() for row in conn.execute("select namespace from projects")}
+        if namespace.casefold() in taken or (proofs_root / Path(namespace.replace('.', '/'))).exists():
+            namespace = unique_namespace_for_project_name(title, conn=conn, proofs_root=proofs_root)
+        project = store.create_project(
+            slug, title=title.strip() or slug, description=(description or None),
+            namespace=namespace, repo_path=store.repo_path_for_namespace(namespace), conn=conn,
+        )
     try:
         _provision_repo(project, proofs_root, overwrite=True)
     except Exception:
@@ -484,6 +528,9 @@ def ensure_project(
     proofs_root: Path | None,
     title: str | None = None,
     namespace: str | None = None,
+    *,
+    overleaf_project_title: str | None = None,
+    name_source: str | None = None,
 ) -> dict:
     """Get-or-create a project by slug (the Overleaf path) AND ensure its on-disk repo is
     provisioned with the seeded ``.lea/*.md`` docs — the idempotent, slug-keyed analogue
@@ -496,19 +543,30 @@ def ensure_project(
     provisioning is best-effort — the index row is the source of truth and is always
     returned; a missing ``proofs_root`` (lea_root unconfigured) just skips the disk half."""
     existing = store.get_project_by_slug(slug)
-    if existing:
-        project = existing
-    else:
-        project_title = (title or slug).strip() or slug
-        ns = normalize_namespace(namespace, project_title) if namespace else unique_namespace_for_project_name(project_title)
-        if store.get_project_by_namespace(ns) is not None:
-            ns = unique_namespace_for_project_name(project_title)
-        project = store.create_project(
-            slug,
-            title=project_title,
-            namespace=ns,
-            repo_path=store.repo_path_for_namespace(ns),
-        )
+    with project_coordination.mutation(existing["id"] if existing else None), store.write() as conn:
+        row = conn.execute("select * from projects where slug = ?", (slug,)).fetchone()
+        if row:
+            project = store._normalize_project(store.row_to_dict(row))
+            if overleaf_project_title is not None:
+                project = _adopt_overleaf_name(conn, project, overleaf_project_title, proofs_root)
+        else:
+            if overleaf_project_title is not None:
+                source_title = overleaf_project_title.strip()
+                project_title = _unique_default_name(conn, source_title or "Overleaf Project")
+                source = "overleaf" if source_title else "generated"
+                # The supplied namespace can be a stale URL-derived fallback.
+                namespace = None
+            else:
+                project_title = (title or slug).strip() or slug
+                defaults = {slug, store.project_namespace_for_slug(slug)[4:], "Overleaf Project"}
+                source = "generated" if project_title in defaults else "custom"
+            ns = normalize_namespace(namespace, project_title) if namespace else None
+            if ns is None or any(r[0].casefold() == ns.casefold() for r in conn.execute("select namespace from projects")):
+                ns = unique_namespace_for_project_name(project_title, conn=conn, proofs_root=proofs_root)
+            project = store.create_project(
+                slug, title=project_title, namespace=ns,
+                repo_path=store.repo_path_for_namespace(ns), name_source=name_source or source, conn=conn,
+            )
     if proofs_root is not None:
         try:
             _provision_repo(project, proofs_root, overwrite=False)
@@ -565,7 +623,7 @@ def refresh_project_title_docs(project: dict, proofs_root: Path, title: str) -> 
     if not new_title or old_title == new_title:
         return None
     repo = project_repo_dir(project, proofs_root)
-    changed = False
+    changed_paths: list[str] = []
     for name in EDITABLE_DOCS:
         path = repo / ".lea" / name
         try:
@@ -581,10 +639,10 @@ def refresh_project_title_docs(project: dict, proofs_root: Path, title: str) -> 
         updated = _rewrite_project_doc_title(original, old_title, new_title)
         if updated != original:
             path.write_text(updated)
-            changed = True
-    if not changed:
+            changed_paths.append(path.relative_to(repo).as_posix())
+    if not changed_paths:
         return None
-    return GitStore(proofs_root).commit_all(repo, f"rename project title: {old_title} -> {new_title}")
+    return GitStore(proofs_root).commit_all(repo, f"rename project title: {old_title} -> {new_title}", paths=changed_paths)
 
 
 def _project_has_active_runs(project_id: str) -> bool:

@@ -44,6 +44,18 @@ def _setup(tmp_path, monkeypatch):
     return _fresh_registry(monkeypatch)
 
 
+def test_create_run_uses_overleaf_title_without_a_source_mirror(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    result = runs_route.create_run(RunRequest(message="prove this", project_slug="opaque-overleaf-id",
+        project_title="Old fallback", project_namespace="Lea.OpaqueId", origin="overleaf",
+        overleaf_project_title="Readable Notes"))
+    project = store.get_project_by_slug("opaque-overleaf-id")
+    assert project["title"] == "Readable Notes"
+    assert project["namespace"] == "Lea.ReadableNotes"
+    assert project["name_source"] == "overleaf"
+    assert result["project_namespace"] == "Lea.ReadableNotes"
+
+
 def test_create_run_tags_session_and_run_with_project_slug(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     result = runs_route.create_run(

@@ -78,6 +78,7 @@
   let texMirrorSyncedOnce = false;
   let texMirrorSyncTimer = null;
   let texMirrorSyncPromise = null;
+  let defaultNameLoadedProjectId = "";
   // When the last zip-download full sync ran (PLAN 3.2): ordinary edits ship
   // only the active buffer; the zip refresh happens on this cadence.
   let lastTexMirrorFullSyncAt = 0;
@@ -109,6 +110,7 @@
       latestBaseStatuses = {};
       latestStatuses = {};
       lastProjectIdentity = null;
+      defaultNameLoadedProjectId = "";
       lastLeanPaneManifest = null;
       leanPaneBlueprintGraph = null;
     }
@@ -408,6 +410,7 @@
       latestActiveTex = nextActiveTex;
       latestActiveTexPath = typeof event.data.activePath === "string" ? event.data.activePath : latestActiveTexPath;
       latestActiveTexProjectId = nextProjectId;
+      initializeOverleafNameOnOpen(nextProjectId, nextActiveTex).catch(() => {});
       const revision = `${nextProjectId}\0${normalizeDocPath(latestActiveTexPath)}\0${nextActiveTex}`;
       if (resolvedTargetsRevision === revision) {
         for (const target of latestTargets) {
@@ -2715,13 +2718,37 @@
   function renderLeanPaneProjectIdentity(identity) {
     if (!leanPaneProjectTitle || !leanPaneProjectNamespace) return;
     const fallback = guessProjectName(lastLeanPaneFiles || []);
-    leanPaneProjectTitle.textContent = identity?.projectName || fallback;
+    leanPaneProjectTitle.textContent = identity?.exists === false ? fallback : identity?.projectName || fallback;
     leanPaneProjectNamespace.textContent = identity?.namespace || "Namespace not created yet";
+  }
+
+  async function initializeOverleafNameOnOpen(projectId, activeTex) {
+    if (!projectId || projectId === "unknown" || defaultNameLoadedProjectId === projectId) return;
+    const overleafProjectTitle = readOverleafProjectTitle([{ content: activeTex }]);
+    if (!overleafProjectTitle) return;
+    defaultNameLoadedProjectId = projectId;
+    try {
+      const settings = await getSettings();
+      const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
+      const generation = displayGeneration;
+      const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/project/identity/default-name`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overleafProjectId: projectId, overleafProjectTitle })
+      }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+        timeoutMessage: "The Lea companion timed out while initializing the project name." });
+      if (!response.ok && response.status !== 404) throw companionRequestError(response, payload);
+      if (projectId === extractOverleafProjectId() && generation === displayGeneration && response.ok && payload.identity) {
+        lastProjectIdentity = payload.identity;
+        renderLeanPaneProjectIdentity(lastProjectIdentity);
+      }
+    } catch {
+      if (defaultNameLoadedProjectId === projectId) defaultNameLoadedProjectId = "";
+    }
   }
 
   async function loadProjectIdentity({ baseUrl, projectId }) {
     const request = displayRequest("identity");
-    const { response, payload } = await fetchJsonWithTimeout(
+    let { response, payload } = await fetchJsonWithTimeout(
       `${baseUrl}/project/identity?overleafProjectId=${encodeURIComponent(projectId)}`,
       {},
       {
@@ -2731,6 +2758,23 @@
     );
     if (!currentDisplayRequest(request)) throw Object.assign(new Error("A newer project request superseded this response."), { code: "superseded" });
     if (!response.ok) throw companionRequestError(response, payload);
+    const overleafProjectTitle = readOverleafProjectTitle(lastLeanPaneFiles || []);
+    if (payload.identity?.exists && payload.identity.nameSource === "generated" && overleafProjectTitle) {
+      try {
+        const initialized = await fetchJsonWithTimeout(`${baseUrl}/project/identity/default-name`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ overleafProjectId: projectId, overleafProjectTitle })
+        }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+          timeoutMessage: "The Lea companion timed out while initializing the project name." });
+        if (!currentDisplayRequest(request)) throw Object.assign(new Error("A newer project request superseded this response."), { code: "superseded" });
+        if (initialized.response.ok && initialized.payload.identity) payload = initialized.payload;
+        else if (initialized.response.status === 409) throw companionRequestError(initialized.response, initialized.payload);
+      } catch (error) {
+        if (error?.code === "superseded" || error?.code === "project_renaming") throw error;
+        // Naming is best-effort on tab open; the next identity load retries.
+      }
+    }
     if (!acceptDisplayResponse(request, payload.identity?.namespaceRevision)) {
       throw Object.assign(new Error("A newer project request superseded this response."), { code: "superseded" });
     }
@@ -2777,13 +2821,18 @@
     return payload;
   }
 
-  function guessProjectName(files = []) {
-    for (const file of files || []) {
+  function readOverleafProjectTitle(files = []) {
+    const title = String(document.title || "").replace(/\s*[-–—]\s*Overleaf\s*$/i, "").trim();
+    if (title && !/^Overleaf$/i.test(title)) return title;
+    for (const file of [{ content: latestActiveTex }, ...(files || [])]) {
       const match = String(file?.content || "").match(/\\title\s*\{([^}]*)\}/);
       if (match?.[1]?.trim()) return match[1].trim();
     }
-    const title = String(document.title || "").replace(/\s*-\s*Overleaf\s*$/i, "").trim();
-    return title || "Overleaf Project";
+    return "";
+  }
+
+  function guessProjectName(files = []) {
+    return readOverleafProjectTitle(files) || "Overleaf Project";
   }
 
   function renderProjectIdentityFeedback({ source = "lean-pane", popover = null, message = "", kind = "info" } = {}) {
@@ -2818,7 +2867,7 @@
   function buildProjectIdentityEditor({ source, popover, trigger, baseUrl, projectId, identity }) {
     closeProjectIdentityEditor({ restoreFocus: false });
 
-    const currentName = String(identity?.projectName || guessProjectName(lastLeanPaneFiles || [])).trim();
+    const currentName = String((identity?.exists !== false && identity?.projectName) || guessProjectName(lastLeanPaneFiles || [])).trim();
     const currentNamespace = String(identity?.namespace || "").trim();
     const shell = createProjectIdentityElement("div", "ol-lean-project-identity-backdrop");
     const dialog = createProjectIdentityElement("section", "ol-lean-project-identity-dialog");
@@ -5731,6 +5780,7 @@
       const mirrorResult = await syncTexMirrorNow({ force: true });
       leanPaneChatTarget = {
         ...leanPaneChatTarget,
+        overleafProjectTitle: readOverleafProjectTitle(lastLeanPaneFiles || []),
         ...(await buildFormalizationSourceContext(leanPaneChatTarget, {
           verifyMirror: mirrorResult?.disabled !== true,
           mirrorSnapshot: mirrorResult
@@ -7326,6 +7376,7 @@
         targetContext: target.targetContext || "",
         syntax: target.syntax || "comment",
         projectName: lastProjectIdentity?.projectName || guessProjectName(lastLeanPaneFiles || []),
+        overleafProjectTitle: readOverleafProjectTitle(lastLeanPaneFiles || []),
         projectNamespace: lastProjectIdentity?.namespace || "",
         sourceHash: await sha256(normalizeTargetText(target.targetText)),
         resume: target.resume === true,
@@ -7366,6 +7417,7 @@
         targetContext: target.targetContext || "",
         syntax: target.syntax || "comment",
         projectName: lastProjectIdentity?.projectName || guessProjectName(lastLeanPaneFiles || []),
+        overleafProjectTitle: readOverleafProjectTitle(lastLeanPaneFiles || []),
         projectNamespace: lastProjectIdentity?.namespace || "",
         sourceHash: await sha256(normalizeTargetText(target.targetText)),
         ...sourceContext
@@ -7401,6 +7453,7 @@
         syntax: target.syntax || "comment",
         projectName,
         projectNamespace,
+        overleafProjectTitle: readOverleafProjectTitle(lastLeanPaneFiles || []),
         sourceHash: await sha256(normalizeTargetText(target.targetText)),
         ...sourceContext
       };
@@ -7684,12 +7737,17 @@
           body: JSON.stringify({
             overleafProjectId: projectId,
             mode: "upsert",
+            overleafProjectTitle: readOverleafProjectTitle(lastMirrorFiles || []),
             files: [{ path: activeRel, content: latestActiveTex }]
           })
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+        }
+        if (projectId === extractOverleafProjectId() && payload.identity) {
+          lastProjectIdentity = payload.identity;
+          renderLeanPaneProjectIdentity(lastProjectIdentity);
         }
         lastMirrorFiles = lastMirrorFiles.map((file) =>
           file.path === activeRel ? { ...file, content: latestActiveTex } : file
@@ -7717,11 +7775,15 @@
       const response = await fetch(`${baseUrl}/mirror-tex`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ overleafProjectId: projectId, files })
+        body: JSON.stringify({ overleafProjectId: projectId, files, overleafProjectTitle: readOverleafProjectTitle(files) })
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+      }
+      if (projectId === extractOverleafProjectId() && payload.identity) {
+        lastProjectIdentity = payload.identity;
+        renderLeanPaneProjectIdentity(lastProjectIdentity);
       }
       lastMirrorFiles = files;
       lastMirrorProjectId = projectId;
@@ -8448,7 +8510,7 @@
     const namespace = popover.querySelector("[data-role='project-namespace']");
     const binding = popover.querySelector("[data-role='project-binding']");
     const fallback = guessProjectName(lastLeanPaneFiles || []);
-    if (projectName) projectName.textContent = identity?.projectName || fallback;
+    if (projectName) projectName.textContent = identity?.exists === false ? fallback : identity?.projectName || fallback;
     if (exists) exists.textContent = identity?.exists ? "Created" : "Not created";
     if (namespace) namespace.textContent = `Lean namespace: ${identity?.namespace || "--"}`;
     if (binding) binding.textContent = `Overleaf binding: ${identity?.slug || extractOverleafProjectId() || "--"}`;
