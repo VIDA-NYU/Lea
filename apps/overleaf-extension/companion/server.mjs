@@ -68,6 +68,7 @@ import {
   findLatestJob,
   jobRecency,
   jobsByRecencyDesc,
+  projectActivitySnapshot,
   pruneJobs
 } from "./jobStore.mjs";
 import { createEventBus, publishEvent } from "./eventBus.mjs";
@@ -479,6 +480,12 @@ async function getStatusesSnapshot(payload, state, identity) {
   const targets = Array.isArray(payload.targets) ? payload.targets : [];
   const statuses = {};
   const overleafProjectId = payload.overleafProjectId || "unknown";
+  if (targets.length === 0) {
+    return { statusCode: 200, body: {
+      statuses,
+      projectActivity: projectActivitySnapshot(state.jobs, state.repairBatches, overleafProjectId)
+    } };
+  }
   const ledgerSnapshot = await fetchInventoryLedger({ state, overleafProjectId, identity,
     targets: targets.map((item) => ({ targetKind: normalizeTargetKind(item?.targetKind),
       targetLabel: String(item?.targetLabel || "") })) });
@@ -562,7 +569,10 @@ async function getStatusesSnapshot(payload, state, identity) {
     };
   }
 
-  return { statusCode: 200, body: { statuses } };
+  return { statusCode: 200, body: {
+    statuses,
+    projectActivity: projectActivitySnapshot(state.jobs, state.repairBatches, overleafProjectId)
+  } };
 }
 
 export async function handleFormalize(payload, state, { batch = false } = {}) {

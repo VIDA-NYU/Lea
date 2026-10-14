@@ -83,6 +83,9 @@
   // only the active buffer; the zip refresh happens on this cadence.
   let lastTexMirrorFullSyncAt = 0;
   let latestStatuses = {};
+  let latestProjectActivity = null;
+  let leaActivityStatus = null;
+  const pendingFormalizations = new Set();
   // One project-scoped reconciliation loop. Request generations prevent an old
   // response from repainting statuses or code after a rename (or navigation).
   let displayProjectId = "";
@@ -109,12 +112,14 @@
     if (hadProject) {
       latestBaseStatuses = {};
       latestStatuses = {};
+      latestProjectActivity = null;
       lastProjectIdentity = null;
       defaultNameLoadedProjectId = "";
       lastLeanPaneManifest = null;
       leanPaneBlueprintGraph = null;
     }
     renderRenameNotice();
+    renderLeaActivity();
   }
 
   function displayRequest(surface) {
@@ -437,6 +442,7 @@
   requestTargetsSoon();
   renderSettingsButton();
   renderLeanPaneButton();
+  scheduleStatusRefresh();
   refreshApiKeyNudge();
   hydrateLeanPaneWidthFromStorage();
   hydrateSettingsPopoverWidthFromStorage();
@@ -587,6 +593,15 @@
     mark.setAttribute("aria-hidden", "true");
     mark.textContent = "L";
     leanPaneButton.appendChild(mark);
+    const spinner = document.createElement("span");
+    spinner.className = "ol-lean-activity-spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    leanPaneButton.appendChild(spinner);
+    const label = document.createElement("span");
+    label.className = "ol-lean-activity-label";
+    label.setAttribute("aria-hidden", "true");
+    label.textContent = "Lea is working…";
+    leanPaneButton.appendChild(label);
     leanPaneButton.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -597,6 +612,40 @@
       }
     });
     (document.body || document.documentElement).appendChild(leanPaneButton);
+    leaActivityStatus = document.createElement("span");
+    leaActivityStatus.className = "ol-lean-sr-only";
+    leaActivityStatus.setAttribute("role", "status");
+    leaActivityStatus.setAttribute("aria-live", "polite");
+    (document.body || document.documentElement).appendChild(leaActivityStatus);
+    renderLeaActivity();
+  }
+
+  function renderLeaActivity() {
+    if (!leanPaneButton) return;
+    const working = [...pendingFormalizations].some((pending) => pending.projectId === extractOverleafProjectId())
+      || (latestProjectActivity
+        ? latestProjectActivity.activeJobs > 0 || latestProjectActivity.activeBatches > 0
+        : Object.values(latestStatuses).some((status) => status.status === "in_progress" && !status.githubImportPending));
+    const wasWorking = leanPaneButton.classList.contains("is-working");
+    leanPaneButton.classList.toggle("is-working", working);
+    leanPaneButton.dataset.pageHidden = String(Boolean(document.hidden));
+    leanPaneButton.setAttribute("aria-expanded", String(Boolean(leanPane)));
+    const action = leanPane ? "Close Lean project pane" : "Open Lean project pane";
+    leanPaneButton.setAttribute("aria-label", working ? `${action} — Lea is working` : action);
+    leanPaneButton.title = working ? "Lea is working on formalization" : "Lean project pane";
+    if (leaActivityStatus && wasWorking !== working) {
+      leaActivityStatus.textContent = working ? "Lea is working on formalization." : "Lea is idle.";
+    }
+  }
+
+  function rememberStartedWork(projectId, field) {
+    if (projectId !== extractOverleafProjectId()) return;
+    // A status fetch started before admission must not erase the new run.
+    displayRequests.statuses = (displayRequests.statuses || 0) + 1;
+    latestProjectActivity = {
+      ...latestProjectActivity,
+      [field]: Math.max(1, latestProjectActivity?.[field] || 0)
+    };
   }
 
   function showLeanPane({ deferRefresh = false, preservePopover = false } = {}) {
@@ -735,6 +784,7 @@
     leanPane.appendChild(leanPaneStatus);
     leanPane.appendChild(leanPaneBody);
     document.body.appendChild(leanPane);
+    renderLeaActivity();
     renderRenameNotice();
     leanPane.focus({ preventScroll: true });
     if (!deferRefresh) {
@@ -783,6 +833,7 @@
     if (!leanPane) return;
     leanPane.remove();
     leanPane = null;
+    renderLeaActivity();
     renderRenameNotice();
     leanPaneBody = null;
     leanPaneStatus = null;
@@ -2301,6 +2352,7 @@
 
   // Keep refreshing while any item is still being formalized; stop once it settles.
   document.addEventListener("visibilitychange", () => {
+    renderLeaActivity();
     clearTimeout(renameRetryTimer);
     renameRetryTimer = null;
     if (!document.hidden && projectRenaming) { scheduleRenameReconciliation(0); return; }
@@ -7353,6 +7405,23 @@
   }
 
   async function formalize(target) {
+    const pending = { projectId: extractOverleafProjectId() };
+    pendingFormalizations.add(pending);
+    renderLeaActivity();
+    try {
+      const payload = await dispatchFormalization(target);
+      if (payload.status === "in_progress") {
+        rememberStartedWork(pending.projectId, "activeJobs");
+      }
+      return payload;
+    } finally {
+      pendingFormalizations.delete(pending);
+      renderLeaActivity();
+      scheduleStatusRefresh();
+    }
+  }
+
+  async function dispatchFormalization(target) {
     // A run must never begin against a mirror that failed to accept the live buffer.
     const mirrorResult = await syncTexMirrorNow({ force: true });
     if (target.resume === true) target = await currentResumeTarget(target);
@@ -7469,6 +7538,9 @@
     leanPaneRepairError = null;
     if (items.length === 0) return;
     const projectId = extractOverleafProjectId();
+    const pending = { projectId };
+    pendingFormalizations.add(pending);
+    renderLeaActivity();
     try {
       const mirrorResult = await syncTexMirrorNow({ force: true });
       const baseUrl = await chatCompanionBaseUrl();
@@ -7485,6 +7557,9 @@
       if (!response.ok) throw new Error(payload?.message || `Companion returned HTTP ${response.status}.`);
       if (projectId !== extractOverleafProjectId()) return;
       leanPaneRepairBatch = { ...payload, overleafProjectId: projectId };
+      if (!payload.done && !payload.pausedOn) {
+        rememberStartedWork(projectId, "activeBatches");
+      }
       leanPaneBatchNavigationStatus = null;
       leanPaneExpandedBatchQueueId = "";
       leanPaneExpandedBatchAttentionId = "";
@@ -7492,6 +7567,10 @@
       startRepairBatchPolling({ immediate: true });
     } catch (error) {
       leanPaneRepairError = { itemKey: errorKey, message: normalizeErrorMessage(error) };
+    } finally {
+      pendingFormalizations.delete(pending);
+      renderLeaActivity();
+      scheduleStatusRefresh();
     }
     renderLeanPaneManifest(lastLeanPaneManifest);
     scheduleLeanPaneRefresh();
@@ -7521,6 +7600,7 @@
     statusRefreshTimer = setTimeout(() => {
       refreshStatusesNow().catch((error) => {
         postStatusError(error);
+        scheduleStatusRefresh(STATUS_REFRESH_RECONCILE_MS);
       });
     }, delayMs);
   }
@@ -7536,11 +7616,6 @@
   }
 
   async function refreshStatusesSnapshot(request) {
-    if (latestTargets.length === 0) {
-      postStatuses({});
-      return true;
-    }
-
     await resolveVisibleTargets();
 
     const settings = await getSettings();
@@ -7578,14 +7653,15 @@
       target,
       statusInfo: statuses[targetKey(target)]
     })));
-    // Storage reconciliation can also outlive a rename.
-    if (request.generation !== displayGeneration || request.projectId !== extractOverleafProjectId()) return false;
+    // Storage reconciliation can outlive a rename or a newly admitted run.
+    if (!currentDisplayRequest(request)) return false;
+    latestProjectActivity = payload.projectActivity || null;
     postStatuses(statuses);
     if (activePopover?.dataset.targetKey) {
       const target = latestTargets.find((item) => targetKey(item) === activePopover.dataset.targetKey);
       if (target) updatePopoverStatus(activePopover, target);
     }
-    if (Object.values(latestStatuses).some((status) => (
+    if (latestProjectActivity?.activeJobs > 0 || latestProjectActivity?.activeBatches > 0 || Object.values(latestStatuses).some((status) => (
       status.status === "in_progress" && !status.githubImportPending
     ))) {
       scheduleStatusRefresh(pushConnected ? STATUS_REFRESH_RECONCILE_MS : STATUS_REFRESH_IN_PROGRESS_MS);
@@ -8000,6 +8076,7 @@
   function postStatuses(statuses) {
     latestBaseStatuses = statuses || {};
     latestStatuses = githubImportStatusOverlay(latestBaseStatuses);
+    renderLeaActivity();
     renderStatusBadges();
   }
 
@@ -9075,6 +9152,7 @@
       return;
     }
     if (type === "repair-batch-updated") {
+      scheduleStatusRefresh();
       if (!leanPaneRepairBatch?.batchId) return;
       if (data && data.batchId && data.batchId !== leanPaneRepairBatch.batchId) return;
       startRepairBatchPolling({ immediate: true });

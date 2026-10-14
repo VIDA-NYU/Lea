@@ -27,6 +27,135 @@ const CASES = [
   ["failed with sorry_stub effective status", { status: "failed", effectiveStatus: "sorry_stub" }, true]
 ];
 
+test("project activity remains visible with the pane closed and no editor targets", async () => {
+  let projectActivity = { activeJobs: 1, activeBatches: 0 };
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    fetchOverride: async (url) => url.endsWith("/statuses")
+      ? { ok: true, async json() { return { statuses: {}, projectActivity }; } }
+      : undefined
+  });
+  await harness.setVisibility(false);
+  await harness.runTimersAt(250);
+  const button = harness.document.body.querySelector(".ol-lean-pane-trigger");
+  assert.equal(button.classList.contains("is-working"), true);
+  assert.match(button.attributes["aria-label"], /Lea is working/);
+  assert.equal(harness.countSelector(".ol-lean-project-pane"), 0);
+  const request = harness.fetchCalls.find((call) => call.url.endsWith("/statuses"));
+  assert.deepEqual(JSON.parse(request.options.body).targets, []);
+
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickButtonLabel("Close Lean pane");
+  assert.equal(button.classList.contains("is-working"), true);
+  assert.equal(button.attributes["aria-expanded"], "false");
+
+  projectActivity = { activeJobs: 0, activeBatches: 0 };
+  await harness.runTimersAt(3000);
+  assert.equal(button.classList.contains("is-working"), false);
+  assert.equal(button.attributes["aria-label"], "Open Lean project pane");
+});
+
+test("a queued batch keeps the loading wheel active between items and stops when paused", async () => {
+  let projectActivity = { activeJobs: 0, activeBatches: 1 };
+  const harness = createContentHarness({ status: "formalized" }, {}, {
+    fetchOverride: async (url) => url.endsWith("/statuses")
+      ? { ok: true, async json() { return { statuses: {}, projectActivity }; } }
+      : undefined
+  });
+  await harness.loadStatusForVisibleTheorem();
+  const button = harness.document.body.querySelector(".ol-lean-pane-trigger");
+  assert.equal(button.classList.contains("is-working"), true);
+  projectActivity = { activeJobs: 0, activeBatches: 0 };
+  await harness.runTimersAt(3000);
+  assert.equal(button.classList.contains("is-working"), false);
+});
+
+test("the loading wheel starts during formalization admission and clears on rejection", async () => {
+  let rejectStart;
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    storage: { leaTexMirrorEnabled: false },
+    fetchOverride: async (url) => {
+      if (url.endsWith("/formalize")) return new Promise((resolve) => {
+        rejectStart = () => resolve({ ok: false, status: 400, async json() { return { message: "Cannot start this run." }; } });
+      });
+    }
+  });
+  await harness.loadStatusForVisibleTheorem();
+  harness.openTargetPopover();
+  harness.clickButtonText("Formalize");
+  const button = harness.document.body.querySelector(".ol-lean-pane-trigger");
+  assert.equal(button.classList.contains("is-working"), true);
+  await flushPromises();
+  assert.ok(rejectStart);
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickButtonLabel("Close Lean pane");
+  rejectStart();
+  await flushPromises();
+  assert.equal(button.classList.contains("is-working"), false);
+});
+
+test("a status response from before admission cannot clear a newly started formalization", async () => {
+  let releaseStatus;
+  let delayStatus = false;
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    storage: { leaTexMirrorEnabled: false },
+    fetchOverride: async (url) => {
+      if (!url.endsWith("/statuses")) return;
+      const response = { ok: true, async json() { return {
+        statuses: { "theorem:demo_theorem": { status: "unformalized" } },
+        projectActivity: { activeJobs: 0, activeBatches: 0 }
+      }; } };
+      if (delayStatus) return new Promise((resolve) => { releaseStatus = () => resolve(response); });
+      return response;
+    }
+  });
+  await harness.loadStatusForVisibleTheorem();
+  delayStatus = true;
+  await harness.runTimersAt(30000);
+  assert.ok(releaseStatus);
+  const releasePreviousStatus = releaseStatus;
+  harness.openTargetPopover();
+  harness.clickButtonText("Formalize");
+  await flushPromises();
+  const button = harness.document.body.querySelector(".ol-lean-pane-trigger");
+  assert.equal(button.classList.contains("is-working"), true);
+  releasePreviousStatus();
+  await flushPromises();
+  assert.equal(button.classList.contains("is-working"), true);
+  releaseStatus();
+  await flushPromises();
+  assert.equal(button.classList.contains("is-working"), false);
+});
+
+test("project activity retries after a companion outage and reconciles on tab visibility", async () => {
+  let failing = false;
+  let activeJobs = 1;
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    fetchOverride: async (url) => {
+      if (!url.endsWith("/statuses")) return;
+      if (failing) throw new Error("Companion unavailable");
+      return { ok: true, async json() { return { statuses: {}, projectActivity: { activeJobs, activeBatches: 0 } }; } };
+    }
+  });
+  await harness.loadStatusForVisibleTheorem();
+  const button = harness.document.body.querySelector(".ol-lean-pane-trigger");
+  await harness.setVisibility(true);
+  assert.equal(button.dataset.pageHidden, "true");
+  const callsWhileHidden = harness.fetchCalls.length;
+  await harness.runTimersAt(3000);
+  assert.equal(harness.fetchCalls.length, callsWhileHidden);
+  failing = true;
+  await harness.setVisibility(false);
+  await harness.runTimersAt(250);
+  assert.equal(button.dataset.pageHidden, "false");
+  assert.ok(harness.pendingTimers().includes(30000));
+  failing = false;
+  activeJobs = 0;
+  await harness.runTimersAt(30000);
+  assert.equal(button.classList.contains("is-working"), false);
+});
+
 for (const [name, statusInfo, shouldShow] of CASES) {
   test(`View in Lea UI visibility: ${name}`, async () => {
     const harness = createContentHarness(statusInfo);

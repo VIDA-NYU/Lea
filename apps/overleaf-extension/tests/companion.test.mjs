@@ -76,6 +76,33 @@ test("buildOverleafDocumentUrl builds the canonical public-Overleaf URL", () => 
   assert.equal(buildOverleafDocumentUrl(null), null);
 });
 
+test("statuses include project activity even with no visible targets", async () => {
+  const leaRepo = await makeLeaRepo();
+  const state = await makeState({ leaRepoPath: leaRepo });
+  state.jobs = {
+    hidden: { overleafProjectId: "project-1", status: "in_progress" },
+    paused: { overleafProjectId: "project-1", status: "paused" },
+    finished: { overleafProjectId: "project-1", status: "formalized" },
+    other: { overleafProjectId: "project-2", status: "in_progress" }
+  };
+  state.repairBatches = {
+    queued: { overleafProjectId: "project-1", done: false, pausedOn: null },
+    paused: { overleafProjectId: "project-1", done: false, pausedOn: { reason: "needs_review" } },
+    finished: { overleafProjectId: "project-1", done: true },
+    other: { overleafProjectId: "project-2", done: false }
+  };
+  const request = { overleafProjectId: "project-1", targets: [] };
+  const active = await handleGetStatuses(request, state);
+  assert.equal(active.statusCode, 200);
+  assert.deepEqual(active.body.statuses, {});
+  assert.deepEqual(active.body.projectActivity, { activeJobs: 1, activeBatches: 1 });
+
+  state.jobs.hidden.status = "failed";
+  state.repairBatches.queued.pausedOn = { reason: "needs_review" };
+  const settled = await handleGetStatuses(request, state);
+  assert.deepEqual(settled.body.projectActivity, { activeJobs: 0, activeBatches: 0 });
+});
+
 test("validates a Lea repo and derives its workspace", async () => {
   const leaRepo = await makeLeaRepo();
 
