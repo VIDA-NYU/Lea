@@ -1,13 +1,13 @@
 # `public/` — the Lea website
 
-Everything public-facing lives here: the marketing site, the install guide and the
+Everything public-facing lives here: the marketing site, the install and usage guides, and the
 blog. It is a static site with **no dependencies** — `node build.mjs` is the whole
 toolchain, so there is nothing to `npm install` before editing it.
 
 ```sh
 npm run site:dev      # build + serve at http://localhost:4321 (rebuilds on save)
 npm run site:build    # write public/dist for deployment
-npm run site:test     # unit tests for the Markdown renderer
+npm run site:test     # Markdown renderer and guide build tests
 ```
 
 Or, from inside `public/`: `node serve.mjs --watch`, `node build.mjs`,
@@ -22,6 +22,7 @@ public/
   serve.mjs            preview server
   content/
     install.md         the install guide
+    overleaf.md        the Overleaf extension usage guide
     blog/*.md          one file per blog post
   lib/
     markdown.mjs       Markdown → HTML (no dependencies)
@@ -59,9 +60,10 @@ Your first paragraph.
 Posts are sorted by `date`, newest first. Nothing else needs updating — the index,
 the Atom feed, `sitemap.xml`, `api/posts.json` and `llms.txt` are all generated.
 
-## Editing the install guide
+## Editing the guides
 
-`content/install.md` is one long Markdown document. Every `##` and `###` heading
+`content/install.md` and `content/overleaf.md` render at `/install/` and `/overleaf/`.
+Each is a Markdown document. Every `##` and `###` heading
 automatically becomes an entry in the sidebar table of contents, and its anchor is
 the slugified heading text — so renaming a heading changes its link.
 
@@ -105,6 +107,29 @@ The home page itself is `lib/pages/home.mjs` — hand-written HTML rather than
 Markdown, because its layout carries the argument. The architecture diagram is an
 inline SVG in that same file and follows the colour theme automatically.
 
+## The wordmark
+
+"Lea" is set in **IBM Plex Mono SemiBold** and filled with the brand ramp — blue
+into teal into the green the app uses for "proved", with a lighter version of the
+same ramp for dark backgrounds. Both live as `--font-wordmark` and `--ramp` in
+`site.css`, so anything that should carry the brand can just use those two.
+
+The glyphs are also outlined into `lib/wordmark.mjs`, which the header mark, the
+favicon and the repository README all share. Outlines rather than live text,
+because a favicon cannot load a webfont and GitHub will not run one either — this
+way the three surfaces cannot drift apart. The font itself ships subsetted to the
+three letters it needs, at 788 bytes.
+
+To change the typeface or the ramp, edit `scripts/build-wordmark.py` and run it:
+
+```sh
+uvx --with brotli --from fonttools python scripts/build-wordmark.py
+```
+
+That rewrites `lib/wordmark.mjs` and the two README images in `assets/img/`. It is
+the only part of the site that needs anything beyond Node, and only when the brand
+changes.
+
 ## Deploying
 
 `.github/workflows/site.yml` builds and publishes to GitHub Pages on every push to
@@ -115,8 +140,9 @@ Source → GitHub Actions**. Until then the workflow fails at `configure-pages` 
 *"Get Pages site failed … Not Found"*. The workflow cannot do this for you — creating
 a Pages site over the API is outside what `GITHUB_TOKEN` is permitted to do.
 
-The site is built for a project page at `/UnifiedLeaEcosystem/`. If you move it to a
-custom domain, set `origin` in `site.config.mjs` and build with `--base=/`:
+The site is built for a project page at `/Lea/`. If the repository is renamed, update
+`base` and `links.github` in `site.config.mjs` to match. If you move it to a custom
+domain, set `origin` in `site.config.mjs` and build with `--base=/`:
 
 ```sh
 node build.mjs --base=/ --origin=https://lea.example.org

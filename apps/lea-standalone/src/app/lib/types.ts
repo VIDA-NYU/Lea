@@ -1,3 +1,16 @@
+export interface UsageDetails {
+  version?: number;
+  cached_input_tokens?: number | null;
+  cache_write_tokens?: number | null;
+  reasoning_tokens?: number | null;
+  cost_basis?: 'provider_reported' | 'cache_aware_estimate' | 'legacy_estimate' | 'unavailable' | 'mixed';
+  basis_counts?: Record<string, number>;
+  unpriced_calls?: number;
+  details_missing_calls?: number;
+  response_model?: string;
+  service_tier?: string | null;
+}
+
 // LeaUI v2 frontend API client.
 //
 // One source of truth for the HTTP + SSE contract the v2 adapter exposes under
@@ -17,7 +30,8 @@ export type SessionStatus =
   | 'running'
   | 'proved'
   | 'defined'
-  | 'disproved';
+  | 'disproved'
+  | 'needs_review';
 // ── Run-level status (a single proof attempt) ─────────────────────────────────
 // 'proved' / 'disproved' are checked-artifact outcomes; 'needs_review' is
 // preserved as classifier metadata, not a primary session/code status.
@@ -36,14 +50,31 @@ export type RunStatus =
 export interface RunSummary {
   id: string;
   status: RunStatus | string;
+  autonomous?: boolean;
+  approval_mode?: ApprovalMode;
   focus_formalization_id?: string | null;
   focus_source_hash?: string | null;
   result_kind?: 'proved' | 'disproved' | 'needs_review' | string | null;
   result_detail?: string | null;
+  stop_reason?: string | null;
+  stop_requested_reason?: string | null;
+  usage_status?: 'pending' | 'partial' | 'final' | 'unknown' | null;
+  usage_revision?: number;
+  usage_details?: UsageDetails | null;
+  cost_usd?: number;
+  attempt_id?: string | null;
+  recovery_state?: 'recovering' | 'review' | null;
+  recovery_reason?: string | null;
+  checkpoint_at?: string | null;
+  available_recovery_action?: 'resume' | 'continue' | null;
+  dependency_id?: string | null;
+  waiting_dependencies_json?: string | null;
+  automation_budget_json?: string | null;
 }
 // ── Per-tool approval gate (D19) ──────────────────────────────────────────────
 export type GatedTool = 'bash' | 'write_file' | 'edit_file';
 export type ApprovalDecision = 'allow' | 'deny' | 'always_session';
+export type ApprovalMode = 'stepwise' | 'none';
 
 export interface SessionSummary {
   id: string;
@@ -62,7 +93,10 @@ export interface SessionSummary {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  usage_details?: UsageDetails | null;
   cost_usd: number;
+  incomplete_usage_runs?: number;
+  unconfirmed_usage_runs?: number;
   run_count: number;
   message_count: number;
   code_step_count: number;
@@ -70,6 +104,7 @@ export interface SessionSummary {
   // background run is live even when the derived `status` reads a settled verdict
   // (a re-run of an already-proved session), so the sidebar can show a running dot.
   active_run_count?: number;
+  latest_recovery_state?: 'recovering' | 'review' | null;
   primary_model?: string | null;
   models: string[];
   latest_check_status?: 'ok' | 'error' | 'unchecked' | null;
@@ -105,6 +140,7 @@ export interface Project {
   namespace: string;
   repo_path: string;
   remote_url?: string | null;
+  overleaf_linked?: boolean;
   created_at: string;
   updated_at: string;
   session_count?: number;
@@ -132,6 +168,13 @@ export interface FormalizationFile {
   role: 'primary' | 'support' | 'generated';
 }
 
+export interface ResultApproval {
+  id: string;
+  outcome: 'proved' | 'defined' | 'disproved';
+  created_at: string;
+  revision_token: string;
+}
+
 export interface Formalization {
   id: string;
   project_id?: string | null;
@@ -144,6 +187,26 @@ export interface Formalization {
   origin_key?: string | null;
   source_hash?: string | null;
   validity_status: FormalizationValidity | string;
+  validity_reason?: string | null;
+  completion_run_id?: string | null;
+  declaration_kind?: string | null;
+  check_current?: boolean;
+  review?: {
+    eligible: boolean;
+    reason: string;
+    revision_token: string | null;
+    allowed_outcomes: Array<'proved' | 'defined' | 'disproved'>;
+    approval: ResultApproval | null;
+    run_id?: string | null;
+  };
+  certification?: { source: 'run' | 'user_review'; outcome: string; run_id?: string | null; review_event_id?: string } | null;
+  latest_check?: {
+    code_step_id: string;
+    path: string;
+    status: string | null;
+    detail?: string | null;
+    created_at: string;
+  } | null;
   activity: {
     status: 'idle' | 'queued' | 'running' | 'waiting_for_approval' | string;
     run_id?: string | null;
@@ -183,6 +246,8 @@ export interface FormalizationCurrentSnapshot {
     is_current: boolean;
   } | null;
   validity_status: FormalizationValidity | string;
+  review?: Formalization['review'];
+  certification?: Formalization['certification'];
   safe_verify?: Formalization['safe_verify'];
 }
 
@@ -526,6 +591,8 @@ export interface CodeStep {
   // True when the step's content couldn't be recovered (a pre-v2.3 row whose git
   // pointer didn't resolve). The step still exists — it says something happened.
   content_lost?: boolean;
+  check_current?: boolean;
+  check_stale_reason?: string | null;
   check_status?: 'ok' | 'error' | 'unchecked' | null;
   check_detail?: string | null;
   artifact_kind?: 'proof' | 'definition' | 'mixed' | 'unknown' | string | null;
@@ -535,7 +602,28 @@ export interface CodeStep {
   code: string;
 }
 
+export interface LeanCheckExecution {
+  check_id: string;
+  daemon_generation?: string | null;
+  backend: 'lsp' | 'cold' | 'none';
+  cold_reason?: 'explicit' | 'disabled' | 'no_lake_root' | 'fallback' | null;
+  failure?: { kind: string; message: string; phase?: string; [key: string]: unknown } | null;
+  attempts: number;
+  timings_ms: Record<'queue' | 'initialization' | 'lsp' | 'cold' | 'total', number>;
+}
+
+export interface LeanCheckRuntime {
+  runtime_id?: string;
+  generation?: string | null;
+  state: 'idle' | 'starting' | 'ready' | 'recovering' | 'degraded' | 'disabled' | 'unavailable';
+  active_cold_checks?: number;
+  retry_after_ms?: number;
+  last_failure?: { kind: string; message: string; [key: string]: unknown } | null;
+  episode_id?: string | null;
+}
+
 export interface StatusEvent {
+  execution?: LeanCheckExecution | null;
   id: string;
   session_id?: string;
   run_id?: string;
@@ -575,6 +663,7 @@ export interface ApprovalEvent {
 export type SafeVerifyStatus = 'ok' | 'rejected' | 'error' | 'unavailable' | 'running' | 'pending';
 
 export interface SafeVerifyResult {
+  current?: boolean;
   run_id?: string;
   status: SafeVerifyStatus;
   detail?: string | null;
@@ -593,6 +682,7 @@ export interface UsageBreakdownRow {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  usage_details?: UsageDetails | null;
   cost_usd: number;
   event_count: number;
   created_at?: string;
@@ -601,12 +691,18 @@ export interface UsageBreakdownRow {
 export interface ActiveRun {
   id: string;
   status: RunStatus | string;
+  autonomous?: boolean;
+  approval_mode?: ApprovalMode;
+  stop_reason?: string | null;
+  stop_requested_reason?: string | null;
   model?: string;
   pending_approval?: PendingApproval | null;
   result_kind?: string | null;
   result_detail?: string | null;
   focus_formalization_id?: string | null;
   focus_source_hash?: string | null;
+  recovery_state?: 'recovering' | 'review' | null;
+  recovery_reason?: string | null;
 }
 
 /**
@@ -673,6 +769,7 @@ export interface Diagnostic {
 }
 
 export interface SessionDetail extends SessionSummary {
+  lean_check_runtime?: LeanCheckRuntime;
   messages: ChatMessage[];
   code_steps: CodeStep[];
   /** Persisted failures for this session, in timeline order (G1). */
@@ -722,6 +819,10 @@ export interface DoneEvent {
   status: RunStatus;
   result_kind?: string | null;
   result_detail?: string | null;
+  stop_reason?: string | null;
+  usage_status?: string | null;
+  usage_details?: UsageDetails | null;
+  cost_usd?: number | null;
 }
 
 // ── Frontend-derived timeline (built from messages + code steps by timeline.mjs) ──

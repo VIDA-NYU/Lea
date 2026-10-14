@@ -1,3 +1,18 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)"
+            srcset="public/assets/img/lea-wordmark-dark.svg">
+    <img src="public/assets/img/lea-wordmark-light.svg" alt="Lea" width="220">
+  </picture>
+</p>
+
+<p align="center">
+  <a href="https://discord.com/invite/CtEJvUTjm">
+    <img alt="Join the Lea Discord"
+         src="https://img.shields.io/badge/Discord-5865F2?style=flat-square&logo=discord&logoColor=white">
+  </a>
+</p>
+
 # LeaEcosystem
 
 LeaEcosystem is an npm-workspaces monorepo that wraps
@@ -23,20 +38,6 @@ messages, usage, and code-step metadata; git stores proof content under the
 prover workspace. Overleaf-created formalizations go through the same adapter, so
 they appear in the standalone UI and can be opened with a `?session=<id>` link.
 
-## Website
-
-The public site (landing page, install guide, blog) lives in
-[`public/`](public/README.md) and is a dependency-free static site.
-
-```sh
-npm run site:dev     # preview at http://localhost:4321, rebuilding on save
-npm run site:build   # write public/dist
-npm run site:test    # unit tests for the Markdown renderer
-```
-
-Adding a blog post means adding one Markdown file to `public/content/blog/`.
-Pushing to `main` publishes to GitHub Pages via `.github/workflows/site.yml`.
-
 ## Quick start
 
 You supply one provider API key; everything else is provisioned for you. Get a
@@ -45,37 +46,57 @@ key from whichever provider you'll use, then keep it handy for the last step:
 - **OpenAI** (default) — https://platform.openai.com/api-keys
 - **Anthropic** — https://console.anthropic.com/settings/keys
 - **Gemini** — https://aistudio.google.com/apikey
+- **Portkey gateway** — a Portkey API key from your institution's (or Portkey's
+  hosted) AI gateway; see [Portkey gateways](#portkey-gateways) below
+
+These three are the common ones, but you can use any model provider and model from
+the Settings pane. [LiteLLM's provider pages](https://docs.litellm.ai/docs/providers)
+give the model ID and env var for the rest — DeepSeek, for example, is
+`deepseek/deepseek-v4-flash` with `DEEPSEEK_API_KEY`.
+
+You can even use open-weight models you host yourself. For example, for a model
+served by vLLM, point Lea at your server on the way in:
+
+```sh
+export HOSTED_VLLM_API_BASE=http://localhost:<PORT>/v1 && ./start-dev.sh
+```
+
+Then add the model `hosted_vllm/<your-model>` and its key in the Settings pane.
 
 Then pick one of the two paths below.
 
 ### Option A — Docker (no local toolchain) ⭐ easiest
 
-Runs the whole standalone app (UI + adapter + Lean + Mathlib) in one container.
-The only thing you install is Docker.
+Runs the standalone UI, shared adapter, Overleaf companion, Lean, and Mathlib in
+one prebuilt container published by VIDA. The only thing you install is Docker.
 
 1. **Install Docker Desktop** and start it: https://www.docker.com/products/docker-desktop/
-   (verify with `docker --version`).
+   (verify with `docker --version`). Keep at least **20 GB free** in Docker's
+   storage: the image downloads about 3.7 GB and occupies about 10.7 GB after
+   extraction because Lean and Mathlib are included.
 2. **Clone this repo and enter the app folder:**
    ```sh
-   git clone https://github.com/darturi/UnifiedLeaEcosystem.git
-   cd UnifiedLeaEcosystem/apps/lea-standalone
+   git clone https://github.com/VIDA-NYU/Lea.git
+   cd Lea/apps/lea-standalone
    ```
-3. **Build and start it:**
+3. **Download and start it:**
    ```sh
-   docker compose build       # first build is slow — it downloads + bakes Mathlib
-   docker compose up          # start it (subsequent runs skip straight to here)
+   docker compose pull        # downloads ghcr.io/vida-nyu/leaui:main
+   docker compose up
    ```
-   The build targets your machine's own CPU, so no arch flags are needed.
+   The image supports Intel/AMD and ARM64 machines, so no architecture flags are needed.
 4. **Open** http://localhost:8001 in your browser.
 5. **Add your key:** open the **Settings** pane and paste in your API key (no key
    is needed to boot). You're ready to prove.
 
-Sessions, proofs, and your saved key persist on your machine under
-`apps/lea-standalone/{data,config}`, so they survive restarts. Stop with `Ctrl+C`
-(or `docker compose down`).
+Session metadata, your saved key, proof repositories, project registry, and
+Overleaf job state persist on your machine under
+`apps/lea-standalone/{data,config,proofs,projects,overleaf-state}`. Stop with
+`Ctrl+C`; `docker compose down` and image updates preserve these directories.
 
-> Docker covers the **standalone UI** only. The Overleaf extension needs the
-> local install below (it side-loads a Chrome extension).
+To use Overleaf, load `apps/overleaf-extension/extension` as an unpacked Chrome
+extension. Its default companion URL (`http://127.0.0.1:31245`) points to the
+same running container; no separate local toolchain is required.
 
 ### Option B — Local install (macOS / Linux)
 
@@ -87,8 +108,8 @@ bootstrap installs the missing ones for you.
    Check with `node --version`.
 2. **Clone this repo:**
    ```sh
-   git clone https://github.com/darturi/UnifiedLeaEcosystem.git
-   cd UnifiedLeaEcosystem
+   git clone https://github.com/VIDA-NYU/Lea.git
+   cd Lea
    ```
 3. **Bootstrap + provision** (installs `uv` and `elan` if absent, then sets
    everything up). For the leanest test install, use the UI-only, no-SafeVerify
@@ -99,8 +120,8 @@ bootstrap installs the missing ones for you.
    Or `./install.sh` alone for the full stack (UI + Overleaf, with SafeVerify).
    The first run downloads Mathlib and can take several minutes.
 4. **Add your key** to the root `.env` file (set `OPENAI_API_KEY=...`, or the
-   matching `ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) — or skip this and paste it
-   into the app's Settings pane after it starts.
+   matching `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` / `PORTKEY_API_KEY`) — or skip
+   this and paste it into the app's Settings pane after it starts.
 5. **Start the app:**
    ```sh
    ./start-dev.sh
@@ -153,6 +174,36 @@ LEA_UI_BASE_URL=http://localhost:5173
 OVERLEAF_COMPANION_URL=http://127.0.0.1:31245
 ```
 
+### Portkey gateways
+
+Models served through a [Portkey](https://portkey.ai) AI gateway — Portkey's
+hosted service, or a self-hosted one such as a university's — are a first-class
+provider. Portkey's endpoint is OpenAI-compatible, and Lea drives it through the
+same LiteLLM layer as every other provider.
+
+1. Save your **Portkey API key** (`PORTKEY_API_KEY`) in Settings → API keys, and
+   the gateway's `/v1` root as the **Gateway URL** (`PORTKEY_BASE_URL`, e.g.
+   `https://ai-gateway.example.edu/v1`). Leave the URL blank for Portkey's hosted
+   service. Both can also go in the root `.env`.
+2. Pick the model as `portkey/<catalog-name>`, where the catalog name is exactly
+   the model string your gateway expects — usually Portkey's model-catalog form
+   `@provider-slug/model`, for example
+   `portkey/@vertexai-jdoe/anthropic.claude-opus-4-8`. Type it into the model
+   picker; only the leading `portkey/` is stripped before the request.
+
+Claude models take the gateway's native Anthropic Messages route rather than
+its OpenAI-compatible one, so Anthropic prompt caching works through the gateway
+exactly as it does against Anthropic directly (the system prompt and tool schemas
+are cached once per run, and each turn re-reads the conversation so far at the
+cached rate). A gateway that lacks that route falls back to the OpenAI-compatible
+dialect with a warning; caching is unavailable there.
+
+Optional routing headers a gateway may require can be supplied as environment
+variables: `PORTKEY_VIRTUAL_KEY`, `PORTKEY_CONFIG`, `PORTKEY_PROVIDER` (the last
+defaults to the `@provider-slug` from the catalog name on the native route). Cost
+is estimated from the upstream model named inside the catalog string, cache reads
+and writes priced at their own rates; a model LiteLLM cannot price reports `$0.00`.
+
 ## Running
 
 Start only the shared backend:
@@ -177,6 +228,63 @@ npm run dev:overleaf
 
 The companion listens on `http://127.0.0.1:31245` and expects the adapter to be
 reachable at `LEA_API_BASE_URL`.
+
+## Set Up The Overleaf Extension
+
+The Overleaf integration requires the [local install](#option-b--local-install-macos--linux);
+it is not included in the Docker image. If you previously ran the UI-only setup,
+add the Overleaf side from the monorepo root:
+
+```sh
+npm run setup -- --target overleaf
+```
+
+Then:
+
+1. **Start the local stack:**
+
+   ```sh
+   ./start-dev.sh
+   ```
+
+   This starts the adapter, standalone UI, and Overleaf companion. Keep the
+   terminal open while using the extension.
+
+2. **Load the extension in Chrome:**
+
+   - Open `chrome://extensions`.
+   - Enable **Developer mode**.
+   - Click **Load unpacked** and select
+     `apps/overleaf-extension/extension/` from this repository.
+
+3. **Check the extension settings.** Open **Details** for the extension, choose
+   **Extension options**, and confirm:
+
+   - Companion URL: `http://127.0.0.1:31245`
+   - Local Lea repo path: the absolute path to
+     `apps/lea-standalone/prover`
+   - Lea API URL: `http://127.0.0.1:8001`
+
+   Setup writes these defaults for you. The options page can also load the
+   current values from the companion.
+
+4. **Mark a theorem in Overleaf** with a `% lea:` comment:
+
+   ```tex
+   \begin{theorem}\label{thm:finite-tree-leaves}
+   % lea: formalize label=finite_tree_leaves
+   Every finite tree has at least two leaves.
+   \end{theorem}
+   ```
+
+   The `label=` value is required and must be a valid Lean identifier: letters,
+   digits, and underscores, with no leading digit. Open the document in Overleaf;
+   the extension adds a badge to the marked block. Choose **Formalize** to start
+   the run or **View in Lea UI** to open its proof timeline.
+
+For dependency markers, context hints, custom LaTeX environments, and other
+extension details, see the
+[Overleaf extension guide](apps/overleaf-extension/README.md).
 
 ## Common Commands
 

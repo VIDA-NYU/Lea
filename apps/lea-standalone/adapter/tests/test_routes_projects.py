@@ -3,12 +3,13 @@ other route tests do), with `load_config` patched so the proofs root is a tmp di
 
 import asyncio
 import io
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException, UploadFile
 from starlette.datastructures import Headers
 
-from app import db, store
+from app import db, formalizations, projects, store
 from app.config import LeaConfig
 from app.routes import projects as projects_route
 from app.routes.projects import (
@@ -183,6 +184,103 @@ def test_project_namespace_migration_rewrites_files_and_updates_row(tmp_path, mo
     assert "# Instructions — New Name" in (new_repo / ".lea" / "instructions.md").read_text()
     assert result["migration"]["checkedFiles"] == 1
     assert result["migration"]["failedFiles"] == []
+
+
+def _checked_rename_target(proofs, *, kind="theorem", result_kind="proved"):
+    project = projects_route.create_project(ProjectCreate(title="Old Name"))
+    session = store.create_session("Formalize target", project_id=project["id"])
+    target = store.create_formalization(
+        project_id=project["id"], loose_session_id=None,
+        display_title="target", declaration_name="target", kind=kind,
+    )
+    store.link_session_formalization(session["id"], target["id"])
+    store.link_formalization_file(target["id"], "Target.lean", "primary")
+    run = store.create_run(
+        session["id"], "m", None, 3, project_id=project["id"],
+        focus_formalization_id=target["id"],
+    )
+    declaration = ("structure target where\n  value : Nat" if kind == "definition"
+                   else "theorem target : True := by trivial")
+    code = f"namespace Lea.OldName\n{declaration}\nend Lea.OldName\n"
+    path = proofs / "Lea" / "OldName" / "Target.lean"
+    path.write_text(code)
+    step = store.add_code_step(
+        session["id"], run["id"], "Target.lean", content=code,
+        check_status="ok", formalization_id=target["id"],
+        artifact_kind="definition" if kind == "definition" else "proof",
+    )
+    store.update_run(run["id"], "needs_review" if result_kind == "needs_review" else "proved",
+                     result_kind=result_kind)
+    store.upsert_artifact(
+        project_id=project["id"], session_id=session["id"], run_id=run["id"],
+        declaration_name="target", kind="definition" if kind == "definition" else "proof",
+        path="Target.lean", module_name="Lea.OldName.Target", formalization_id=target["id"],
+    )
+    return project, target, step, path
+
+
+@pytest.mark.parametrize("kind, verdict", [("theorem", "proved"), ("definition", "defined")])
+def test_namespace_rename_preserves_certification_and_original_history(tmp_path, monkeypatch, kind, verdict):
+    proofs = _setup(tmp_path, monkeypatch)
+    project, target, original, _ = _checked_rename_target(proofs, kind=kind, result_kind=verdict)
+    monkeypatch.setattr(projects_route, "interface_check", lambda _path: CheckResult(_path, "ok"))
+
+    # Certification survives successive renames, without attributing the new
+    # namespace bytes to the agent's original completed run.
+    for title in ("NewName", "FinalName"):
+        projects_route.update_project_identity_by_slug(
+            project["slug"], ProjectIdentityUpdate(
+                project_name=title, mode="rename-namespace", namespace=f"Lea.{title}",
+            ),
+        )
+        status = projects_route.project_target_status_by_slug(project["slug"], declarations="target")["targets"][0]
+        assert status["validity_status"] == verdict
+        assert status["check_current"] is True
+        assert status["completion_run_id"] == original["run_id"]
+        assert status["session_id"] == original["session_id"]
+        assert status["module_name"] == f"Lea.{title}.Target"
+        latest = store.code_steps_for_project_path(project["id"], "Target.lean")[0]
+        assert latest["code"] == (proofs / "Lea" / title / "Target.lean").read_text()
+        assert latest["author"] == "environment"
+        assert latest["run_id"] is None
+        assert latest["formalization_id"] == target["id"]
+
+    history = store.code_steps_for_project_path(project["id"], "Target.lean")
+    assert next(step for step in history if step["id"] == original["id"])["code"] == original["code"]
+    # An ordinary later check of the same renamed bytes preserves certification.
+    store.add_code_step(
+        original["session_id"], None, "Target.lean", content=history[0]["code"],
+        author="user", check_status="ok", formalization_id=target["id"],
+    )
+    assert formalizations.get(target["id"])["validity_status"] == verdict
+
+
+@pytest.mark.parametrize("scenario, expected", [
+    ("check-error", "failing"),
+    ("unchecked", "unchecked"),
+    ("disk-edit", "needs_review"),
+    ("recorded-edit", "needs_review"),
+    ("review-result", "needs_review"),
+    ("no-completion", "unchecked"),
+])
+def test_namespace_rename_cannot_create_certification(tmp_path, monkeypatch, scenario, expected):
+    proofs = _setup(tmp_path, monkeypatch)
+    result_kind = {"review-result": "needs_review", "no-completion": None}.get(scenario, "proved")
+    project, target, original, path = _checked_rename_target(proofs, result_kind=result_kind)
+    if scenario in {"disk-edit", "recorded-edit"}:
+        edited = original["code"].replace("target : True", "target : 1 = 1").replace("by trivial", "by rfl")
+        path.write_text(edited)
+        if scenario == "recorded-edit":
+            store.add_code_step(original["session_id"], None, "Target.lean", content=edited,
+                                author="user", check_status="ok", formalization_id=target["id"])
+    check = None if scenario == "unchecked" else lambda _path: SimpleNamespace(
+        status="error" if scenario == "check-error" else "ok", detail="check detail",
+    )
+    result = projects.migrate_project_namespace(
+        project, proofs, title="New Name", namespace="Lea.NewName", check_fn=check,
+    )
+    assert formalizations.get(target["id"])["validity_status"] == expected
+    assert bool(result["migration"]["failedFiles"]) == (scenario == "check-error")
 
 
 def test_delete_removes_repo_and_rows(tmp_path, monkeypatch):
@@ -923,6 +1021,134 @@ def test_artifact_retire_and_restore_round_trip_through_git(tmp_path, monkeypatc
     assert proof.read_text().startswith("theorem cauchy_bound")
 
 
+def test_artifact_retire_refuses_file_with_multiple_declarations(tmp_path, monkeypatch):
+    """Retrying one declaration must not delete its siblings' proof file."""
+    proofs = _setup(tmp_path, monkeypatch)
+    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    repo = proofs / "Lea" / "Analysis"
+    proof = repo / "shared.lean"
+    original = (
+        "namespace Lea.Analysis\n"
+        "theorem already_proved : True := by trivial\n"
+        "theorem needs_retry : True := by sorry\n"
+        "end Lea.Analysis\n"
+    )
+    proof.write_text(original)
+    from app.gitstore import GitStore
+    GitStore(repo.parent).commit_all(repo, "record shared proof")
+
+    with pytest.raises(HTTPException) as exc:
+        projects_route.retire_project_artifact_by_slug(
+            project["slug"], projects_route.ArtifactRetireRequest(path="shared.lean")
+        )
+
+    assert exc.value.status_code == 409
+    assert proof.read_text() == original
+    session = store.create_session("shared", project_id=project["id"])
+    run = store.create_run(session["id"], "m", None, 3, project_id=project["id"])
+    store.upsert_artifact(
+        project_id=project["id"], session_id=session["id"], run_id=run["id"],
+        declaration_name="needs_retry", kind="proof", path="shared.lean",
+        module_name="Lea.Analysis.shared",
+    )
+    status = projects_route.project_target_status_by_slug(
+        project["slug"], declarations="needs_retry"
+    )
+    assert status["targets"][0]["shared_file"] is True
+
+
+@pytest.mark.parametrize("extra_owner", [None, "unrelated", "indexed", "linked"])
+def test_definition_helpers_share_one_artifact_but_separate_targets_stay_protected(
+    tmp_path, monkeypatch, extra_owner
+):
+    proofs = _setup(tmp_path, monkeypatch)
+    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    repo = proofs / "Lea" / "Analysis"
+    original = (
+        "namespace Lea.Analysis\n"
+        "structure CapacityEncoding where\n  size : Nat\n"
+        "namespace CapacityEncoding\n"
+        "def weightedValue (E : CapacityEncoding) : Nat := E.size\n"
+        "theorem weightedValue_le (E : CapacityEncoding) : E.weightedValue ≤ E.size := by rfl\n"
+        "end CapacityEncoding\n"
+        "end Lea.Analysis\n"
+    )
+    if extra_owner == "unrelated":
+        original += "theorem separate_target : True := by trivial\n"
+    proof = repo / "CapacityEncoding.lean"
+    proof.write_text(original)
+    session = store.create_session("definition", project_id=project["id"])
+    run = store.create_run(session["id"], "m", None, 3, project_id=project["id"])
+    store.upsert_artifact(
+        project_id=project["id"], session_id=session["id"], run_id=run["id"],
+        declaration_name="CapacityEncoding", kind="mixed", path=proof.name,
+        module_name="Lea.Analysis.CapacityEncoding",
+    )
+    if extra_owner == "indexed":
+        store.upsert_artifact(
+            project_id=project["id"], session_id=session["id"], run_id=run["id"],
+            declaration_name="Lea.Analysis.CapacityEncoding.weightedValue_le",
+            kind="proof", path=proof.name, module_name="Lea.Analysis.CapacityEncoding",
+        )
+    if extra_owner == "linked":
+        for name in ["CapacityEncoding", "Lea.Analysis.CapacityEncoding.weightedValue_le"]:
+            formalization = store.create_formalization(
+                project_id=project["id"], loose_session_id=None,
+                display_title=name, declaration_name=name, kind="definition",
+            )
+            store.link_formalization_file(formalization["id"], proof.name, "primary")
+    status = projects_route.project_target_status_by_slug(project["slug"], declarations="CapacityEncoding")
+    assert status["targets"][0]["shared_file"] is (extra_owner is not None)
+    if extra_owner:
+        with pytest.raises(HTTPException) as exc:
+            projects_route.retire_project_artifact_by_slug(
+                project["slug"], projects_route.ArtifactRetireRequest(path=proof.name)
+            )
+        assert exc.value.status_code == 409
+        assert proof.read_text() == original
+    else:
+        retired = projects_route.retire_project_artifact_by_slug(
+            project["slug"], projects_route.ArtifactRetireRequest(path=proof.name)
+        )
+        assert not proof.exists()
+        projects_route.restore_project_artifact_by_slug(
+            project["slug"], projects_route.ArtifactRestoreRequest(
+                path=proof.name, retire_commit=retired["retire_commit"]
+            )
+        )
+        assert proof.read_text() == original
+
+
+def test_artifact_retire_first_records_an_untracked_sql_owned_file(tmp_path, monkeypatch):
+    """Retiring an indexed but untracked materialization must not unlink it and
+    then fail `git add` before a restore token can be returned."""
+    proofs = _setup(tmp_path, monkeypatch)
+    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    repo = proofs / "Lea" / "Analysis"
+    proof = repo / "untracked.lean"
+    content = "theorem untracked : True := by\n  trivial\n"
+    proof.write_text(content)
+    session = store.create_session("prove", project_id=project["id"])
+    run = store.create_run(session["id"], "m", None, 3, project_id=project["id"])
+    store.upsert_artifact(
+        project_id=project["id"], session_id=session["id"], run_id=run["id"],
+        declaration_name="untracked", kind="proof", path="untracked.lean",
+        module_name="Lea.Analysis.untracked",
+    )
+
+    retired = projects_route.retire_project_artifact_by_slug(
+        project["slug"], projects_route.ArtifactRetireRequest(path="untracked.lean")
+    )
+    assert not proof.exists()
+    restored = projects_route.restore_project_artifact_by_slug(
+        project["slug"], projects_route.ArtifactRestoreRequest(
+            path="untracked.lean", retire_commit=retired["retire_commit"],
+        ),
+    )
+    assert restored["restored"] is True
+    assert proof.read_text() == content
+
+
 def test_artifact_restore_prefers_verified_sql_snapshot(tmp_path, monkeypatch):
     """Agent proof bytes live in the timeline, even when project Git never saw
     that version. A failed retry must restore those exact verified bytes."""
@@ -1040,7 +1266,8 @@ def test_target_status_serves_ledger_evidence(tmp_path, monkeypatch):
     retired = by_name["retired_one"]
     assert retired["recorded"] is True and retired["exists"] is False
 
-    assert by_name["never_seen"] == {"declaration_name": "never_seen", "recorded": False}
+    assert by_name["never_seen"]["recorded"] is False
+    assert by_name["never_seen"]["validity_status"] == "unavailable"
 
 
 def test_target_status_check_verdict_spans_sessions(tmp_path, monkeypatch):
@@ -1197,3 +1424,9 @@ def test_a_normal_upload_still_works(tmp_path, monkeypatch):
 
     assert row["filename"] == "notes.md"
     assert row["stored_path"] == ".lea/files/notes.md"
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")
+
+from lea.events import CheckResult

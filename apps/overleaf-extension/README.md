@@ -1,7 +1,7 @@
 # Overleaf Lea Formalizer
 
 This app is the Overleaf side of the LeaEcosystem monorepo. It provides a Chrome
-extension plus a local Node companion that sends labeled theorem blocks from
+extension plus a local Node companion that sends marked theorem blocks from
 Overleaf to the shared Lea adapter.
 
 The default path is:
@@ -13,8 +13,9 @@ Overleaf page -> Chrome extension -> companion (:31245) -> FastAPI adapter (:800
 The adapter then drives the vendored prover at `apps/lea-standalone/prover/`
 in-process. The companion does not start its own prover backend.
 
-For beta testers installing from a pinned release tag, see
-[BETA_INSTALL.md](BETA_INSTALL.md).
+For the VIDA-hosted Docker installation and Chrome side-load steps, see
+[BETA_INSTALL.md](BETA_INSTALL.md). The image already runs both the adapter and
+the companion; only the unpacked extension is loaded separately in Chrome.
 
 ## Pieces
 
@@ -37,14 +38,17 @@ environments. Mark only the blocks you want Lea to formalize:
 
 ```tex
 \begin{theorem}\label{thm:finite-tree-leaves}
-% lea: formalize label=finite_tree_leaves
+% lea: formalize
 Every finite tree has at least two leaves.
 \end{theorem}
 ```
 
-The `label=...` value is required. It is used as the Overleaf theorem identifier
-and fallback Lean declaration name. It must be a valid Lean identifier: letters,
-digits, and underscores, with no leading digit.
+Lea assigns a stable internal label automatically. An existing LaTeX
+`\label{...}` helps Lea keep that identity and choose a Lean declaration name;
+neither label is required to start formalizing. The older `label=...` field is
+deprecated but still supported for existing documents and references. If used,
+it must be a valid Lean identifier: letters, digits, and underscores, with no
+leading digit.
 
 Initially supported environments are `theorem`, `lemma`, `proposition`, and
 `corollary`. Unmarked environments are ignored.
@@ -52,7 +56,8 @@ Initially supported environments are `theorem`, `lemma`, `proposition`, and
 ### `uses={...}`
 
 Use `uses={...}` when a theorem should depend on earlier theorems from the same
-Overleaf project. Values are Overleaf labels, not Lean theorem names. Each
+Overleaf project. Values may be existing Lea labels or unique LaTeX labels
+(such as `uses={thm:finite-tree-leaves}`); they are not Lean theorem names. Each
 referenced theorem must already be formalized, or at least have a saved sorry
 stub from an older build, before Lea starts the new run.
 
@@ -74,7 +79,7 @@ interpret the statement.
 
 ```tex
 \begin{theorem}
-% lea: formalize label=even_square context={Use the assumption that n is even, rewrite n as 2 * k, then use ring_nf.}
+% lea: formalize context={Use the assumption that n is even, rewrite n as 2 * k, then use ring_nf.}
 If n is even, then n^2 is even.
 \end{theorem}
 ```
@@ -125,15 +130,15 @@ needed if you use the snippet).
 \usepackage{lea-tags}
 ...
 \begin{claim}\label{clm:even-square}
-\leatheorem{label=even_square, uses={even_def}, context={Use the parity definition first.}}
+\leatheorem{uses={even_def}, context={Use the parity definition first.}}
 If $n$ is even, then $n^2$ is even.
 \end{claim}
 ```
 
 `claim` is not a recognized environment name, but `\leatheorem{...}` states
 its own kind directly, so the extension still finds and formalizes it. The
-`label=`/`uses=`/`context=` fields work exactly like the comment-marker
-fields above.
+`uses=`/`context=` fields work exactly like the comment-marker fields above.
+The deprecated `label=` field remains accepted.
 
 Named tag commands: `\leatheorem`, `\lealemma`, `\leaproposition`,
 `\leacorollary` (all theorem-kind), and `\leadefinition` (definition-kind).
@@ -152,17 +157,27 @@ Give a tag a second argument and it needs no enclosing environment -- the
 argument both renders as the statement and is what's sent to Lea:
 
 ```tex
-\leatheorem{label=pythagorean, uses={right_triangle}}
+\leatheorem{uses={right_triangle}}
 {In a right triangle, the square of the hypotenuse equals the sum of the
 squares of the other two sides.}
 ```
 
-The two arguments don't need to be on the same line -- whitespace (including
-blank lines) between them is fine, matching ordinary TeX argument scanning.
+Metadata may span multiple lines, and whitespace or `%` comments may separate
+any of the arguments. For example:
+
+```tex
+\leatheorem{
+  context={Use the parity definition first.}
+}% The statement follows on the next line.
+{If $n$ is even, then $n^2$ is even.}
+```
+
+Commented-out tags and command definitions are ignored by the extension.
+The same multiline metadata rules apply to `\begin{leacode}{...}`.
 One caveat that follows directly from that: a tag with **no** intended body,
-placed with nothing but whitespace before an unrelated `{...}` group, will
+placed with only whitespace or comments before an unrelated `{...}` group, will
 have that group absorbed as its body. If you don't want a second argument,
-keep something other than blank lines between the tag and the next braced
+keep actual prose or another command between the tag and the next braced
 group (the normal case of actual prose in between is never a problem).
 
 If you load `lea-tags.sty` but the extension finds a tag command with nothing
@@ -211,6 +226,8 @@ OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 GEMINI_API_KEY=
 GOOGLE_API_KEY=
+PORTKEY_API_KEY=          # Portkey AI gateway; models are portkey/@provider-slug/model
+PORTKEY_BASE_URL=         # the gateway's /v1 root (blank = Portkey's hosted service)
 LEA_JOB_TIMEOUT_SECONDS=900
 ```
 

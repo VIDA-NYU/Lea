@@ -3,7 +3,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 // Every service owns a process group, so npm wrappers and their subprocesses
 // receive the same signal. Keep the group after its leader exits: a descendant
 // may still be alive and holding a socket or inherited stdout open.
-export function createProcessSupervisor({ graceMs = 5000, prefix = "[dev]" } = {}) {
+export function createProcessSupervisor({ graceMs = 5000, prefix = "[dev]", onUnexpectedExit = null } = {}) {
   const owned = [];
   const descendants = new Map();
   const controller = new AbortController();
@@ -170,6 +170,9 @@ export function createProcessSupervisor({ graceMs = 5000, prefix = "[dev]" } = {
       });
       child.on("exit", (code, signalName) => {
         if (!stopping) {
+          // A restart-capable caller can handle an exit while keeping the same
+          // process-group owner and bounded shutdown behavior.
+          if (onUnexpectedExit?.(label, code, signalName, child) === true) return;
           console.error(`${prefix} ${label} exited (${signalName || code}); stopping the stack.`);
           stop(code === 0 ? 0 : 1);
         }

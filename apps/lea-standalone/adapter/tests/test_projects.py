@@ -4,6 +4,8 @@ touch the real workspace."""
 
 from __future__ import annotations
 
+import pytest
+
 import subprocess
 
 from app import db, projects, store
@@ -119,8 +121,9 @@ def test_compose_context_message(tmp_path, monkeypatch):
     assert "Likely root document(s)" in msg["content"]
     assert "includes `sections/results`" in msg["content"]
     assert "read every mirrored LaTeX source before planning" in msg["content"]
-    assert "## Project Lean modules" in msg["content"]
-    assert "`existing.lean`" in msg["content"]
+    assert "## Project mathematics library" in msg["content"]
+    assert "1 declarations indexed" in msg["content"]
+    assert "search_project_library" in msg["content"]
     # D26: the agent is told, concretely, to keep memory.md current with edit_file.
     assert ".lea/memory.md" in msg["content"]
     assert "edit_file" in msg["content"]
@@ -138,7 +141,8 @@ def test_delete_project_removes_tree_and_cascades_rows(tmp_path, monkeypatch):
 
     # A session + run inside the project, to prove the cascade reaches dependents.
     sess = store.create_session("s", project_id=pid)
-    store.create_run(sess["id"], "gpt-4o", "openai", 3, project_id=pid)
+    run = store.create_run(sess["id"], "gpt-4o", "openai", 3, project_id=pid)
+    store.update_run(run["id"], "proved")
     assert repo.is_dir()
 
     assert projects.delete_project(pid, proofs) is True
@@ -273,3 +277,7 @@ def test_migration_proceeds_once_no_run_is_active(tmp_path, monkeypatch):
     assert artifacts["t"]["module_name"] == "Lea.Renamed.p"
     assert artifacts["other"]["module_name"] == "Lea.Demonstration.other"
     assert "namespace Lea.Renamed" in (proofs / "Lea" / "Renamed" / "p.lean").read_text()
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

@@ -1,0 +1,43 @@
+test_failed_completeness_check_stops_before_verifier (test_ci_preparation.CompilerPreparationTests.test_failed_completeness_check_stops_before_verifier) ... ok
+test_failed_mathlib_build_stops_before_verifier (test_ci_preparation.CompilerPreparationTests.test_failed_mathlib_build_stops_before_verifier) ... ok
+test_failed_safe_verify_build_is_fatal (test_ci_preparation.CompilerPreparationTests.test_failed_safe_verify_build_is_fatal) ... ok
+test_missing_verifier_executable_is_fatal (test_ci_preparation.CompilerPreparationTests.test_missing_verifier_executable_is_fatal) ... ok
+test_selected_toolchain_is_exported_for_following_ci_steps (test_ci_preparation.CompilerPreparationTests.test_selected_toolchain_is_exported_for_following_ci_steps) ... ok
+test_successful_cache_does_not_retry (test_ci_preparation.CompilerPreparationTests.test_successful_cache_does_not_retry) ... ok
+test_transient_failure_retries_once_then_runs_all_gates (test_ci_preparation.CompilerPreparationTests.test_transient_failure_retries_once_then_runs_all_gates) ... ok
+test_two_failures_fall_back_to_mandatory_build_not_more_downloads (test_ci_preparation.CompilerPreparationTests.test_two_failures_fall_back_to_mandatory_build_not_more_downloads) ... ok
+test_changed_feature_head_rejected (test_main_merge.MainIntegrationTests.test_changed_feature_head_rejected) ... ok
+test_changed_local_main_rejected (test_main_merge.MainIntegrationTests.test_changed_local_main_rejected) ... ok
+test_changed_remote_main_rejected (test_main_merge.MainIntegrationTests.test_changed_remote_main_rejected) ... ok
+test_changed_selected_bytes_rejected (test_main_merge.MainIntegrationTests.test_changed_selected_bytes_rejected) ... ok
+test_changed_selected_mode_rejected (test_main_merge.MainIntegrationTests.test_changed_selected_mode_rejected) ... ok
+test_cli_defaults_to_dry_run (test_main_merge.MainIntegrationTests.test_cli_defaults_to_dry_run) ... ok
+test_cli_explicit_apply_leaves_pending_merge_in_fixture_only (test_main_merge.MainIntegrationTests.test_cli_explicit_apply_leaves_pending_merge_in_fixture_only) ... ok
+test_default_dry_run_is_read_only (test_main_merge.MainIntegrationTests.test_default_dry_run_is_read_only) ... ok
+test_deleted_selected_source_rejected (test_main_merge.MainIntegrationTests.test_deleted_selected_source_rejected) ... ok
+test_deletion_requires_explicit_reviewed_fields (test_main_merge.MainIntegrationTests.test_deletion_requires_explicit_reviewed_fields) ... ok
+test_detached_head_rejected (test_main_merge.MainIntegrationTests.test_detached_head_rejected) ... ok
+test_dirty_index_rejected (test_main_merge.MainIntegrationTests.test_dirty_index_rejected) ... ok
+test_dirty_worktree_rejected (test_main_merge.MainIntegrationTests.test_dirty_worktree_rejected) ... ok
+test_draft_manifest_cannot_approve_preview (test_main_merge.MainIntegrationTests.test_draft_manifest_cannot_approve_preview) ... ok
+test_existing_merge_rejected (test_main_merge.MainIntegrationTests.test_existing_merge_rejected) ... ok
+test_existing_sequencer_rejected (test_main_merge.MainIntegrationTests.test_existing_sequencer_rejected) ... ok
+test_explicit_apply_stages_exact_tree_modes_links_deletions_and_history (test_main_merge.MainIntegrationTests.test_explicit_apply_stages_exact_tree_modes_links_deletions_and_history) ... ok
+test_ignored_local_file_cannot_be_overwritten_by_main (test_main_merge.MainIntegrationTests.test_ignored_local_file_cannot_be_overwritten_by_main) ... ok
+test_integrated_candidate_previews_cleanly_and_cannot_merge_twice (test_main_merge.MainIntegrationTests.test_integrated_candidate_previews_cleanly_and_cannot_merge_twice) ... ok
+test_late_edit_during_remote_check_rejected_before_merge (test_main_merge.MainIntegrationTests.test_late_edit_during_remote_check_rejected_before_merge) ... ok
+test_legacy_manifest_requires_reviewed_modes (test_main_merge.MainIntegrationTests.test_legacy_manifest_requires_reviewed_modes) ... ok
+test_legacy_preview_cannot_authorize_apply (test_main_merge.MainIntegrationTests.test_legacy_preview_cannot_authorize_apply) ... ok
+test_missing_remote_rejected (test_main_merge.MainIntegrationTests.test_missing_remote_rejected) ... ok
+test_path_escape_rejected (test_main_merge.MainIntegrationTests.test_path_escape_rejected) ... ok
+test_preview_preserves_refs_real_index_private_files_and_tree (test_main_merge.MainIntegrationTests.test_preview_preserves_refs_real_index_private_files_and_tree) ... ok
+test_tampered_approved_manifest_fingerprint_rejected (test_main_merge.MainIntegrationTests.test_tampered_approved_manifest_fingerprint_rejected) ... ok
+test_tampered_approved_tree_rejected (test_main_merge.MainIntegrationTests.test_tampered_approved_tree_rejected) ... ok
+test_unknown_conflict_rejected (test_main_merge.MainIntegrationTests.test_unknown_conflict_rejected) ... ok
+test_untracked_work_rejected (test_main_merge.MainIntegrationTests.test_untracked_work_rejected) ... ok
+test_wrong_branch_rejected (test_main_merge.MainIntegrationTests.test_wrong_branch_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 38 tests in 46.400s
+
+OK

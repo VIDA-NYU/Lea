@@ -57,9 +57,9 @@ _DECLARATION_RE = re.compile(
     r"(?:private\s+|protected\s+|noncomputable\s+|unsafe\s+|partial\s+|"
     r"scoped\s+|local\s+)*"
     r"(theorem|lemma|def|abbrev|structure|class|inductive|coinductive|instance|opaque)\s+"
-    r"([A-Za-z_][A-Za-z0-9_'.]*)"
+    r"((?:[^\W\d]|_)[\w'.]*|«[^»]+»)"
 )
-_NAMESPACE_RE = re.compile(r"^\s*namespace\s+([A-Za-z_][A-Za-z0-9_'.]*)")
+_NAMESPACE_RE = re.compile(r"^\s*namespace\s+((?:[^\W\d]|_)[\w'.]*)")
 _SECTION_RE = re.compile(r"^\s*section(?:\s+([A-Za-z_][A-Za-z0-9_'.]*))?\s*$")
 _MUTUAL_RE = re.compile(r"^\s*mutual\s*$")
 _END_RE = re.compile(r"^\s*end\b\s*([A-Za-z_][A-Za-z0-9_'.]*)?")
@@ -196,6 +196,26 @@ def scan_lean_declarations(code: str) -> list[LeanDeclaration]:
             )
         )
     return result
+
+
+def has_unrelated_declarations(code: str, owner_name: str | None) -> bool:
+    """A definition's namespace helpers belong to its artifact, not other targets.
+
+    Keep multi-target files protected. Only a uniquely named definition with
+    every other declaration inside its own namespace forms one bundled target.
+    """
+    declarations = scan_lean_declarations(code)
+    if len(declarations) <= 1:
+        return False
+    owners = [decl for decl in declarations if (
+        decl.full_name == owner_name if owner_name and "." in owner_name
+        else decl.short_name == owner_name
+    )]
+    if len(owners) != 1 or owners[0].kind != "definition":
+        return True
+    owner = owners[0]
+    return any(decl != owner and not decl.full_name.startswith(owner.full_name + ".")
+               for decl in declarations)
 
 
 def extract_declaration_name(code: str | None) -> str | None:

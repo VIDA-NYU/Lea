@@ -1,0 +1,10 @@
+{
+  "pending_main": "8fc9a74bb7de07b655105e46fe661eb3473482b2",
+  "first_parent": "5517d7760b5bba74f6fbb6872cd75654458b8438",
+  "reviewed_tree": "201a75e4fdee57f121f8fc8a5daaff69eca5f1dc",
+  "index_matches_reviewed_tree": true,
+  "no_unresolved_paths": true,
+  "no_source_changes": true,
+  "all_refs_unchanged_before_commit": true,
+  "ignored_data_precheck": true
+}

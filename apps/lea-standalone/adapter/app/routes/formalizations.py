@@ -5,12 +5,26 @@ from __future__ import annotations
 import sqlite3
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Literal
 
 from .. import formalizations as service
 from .. import github_import_service
 from ..config import load_config
-from .. import store
+from .. import store, project_coordination, formalization_reviews
+
+
+def _scope_project(arguments):
+    if "project_id" in arguments:
+        return arguments["project_id"]
+    if "slug" in arguments:
+        project = store.get_project_by_slug(arguments["slug"])
+        return project["id"] if project else None
+    if "formalization_id" in arguments:
+        item = store.get_formalization(arguments["formalization_id"])
+        return item.get("project_id") if item else None
+    session = store.get_session(arguments["session_id"])
+    return session.get("project_id") if session else None
 
 
 router = APIRouter()
@@ -34,7 +48,30 @@ class FormalizationUpdate(BaseModel):
     source_hash: str | None = None
 
 
+class ReviewDecision(BaseModel):
+    action: Literal['approve', 'withdraw']
+    outcome: Literal['proved', 'defined', 'disproved'] | None = None
+    revision_token: str | None = None
+    approval_id: str | None = None
+    source_context_ref: str | None = None
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+@router.get('/api/formalizations/{formalization_id}/review')
+@project_coordination.guarded(_scope_project, metadata=True)
+def review_context(formalization_id: str, source_context_ref: str | None = None) -> dict:
+    return formalization_reviews.context(formalization_id, source_context_ref)
+
+
+@router.post('/api/formalizations/{formalization_id}/review-decisions')
+@project_coordination.guarded(_scope_project)
+def review_decision(formalization_id: str, request: ReviewDecision) -> dict:
+    # The service owns the mutation reservation, before its environment lease.
+    return formalization_reviews.decide(formalization_id, request.model_dump())
+
+
 @router.get("/api/projects/{project_id}/formalizations")
+@project_coordination.guarded(_scope_project, metadata=True)
 def project_formalizations(project_id: str) -> dict:
     if store.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -43,6 +80,7 @@ def project_formalizations(project_id: str) -> dict:
 
 
 @router.get("/api/projects/by-slug/{slug}/formalizations")
+@project_coordination.guarded(_scope_project, metadata=True)
 def project_formalizations_by_slug(slug: str) -> dict:
     project = store.get_project_by_slug(slug)
     if project is None:
@@ -57,6 +95,7 @@ def project_formalizations_by_slug(slug: str) -> dict:
 
 
 @router.post("/api/projects/{project_id}/formalizations", status_code=201)
+@project_coordination.guarded(_scope_project, write=True)
 def create_project_formalization(
     project_id: str, request: FormalizationCreate
 ) -> dict:
@@ -89,6 +128,7 @@ def create_project_formalization(
 
 
 @router.get("/api/sessions/{session_id}/formalizations")
+@project_coordination.guarded(_scope_project, metadata=True)
 def session_formalizations(session_id: str) -> dict:
     if store.get_session(session_id) is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -97,6 +137,7 @@ def session_formalizations(session_id: str) -> dict:
 
 
 @router.get("/api/formalizations/{formalization_id}")
+@project_coordination.guarded(_scope_project, metadata=True)
 def formalization_detail(formalization_id: str) -> dict:
     item = service.get(formalization_id)
     if item is None:
@@ -105,6 +146,7 @@ def formalization_detail(formalization_id: str) -> dict:
 
 
 @router.get("/api/formalizations/{formalization_id}/current")
+@project_coordination.guarded(_scope_project, metadata=True)
 def formalization_current(
     formalization_id: str,
     session_id: str | None = None,
@@ -121,6 +163,7 @@ def formalization_current(
 
 
 @router.patch("/api/formalizations/{formalization_id}")
+@project_coordination.guarded(_scope_project, write=True)
 def update_formalization(
     formalization_id: str, request: FormalizationUpdate
 ) -> dict:

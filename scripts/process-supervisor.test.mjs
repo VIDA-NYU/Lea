@@ -20,12 +20,13 @@ const cooperative = `
   setInterval(() => {}, 1000);
 `;
 
-async function fixture(t, code, graceMs = 5000, { viaNpm = false } = {}) {
+async function fixture(t, code, graceMs = 5000, { viaNpm = false, handleExits = false } = {}) {
   let output = "";
   const script = `
     import { createProcessSupervisor } from ${JSON.stringify(supervisorUrl)};
     import { spawn } from "node:child_process";
-    const supervisor = createProcessSupervisor({ graceMs: ${graceMs} });
+    const supervisor = createProcessSupervisor({ graceMs: ${graceMs},
+      onUnexpectedExit: ${handleExits ? '(label) => { console.log("HANDLED " + label); return true; }' : 'null'} });
     ${code}
   `;
   let command = process.execPath;
@@ -91,6 +92,20 @@ test("one Ctrl+C waits for cooperative services and releases their process group
   assert.equal(code, 0, run.output);
   assert.ok(Date.now() - started < 1500, run.output);
   assert.doesNotMatch(run.output, /Forcing shutdown/);
+  await assertGone(pid);
+});
+
+test("restart-managed exits keep peers running and retain bounded shutdown", { timeout: 6000 }, async t => {
+  const run = await fixture(t, service("web", cooperative) + service("adapter", "process.exit(0)"),
+    5000, { handleExits: true });
+  await run.waitFor(/HANDLED adapter/);
+  await run.waitFor(/READY (\d+)/);
+  const pid = Number(run.output.match(/READY (\d+)/)[1]);
+  assert.equal(run.child.exitCode, null);
+  assert.doesNotMatch(run.output, /stopping the stack/);
+  run.child.kill("SIGINT");
+  const [code] = await run.exited;
+  assert.equal(code, 0, run.output);
   await assertGone(pid);
 });
 

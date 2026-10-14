@@ -3,15 +3,69 @@ import assert from "node:assert/strict";
 import {
   fetchAdapterModelCatalog,
   fetchAdapterModelRequirements,
+  fetchAdapterSettings,
+  fetchAdapterUsageStats,
+  fetchCurrentAlignmentCheck,
+  fetchCurrentLeaStatus,
+  projectDependencyRequest,
   previewGithubImportBySlug,
   confirmGithubImportBySlug,
   getGithubImportBySlug,
   syncProjectFormalizationTargetsBySlug,
   parseSseFrame,
+  fetchApiRunUsage,
   runApiProofJob,
 } from "../companion/leaApiClient.mjs";
 
 const encoder = new TextEncoder();
+
+for (const read of [fetchAdapterSettings, fetchAdapterUsageStats, projectDependencyRequest,
+  syncProjectFormalizationTargetsBySlug, fetchCurrentAlignmentCheck, fetchCurrentLeaStatus]) {
+  test(`${read.name} bounds stalled headers and response bodies`, async () => {
+    for (const stalledBody of [false, true]) {
+      let signal;
+      const result = await read({ baseUrl: "http://adapter.test", timeoutMs: 10,
+        fetchImpl: async (_url, options) => {
+          signal = options.signal;
+          return stalledBody ? { ok: true, text: () => new Promise(() => {}) } : new Promise(() => {});
+        }
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.timedOut, true);
+      assert.equal(signal.aborted, true);
+    }
+  });
+}
+
+test('source-comparison metadata also bounds stalled headers and bodies', async () => {
+  for (const stalledBody of [false, true]) {
+    let signal;
+    const result = await fetchCurrentLeaStatus({ baseUrl: 'http://adapter.test',
+      formalizationId: 'target', sourceBundle: {}, timeoutMs: 10,
+      fetchImpl: async (_url, options) => {
+        signal = options.signal;
+        assert.equal(options.method, 'POST');
+        return stalledBody ? { ok: true, text: () => new Promise(() => {}) } : new Promise(() => {});
+      }
+    });
+    assert.equal(result.timedOut, true);
+    assert.equal(signal.aborted, true);
+  }
+});
+
+test("explicit dependency work retains its own operation deadline", async () => {
+  let options;
+  const result = await projectDependencyRequest({ baseUrl: "http://adapter.test", projectSlug: "study", action: "ensure", timeoutMs: 1,
+    fetchImpl: async (_url, value) => {
+      options = value;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return jsonResponse({ ready: true });
+    }
+  });
+  assert.equal(result.ok, true);
+  assert.equal(options.method, "POST");
+  assert.equal(options.signal, undefined);
+});
 
 function jsonResponse(obj, ok = true, status = 200) {
   return { ok, status, async text() { return JSON.stringify(obj); } };
@@ -439,12 +493,90 @@ test("runApiProofJob: still queued at the deadline → times out and interrupts 
     baseUrl: "http://127.0.0.1:8001",
     message: "Formalize starved",
     timeoutMs: 40,
+    settleGraceMs: 30,
     busyRetryDelayMs: 5,
   });
 
   assert.equal(result.ok, false);
   assert.equal(result.timedOut, true);
   assert.ok(calls.some((c) => c.url.includes("/api/runs/run-w/interrupt") && c.method === "POST"));
+  assert.equal(result.usageStatus, "unknown");
+  assert.equal(result.costUsd, null);
+});
+
+test("runApiProofJob: timeout retains the final run cost and cause", async () => {
+  let interrupted = false;
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith("/api/runs") && options.method === "POST") return jsonResponse({ session_id: "sess-t", run_id: "run-t" });
+    if (url.endsWith("/run-t/interrupt")) {
+      assert.deepEqual(JSON.parse(options.body), { reason: "timeout", source: "companion" });
+      interrupted = true;
+      return jsonResponse({ status: "interrupting", stop_reason: "timeout" });
+    }
+    if (url.endsWith("/run-t/events")) return sseResponse([frame("queued", { position: 1 })]);
+    if (url.endsWith("/run-t")) return jsonResponse({ id: "run-t", status: interrupted ? "cancelled" : "pending",
+      stop_reason: interrupted ? "timeout" : null, input_tokens: 100, output_tokens: 40,
+      cost_usd: 0.037, usage_status: interrupted ? "final" : "partial", usage_revision: 2 });
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const result = await runApiProofJob({ fetchImpl, baseUrl: "http://adapter", message: "work",
+                                       timeoutMs: 25, settleGraceMs: 40, busyRetryDelayMs: 5 });
+  assert.equal(result.timedOut, true);
+  assert.equal(result.settling, false);
+  assert.equal(result.stopReason, "timeout");
+  assert.equal(result.costUsd, 0.037);
+  assert.equal(result.usageStatus, "final");
+});
+
+test("runApiProofJob: a completion that wins the timeout race is not paused", async () => {
+  let interrupted = false;
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith("/api/runs") && options.method === "POST") return jsonResponse({ session_id: "sess-r", run_id: "run-r" });
+    if (url.endsWith("/run-r/interrupt")) {
+      interrupted = true;
+      return jsonResponse({ status: "proved" });
+    }
+    if (url.endsWith("/run-r/events")) return sseResponse([frame("queued", { position: 1 })]);
+    if (url.endsWith("/run-r")) return jsonResponse({ id: "run-r", status: interrupted ? "proved" : "running",
+      result_kind: interrupted ? "proved" : null, input_tokens: 100, output_tokens: 40,
+      cost_usd: 0.037, usage_status: interrupted ? "final" : "partial", usage_revision: 2 });
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const result = await runApiProofJob({ fetchImpl, baseUrl: "http://adapter", message: "work",
+                                       timeoutMs: 25, settleGraceMs: 40, busyRetryDelayMs: 5 });
+  assert.equal(result.ok, true);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.recoverable, false);
+  assert.equal(result.doneStatus, "proved");
+});
+
+test("runApiProofJob: old adapter user_stop does not erase the companion timeout", async () => {
+  let interrupted = false;
+  const fetchImpl = async (url, options = {}) => {
+    if (url.endsWith("/api/runs") && options.method === "POST") return jsonResponse({ session_id: "sess-old", run_id: "run-old" });
+    if (url.endsWith("/run-old/interrupt")) {
+      interrupted = true;
+      return jsonResponse({ status: "interrupting" });
+    }
+    if (url.endsWith("/run-old/events")) return sseResponse([frame("queued", { position: 1 })]);
+    if (url.endsWith("/run-old")) return jsonResponse({ id: "run-old", status: interrupted ? "cancelled" : "pending",
+      stop_reason: "user_stop", cost_usd: 0 });
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const result = await runApiProofJob({ fetchImpl, baseUrl: "http://adapter", message: "work",
+                                       timeoutMs: 25, settleGraceMs: 40, busyRetryDelayMs: 5 });
+  assert.equal(result.stopReason, "timeout");
+  assert.equal(result.usageStatus, "unknown");
+});
+
+test("missing run usage cannot borrow another run's or session's total", async () => {
+  const fetchImpl = async (url) => url.endsWith("/api/runs/missing")
+    ? jsonResponse({ detail: "not found" }, false, 404)
+    : jsonResponse({ usage: { cost_usd: 0.25 }, runs: [{ id: "other", cost_usd: 0.25 }] });
+  const result = await fetchApiRunUsage({ fetchImpl, baseUrl: "http://adapter",
+                                         sessionId: "s", runId: "missing" });
+  assert.equal(result.costUsd, null);
+  assert.equal(result.usageStatus, "unknown");
 });
 
 test("runApiProofJob: an HTTP rejection of the attach fails immediately (no retry)", async () => {
@@ -520,12 +652,13 @@ test("runApiProofJob: stream drops with no done frame, run row is terminal → a
   assert.equal(result.costUsd, 0.002);
 });
 
-test("runApiProofJob: stream drops and the adapter is unreachable → gives up after the miss cap and interrupts", async () => {
+test("runApiProofJob: adapter outage keeps the run identity until its deadline", async () => {
   const calls = [];
+  const originalDeadline = new Date(Date.now() + 50).toISOString();
   const fetchImpl = async (url, options = {}) => {
     calls.push({ url, method: options.method || "GET" });
     if (url.endsWith("/api/runs") && options.method === "POST") {
-      return jsonResponse({ session_id: "sess-u", run_id: "run-u" });
+      return jsonResponse({ session_id: "sess-u", run_id: "run-u", deadline_at: originalDeadline });
     }
     if (url.includes("/api/runs/run-u/interrupt")) {
       return jsonResponse({ status: "interrupted" });
@@ -549,23 +682,23 @@ test("runApiProofJob: stream drops and the adapter is unreachable → gives up a
     fetchImpl,
     baseUrl: "http://127.0.0.1:8001",
     message: "Formalize unreachable",
-    timeoutMs: 5000,
+    timeoutMs: 5000, // a retry must honor the earlier adapter deadline
     busyRetryDelayMs: 3,
+    settleGraceMs: 20,
   });
 
   assert.equal(result.ok, false);
-  // It stopped on the miss cap, not the timeout.
-  assert.equal(result.timedOut, false);
+  assert.equal(result.timedOut, true);
   assert.ok(
     calls.some((c) => c.url.includes("/api/runs/run-u/interrupt") && c.method === "POST"),
-    "should best-effort interrupt the run it is abandoning"
+    "should request interruption only when the original deadline expires"
   );
-  // Bounded: one attach + one row read per miss, capped at 5 misses.
+  // The time budget bounds retries even when the adapter is unavailable.
   const eventAttempts = calls.filter((c) => c.url.includes("/events")).length;
-  assert.ok(eventAttempts <= 5, `expected <= 5 attach attempts, got ${eventAttempts}`);
+  assert.ok(eventAttempts > 0);
 });
 
-test("runApiProofJob: a malformed run row without status is bounded like a failed status read", async () => {
+test("runApiProofJob: a malformed run row remains unconfirmed until the deadline", async () => {
   const calls = [];
   const fetchImpl = async (url, options = {}) => {
     calls.push({ url, method: options.method || "GET" });
@@ -591,12 +724,13 @@ test("runApiProofJob: a malformed run row without status is bounded like a faile
     fetchImpl,
     baseUrl: "http://127.0.0.1:8001",
     message: "Formalize malformed row",
-    timeoutMs: 5000,
+    timeoutMs: 40,
     busyRetryDelayMs: 3,
+    settleGraceMs: 20,
   });
 
   assert.equal(result.ok, false);
-  assert.equal(result.timedOut, false);
+  assert.equal(result.timedOut, true);
   assert.ok(calls.some((c) => c.url.includes("/interrupt")));
-  assert.ok(calls.filter((c) => c.url.includes("/events")).length <= 5);
+  assert.ok(calls.filter((c) => c.url.includes("/events")).length > 0);
 });

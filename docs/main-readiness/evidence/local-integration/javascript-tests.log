@@ -1,0 +1,4542 @@
+
+> test
+> npm run test:scripts && npm test -w apps/overleaf-extension && npm run test:frontend -w apps/lea-standalone
+
+
+> test:scripts
+> node --test scripts/*.test.mjs apps/lea-standalone/scripts/lean-assets.test.mjs
+
+TAP version 13
+# Subtest: production and dev serve the same fixed InfoView assets without accepting extra paths
+ok 1 - production and dev serve the same fixed InfoView assets without accepting extra paths
+  ---
+  duration_ms: 6.223541
+  type: 'test'
+  ...
+# Subtest: Vite development middleware serves the same editor URLs
+ok 2 - Vite development middleware serves the same editor URLs
+  ---
+  duration_ms: 145.478708
+  type: 'test'
+  ...
+# Subtest: preflight checks only the services requested by the launcher
+ok 3 - preflight checks only the services requested by the launcher
+  ---
+  duration_ms: 1.43525
+  type: 'test'
+  ...
+# Subtest: preflight reports every conflicting port in one actionable error
+ok 4 - preflight reports every conflicting port in one actionable error
+  ---
+  duration_ms: 0.240458
+  type: 'test'
+  ...
+# Subtest: port probes reject an existing listener without disturbing it
+ok 5 - port probes reject an existing listener without disturbing it
+  ---
+  duration_ms: 7.028584
+  type: 'test'
+  ...
+# Subtest: a rejected --fresh launch exits before config creation or data reset
+ok 6 - a rejected --fresh launch exits before config creation or data reset
+  ---
+  duration_ms: 267.108916
+  type: 'test'
+  ...
+1..6
+# tests 6
+# suites 0
+# pass 6
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 363.196084
+
+> overleaf-lean-stub-mvp@0.1.0 test
+> npm run check:katex-assets && node --test tests/*.test.mjs
+
+
+> overleaf-lean-stub-mvp@0.1.0 check:katex-assets
+> node scripts/sync-katex-assets.mjs --check
+
+Verified 63 vendored KaTeX assets.
+TAP version 13
+# Subtest: extension blueprintLayout mirrors the canonical package module
+ok 1 - extension blueprintLayout mirrors the canonical package module
+  ---
+  duration_ms: 1.3325
+  type: 'test'
+  ...
+# Subtest: cascade: a broken dependent gets invalid + attributed brokenByUpstream with via/editedAt, and the verdict persists breakage
+ok 2 - cascade: a broken dependent gets invalid + attributed brokenByUpstream with via/editedAt, and the verdict persists breakage
+  ---
+  duration_ms: 1.963625
+  type: 'test'
+  ...
+# Subtest: cascade: a still-valid dependent is reverified with no brokenByUpstream, and a passing verdict clears stale breakage
+ok 3 - cascade: a still-valid dependent is reverified with no brokenByUpstream, and a passing verdict clears stale breakage
+  ---
+  duration_ms: 0.198542
+  type: 'test'
+  ...
+# Subtest: cascade: upstream rebuild failure fails closed -- every dependent unknown with an error verdict + breakage, none checked
+ok 4 - cascade: upstream rebuild failure fails closed -- every dependent unknown with an error verdict + breakage, none checked
+  ---
+  duration_ms: 0.123958
+  type: 'test'
+  ...
+# Subtest: cascade: a dependent with an active run is skipped as busy in both the normal and fail-closed branches
+ok 5 - cascade: a dependent with an active run is skipped as busy in both the normal and fail-closed branches
+  ---
+  duration_ms: 0.161125
+  type: 'test'
+  ...
+# Subtest: cascade: unattributed dependent (no session) is reported at-risk but gets no verdict write
+ok 6 - cascade: unattributed dependent (no session) is reported at-risk but gets no verdict write
+  ---
+  duration_ms: 0.160916
+  type: 'test'
+  ...
+# Subtest: cascade: transitive fixpoint flips a spuriously-passing second-hop dependent to invalid with viaModule + persisted breakage
+ok 7 - cascade: transitive fixpoint flips a spuriously-passing second-hop dependent to invalid with viaModule + persisted breakage
+  ---
+  duration_ms: 0.352334
+  type: 'test'
+  ...
+# Subtest: cascade: a dependentsOf failure degrades to an empty impact list, not a throw
+ok 8 - cascade: a dependentsOf failure degrades to an empty impact list, not a throw
+  ---
+  duration_ms: 0.162084
+  type: 'test'
+  ...
+# Subtest: breakageDescriptor: rename carries from/to and the NEW declaration name; other kinds carry the effective name
+ok 9 - breakageDescriptor: rename carries from/to and the NEW declaration name; other kinds carry the effective name
+  ---
+  duration_ms: 0.066667
+  type: 'test'
+  ...
+# Subtest: projects compiler and attempt facts into the six Lean Check states
+ok 10 - projects compiler and attempt facts into the six Lean Check states
+  ---
+  duration_ms: 1.451167
+  type: 'test'
+  ...
+# Subtest: normalizes missing semantic evidence to an explained N/A
+ok 11 - normalizes missing semantic evidence to an explained N/A
+  ---
+  duration_ms: 1.196542
+  type: 'test'
+  ...
+# Subtest: companion listen host stays loopback-local unless a container overrides it
+ok 12 - companion listen host stays loopback-local unless a container overrides it
+  ---
+  duration_ms: 1.400625
+  type: 'test'
+  ...
+# Subtest: buildOverleafDocumentUrl builds the canonical public-Overleaf URL
+ok 13 - buildOverleafDocumentUrl builds the canonical public-Overleaf URL
+  ---
+  duration_ms: 0.082
+  type: 'test'
+  ...
+# Subtest: validates a Lea repo and derives its workspace
+ok 14 - validates a Lea repo and derives its workspace
+  ---
+  duration_ms: 64.095125
+  type: 'test'
+  ...
+# Subtest: startup records the derived Lea workspace without creating root Lean files
+ok 15 - startup records the derived Lea workspace without creating root Lean files
+  ---
+  duration_ms: 7.766458
+  type: 'test'
+  ...
+# [companion] /var/folders/7v/bwwzmh557fq01rdzwhsyys2h0000gn/T/overleaf-lean-corrupt-0H1QM1/jobs.json contained invalid JSON; moved it to /var/folders/7v/bwwzmh557fq01rdzwhsyys2h0000gn/T/overleaf-lean-corrupt-0H1QM1/jobs.json.corrupt-1791831527554 and starting fresh.
+# Subtest: createServer recovers from a corrupt jobs.json instead of crashing (AUDIT H1)
+ok 16 - createServer recovers from a corrupt jobs.json instead of crashing (AUDIT H1)
+  ---
+  duration_ms: 9.422375
+  type: 'test'
+  ...
+# Subtest: builds Lea-compatible Overleaf project slugs and markdown paths
+ok 17 - builds Lea-compatible Overleaf project slugs and markdown paths
+  ---
+  duration_ms: 0.295708
+  type: 'test'
+  ...
+# Subtest: project identity endpoints proxy adapter state without creating on missing get
+ok 18 - project identity endpoints proxy adapter state without creating on missing get
+  ---
+  duration_ms: 15.138833
+  type: 'test'
+  ...
+# Subtest: namespace migration rebases cached job artifact pointers without rewriting history
+ok 19 - namespace migration rebases cached job artifact pointers without rewriting history
+  ---
+  duration_ms: 3.624209
+  type: 'test'
+  ...
+# Subtest: settings response includes model families and key status
+ok 20 - settings response includes model families and key status
+  ---
+  duration_ms: 4.211125
+  type: 'test'
+  ...
+# Subtest: settings response reloads model selection from env file
+ok 21 - settings response reloads model selection from env file
+  ---
+  duration_ms: 4.496709
+  type: 'test'
+  ...
+# Subtest: model catalog and requirements proxy the adapter's exhaustive source
+ok 22 - model catalog and requirements proxy the adapter's exhaustive source
+  ---
+  duration_ms: 5.802667
+  type: 'test'
+  ...
+# Subtest: model catalog fallback preserves a configured custom model
+ok 23 - model catalog fallback preserves a configured custom model
+  ---
+  duration_ms: 6.207667
+  type: 'test'
+  ...
+# Subtest: settings forward dynamically required provider keys by environment name
+ok 24 - settings forward dynamically required provider keys by environment name
+  ---
+  duration_ms: 21.544459
+  type: 'test'
+  ...
+# Subtest: settings accept custom model ids and surface adapter credential errors
+ok 25 - settings accept custom model ids and surface adapter credential errors
+  ---
+  duration_ms: 20.150042
+  type: 'test'
+  ...
+# Could not reach the Lea adapter to sync settings: Request to http://127.0.0.1:8001/api/settings failed: Unexpected provider validation URL: http://127.0.0.1:8001/api/settings
+# Could not reach the Lea adapter to sync settings: Request to http://127.0.0.1:8001/api/settings failed: Unexpected provider validation URL: http://127.0.0.1:8001/api/settings
+# Could not reach the Lea adapter to sync settings: Request to http://127.0.0.1:8001/api/settings failed: Unexpected provider validation URL: http://127.0.0.1:8001/api/settings
+# Subtest: settings save supported models when their family key is configured
+ok 26 - settings save supported models when their family key is configured
+  ---
+  duration_ms: 30.351875
+  type: 'test'
+  ...
+# Could not reach the Lea adapter to sync settings: Request to http://127.0.0.1:8001/api/settings failed: Unexpected provider validation URL: http://127.0.0.1:8001/api/settings
+# Subtest: settings persist the tex-mirror toggle off
+ok 27 - settings persist the tex-mirror toggle off
+  ---
+  duration_ms: 12.771917
+  type: 'test'
+  ...
+# Subtest: mirror-tex forwards the project's .tex set to the adapter by slug
+ok 28 - mirror-tex forwards the project's .tex set to the adapter by slug
+  ---
+  duration_ms: 16.51475
+  type: 'test'
+  ...
+# Subtest: mirror-tex rejects a missing project id and respects the disable toggle
+ok 29 - mirror-tex rejects a missing project id and respects the disable toggle
+  ---
+  duration_ms: 8.373542
+  type: 'test'
+  ...
+# Subtest: formalize refuses a source version that the mirror did not acknowledge
+ok 30 - formalize refuses a source version that the mirror did not acknowledge
+  ---
+  duration_ms: 5.645167
+  type: 'test'
+  ...
+# Subtest: formalize returns a structured error when the spend cap is already reached
+ok 31 - formalize returns a structured error when the spend cap is already reached
+  ---
+  duration_ms: 10.205
+  type: 'test'
+  ...
+# Subtest: lean pane manifest returns missing-stub items without artifacts
+ok 32 - lean pane manifest returns missing-stub items without artifacts
+  ---
+  duration_ms: 11.004959
+  type: 'test'
+  ...
+# Subtest: lean pane refresh syncs the source identity and preserves a stale artifact's passing Lean check
+ok 33 - lean pane refresh syncs the source identity and preserves a stale artifact's passing Lean check
+  ---
+  duration_ms: 7.257625
+  type: 'test'
+  ...
+# Subtest: lean pane compares complete canonical evidence and marks fallback inventories partial
+ok 34 - lean pane compares complete canonical evidence and marks fallback inventories partial
+  ---
+  duration_ms: 17.018417
+  type: 'test'
+  ...
+# Subtest: lean pane manifest preserves a terminal max-spend failure for item-level feedback
+ok 35 - lean pane manifest preserves a terminal max-spend failure for item-level feedback
+  ---
+  duration_ms: 7.109375
+  type: 'test'
+  ...
+# Subtest: lean pane manifest surfaces sorry stubs and valid artifacts
+ok 36 - lean pane manifest surfaces sorry stubs and valid artifacts
+  ---
+  duration_ms: 25.906375
+  type: 'test'
+  ...
+# Subtest: lean pane manifest surfaces a disproof as a counterexample, not a failure
+ok 37 - lean pane manifest surfaces a disproof as a counterexample, not a failure
+  ---
+  duration_ms: 17.320708
+  type: 'test'
+  ...
+# Subtest: manifest reads dependencies once and marks cached evidence when unavailable
+ok 38 - manifest reads dependencies once and marks cached evidence when unavailable
+  ---
+  duration_ms: 7.474084
+  type: 'test'
+  ...
+# Subtest: manifest preserves batch explanations and honors newer authoritative completion
+ok 39 - manifest preserves batch explanations and honors newer authoritative completion
+  ---
+  duration_ms: 17.03225
+  type: 'test'
+  ...
+# Subtest: lean pane manifest surfaces needs_review as a visible review state
+ok 40 - lean pane manifest surfaces needs_review as a visible review state
+  ---
+  duration_ms: 6.771875
+  type: 'test'
+  ...
+# Subtest: lean pane manifest: a newer unconfirmed re-run beats an older formalized job (regression)
+ok 41 - lean pane manifest: a newer unconfirmed re-run beats an older formalized job (regression)
+  ---
+  duration_ms: 6.888208
+  type: 'test'
+  ...
+# Subtest: lean pane manifest: a newer formalized re-run beats an older needs_review job
+ok 42 - lean pane manifest: a newer formalized re-run beats an older needs_review job
+  ---
+  duration_ms: 22.115292
+  type: 'test'
+  ...
+# Subtest: lean pane manifest demotes a formalized item to stub-generated when the ledger sees a sorry in its file
+ok 43 - lean pane manifest demotes a formalized item to stub-generated when the ledger sees a sorry in its file
+  ---
+  duration_ms: 10.464792
+  type: 'test'
+  ...
+# Subtest: lean pane manifest surfaces stubbed-import uses on the dependent's pane item, matching the doc badge
+ok 44 - lean pane manifest surfaces stubbed-import uses on the dependent's pane item, matching the doc badge
+  ---
+  duration_ms: 22.085917
+  type: 'test'
+  ...
+# Subtest: stubbed-upstream warnings are file-derived and transitive: every downstream item lists what remains
+ok 45 - stubbed-upstream warnings are file-derived and transitive: every downstream item lists what remains
+  ---
+  duration_ms: 23.174917
+  type: 'test'
+  ...
+# Subtest: lean pane manifest marks generated artifacts stale when source hash changes
+ok 46 - lean pane manifest marks generated artifacts stale when source hash changes
+  ---
+  duration_ms: 7.523625
+  type: 'test'
+  ...
+# Subtest: version-2 source identity keeps a newly formalized definition current on both status surfaces
+ok 47 - version-2 source identity keeps a newly formalized definition current on both status surfaces
+  ---
+  duration_ms: 11.082
+  type: 'test'
+  ...
+# Subtest: an existing canonical lemma artifact stays current and real source edits become stale
+ok 48 - an existing canonical lemma artifact stays current and real source edits become stale
+  ---
+  duration_ms: 19.902792
+  type: 'test'
+  ...
+# Subtest: companion canonicalizes an older client's raw lemma source-bundle kind
+ok 49 - companion canonicalizes an older client's raw lemma source-bundle kind
+  ---
+  duration_ms: 8.914875
+  type: 'test'
+  ...
+# Subtest: version-2 source identity marks a proof-only LaTeX change stale on both status surfaces
+ok 50 - version-2 source identity marks a proof-only LaTeX change stale on both status surfaces
+  ---
+  duration_ms: 48.847708
+  type: 'test'
+  ...
+# Subtest: source freshness follows the restored artifact rather than a newer failed retry
+ok 51 - source freshness follows the restored artifact rather than a newer failed retry
+  ---
+  duration_ms: 7.88525
+  type: 'test'
+  ...
+# Subtest: line shifts outside a formalized block do not make either status surface stale
+ok 52 - line shifts outside a formalized block do not make either status surface stale
+  ---
+  duration_ms: 17.114542
+  type: 'test'
+  ...
+# Subtest: changes to uses and context mark both status surfaces stale without changing theorem text
+ok 53 - changes to uses and context mark both status surfaces stale without changing theorem text
+  ---
+  duration_ms: 7.275583
+  type: 'test'
+  ...
+# Subtest: approval revisions agree across status surfaces and change with transitive upstream artifacts
+ok 54 - approval revisions agree across status surfaces and change with transitive upstream artifacts
+  ---
+  duration_ms: 13.352375
+  type: 'test'
+  ...
+# Subtest: lean pane manifest uses adapter ledger content for formalized jobs without recorded proof paths
+ok 55 - lean pane manifest uses adapter ledger content for formalized jobs without recorded proof paths
+  ---
+  duration_ms: 3.907041
+  type: 'test'
+  ...
+# Subtest: lean pane manifest degrades when Lea lookup is unavailable
+ok 56 - lean pane manifest degrades when Lea lookup is unavailable
+  ---
+  duration_ms: 0.510416
+  type: 'test'
+  ...
+# Subtest: records targetSyntax on the job for telemetry, defaulting to comment
+ok 57 - records targetSyntax on the job for telemetry, defaulting to comment
+  ---
+  duration_ms: 7.383416
+  type: 'test'
+  ...
+# Subtest: lean pane manifest flags in-progress items for live polling
+ok 58 - lean pane manifest flags in-progress items for live polling
+  ---
+  duration_ms: 5.965417
+  type: 'test'
+  ...
+# Subtest: lean pane manifest keeps polling when an active job already has valid proof evidence
+ok 59 - lean pane manifest keeps polling when an active job already has valid proof evidence
+  ---
+  duration_ms: 57.296708
+  type: 'test'
+  ...
+# Could not reach the Lea adapter to sync settings: Request to http://127.0.0.1:8001/api/settings failed: Unexpected provider validation URL: http://127.0.0.1:8001/api/settings
+# Subtest: settings clear max spend and reject negative caps
+ok 60 - settings clear max spend and reject negative caps
+  ---
+  duration_ms: 36.272666
+  type: 'test'
+  ...
+# Could not reach the Lea adapter to sync settings: Request to http://127.0.0.1:8001/api/settings failed: Unexpected provider validation URL: http://127.0.0.1:8001/api/settings
+# Subtest: settings normalize legacy Anthropic model ids
+ok 61 - settings normalize legacy Anthropic model ids
+  ---
+  duration_ms: 6.286042
+  type: 'test'
+  ...
+# Subtest: settings writes scrub legacy key fields
+ok 62 - settings writes scrub legacy key fields
+  ---
+  duration_ms: 4.214792
+  type: 'test'
+  ...
+# Could not reach the Lea adapter to sync settings: Request to http://127.0.0.1:8001/api/settings failed: Unexpected provider validation URL: http://127.0.0.1:8001/api/settings
+# Subtest: settings save provider key patches to env file without settings persistence
+ok 63 - settings save provider key patches to env file without settings persistence
+  ---
+  duration_ms: 8.087291
+  type: 'test'
+  ...
+# Subtest: adapter settings read overlays shared values and key status
+ok 64 - adapter settings read overlays shared values and key status
+  ---
+  duration_ms: 2.655708
+  type: 'test'
+  ...
+# Subtest: saving settings forwards shared fields to the adapter
+ok 65 - saving settings forwards shared fields to the adapter
+  ---
+  duration_ms: 4.545459
+  type: 'test'
+  ...
+# Subtest: adapter validation rejection surfaces as a 422
+ok 66 - adapter validation rejection surfaces as a 422
+  ---
+  duration_ms: 2.943792
+  type: 'test'
+  ...
+# Subtest: settings reject invalid submitted Gemini keys before persistence
+ok 67 - settings reject invalid submitted Gemini keys before persistence
+  ---
+  duration_ms: 2.308208
+  type: 'test'
+  ...
+# Subtest: settings reject invalid existing key for selected provider family
+ok 68 - settings reject invalid existing key for selected provider family
+  ---
+  duration_ms: 2.347459
+  type: 'test'
+  ...
+# Subtest: settings validate newly entered non-selected provider keys
+ok 69 - settings validate newly entered non-selected provider keys
+  ---
+  duration_ms: 2.144584
+  type: 'test'
+  ...
+# Could not reach the Lea adapter to sync settings: Request to http://127.0.0.1:8001/api/settings failed: Unexpected provider validation URL: http://127.0.0.1:8001/api/settings
+# Subtest: settings save valid submitted keys after provider verification
+ok 70 - settings save valid submitted keys after provider verification
+  ---
+  duration_ms: 6.033291
+  type: 'test'
+  ...
+# Subtest: settings reject provider key verification network failures
+ok 71 - settings reject provider key verification network failures
+  ---
+  duration_ms: 3.092583
+  type: 'test'
+  ...
+# Could not reach the Lea adapter to sync settings: Request to http://127.0.0.1:8001/api/settings failed: Unexpected provider validation URL: http://127.0.0.1:8001/api/settings
+# Subtest: settings do not validate untouched non-selected provider keys
+ok 72 - settings do not validate untouched non-selected provider keys
+  ---
+  duration_ms: 2.734792
+  type: 'test'
+  ...
+# Subtest: completed formalization status keeps Lea UI session link
+ok 73 - completed formalization status keeps Lea UI session link
+  ---
+  duration_ms: 2.577333
+  type: 'test'
+  ...
+# Subtest: in-progress status links Lea UI session from leaSessionId (no recorder)
+ok 74 - in-progress status links Lea UI session from leaSessionId (no recorder)
+  ---
+  duration_ms: 1.995042
+  type: 'test'
+  ...
+# Subtest: active jobs stay in progress even when local proof evidence already looks formalized
+ok 75 - active jobs stay in progress even when local proof evidence already looks formalized
+  ---
+  duration_ms: 4.71975
+  type: 'test'
+  ...
+# Subtest: a newer repaired job is terminal evidence: its declarationName beats the older formalize job's stale cache
+ok 76 - a newer repaired job is terminal evidence: its declarationName beats the older formalize job's stale cache
+  ---
+  duration_ms: 2.701875
+  type: 'test'
+  ...
+# Subtest: statuses report saved sorry stubs
+ok 77 - statuses report saved sorry stubs
+  ---
+  duration_ms: 2.349666
+  type: 'test'
+  ...
+# Subtest: statuses report active Lea jobs as in progress
+ok 78 - statuses report active Lea jobs as in progress
+  ---
+  duration_ms: 2.539875
+  type: 'test'
+  ...
+# Subtest: statuses include turn progress for active Lea jobs
+ok 79 - statuses include turn progress for active Lea jobs
+  ---
+  duration_ms: 13.655292
+  type: 'test'
+  ...
+# Subtest: active Lea job omits turn progress when current turn is unknown or invalid
+ok 80 - active Lea job omits turn progress when current turn is unknown or invalid
+  ---
+  duration_ms: 5.868584
+  type: 'test'
+  ...
+# Subtest: statuses report formalized proofs recorded in the adapter ledger
+ok 81 - statuses report formalized proofs recorded in the adapter ledger
+  ---
+  duration_ms: 3.089542
+  type: 'test'
+  ...
+# Subtest: formalize maps an Overleaf label to the Lean artifact Lea records
+ok 82 - formalize maps an Overleaf label to the Lean artifact Lea records
+  ---
+  duration_ms: 216.078875
+  type: 'test'
+  ...
+# Subtest: a verified run that never self-registered still records proof path, module, and markdown entry
+ok 83 - a verified run that never self-registered still records proof path, module, and markdown entry
+  ---
+  duration_ms: 181.343
+  type: 'test'
+  ...
+# Subtest: a verified unregistered run whose file name differs from the label is recovered via the session's code_steps
+ok 84 - a verified unregistered run whose file name differs from the label is recovered via the session's code_steps
+  ---
+  duration_ms: 184.794792
+  type: 'test'
+  ...
+# Subtest: formalize includes resolved theorem uses in the Lea prompt
+ok 85 - formalize includes resolved theorem uses in the Lea prompt
+  ---
+  duration_ms: 147.397083
+  type: 'test'
+  ...
+# Subtest: formalize includes multiple resolved theorem uses in source order
+ok 86 - formalize includes multiple resolved theorem uses in source order
+  ---
+  duration_ms: 178.07825
+  type: 'test'
+  ...
+# Subtest: formalize allows theorem uses backed by sorry stubs
+ok 87 - formalize allows theorem uses backed by sorry stubs
+  ---
+  duration_ms: 160.512291
+  type: 'test'
+  ...
+# Subtest: formalized theorem has no stubbed-use warning when stub support is not imported
+ok 88 - formalized theorem has no stubbed-use warning when stub support is not imported
+  ---
+  duration_ms: 152.310333
+  type: 'test'
+  ...
+# Subtest: formalized theorem has no stubbed-use warning when imported support is formalized
+ok 89 - formalized theorem has no stubbed-use warning when imported support is formalized
+  ---
+  duration_ms: 198.74125
+  type: 'test'
+  ...
+# Subtest: formalize allows theorem uses backed by failed sorry stubs
+ok 90 - formalize allows theorem uses backed by failed sorry stubs
+  ---
+  duration_ms: 144.435916
+  type: 'test'
+  ...
+# Subtest: formalize blocks unresolved theorem uses
+ok 91 - formalize blocks unresolved theorem uses
+  ---
+  duration_ms: 2.079333
+  type: 'test'
+  ...
+# Subtest: formalize rejects invalid theorem uses labels
+ok 92 - formalize rejects invalid theorem uses labels
+  ---
+  duration_ms: 1.638584
+  type: 'test'
+  ...
+# Subtest: formalize maps unnamed theorem output that uses the Overleaf label
+ok 93 - formalize maps unnamed theorem output that uses the Overleaf label
+  ---
+  duration_ms: 144.520042
+  type: 'test'
+  ...
+# Subtest: formalize persists completed Lea usage and cost
+ok 94 - formalize persists completed Lea usage and cost
+  ---
+  duration_ms: 238.881083
+  type: 'test'
+  ...
+# Subtest: formalize definition uses a declaration-oriented prompt and typed job key
+ok 95 - formalize definition uses a declaration-oriented prompt and typed job key
+  ---
+  duration_ms: 143.984167
+  type: 'test'
+  ...
+# Subtest: same-label theorem and definition targets do not collide
+ok 96 - same-label theorem and definition targets do not collide
+  ---
+  duration_ms: 1.765334
+  type: 'test'
+  ...
+# Subtest: usage falls back to in-memory job totals when the adapter is unavailable
+ok 97 - usage falls back to in-memory job totals when the adapter is unavailable
+  ---
+  duration_ms: 1.504167
+  type: 'test'
+  ...
+# Subtest: usage sourced from the adapter matches /api/stats (all-time + this project)
+ok 98 - usage sourced from the adapter matches /api/stats (all-time + this project)
+  ---
+  duration_ms: 1.454083
+  type: 'test'
+  ...
+# Subtest: usage from the adapter flags the spend cap from all-time cost
+ok 99 - usage from the adapter flags the spend cap from all-time cost
+  ---
+  duration_ms: 1.423042
+  type: 'test'
+  ...
+# Subtest: formalize keeps the previous Lean artifact and registry entry while retrying
+ok 100 - formalize keeps the previous Lean artifact and registry entry while retrying
+  ---
+  duration_ms: 155.75
+  type: 'test'
+  ...
+# Subtest: formalize all rechecks completed proofs before starting a queued item
+ok 101 - formalize all rechecks completed proofs before starting a queued item
+  ---
+  duration_ms: 26.29
+  type: 'test'
+  ...
+# Subtest: formalize all resumes a paused proof without retiring its partial artifact
+ok 102 - formalize all resumes a paused proof without retiring its partial artifact
+  ---
+  duration_ms: 405.786625
+  type: 'test'
+  ...
+# Subtest: formalize all resumes an item that pauses while waiting in the queue
+ok 103 - formalize all resumes an item that pauses while waiting in the queue
+  ---
+  duration_ms: 816.103084
+  type: 'test'
+  ...
+# Subtest: formalize all cannot bypass the shared-file guard
+ok 104 - formalize all cannot bypass the shared-file guard
+  ---
+  duration_ms: 3.019541
+  type: 'test'
+  ...
+# Subtest: formalize all refuses to complete a stub stored beside another proof
+ok 105 - formalize all refuses to complete a stub stored beside another proof
+  ---
+  duration_ms: 2.046625
+  type: 'test'
+  ...
+# Subtest: a first formalization does not retire a different target inferred from its source
+ok 106 - a first formalization does not retire a different target inferred from its source
+  ---
+  duration_ms: 3.098167
+  type: 'test'
+  ...
+# Subtest: statuses are unformalized when project markdown has no theorem entry
+ok 107 - statuses are unformalized when project markdown has no theorem entry
+  ---
+  duration_ms: 2.242083
+  type: 'test'
+  ...
+# Subtest: ledger evidence for a valid recorded file overrides a stale failed job
+ok 108 - ledger evidence for a valid recorded file overrides a stale failed job
+  ---
+  duration_ms: 2.917333
+  type: 'test'
+  ...
+# Subtest: formalize rejects missing OpenAI key
+ok 109 - formalize rejects missing OpenAI key
+  ---
+  duration_ms: 1.713333
+  type: 'test'
+  ...
+# Subtest: failed jobs take precedence over completed project markdown entries
+ok 110 - failed jobs take precedence over completed project markdown entries
+  ---
+  duration_ms: 2.899584
+  type: 'test'
+  ...
+# Subtest: formalize pauses a Lea job that exceeds the job timeout
+ok 111 - formalize pauses a Lea job that exceeds the job timeout
+  ---
+  duration_ms: 25.809084
+  type: 'test'
+  ...
+# Subtest: startup recovery pauses legacy jobs lacking an adapter identity
+ok 112 - startup recovery pauses legacy jobs lacking an adapter identity
+  ---
+  duration_ms: 3.004958
+  type: 'test'
+  ...
+# Subtest: startup recovery reattaches to the exact adapter run without creating another
+ok 113 - startup recovery reattaches to the exact adapter run without creating another
+  ---
+  duration_ms: 806.030667
+  type: 'test'
+  ...
+# Subtest: single formalization coordinates L once, resumes A, and B reuses L
+ok 114 - single formalization coordinates L once, resumes A, and B reuses L
+  ---
+  duration_ms: 774.016541
+  type: 'test'
+  ...
+# Subtest: batch formalization coordinates L once, resumes A, and B reuses L
+ok 115 - batch formalization coordinates L once, resumes A, and B reuses L
+  ---
+  duration_ms: 812.514583
+  type: 'test'
+  ...
+# Subtest: verified dependency retry resumes all current consumers after restart, once each
+ok 116 - verified dependency retry resumes all current consumers after restart, once each
+  ---
+  duration_ms: 428.334958
+  type: 'test'
+  ...
+# Subtest: blocked waits do not starve later verified consumers
+ok 117 - blocked waits do not starve later verified consumers
+  ---
+  duration_ms: 350.995875
+  type: 'test'
+  ...
+# Subtest: stopping during readiness checks prevents observation and explicit Continue re-arms a canceled batch target
+ok 118 - stopping during readiness checks prevents observation and explicit Continue re-arms a canceled batch target
+  ---
+  duration_ms: 429.299833
+  type: 'test'
+  ...
+# Subtest: lost admission response reuses the exact saved source request after restart
+ok 119 - lost admission response reuses the exact saved source request after restart
+  ---
+  duration_ms: 3.1275
+  type: 'test'
+  ...
+# Subtest: transient continuation server failures retain the request and real blockers give a recovery step
+ok 120 - transient continuation server failures retain the request and real blockers give a recovery step
+  ---
+  duration_ms: 2.715708
+  type: 'test'
+  ...
+# Subtest: stop during admission interrupts the admitted child and a lost response is reconciled by read-only identity lookup
+ok 121 - stop during admission interrupts the admitted child and a lost response is reconciled by read-only identity lookup
+  ---
+  duration_ms: 4.886166
+  type: 'test'
+  ...
+# Subtest: checkpoint Resume reports admission failure and keeps the paused attempt without a restart
+ok 122 - checkpoint Resume reports admission failure and keeps the paused attempt without a restart
+  ---
+  duration_ms: 2.557542
+  type: 'test'
+  ...
+# Subtest: concurrent checkpoint Resume clicks share one admission and retain the saved model
+ok 123 - concurrent checkpoint Resume clicks share one admission and retain the saved model
+  ---
+  duration_ms: 13.251208
+  type: 'test'
+  ...
+# Subtest: a dropped checkpoint admission response retries the persisted identity without a fresh run
+ok 124 - a dropped checkpoint admission response retries the persisted identity without a fresh run
+  ---
+  duration_ms: 13.149125
+  type: 'test'
+  ...
+# Subtest: Resume validates the saved model's key even when the default model has changed
+ok 125 - Resume validates the saved model's key even when the default model has changed
+  ---
+  duration_ms: 13.267958
+  type: 'test'
+  ...
+# Subtest: companion restart recovers a persisted checkpoint admission before its run ID was saved
+ok 126 - companion restart recovers a persisted checkpoint admission before its run ID was saved
+  ---
+  duration_ms: 25.369333
+  type: 'test'
+  ...
+# Subtest: formalize on the /api backend posts to /api/runs and runs autonomously (no /v1 calls)
+ok 127 - formalize on the /api backend posts to /api/runs and runs autonomously (no /v1 calls)
+  ---
+  duration_ms: 15.607667
+  type: 'test'
+  ...
+# Could not reach the Lea adapter to sync settings: Request to http://127.0.0.1:8001/api/settings failed: Unexpected provider validation URL: http://127.0.0.1:8001/api/settings
+# Could not reach the Lea adapter to sync settings: Request to http://127.0.0.1:8001/api/settings failed: Unexpected provider validation URL: http://127.0.0.1:8001/api/settings
+# Subtest: source pause setting is opt-in and persists without changing adapter settings
+ok 128 - source pause setting is opt-in and persists without changing adapter settings
+  ---
+  duration_ms: 14.957833
+  type: 'test'
+  ...
+# Subtest: formalize all overrides opt-in pauses, skips dependents, and continues independent targets
+ok 129 - formalize all overrides opt-in pauses, skips dependents, and continues independent targets
+  ---
+  duration_ms: 810.770541
+  type: 'test'
+  ...
+# Subtest: formalize all keeps review terminal and skips only dependent targets
+ok 130 - formalize all keeps review terminal and skips only dependent targets
+  ---
+  duration_ms: 805.986
+  type: 'test'
+  ...
+# Subtest: formalize all settles resumable pauses as incomplete and continues independent work
+ok 131 - formalize all settles resumable pauses as incomplete and continues independent work
+  ---
+  duration_ms: 807.247208
+  type: 'test'
+  ...
+# Subtest: stalled Formalize all targets stay incomplete, skip dependents, and continue independent work
+ok 132 - stalled Formalize all targets stay incomplete, skip dependents, and continue independent work
+  ---
+  duration_ms: 809.300958
+  type: 'test'
+  ...
+# Subtest: best-effort continuation is scoped to a proofless source-obstruction pause and changes the resumed prompt
+ok 133 - best-effort continuation is scoped to a proofless source-obstruction pause and changes the resumed prompt
+  ---
+  duration_ms: 3.931833
+  type: 'test'
+  ...
+# Subtest: formalize fetches adapter identity after companion restart before composing the prompt
+ok 134 - formalize fetches adapter identity after companion restart before composing the prompt
+  ---
+  duration_ms: 13.375916
+  type: 'test'
+  ...
+# Subtest: formalize refreshes stale fallback identity and dependency paths after project rename
+ok 135 - formalize refreshes stale fallback identity and dependency paths after project rename
+  ---
+  duration_ms: 15.106583
+  type: 'test'
+  ...
+# Subtest: stub on the /api backend records a checked sorry stub with a Lea session link
+ok 136 - stub on the /api backend records a checked sorry stub with a Lea session link
+  ---
+  duration_ms: 8.252917
+  type: 'test'
+  ...
+# Subtest: formalize after a saved stub reuses the stub session and proof file
+ok 137 - formalize after a saved stub reuses the stub session and proof file
+  ---
+  duration_ms: 14.805041
+  type: 'test'
+  ...
+# Subtest: re-formalize creates a new run in the target's existing Lea session
+ok 138 - re-formalize creates a new run in the target's existing Lea session
+  ---
+  duration_ms: 13.83875
+  type: 'test'
+  ...
+# Subtest: an artifact-only retry keeps its adapter identity when the file exists
+ok 139 - an artifact-only retry keeps its adapter identity when the file exists
+  ---
+  duration_ms: 15.318625
+  type: 'test'
+  ...
+# Subtest: an artifact-only retry keeps its adapter identity when the file is missing
+ok 140 - an artifact-only retry keeps its adapter identity when the file is missing
+  ---
+  duration_ms: 15.024625
+  type: 'test'
+  ...
+# Subtest: theorem retry retains renamed partial work after failed
+ok 141 - theorem retry retains renamed partial work after failed
+  ---
+  duration_ms: 15.882542
+  type: 'test'
+  ...
+# Subtest: theorem retry retains renamed partial work after timeout
+ok 142 - theorem retry retains renamed partial work after timeout
+  ---
+  duration_ms: 16.089208
+  type: 'test'
+  ...
+# Subtest: theorem retry retains renamed partial work after turn_cap in a batch
+ok 143 - theorem retry retains renamed partial work after turn_cap in a batch
+  ---
+  duration_ms: 19.934541
+  type: 'test'
+  ...
+# Subtest: definition retry retains renamed partial work after failed
+ok 144 - definition retry retains renamed partial work after failed
+  ---
+  duration_ms: 17.028667
+  type: 'test'
+  ...
+# Subtest: resolveProofOutcome does not certify a bare successful stream outcome
+ok 145 - resolveProofOutcome does not certify a bare successful stream outcome
+  ---
+  duration_ms: 0.165542
+  type: 'test'
+  ...
+# Subtest: resolveProofOutcome maps adapter disproof to disproved status
+ok 146 - resolveProofOutcome maps adapter disproof to disproved status
+  ---
+  duration_ms: 0.04875
+  type: 'test'
+  ...
+# Subtest: resolveProofOutcome keeps a verified run formalized when local evidence is also formalized
+ok 147 - resolveProofOutcome keeps a verified run formalized when local evidence is also formalized
+  ---
+  duration_ms: 0.0455
+  type: 'test'
+  ...
+# Subtest: resolveProofOutcome retains a certified definition result
+ok 148 - resolveProofOutcome retains a certified definition result
+  ---
+  duration_ms: 0.03825
+  type: 'test'
+  ...
+# Subtest: resolveProofOutcome records a leftover sorry as a failed run with sorry_stub effective status
+ok 149 - resolveProofOutcome records a leftover sorry as a failed run with sorry_stub effective status
+  ---
+  duration_ms: 0.045875
+  type: 'test'
+  ...
+# Subtest: resolveProofOutcome marks a failed run as failed and surfaces the run error
+ok 150 - resolveProofOutcome marks a failed run as failed and surfaces the run error
+  ---
+  duration_ms: 0.033625
+  type: 'test'
+  ...
+# Subtest: resolveProofOutcome preserves needs_review even when the local file compiles
+ok 151 - resolveProofOutcome preserves needs_review even when the local file compiles
+  ---
+  duration_ms: 0.045917
+  type: 'test'
+  ...
+# Subtest: resolveProofOutcome fails unconfirmed needs_review when the fresh compile fails
+ok 152 - resolveProofOutcome fails unconfirmed needs_review when the fresh compile fails
+  ---
+  duration_ms: 0.0395
+  type: 'test'
+  ...
+# Subtest: resolveProofOutcome fails unconfirmed needs_review when no compile evidence is possible
+ok 153 - resolveProofOutcome fails unconfirmed needs_review when no compile evidence is possible
+  ---
+  duration_ms: 0.033458
+  type: 'test'
+  ...
+# Subtest: recoverFormalizedStatusFromTargetPath recovers a compiling proof via the session's code_steps (production target shape)
+ok 154 - recoverFormalizedStatusFromTargetPath recovers a compiling proof via the session's code_steps (production target shape)
+  ---
+  duration_ms: 206.8475
+  type: 'test'
+  ...
+# Subtest: recoverFormalizedStatusFromTargetPath returns null when the session's recorded file doesn't exist on disk
+ok 155 - recoverFormalizedStatusFromTargetPath returns null when the session's recorded file doesn't exist on disk
+  ---
+  duration_ms: 8.334167
+  type: 'test'
+  ...
+# Subtest: recoverFormalizedStatusFromTargetPath returns null (not a false pass) when the file still has a sorry
+ok 156 - recoverFormalizedStatusFromTargetPath returns null (not a false pass) when the file still has a sorry
+  ---
+  duration_ms: 12.593834
+  type: 'test'
+  ...
+# Subtest: recoverFormalizedStatusFromTargetPath returns null when the run has no session to consult
+ok 157 - recoverFormalizedStatusFromTargetPath returns null when the run has no session to consult
+  ---
+  duration_ms: 4.922625
+  type: 'test'
+  ...
+# Subtest: resolveProofOutcome keeps needs_review when no local file is found
+ok 158 - resolveProofOutcome keeps needs_review when no local file is found
+  ---
+  duration_ms: 0.25975
+  type: 'test'
+  ...
+# Subtest: formalize on the /api backend tags the theorem formalized when the run succeeds (regression)
+ok 159 - formalize on the /api backend tags the theorem formalized when the run succeeds (regression)
+  ---
+  duration_ms: 453.689417
+  type: 'test'
+  ...
+# Subtest: formalize on the /api backend tags the theorem failed when the run does not succeed
+ok 160 - formalize on the /api backend tags the theorem failed when the run does not succeed
+  ---
+  duration_ms: 12.530792
+  type: 'test'
+  ...
+# Subtest: chat session load returns no-session when no job or association exists
+ok 161 - chat session load returns no-session when no job or association exists
+  ---
+  duration_ms: 1.63
+  type: 'test'
+  ...
+# Subtest: chat session load mirrors adapter messages, filtering tool narration and ordering by seq
+ok 162 - chat session load mirrors adapter messages, filtering tool narration and ordering by seq
+  ---
+  duration_ms: 1.515333
+  type: 'test'
+  ...
+# Subtest: chat session load surfaces adapter-unavailable while keeping the session link
+ok 163 - chat session load surfaces adapter-unavailable while keeping the session link
+  ---
+  duration_ms: 1.304459
+  type: 'test'
+  ...
+# Subtest: chat message starts a first-message session with the full context preamble
+ok 164 - chat message starts a first-message session with the full context preamble
+  ---
+  duration_ms: 2.22925
+  type: 'test'
+  ...
+# Subtest: chat message continues an existing session with a minimal prompt
+ok 165 - chat message continues an existing session with a minimal prompt
+  ---
+  duration_ms: 1.526917
+  type: 'test'
+  ...
+# Subtest: chat message prepends a stale note when the source hash drifted
+ok 166 - chat message prepends a stale note when the source hash drifted
+  ---
+  duration_ms: 1.754583
+  type: 'test'
+  ...
+# Subtest: chat message treats activation comment metadata drift as stale
+ok 167 - chat message treats activation comment metadata drift as stale
+  ---
+  duration_ms: 1.811792
+  type: 'test'
+  ...
+# Subtest: chat message is blocked while a formalization run is active
+ok 168 - chat message is blocked while a formalization run is active
+  ---
+  duration_ms: 1.256417
+  type: 'test'
+  ...
+# Subtest: chat message is blocked when the spend cap is reached
+ok 169 - chat message is blocked when the spend cap is reached
+  ---
+  duration_ms: 1.304792
+  type: 'test'
+  ...
+# Subtest: chat poll reshapes adapter session detail and reports the active run
+ok 170 - chat poll reshapes adapter session detail and reports the active run
+  ---
+  duration_ms: 2.140459
+  type: 'test'
+  ...
+# Subtest: chat interrupt forwards the run id to the adapter
+ok 171 - chat interrupt forwards the run id to the adapter
+  ---
+  duration_ms: 1.714625
+  type: 'test'
+  ...
+# Subtest: chat message persists the association to disk when a path is configured
+ok 172 - chat message persists the association to disk when a path is configured
+  ---
+  duration_ms: 2.030167
+  type: 'test'
+  ...
+# Subtest: share status maps the adapter's by-slug payload and treats 404 as 'no project yet'
+ok 173 - share status maps the adapter's by-slug payload and treats 404 as 'no project yet'
+  ---
+  duration_ms: 1.502417
+  type: 'test'
+  ...
+# Subtest: project graph passes the by-slug nodes/edges through and treats 404 as an empty graph
+ok 174 - project graph passes the by-slug nodes/edges through and treats 404 as an empty graph
+  ---
+  duration_ms: 1.704041
+  type: 'test'
+  ...
+# Subtest: blueprint generate returns the added count + fresh graph, treating 404 as no-project
+ok 175 - blueprint generate returns the added count + fresh graph, treating 404 as no-project
+  ---
+  duration_ms: 1.655541
+  type: 'test'
+  ...
+# Subtest: set remote forwards to the by-slug route and surfaces the adapter's detail on rejection
+ok 176 - set remote forwards to the by-slug route and surfaces the adapter's detail on rejection
+  ---
+  duration_ms: 1.866709
+  type: 'test'
+  ...
+# Subtest: push forwards the adapter's user-facing detail, including the diverged-history hint
+ok 177 - push forwards the adapter's user-facing detail, including the diverged-history hint
+  ---
+  duration_ms: 1.929208
+  type: 'test'
+  ...
+# Subtest: GitHub project import handlers preserve the Overleaf target identity through preview, confirm, and poll
+ok 178 - GitHub project import handlers preserve the Overleaf target identity through preview, confirm, and poll
+  ---
+  duration_ms: 1.615209
+  type: 'test'
+  ...
+# Subtest: project export streams the adapter zip through and softens a 404
+ok 179 - project export streams the adapter zip through and softens a 404
+  ---
+  duration_ms: 1.665917
+  type: 'test'
+  ...
+# Subtest: github token update writes through to adapter settings and reports presence only
+ok 180 - github token update writes through to adapter settings and reports presence only
+  ---
+  duration_ms: 1.575291
+  type: 'test'
+  ...
+# Subtest: a chat run that renames the declaration cascades over dependents, attributes via=chat, and records lastRunImpact
+ok 181 - a chat run that renames the declaration cascades over dependents, attributes via=chat, and records lastRunImpact
+  ---
+  duration_ms: 14.290625
+  type: 'test'
+  ...
+# Subtest: a chat run on a never-formalized item (no snapshot) runs no cascade and records no impact
+ok 182 - a chat run on a never-formalized item (no snapshot) runs no cascade and records no impact
+  ---
+  duration_ms: 53.104583
+  type: 'test'
+  ...
+# Subtest: a re-formalize whose outcome changes the signature cascades over dependents with via=formalize
+ok 183 - a re-formalize whose outcome changes the signature cascades over dependents with via=formalize
+  ---
+  duration_ms: 12.795125
+  type: 'test'
+  ...
+# Subtest: chat lastRunImpact is annotated with each dependent's LIVE state at serve time, without rewriting the stored record
+ok 184 - chat lastRunImpact is annotated with each dependent's LIVE state at serve time, without rewriting the stored record
+  ---
+  duration_ms: 1.752959
+  type: 'test'
+  ...
+# Subtest: adapter-side mid-run spend cap maps to finalStatus max_spend without an interrupt
+ok 185 - adapter-side mid-run spend cap maps to finalStatus max_spend without an interrupt
+  ---
+  duration_ms: 13.053833
+  type: 'test'
+  ...
+# Subtest: formalize lifecycle publishes jobs-changed push events (PLAN 3.1)
+ok 186 - formalize lifecycle publishes jobs-changed push events (PLAN 3.1)
+  ---
+  duration_ms: 358.679041
+  type: 'test'
+  ...
+# Subtest: formalize resolves the artifact from the adapter index, no agent markdown needed (PLAN 4.2)
+ok 187 - formalize resolves the artifact from the adapter index, no agent markdown needed (PLAN 4.2)
+  ---
+  duration_ms: 164.112375
+  type: 'test'
+  ...
+# Subtest: ledger engine: recorded + clean check reads formalized with the lean statement
+ok 188 - ledger engine: recorded + clean check reads formalized with the lean statement
+  ---
+  duration_ms: 2.414041
+  type: 'test'
+  ...
+# Subtest: ledger engine: only a later successful target run supersedes a paused job
+ok 189 - ledger engine: only a later successful target run supersedes a paused job
+  ---
+  duration_ms: 2.40275
+  type: 'test'
+  ...
+# Subtest: ledger engine: a sorry in the recorded file reads sorry_stub
+ok 190 - ledger engine: a sorry in the recorded file reads sorry_stub
+  ---
+  duration_ms: 1.662292
+  type: 'test'
+  ...
+# Subtest: ledger engine: an error check verdict on the recorded file reads broken
+ok 191 - ledger engine: an error check verdict on the recorded file reads broken
+  ---
+  duration_ms: 1.837333
+  type: 'test'
+  ...
+# Subtest: ledger engine: index-known-gone artifact ignores a stale formalized job and reads failed from the overlay
+ok 192 - ledger engine: index-known-gone artifact ignores a stale formalized job and reads failed from the overlay
+  ---
+  duration_ms: 1.860916
+  type: 'test'
+  ...
+# Subtest: ledger engine: a recorded artifact whose file is gone reads unformalized when no job remains
+ok 193 - ledger engine: a recorded artifact whose file is gone reads unformalized when no job remains
+  ---
+  duration_ms: 2.396083
+  type: 'test'
+  ...
+# Subtest: ledger engine: an unconfirmed historical formalized job remains unavailable
+ok 194 - ledger engine: an unconfirmed historical formalized job remains unavailable
+  ---
+  duration_ms: 1.624167
+  type: 'test'
+  ...
+# Subtest: rename snapshot: a busy target defers the whole status response instead of fabricating unformalized
+ok 195 - rename snapshot: a busy target defers the whole status response instead of fabricating unformalized
+  ---
+  duration_ms: 1.86125
+  type: 'test'
+  ...
+# Subtest: rename snapshot: manifests and badges reject an identity revision changed during assembly
+ok 196 - rename snapshot: manifests and badges reject an identity revision changed during assembly
+  ---
+  duration_ms: 2.61775
+  type: 'test'
+  ...
+# Subtest: rename snapshot: refreshed identity repairs cached pointers and uses the ledger namespace
+ok 197 - rename snapshot: refreshed identity repairs cached pointers and uses the ledger namespace
+  ---
+  duration_ms: 1.83925
+  type: 'test'
+  ...
+# Subtest: rename snapshot: start/finish events bracket failed renames and clear local deferral
+ok 198 - rename snapshot: start/finish events bracket failed renames and clear local deferral
+  ---
+  duration_ms: 1.123125
+  type: 'test'
+  ...
+# Could not reach the Lea adapter to sync settings: Request to http://127.0.0.1:8001/api/settings failed: Unexpected provider validation URL: http://127.0.0.1:8001/api/settings
+# Subtest: settings verify a Portkey key against the configured gateway
+ok 199 - settings verify a Portkey key against the configured gateway
+  ---
+  duration_ms: 2.488541
+  type: 'test'
+  ...
+# Subtest: settings reject a Portkey key the gateway turns away
+ok 200 - settings reject a Portkey key the gateway turns away
+  ---
+  duration_ms: 1.349709
+  type: 'test'
+  ...
+# Subtest: Host parsing accepts local identities and exact configured exceptions
+ok 201 - Host parsing accepts local identities and exact configured exceptions
+  ---
+  duration_ms: 1.101917
+  type: 'test'
+  ...
+# Subtest: originless attacker Host is rejected before project export or preflight dispatch
+ok 202 - originless attacker Host is rejected before project export or preflight dispatch
+  ---
+  duration_ms: 18.015
+  type: 'test'
+  ...
+# Subtest: legitimate browser origins retain CORS and local preflight access
+ok 203 - legitimate browser origins retain CORS and local preflight access
+  ---
+  duration_ms: 5.608917
+  type: 'test'
+  ...
+# Subtest: loads .env values without overriding existing environment
+ok 204 - loads .env values without overriding existing environment
+  ---
+  duration_ms: 6.895667
+  type: 'test'
+  ...
+# Subtest: shared environment defaults replace explicit local settings
+ok 205 - shared environment defaults replace explicit local settings
+  ---
+  duration_ms: 0.30175
+  type: 'test'
+  ...
+# Subtest: environment max spend overrides explicit local setting
+ok 206 - environment max spend overrides explicit local setting
+  ---
+  duration_ms: 0.06925
+  type: 'test'
+  ...
+# Subtest: invalid env max spend is ignored, not thrown (AUDIT M8)
+ok 207 - invalid env max spend is ignored, not thrown (AUDIT M8)
+  ---
+  duration_ms: 0.124417
+  type: 'test'
+  ...
+# Subtest: tex mirror defaults on and is overridable via env
+ok 208 - tex mirror defaults on and is overridable via env
+  ---
+  duration_ms: 0.075625
+  type: 'test'
+  ...
+# Subtest: derives local path defaults when env values are absent
+ok 209 - derives local path defaults when env values are absent
+  ---
+  duration_ms: 0.072625
+  type: 'test'
+  ...
+# Subtest: patches env files while preserving unrelated entries
+ok 210 - patches env files while preserving unrelated entries
+  ---
+  duration_ms: 23.289209
+  type: 'test'
+  ...
+# (node:98942) ExperimentalWarning: vm.USE_MAIN_CONTEXT_DEFAULT_LOADER is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: View in Lea UI visibility: unformalized
+ok 211 - View in Lea UI visibility: unformalized
+  ---
+  duration_ms: 49.299125
+  type: 'test'
+  ...
+# Subtest: View in Lea UI visibility: unknown
+ok 212 - View in Lea UI visibility: unknown
+  ---
+  duration_ms: 2.306917
+  type: 'test'
+  ...
+# Subtest: View in Lea UI visibility: formalized
+ok 213 - View in Lea UI visibility: formalized
+  ---
+  duration_ms: 1.551542
+  type: 'test'
+  ...
+# Subtest: View in Lea UI visibility: disproved
+ok 214 - View in Lea UI visibility: disproved
+  ---
+  duration_ms: 1.757209
+  type: 'test'
+  ...
+# Subtest: View in Lea UI visibility: in_progress
+ok 215 - View in Lea UI visibility: in_progress
+  ---
+  duration_ms: 3.036625
+  type: 'test'
+  ...
+# Subtest: View in Lea UI visibility: sorry_stub
+ok 216 - View in Lea UI visibility: sorry_stub
+  ---
+  duration_ms: 9.706958
+  type: 'test'
+  ...
+# Subtest: View in Lea UI visibility: failed with unformalized effective status
+ok 217 - View in Lea UI visibility: failed with unformalized effective status
+  ---
+  duration_ms: 60.381
+  type: 'test'
+  ...
+# Subtest: View in Lea UI visibility: failed with sorry_stub effective status
+ok 218 - View in Lea UI visibility: failed with sorry_stub effective status
+  ---
+  duration_ms: 8.293084
+  type: 'test'
+  ...
+# Subtest: a label-free editor badge resolves its job key and shows a readable source name
+ok 219 - a label-free editor badge resolves its job key and shows a readable source name
+  ---
+  duration_ms: 20.250958
+  type: 'test'
+  ...
+# Subtest: diagnostic markers render a non-runnable fix badge and popover
+ok 220 - diagnostic markers render a non-runnable fix badge and popover
+  ---
+  duration_ms: 6.589417
+  type: 'test'
+  ...
+# Subtest: targets without coordinates do not render floating status badges
+ok 221 - targets without coordinates do not render floating status badges
+  ---
+  duration_ms: 1.928792
+  type: 'test'
+  ...
+# Subtest: status refresh sends the canonical version-2 source identity
+ok 222 - status refresh sends the canonical version-2 source identity
+  ---
+  duration_ms: 1.181958
+  type: 'test'
+  ...
+# Subtest: formalize requests and pane refresh hash unchanged targets identically across LaTeX environments
+ok 223 - formalize requests and pane refresh hash unchanged targets identically across LaTeX environments
+  ---
+  duration_ms: 105.852292
+  type: 'test'
+  ...
+# Subtest: a source-stale formalization is labeled out of date on the LaTeX badge and in its popover
+ok 224 - a source-stale formalization is labeled out of date on the LaTeX badge and in its popover
+  ---
+  duration_ms: 4.422792
+  type: 'test'
+  ...
+# Subtest: a current formalization still offers Re-formalize in its popover
+ok 225 - a current formalization still offers Re-formalize in its popover
+  ---
+  duration_ms: 2.839375
+  type: 'test'
+  ...
+# Subtest: definition targets use definition copy and do not show Stub
+ok 226 - definition targets use definition copy and do not show Stub
+  ---
+  duration_ms: 1.415292
+  type: 'test'
+  ...
+# Subtest: definition success renders a defined badge
+ok 227 - definition success renders a defined badge
+  ---
+  duration_ms: 1.342459
+  type: 'test'
+  ...
+# Subtest: personal approval toggles in browser-local storage and updates the source badge
+ok 228 - personal approval toggles in browser-local storage and updates the source badge
+  ---
+  duration_ms: 6.150583
+  type: 'test'
+  ...
+# Subtest: a changed approval revision automatically removes the local note without resurrecting it
+ok 229 - a changed approval revision automatically removes the local note without resurrecting it
+  ---
+  duration_ms: 1.778334
+  type: 'test'
+  ...
+# Subtest: the Lean pane shows the same stored approval as the in-source tag
+ok 230 - the Lean pane shows the same stored approval as the in-source tag
+  ---
+  duration_ms: 4.119791
+  type: 'test'
+  ...
+# Subtest: Lean pane trigger opens a project pane and renders manifest items
+ok 231 - Lean pane trigger opens a project pane and renders manifest items
+  ---
+  duration_ms: 4.79575
+  type: 'test'
+  ...
+# Subtest: Lean pane falls back to the live TeX file when the Overleaf archive is unavailable
+ok 232 - Lean pane falls back to the live TeX file when the Overleaf archive is unavailable
+  ---
+  duration_ms: 3.757583
+  type: 'test'
+  ...
+# Subtest: Lean pane times out a hanging Overleaf archive instead of remaining on the loading screen
+ok 233 - Lean pane times out a hanging Overleaf archive instead of remaining on the loading screen
+  ---
+  duration_ms: 6.84975
+  type: 'test'
+  ...
+# Subtest: settings open over the Lean pane and closing them preserves the pane
+ok 234 - settings open over the Lean pane and closing them preserves the pane
+  ---
+  duration_ms: 7.01425
+  type: 'test'
+  ...
+# Subtest: a missing model API key shows a one-click settings nudge
+ok 235 - a missing model API key shows a one-click settings nudge
+  ---
+  duration_ms: 5.579792
+  type: 'test'
+  ...
+# Subtest: the API-key nudge stays hidden when the selected model is configured
+ok 236 - the API-key nudge stays hidden when the selected model is configured
+  ---
+  duration_ms: 2.086
+  type: 'test'
+  ...
+# Subtest: settings popover defaults source pausing off and saves an explicit opt-in
+ok 237 - settings popover defaults source pausing off and saves an explicit opt-in
+  ---
+  duration_ms: 6.667958
+  type: 'test'
+  ...
+# Subtest: settings popover renders an accessible persisted resize handle
+ok 238 - settings popover renders an accessible persisted resize handle
+  ---
+  duration_ms: 7.381292
+  type: 'test'
+  ...
+# Subtest: settings popover drag resizing grows left, clamps, and persists independently
+ok 239 - settings popover drag resizing grows left, clamps, and persists independently
+  ---
+  duration_ms: 7.147292
+  type: 'test'
+  ...
+# Subtest: settings popover applies its stored width when reopened
+ok 240 - settings popover applies its stored width when reopened
+  ---
+  duration_ms: 6.200125
+  type: 'test'
+  ...
+# Subtest: settings popover keyboard resizing honors min and max
+ok 241 - settings popover keyboard resizing honors min and max
+  ---
+  duration_ms: 4.887875
+  type: 'test'
+  ...
+# Subtest: settings popover clamps and stays bottom-right anchored when the viewport narrows
+ok 242 - settings popover clamps and stays bottom-right anchored when the viewport narrows
+  ---
+  duration_ms: 4.256208
+  type: 'test'
+  ...
+# Subtest: closing settings during a resize removes the drag lifecycle
+ok 243 - closing settings during a resize removes the drag lifecycle
+  ---
+  duration_ms: 6.260083
+  type: 'test'
+  ...
+# Subtest: GitHub token settings use a full-width editor with cancel, reveal, save, and remove states
+ok 244 - GitHub token settings use a full-width editor with cancel, reveal, save, and remove states
+  ---
+  duration_ms: 11.638334
+  type: 'test'
+  ...
+# Subtest: GitHub import refreshes a Share panel that was opened before the project existed
+ok 245 - GitHub import refreshes a Share panel that was opened before the project existed
+  ---
+  duration_ms: 13.126125
+  type: 'test'
+  ...
+# Subtest: GitHub import closes after confirmation and locks matched theorems while checks run
+ok 246 - GitHub import closes after confirmation and locks matched theorems while checks run
+  ---
+  duration_ms: 12.619958
+  type: 'test'
+  ...
+# Subtest: GitHub push uses a Lea confirmation dialog instead of the browser confirm
+ok 247 - GitHub push uses a Lea confirmation dialog instead of the browser confirm
+  ---
+  duration_ms: 11.593209
+  type: 'test'
+  ...
+# Subtest: project rename uses an accessible Lea dialog with a live namespace preview
+ok 248 - project rename uses an accessible Lea dialog with a live namespace preview
+  ---
+  duration_ms: 14.278625
+  type: 'test'
+  ...
+# Subtest: project rename can keep the existing namespace when the suggested namespace is occupied
+ok 249 - project rename can keep the existing namespace when the suggested namespace is occupied
+  ---
+  duration_ms: 10.198708
+  type: 'test'
+  ...
+# Subtest: Lean pane renders a persisted drag resize handle
+ok 250 - Lean pane renders a persisted drag resize handle
+  ---
+  duration_ms: 3.85875
+  type: 'test'
+  ...
+# Subtest: Lean pane drag resizing grows left, clamps at minimum, and persists
+ok 251 - Lean pane drag resizing grows left, clamps at minimum, and persists
+  ---
+  duration_ms: 4.675417
+  type: 'test'
+  ...
+# Subtest: Lean pane applies stored width when reopened
+ok 252 - Lean pane applies stored width when reopened
+  ---
+  duration_ms: 4.441667
+  type: 'test'
+  ...
+# Subtest: Lean pane keyboard resizing honors min and max and persists
+ok 253 - Lean pane keyboard resizing honors min and max and persists
+  ---
+  duration_ms: 12.132666
+  type: 'test'
+  ...
+# Subtest: Lean pane viewport resize clamps an oversized stored width
+ok 254 - Lean pane viewport resize clamps an oversized stored width
+  ---
+  duration_ms: 57.795833
+  type: 'test'
+  ...
+# Subtest: Lean pane renders every source file equally with file rows collapsed by default
+ok 255 - Lean pane renders every source file equally with file rows collapsed by default
+  ---
+  duration_ms: 11.987334
+  type: 'test'
+  ...
+# Subtest: Lean pane file rows render proportional progress segments
+ok 256 - Lean pane file rows render proportional progress segments
+  ---
+  duration_ms: 4.447791
+  type: 'test'
+  ...
+# Subtest: Lean pane polling refresh preserves expanded folder and file rows
+ok 257 - Lean pane polling refresh preserves expanded folder and file rows
+  ---
+  duration_ms: 13.670875
+  type: 'test'
+  ...
+# Subtest: Lean pane expanded detail shows copy actions only for generated content
+ok 258 - Lean pane expanded detail shows copy actions only for generated content
+  ---
+  duration_ms: 3.839625
+  type: 'test'
+  ...
+# Subtest: Lean pane keeps a visible LeaChat button for a saved session whose status is unknown
+ok 259 - Lean pane keeps a visible LeaChat button for a saved session whose status is unknown
+  ---
+  duration_ms: 6.747084
+  type: 'test'
+  ...
+# Subtest: Lean pane shows navigable uses and used-by relationships across project files
+ok 260 - Lean pane shows navigable uses and used-by relationships across project files
+  ---
+  duration_ms: 4.096209
+  type: 'test'
+  ...
+# Subtest: Lean pane relationship chips survive polling and reflect refreshed target status
+ok 261 - Lean pane relationship chips survive polling and reflect refreshed target status
+  ---
+  duration_ms: 4.766667
+  type: 'test'
+  ...
+# Subtest: Lean pane renders lightweight math and highlighted Lean code
+ok 262 - Lean pane renders lightweight math and highlighted Lean code
+  ---
+  duration_ms: 11.816959
+  type: 'test'
+  ...
+# Subtest: Lean pane uses KaTeX for standard notation and styles surrounding LaTeX prose
+ok 263 - Lean pane uses KaTeX for standard notation and styles surrounding LaTeX prose
+  ---
+  duration_ms: 10.42225
+  type: 'test'
+  ...
+# Subtest: Lean pane preserves readable math when KaTeX rejects an expression
+ok 264 - Lean pane preserves readable math when KaTeX rejects an expression
+  ---
+  duration_ms: 4.640875
+  type: 'test'
+  ...
+# Subtest: Lean pane 'Go to source' posts a navigate message with the item's offsets
+ok 265 - Lean pane 'Go to source' posts a navigate message with the item's offsets
+  ---
+  duration_ms: 11.605167
+  type: 'test'
+  ...
+# Subtest: source popover 'Show in Lean pane' opens, expands, and highlights the matching item
+ok 266 - source popover 'Show in Lean pane' opens, expands, and highlights the matching item
+  ---
+  duration_ms: 17.698583
+  type: 'test'
+  ...
+# Subtest: source popover 'Show in Lean pane' matches by Lean declaration name
+ok 267 - source popover 'Show in Lean pane' matches by Lean declaration name
+  ---
+  duration_ms: 3.516583
+  type: 'test'
+  ...
+# Subtest: source popover reports when 'Show in Lean pane' cannot find a matching item
+ok 268 - source popover reports when 'Show in Lean pane' cannot find a matching item
+  ---
+  duration_ms: 8.306958
+  type: 'test'
+  ...
+# Subtest: Lean pane 'Formalize' starts a run via the /formalize endpoint
+ok 269 - Lean pane 'Formalize' starts a run via the /formalize endpoint
+  ---
+  duration_ms: 9.742583
+  type: 'test'
+  ...
+# Subtest: Lean pane 'Continue best effort' resumes an eligible source obstruction with an explicit override
+ok 270 - Lean pane 'Continue best effort' resumes an eligible source obstruction with an explicit override
+  ---
+  duration_ms: 7.476958
+  type: 'test'
+  ...
+# Subtest: Resume reparses live statement, proof and source hashes instead of cached pane text
+ok 271 - Resume reparses live statement, proof and source hashes instead of cached pane text
+  ---
+  duration_ms: 8.714625
+  type: 'test'
+  ...
+# Subtest: checkpoint failure stays inline and Re-formalize remains an explicit fresh action
+ok 272 - checkpoint failure stays inline and Re-formalize remains an explicit fresh action
+  ---
+  duration_ms: 5.695166
+  type: 'test'
+  ...
+# Subtest: Lean pane keeps Formalize after an upstream dependency blocks startup
+ok 273 - Lean pane keeps Formalize after an upstream dependency blocks startup
+  ---
+  duration_ms: 5.432584
+  type: 'test'
+  ...
+# Subtest: source popover explains when an upstream dependency blocks formalization startup
+ok 274 - source popover explains when an upstream dependency blocks formalization startup
+  ---
+  duration_ms: 3.90725
+  type: 'test'
+  ...
+# Subtest: a missing-key formalization error links directly to credential settings
+ok 275 - a missing-key formalization error links directly to credential settings
+  ---
+  duration_ms: 5.372292
+  type: 'test'
+  ...
+# Subtest: source popover reports a cost cap inline without a separate floating notice
+ok 276 - source popover reports a cost cap inline without a separate floating notice
+  ---
+  duration_ms: 3.830666
+  type: 'test'
+  ...
+# Subtest: Lean pane cost-cap dismissal survives refresh and clears for a retry
+ok 277 - Lean pane cost-cap dismissal survives refresh and clears for a retry
+  ---
+  duration_ms: 6.284375
+  type: 'test'
+  ...
+# Subtest: Lean pane explains a max-spend failure reported after a run started
+ok 278 - Lean pane explains a max-spend failure reported after a run started
+  ---
+  duration_ms: 7.102958
+  type: 'test'
+  ...
+# Subtest: Formalize all renders an accessible, collapsible queue with active turn progress
+ok 279 - Formalize all renders an accessible, collapsible queue with active turn progress
+  ---
+  duration_ms: 12.84
+  type: 'test'
+  ...
+# Subtest: Formalize all limits cost-cap failures to five statements until expanded
+ok 280 - Formalize all limits cost-cap failures to five statements until expanded
+  ---
+  duration_ms: 9.407833
+  type: 'test'
+  ...
+# Subtest: completed Formalize all shows its saved synthesis
+ok 281 - completed Formalize all shows its saved synthesis
+  ---
+  duration_ms: 11.214375
+  type: 'test'
+  ...
+# Subtest: saved Formalize all reports reopen from project history
+ok 282 - saved Formalize all reports reopen from project history
+  ---
+  duration_ms: 20.284666
+  type: 'test'
+  ...
+# Subtest: report history exposes loading, empty, and retryable error states
+ok 283 - report history exposes loading, empty, and retryable error states
+  ---
+  duration_ms: 13.080834
+  type: 'test'
+  ...
+# Subtest: stopping a batch preserves a completed race winner and reports stopped items separately
+ok 284 - stopping a batch preserves a completed race winner and reports stopped items separately
+  ---
+  duration_ms: 7.68775
+  type: 'test'
+  ...
+# Subtest: Lean pane 'Edit' only appears for items with a recorded artifact
+ok 285 - Lean pane 'Edit' only appears for items with a recorded artifact
+  ---
+  duration_ms: 2.860958
+  type: 'test'
+  ...
+# Subtest: Lean pane 'Edit' opens an inline textarea pre-filled with the artifact and shows the pre-save impact preview
+ok 286 - Lean pane 'Edit' opens an inline textarea pre-filled with the artifact and shows the pre-save impact preview
+  ---
+  duration_ms: 5.808375
+  type: 'test'
+  ...
+# Subtest: Lean pane edit 'Cancel' discards the draft and makes no save request
+ok 287 - Lean pane edit 'Cancel' discards the draft and makes no save request
+  ---
+  duration_ms: 6.251833
+  type: 'test'
+  ...
+# Subtest: Lean pane edit 'Save' posts the edited content and renders the cascade impact summary
+ok 288 - Lean pane edit 'Save' posts the edited content and renders the cascade impact summary
+  ---
+  duration_ms: 6.038
+  type: 'test'
+  ...
+# Subtest: Lean pane 'Repair with Lea' appears for a broken item and posts /lean-pane/repair/start
+ok 289 - Lean pane 'Repair with Lea' appears for a broken item and posts /lean-pane/repair/start
+  ---
+  duration_ms: 4.965792
+  type: 'test'
+  ...
+# Subtest: no repair offer while the upstream item is itself broken (suppressed), with the redirecting copy
+ok 290 - no repair offer while the upstream item is itself broken (suppressed), with the redirecting copy
+  ---
+  duration_ms: 3.360667
+  type: 'test'
+  ...
+# Subtest: post-save impact summary offers 'Repair all (N)' and posts the batch; the batch panel renders
+ok 291 - post-save impact summary offers 'Repair all (N)' and posts the batch; the batch panel renders
+  ---
+  duration_ms: 7.156625
+  type: 'test'
+  ...
+# Subtest: the reported case: 'Repair all' under the edited item disappears once its dependent is fixed elsewhere
+ok 292 - the reported case: 'Repair all' under the edited item disappears once its dependent is fixed elsewhere
+  ---
+  duration_ms: 11.246459
+  type: 'test'
+  ...
+# Subtest: a repair dispatch error renders only under the item it was dispatched for
+ok 293 - a repair dispatch error renders only under the item it was dispatched for
+  ---
+  duration_ms: 4.399417
+  type: 'test'
+  ...
+# Subtest: round 2: a dependent skipped as busy during the save joins 'Repair all' once its repair run ends broken
+ok 294 - round 2: a dependent skipped as busy during the save joins 'Repair all' once its repair run ends broken
+  ---
+  duration_ms: 6.696375
+  type: 'test'
+  ...
+# Subtest: dependency wait explains the named blocker before expansion and exposes working recovery controls
+ok 295 - dependency wait explains the named blocker before expansion and exposes working recovery controls
+  ---
+  duration_ms: 5.646916
+  type: 'test'
+  ...
+# Subtest: a stopped dependency wait offers Continue when ready in the pane and editor popup
+ok 296 - a stopped dependency wait offers Continue when ready in the pane and editor popup
+  ---
+  duration_ms: 4.889167
+  type: 'test'
+  ...
+# Subtest: live Lea Status renders ongoing findings, history and Pause even for stale source
+ok 297 - live Lea Status renders ongoing findings, history and Pause even for stale source
+  ---
+  duration_ms: 7.532417
+  type: 'test'
+  ...
+# Subtest: rename display retains confirmed badges, counts and code until reconciliation succeeds
+ok 298 - rename display retains confirmed badges, counts and code until reconciliation succeeds
+  ---
+  duration_ms: 8.3105
+  type: 'test'
+  ...
+# Subtest: rename display shows loading on first load and pauses retries while hidden
+ok 299 - rename display shows loading on first load and pauses retries while hidden
+  ---
+  duration_ms: 12.891833
+  type: 'test'
+  ...
+# Subtest: rename display recovers by polling after missed events and preserves real missing-file statuses
+ok 300 - rename display recovers by polling after missed events and preserves real missing-file statuses
+  ---
+  duration_ms: 7.23875
+  type: 'test'
+  ...
+# Subtest: rename display discards delayed badge responses after rename events and navigation
+ok 301 - rename display discards delayed badge responses after rename events and navigation
+  ---
+  duration_ms: 9.967584
+  type: 'test'
+  ...
+# Subtest: rename events synchronize two tabs and ignore unrelated projects
+ok 302 - rename events synchronize two tabs and ignore unrelated projects
+  ---
+  duration_ms: 8.522125
+  type: 'test'
+  ...
+# Subtest: rename display retains the populated Blueprint during retryable reads
+ok 303 - rename display retains the populated Blueprint during retryable reads
+  ---
+  duration_ms: 10.958708
+  type: 'test'
+  ...
+# Subtest: rename display discards a delayed manifest instead of clearing the confirmed pane
+ok 304 - rename display discards a delayed manifest instead of clearing the confirmed pane
+  ---
+  duration_ms: 6.851333
+  type: 'test'
+  ...
+# Subtest: rename display discards a delayed graph instead of clearing the confirmed pane
+ok 305 - rename display discards a delayed graph instead of clearing the confirmed pane
+  ---
+  duration_ms: 9.830792
+  type: 'test'
+  ...
+# Subtest: display-only identity events refresh without a rename notice
+ok 306 - display-only identity events refresh without a rename notice
+  ---
+  duration_ms: 3.470041
+  type: 'test'
+  ...
+# Subtest: rename reconciliation resumes immediately when the event stream reconnects
+ok 307 - rename reconciliation resumes immediately when the event stream reconnects
+  ---
+  duration_ms: 6.885208
+  type: 'test'
+  ...
+# Subtest: settled badges detect a complete rename when both push events were missed
+ok 308 - settled badges detect a complete rename when both push events were missed
+  ---
+  duration_ms: 4.027375
+  type: 'test'
+  ...
+# Subtest: A waits for L, resumes, and B consumes L with one attempt
+ok 309 - A waits for L, resumes, and B consumes L with one attempt
+  ---
+  duration_ms: 1.694417
+  type: 'test'
+  ...
+# Subtest: a shared failure is cached across batches while C remains independent
+ok 310 - a shared failure is cached across batches while C remains independent
+  ---
+  duration_ms: 0.256042
+  type: 'test'
+  ...
+# Subtest: nested dependencies execute first and continue the same saved parent
+ok 311 - nested dependencies execute first and continue the same saved parent
+  ---
+  duration_ms: 0.235666
+  type: 'test'
+  ...
+# Subtest: cycles and cancellation never launch duplicate work
+ok 312 - cycles and cancellation never launch duplicate work
+  ---
+  duration_ms: 0.261958
+  type: 'test'
+  ...
+# Subtest: another owner is awaited and shared counts never become target counts
+ok 313 - another owner is awaited and shared counts never become target counts
+  ---
+  duration_ms: 0.205292
+  type: 'test'
+  ...
+# Subtest: dependency waits identify the supporting result and suppress generic Resume
+ok 314 - dependency waits identify the supporting result and suppress generic Resume
+  ---
+  duration_ms: 14.787
+  type: 'test'
+  ...
+# Subtest: failures retain the actual blocker and an interrupted result remains inspectable
+ok 315 - failures retain the actual blocker and an interrupted result remains inspectable
+  ---
+  duration_ms: 0.220916
+  type: 'test'
+  ...
+# Subtest: unknown registry state cannot imply readiness or suggest Resume
+ok 316 - unknown registry state cannot imply readiness or suggest Resume
+  ---
+  duration_ms: 0.079917
+  type: 'test'
+  ...
+# Subtest: stopped waits and blocked continuation require explicit recovery actions
+ok 317 - stopped waits and blocked continuation require explicit recovery actions
+  ---
+  duration_ms: 0.088042
+  type: 'test'
+  ...
+# Subtest: unknown freshness is not presented as a confirmed source change
+ok 318 - unknown freshness is not presented as a confirmed source change
+  ---
+  duration_ms: 0.224625
+  type: 'test'
+  ...
+# Subtest: browser admission and inventory capture identical evidence from unchanged LaTeX
+ok 319 - browser admission and inventory capture identical evidence from unchanged LaTeX
+  ---
+  duration_ms: 14.969625
+  type: 'test'
+  ...
+# Subtest: warns when the editor is present but the hook never fired
+ok 320 - warns when the editor is present but the hook never fired
+  ---
+  duration_ms: 5.61425
+  type: 'test'
+  ...
+# Subtest: does not warn when the hook fires before the timeout
+ok 321 - does not warn when the hook fires before the timeout
+  ---
+  duration_ms: 0.166792
+  type: 'test'
+  ...
+# Subtest: a hook signal that precedes arm() wins
+ok 322 - a hook signal that precedes arm() wins
+  ---
+  duration_ms: 0.065375
+  type: 'test'
+  ...
+# Subtest: re-probes instead of warning while the editor DOM is absent
+ok 323 - re-probes instead of warning while the editor DOM is absent
+  ---
+  duration_ms: 0.078334
+  type: 'test'
+  ...
+# Subtest: stops probing after the probe cap on non-editor pages
+ok 324 - stops probing after the probe cap on non-editor pages
+  ---
+  duration_ms: 0.14675
+  type: 'test'
+  ...
+# Subtest: a late hook after warning triggers recovery
+ok 325 - a late hook after warning triggers recovery
+  ---
+  duration_ms: 0.065459
+  type: 'test'
+  ...
+# Subtest: arm is idempotent
+ok 326 - arm is idempotent
+  ---
+  duration_ms: 0.098584
+  type: 'test'
+  ...
+# Subtest: bus fans out to every subscriber and unsubscribe detaches
+ok 327 - bus fans out to every subscriber and unsubscribe detaches
+  ---
+  duration_ms: 1.410084
+  type: 'test'
+  ...
+# Subtest: a throwing subscriber cannot break publishing to the others
+ok 328 - a throwing subscriber cannot break publishing to the others
+  ---
+  duration_ms: 0.094209
+  type: 'test'
+  ...
+# Subtest: publishEvent lazily creates the bus on bare states and stamps fields
+ok 329 - publishEvent lazily creates the bus on bare states and stamps fields
+  ---
+  duration_ms: 1.229334
+  type: 'test'
+  ...
+# Subtest: GET /events streams bus events as SSE with project filtering
+ok 330 - GET /events streams bus events as SSE with project filtering
+  ---
+  duration_ms: 71.802375
+  type: 'test'
+  ...
+# Subtest: connects, reports connection, and forwards typed events
+ok 331 - connects, reports connection, and forwards typed events
+  ---
+  duration_ms: 1.527666
+  type: 'test'
+  ...
+# Subtest: reconnects with exponential backoff and resets it on success
+ok 332 - reconnects with exponential backoff and resets it on success
+  ---
+  duration_ms: 2.409042
+  type: 'test'
+  ...
+# Subtest: backoff is capped at maxBackoffMs
+ok 333 - backoff is capped at maxBackoffMs
+  ---
+  duration_ms: 0.491625
+  type: 'test'
+  ...
+# Subtest: a null url retries instead of crashing (project id not resolvable yet)
+ok 334 - a null url retries instead of crashing (project id not resolvable yet)
+  ---
+  duration_ms: 0.3245
+  type: 'test'
+  ...
+# Subtest: stop closes the source, cancels timers, and stays stopped
+ok 335 - stop closes the source, cancels timers, and stays stopped
+  ---
+  duration_ms: 0.11325
+  type: 'test'
+  ...
+# Subtest: events from a superseded source are ignored
+ok 336 - events from a superseded source are ignored
+  ---
+  duration_ms: 0.088125
+  type: 'test'
+  ...
+# Subtest: approval revisions include direct and transitive project-local imports
+ok 337 - approval revisions include direct and transitive project-local imports
+  ---
+  duration_ms: 37.474167
+  type: 'test'
+  ...
+# Subtest: approval revisions ignore unrelated project files and file enumeration order
+ok 338 - approval revisions ignore unrelated project files and file enumeration order
+  ---
+  duration_ms: 0.459708
+  type: 'test'
+  ...
+# Subtest: approval revisions change with the source input or the approved artifact
+ok 339 - approval revisions change with the source input or the approved artifact
+  ---
+  duration_ms: 0.145459
+  type: 'test'
+  ...
+# Subtest: approval revisions require both an input hash and artifact content
+ok 340 - approval revisions require both an input hash and artifact content
+  ---
+  duration_ms: 0.308916
+  type: 'test'
+  ...
+# Subtest: editor and pane resolve the same generated ID and retain it after an edit and restart
+ok 341 - editor and pane resolve the same generated ID and retain it after an edit and restart
+  ---
+  duration_ms: 31.08925
+  type: 'test'
+  ...
+# Subtest: inserting a new label-free theorem does not transfer the earlier theorem's ID
+ok 342 - inserting a new label-free theorem does not transfer the earlier theorem's ID
+  ---
+  duration_ms: 0.339042
+  type: 'test'
+  ...
+# Subtest: a small edit without a LaTeX label keeps the generated ID
+ok 343 - a small edit without a LaTeX label keeps the generated ID
+  ---
+  duration_ms: 0.868167
+  type: 'test'
+  ...
+# Subtest: a complete rewrite at the same sole marker retains the ID for stale status
+ok 344 - a complete rewrite at the same sole marker retains the ID for stale status
+  ---
+  duration_ms: 0.204458
+  type: 'test'
+  ...
+# Subtest: two identical unlabeled statements keep distinct IDs across refreshes
+ok 345 - two identical unlabeled statements keep distinct IDs across refreshes
+  ---
+  duration_ms: 0.8045
+  type: 'test'
+  ...
+# Subtest: copying a statement to another file does not steal the original ID
+ok 346 - copying a statement to another file does not steal the original ID
+  ---
+  duration_ms: 0.094042
+  type: 'test'
+  ...
+# Subtest: explicit labels keep their value and reserve it against generated collisions
+ok 347 - explicit labels keep their value and reserve it against generated collisions
+  ---
+  duration_ms: 0.161333
+  type: 'test'
+  ...
+# Subtest: historical explicit job labels are reserved for compatibility
+ok 348 - historical explicit job labels are reserved for compatibility
+  ---
+  duration_ms: 0.111167
+  type: 'test'
+  ...
+# Subtest: uses can resolve a unique LaTeX label while legacy Lea references remain unchanged
+ok 349 - uses can resolve a unique LaTeX label while legacy Lea references remain unchanged
+  ---
+  duration_ms: 0.590416
+  type: 'test'
+  ...
+# Subtest: live target resolution finds a generated dependency in another TeX file
+ok 350 - live target resolution finds a generated dependency in another TeX file
+  ---
+  duration_ms: 15.333709
+  type: 'test'
+  ...
+# Subtest: jobRecency prefers finishedAt and falls back to startedAt
+ok 351 - jobRecency prefers finishedAt and falls back to startedAt
+  ---
+  duration_ms: 0.765917
+  type: 'test'
+  ...
+# Subtest: prune keeps the newest N per key and removes older finished jobs
+ok 352 - prune keeps the newest N per key and removes older finished jobs
+  ---
+  duration_ms: 0.546333
+  type: 'test'
+  ...
+# Subtest: prune never removes in_progress jobs regardless of age
+ok 353 - prune never removes in_progress jobs regardless of age
+  ---
+  duration_ms: 0.187166
+  type: 'test'
+  ...
+# Subtest: prune keeps the newest job of each (status, mode) combination beyond the window
+ok 354 - prune keeps the newest job of each (status, mode) combination beyond the window
+  ---
+  duration_ms: 0.165459
+  type: 'test'
+  ...
+# Subtest: prune keeps the newest session-linked job per declarationName
+ok 355 - prune keeps the newest session-linked job per declarationName
+  ---
+  duration_ms: 0.222208
+  type: 'test'
+  ...
+# Subtest: prune reports changed=false when everything fits the window
+ok 356 - prune reports changed=false when everything fits the window
+  ---
+  duration_ms: 0.738125
+  type: 'test'
+  ...
+# Subtest: latest-job selections answer identically before and after pruning
+ok 357 - latest-job selections answer identically before and after pruning
+  ---
+  duration_ms: 0.549
+  type: 'test'
+  ...
+# Subtest: prune keeps kept-job object identity so in-flight mutation still lands
+ok 358 - prune keeps kept-job object identity so in-flight mutation still lands
+  ---
+  duration_ms: 0.102834
+  type: 'test'
+  ...
+# Subtest: parseSseFrame reads the event name off the event: line, not the data body
+ok 359 - parseSseFrame reads the event name off the event: line, not the data body
+  ---
+  duration_ms: 1.575083
+  type: 'test'
+  ...
+# Subtest: parseSseFrame tolerates a missing/blank data line
+ok 360 - parseSseFrame tolerates a missing/blank data line
+  ---
+  duration_ms: 0.139208
+  type: 'test'
+  ...
+# Subtest: adapter model helpers call the catalog and encoded requirements endpoints
+ok 361 - adapter model helpers call the catalog and encoded requirements endpoints
+  ---
+  duration_ms: 0.22025
+  type: 'test'
+  ...
+# Subtest: GitHub import helpers use by-slug adapter routes and preserve targets
+ok 362 - GitHub import helpers use by-slug adapter routes and preserve targets
+  ---
+  duration_ms: 0.245375
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: proved done → ok with usage read back from the run row
+ok 363 - runApiProofJob: proved done → ok with usage read back from the run row
+  ---
+  duration_ms: 1.668625
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: disproved done → ok with disproof result kind
+ok 364 - runApiProofJob: disproved done → ok with disproof result kind
+  ---
+  duration_ms: 0.307833
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: forwards origin/origin_url + project tags to POST /api/runs
+ok 365 - runApiProofJob: forwards origin/origin_url + project tags to POST /api/runs
+  ---
+  duration_ms: 0.340542
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: forwards stable formalization identity and source provenance
+ok 366 - runApiProofJob: forwards stable formalization identity and source provenance
+  ---
+  duration_ms: 0.210458
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: creates an external formalization with an origin key
+ok 367 - runApiProofJob: creates an external formalization with an origin key
+  ---
+  duration_ms: 0.436958
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: omits origin fields when not provided (interactive parity)
+ok 368 - runApiProofJob: omits origin fields when not provided (interactive parity)
+  ---
+  duration_ms: 0.452583
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: auto-approves a gated tool call so the run stays autonomous
+ok 369 - runApiProofJob: auto-approves a gated tool call so the run stays autonomous
+  ---
+  duration_ms: 4.68275
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: non-completed terminal status → not ok with a descriptive error
+ok 370 - runApiProofJob: non-completed terminal status → not ok with a descriptive error
+  ---
+  duration_ms: 0.384917
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: a run_error frame surfaces as the failure reason
+ok 371 - runApiProofJob: a run_error frame surfaces as the failure reason
+  ---
+  duration_ms: 0.746459
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: queued frames stream through and are logged before the run starts
+ok 372 - runApiProofJob: queued frames stream through and are logged before the run starts
+  ---
+  duration_ms: 1.419917
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: still queued at the deadline → times out and interrupts the pending run
+ok 373 - runApiProofJob: still queued at the deadline → times out and interrupts the pending run
+  ---
+  duration_ms: 73.567667
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: timeout retains the final run cost and cause
+ok 374 - runApiProofJob: timeout retains the final run cost and cause
+  ---
+  duration_ms: 27.3665
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: a completion that wins the timeout race is not paused
+ok 375 - runApiProofJob: a completion that wins the timeout race is not paused
+  ---
+  duration_ms: 26.665666
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: old adapter user_stop does not erase the companion timeout
+ok 376 - runApiProofJob: old adapter user_stop does not erase the companion timeout
+  ---
+  duration_ms: 25.548083
+  type: 'test'
+  ...
+# Subtest: missing run usage cannot borrow another run's or session's total
+ok 377 - missing run usage cannot borrow another run's or session's total
+  ---
+  duration_ms: 0.226708
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: an HTTP rejection of the attach fails immediately (no retry)
+ok 378 - runApiProofJob: an HTTP rejection of the attach fails immediately (no retry)
+  ---
+  duration_ms: 0.20675
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: stream drops with no done frame, run row is terminal → adopts it (no false failure)
+ok 379 - runApiProofJob: stream drops with no done frame, run row is terminal → adopts it (no false failure)
+  ---
+  duration_ms: 3.718208
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: adapter outage keeps the run identity until its deadline
+ok 380 - runApiProofJob: adapter outage keeps the run identity until its deadline
+  ---
+  duration_ms: 75.202417
+  type: 'test'
+  ...
+# Subtest: runApiProofJob: a malformed run row remains unconfirmed until the deadline
+ok 381 - runApiProofJob: a malformed run row remains unconfirmed until the deadline
+  ---
+  duration_ms: 40.709208
+  type: 'test'
+  ...
+# Subtest: confidence, source attention, compiler verdict and freshness are independent
+ok 382 - confidence, source attention, compiler verdict and freshness are independent
+  ---
+  duration_ms: 2.613916
+  type: 'test'
+  ...
+# Subtest: confidence includes assessment scope without changing compiler status
+ok 383 - confidence includes assessment scope without changing compiler status
+  ---
+  duration_ms: 0.191791
+  type: 'test'
+  ...
+# Subtest: late, repeated, malformed and cross-target events cannot overwrite current status
+ok 384 - late, repeated, malformed and cross-target events cannot overwrite current status
+  ---
+  duration_ms: 0.139833
+  type: 'test'
+  ...
+# Subtest: companion updates a matching active job and deduplicates replay
+ok 385 - companion updates a matching active job and deduplicates replay
+  ---
+  duration_ms: 5.406542
+  type: 'test'
+  ...
+# Subtest: reporting run requires capability and complete source admission; no terminal fallback
+ok 386 - reporting run requires capability and complete source admission; no terminal fallback
+  ---
+  duration_ms: 4.215417
+  type: 'test'
+  ...
+# Subtest: detects a tagged theorem inside a custom (non-allowlisted) environment
+ok 387 - detects a tagged theorem inside a custom (non-allowlisted) environment
+  ---
+  duration_ms: 6.577792
+  type: 'test'
+  ...
+# Subtest: each named wrapper implies its kind regardless of a conflicting kind= argument
+ok 388 - each named wrapper implies its kind regardless of a conflicting kind= argument
+  ---
+  duration_ms: 1.03925
+  type: 'test'
+  ...
+# Subtest: generic \\lea{...} reads kind= explicitly, defaulting to theorem
+ok 389 - generic \\lea{...} reads kind= explicitly, defaulting to theorem
+  ---
+  duration_ms: 0.329042
+  type: 'test'
+  ...
+# Subtest: a tag with no enclosing environment is a missing_environment diagnostic
+ok 390 - a tag with no enclosing environment is a missing_environment diagnostic
+  ---
+  duration_ms: 0.146292
+  type: 'test'
+  ...
+# Subtest: a malformed tag (unbalanced argument) is a malformed_tag diagnostic
+ok 391 - a malformed tag (unbalanced argument) is a malformed_tag diagnostic
+  ---
+  duration_ms: 0.10875
+  type: 'test'
+  ...
+# Subtest: a comment marker and a tag in the same environment is a cross-syntax duplicate_marker
+ok 392 - a comment marker and a tag in the same environment is a cross-syntax duplicate_marker
+  ---
+  duration_ms: 0.253958
+  type: 'test'
+  ...
+# Subtest: a tag in an allowlisted environment behaves identically to the comment-marker path
+ok 393 - a tag in an allowlisted environment behaves identically to the comment-marker path
+  ---
+  duration_ms: 5.224292
+  type: 'test'
+  ...
+# Subtest: reports tag_package_not_loaded when no usepackage/definition is present, and suppresses it when one is
+ok 394 - reports tag_package_not_loaded when no usepackage/definition is present, and suppresses it when one is
+  ---
+  duration_ms: 0.492208
+  type: 'test'
+  ...
+# Subtest: does not false-positive on the package's own \\NewDocumentCommand{\\lea}{m}{} definition
+ok 395 - does not false-positive on the package's own \\NewDocumentCommand{\\lea}{m}{} definition
+  ---
+  duration_ms: 0.331
+  type: 'test'
+  ...
+# Subtest: flags an unusual enclosing environment without blocking the target
+ok 396 - flags an unusual enclosing environment without blocking the target
+  ---
+  duration_ms: 0.378542
+  type: 'test'
+  ...
+# Subtest: strips tag calls (including nested braces in context=) from target text
+ok 397 - strips tag calls (including nested braces in context=) from target text
+  ---
+  duration_ms: 0.112875
+  type: 'test'
+  ...
+# Subtest: ignores unmarked custom environments (tags are still opt-in)
+ok 398 - ignores unmarked custom environments (tags are still opt-in)
+  ---
+  duration_ms: 0.063833
+  type: 'test'
+  ...
+# Subtest: a standalone tag (body as second argument) needs no enclosing environment
+ok 399 - a standalone tag (body as second argument) needs no enclosing environment
+  ---
+  duration_ms: 0.146
+  type: 'test'
+  ...
+# Subtest: a standalone tag's body argument can span multiple lines and paragraphs
+ok 400 - a standalone tag's body argument can span multiple lines and paragraphs
+  ---
+  duration_ms: 6.729042
+  type: 'test'
+  ...
+# Subtest: the generic \\lea{...}{...} standalone form respects kind=
+ok 401 - the generic \\lea{...}{...} standalone form respects kind=
+  ---
+  duration_ms: 1.668375
+  type: 'test'
+  ...
+# Subtest: a standalone tag with an unterminated body argument is a malformed_tag diagnostic
+ok 402 - a standalone tag with an unterminated body argument is a malformed_tag diagnostic
+  ---
+  duration_ms: 0.973333
+  type: 'test'
+  ...
+# Subtest: a standalone tag strips a nested \\label{...} from its own body
+ok 403 - a standalone tag strips a nested \\label{...} from its own body
+  ---
+  duration_ms: 0.556
+  type: 'test'
+  ...
+# Subtest: a tag with no body argument still requires an enclosing environment, with a message mentioning both options
+ok 404 - a tag with no body argument still requires an enclosing environment, with a message mentioning both options
+  ---
+  duration_ms: 2.814041
+  type: 'test'
+  ...
+# Subtest: standalone-tag detection matches real TeX argument scanning, verified against pdflatex separately: whitespace (including a blank line) between metadata and an unrelated brace group is absorbed as the body
+ok 405 - standalone-tag detection matches real TeX argument scanning, verified against pdflatex separately: whitespace (including a blank line) between metadata and an unrelated brace group is absorbed as the body
+  ---
+  duration_ms: 2.476167
+  type: 'test'
+  ...
+# Subtest: text between a tag and a later brace group prevents accidental absorption
+ok 406 - text between a tag and a later brace group prevents accidental absorption
+  ---
+  duration_ms: 0.110667
+  type: 'test'
+  ...
+# Subtest: a leacode block is a formalizable theorem target whose body is the raw code
+ok 407 - a leacode block is a formalizable theorem target whose body is the raw code
+  ---
+  duration_ms: 0.2355
+  type: 'test'
+  ...
+# Subtest: a leacode block preserves Lean's catcode-hostile characters verbatim (_ \\ { } ->)
+ok 408 - a leacode block preserves Lean's catcode-hostile characters verbatim (_ \\ { } ->)
+  ---
+  duration_ms: 0.102416
+  type: 'test'
+  ...
+# Subtest: leacode honors kind= like the generic \\lea{...}, defaulting to theorem
+ok 409 - leacode honors kind= like the generic \\lea{...}, defaulting to theorem
+  ---
+  duration_ms: 0.122417
+  type: 'test'
+  ...
+# Subtest: a leacode block needs no enclosing environment and never flags suspicious/mismatch
+ok 410 - a leacode block needs no enclosing environment and never flags suspicious/mismatch
+  ---
+  duration_ms: 0.076292
+  type: 'test'
+  ...
+# Subtest: a leacode block with an unterminated \\end is a malformed_tag diagnostic
+ok 411 - a leacode block with an unterminated \\end is a malformed_tag diagnostic
+  ---
+  duration_ms: 0.0735
+  type: 'test'
+  ...
+# Subtest: a leacode block without its required metadata argument is malformed
+ok 412 - a leacode block without its required metadata argument is malformed
+  ---
+  duration_ms: 0.068833
+  type: 'test'
+  ...
+# Subtest: empty metadata on a leacode block generates a label
+ok 413 - empty metadata on a leacode block generates a label
+  ---
+  duration_ms: 0.150708
+  type: 'test'
+  ...
+# Subtest: label-free inline and standalone tags are valid targets
+ok 414 - label-free inline and standalone tags are valid targets
+  ---
+  duration_ms: 0.234416
+  type: 'test'
+  ...
+# Subtest: leacode triggers tag_package_not_loaded, and an inline lstnewenvironment suppresses it
+ok 415 - leacode triggers tag_package_not_loaded, and an inline lstnewenvironment suppresses it
+  ---
+  duration_ms: 0.174458
+  type: 'test'
+  ...
+# Subtest: a leacode block shown inside a verbatim documentation example is not a real target
+ok 416 - a leacode block shown inside a verbatim documentation example is not a real target
+  ---
+  duration_ms: 0.133041
+  type: 'test'
+  ...
+# Subtest: runtime client queries the adapter session without starting a check
+ok 417 - runtime client queries the adapter session without starting a check
+  ---
+  duration_ms: 2.031333
+  type: 'test'
+  ...
+# Subtest: chat reload retains history but reports recovery from authoritative runtime
+ok 418 - chat reload retains history but reports recovery from authoritative runtime
+  ---
+  duration_ms: 1.175125
+  type: 'test'
+  ...
+# Subtest: an older adapter yields unavailable, never inferred server health
+ok 419 - an older adapter yields unavailable, never inferred server health
+  ---
+  duration_ms: 2.123375
+  type: 'test'
+  ...
+# Subtest: containsSorryMarker detects real sorry/admit and ignores lookalikes and comments (AUDIT M1)
+ok 420 - containsSorryMarker detects real sorry/admit and ignores lookalikes and comments (AUDIT M1)
+  ---
+  duration_ms: 1.246625
+  type: 'test'
+  ...
+# Subtest: projectNamespaceFromSlug/proofPathFromProjectStep/moduleNameFromProjectStep are unchanged from the original companion/server.mjs behavior
+ok 421 - projectNamespaceFromSlug/proofPathFromProjectStep/moduleNameFromProjectStep are unchanged from the original companion/server.mjs behavior
+  ---
+  duration_ms: 0.792292
+  type: 'test'
+  ...
+# Subtest: parseLeanImports collects every import line, ignoring comments
+ok 422 - parseLeanImports collects every import line, ignoring comments
+  ---
+  duration_ms: 1.048417
+  type: 'test'
+  ...
+# Subtest: listProjectProofFiles walks the namespace directory recursively and derives module names
+ok 423 - listProjectProofFiles walks the namespace directory recursively and derives module names
+  ---
+  duration_ms: 14.080542
+  type: 'test'
+  ...
+# Subtest: listProjectProofFiles returns an empty list when the project has no recorded proofs yet
+ok 424 - listProjectProofFiles returns an empty list when the project has no recorded proofs yet
+  ---
+  duration_ms: 2.029584
+  type: 'test'
+  ...
+# Subtest: buildReverseImportIndex + transitiveDependents finds direct and transitive dependents
+ok 425 - buildReverseImportIndex + transitiveDependents finds direct and transitive dependents
+  ---
+  duration_ms: 0.288834
+  type: 'test'
+  ...
+# Subtest: transitiveDependents finds both direct dependents at the same level (the spec's two-dependent worked example)
+ok 426 - transitiveDependents finds both direct dependents at the same level (the spec's two-dependent worked example)
+  ---
+  duration_ms: 0.116292
+  type: 'test'
+  ...
+# Subtest: transitiveDependents de-duplicates a diamond dependency
+ok 427 - transitiveDependents de-duplicates a diamond dependency
+  ---
+  duration_ms: 0.07875
+  type: 'test'
+  ...
+# Subtest: transitiveDependents returns nothing for a module no one imports (or that doesn't exist)
+ok 428 - transitiveDependents returns nothing for a module no one imports (or that doesn't exist)
+  ---
+  duration_ms: 0.54075
+  type: 'test'
+  ...
+# Subtest: dependentsOf composes file discovery + reverse index + traversal end to end
+ok 429 - dependentsOf composes file discovery + reverse index + traversal end to end
+  ---
+  duration_ms: 6.694833
+  type: 'test'
+  ...
+# Subtest: dependentsOf on a module with no recorded dependents returns an empty array, not an error
+ok 430 - dependentsOf on a module with no recorded dependents returns an empty array, not an error
+  ---
+  duration_ms: 2.515917
+  type: 'test'
+  ...
+# Subtest: recovery uses the live incomplete classification without resuming saved pauses
+ok 431 - recovery uses the live incomplete classification without resuming saved pauses
+  ---
+  duration_ms: 1.416583
+  type: 'test'
+  ...
+# Subtest: stub all / formalize all reject an empty or missing item set
+ok 432 - stub all / formalize all reject an empty or missing item set
+  ---
+  duration_ms: 0.368084
+  type: 'test'
+  ...
+# Subtest: stub all / formalize all require an overleaf project id
+ok 433 - stub all / formalize all require an overleaf project id
+  ---
+  duration_ms: 0.09425
+  type: 'test'
+  ...
+# Subtest: batch validation rejects a malformed target before any run starts
+ok 434 - batch validation rejects a malformed target before any run starts
+  ---
+  duration_ms: 0.931
+  type: 'test'
+  ...
+# Subtest: stub all rejects a definition target (definitions have no stub path)
+ok 435 - stub all rejects a definition target (definitions have no stub path)
+  ---
+  duration_ms: 0.511333
+  type: 'test'
+  ...
+# Subtest: orderTargetsByUses places a target's dependencies before it
+ok 436 - orderTargetsByUses places a target's dependencies before it
+  ---
+  duration_ms: 5.583083
+  type: 'test'
+  ...
+# Subtest: cancel on an unknown batch is a 404
+ok 437 - cancel on an unknown batch is a 404
+  ---
+  duration_ms: 0.193084
+  type: 'test'
+  ...
+# Subtest: cancel settles an idle/paused batch: unsettled items become canceled and it reads done
+ok 438 - cancel settles an idle/paused batch: unsettled items become canceled and it reads done
+  ---
+  duration_ms: 4.717291
+  type: 'test'
+  ...
+# Subtest: cancel of a still-running batch defers settlement to its loop (reports stopping)
+ok 439 - cancel of a still-running batch defers settlement to its loop (reports stopping)
+  ---
+  duration_ms: 0.5665
+  type: 'test'
+  ...
+# Subtest: stopped Formalize all submits one settled report with run provenance
+ok 440 - stopped Formalize all submits one settled report with run provenance
+  ---
+  duration_ms: 8.6555
+  type: 'test'
+  ...
+# Subtest: a project with no adapter row has an empty report history
+ok 441 - a project with no adapter row has an empty report history
+  ---
+  duration_ms: 0.221917
+  type: 'test'
+  ...
+# Subtest: a successful active run that wins the stop race remains completed
+ok 442 - a successful active run that wins the stop race remains completed
+  ---
+  duration_ms: 0.066959
+  type: 'test'
+  ...
+# Subtest: an interrupted active run becomes canceled
+ok 443 - an interrupted active run becomes canceled
+  ---
+  duration_ms: 0.03975
+  type: 'test'
+  ...
+# Subtest: orderTargetsByUses ignores uses that are not part of the batch
+ok 444 - orderTargetsByUses ignores uses that are not part of the batch
+  ---
+  duration_ms: 0.08075
+  type: 'test'
+  ...
+# Subtest: canChatPaneItem requires a declaration name or marker label
+ok 445 - canChatPaneItem requires a declaration name or marker label
+  ---
+  duration_ms: 0.70575
+  type: 'test'
+  ...
+# Subtest: paneItemToChatTarget shapes the companion chat payload
+ok 446 - paneItemToChatTarget shapes the companion chat payload
+  ---
+  duration_ms: 0.80625
+  type: 'test'
+  ...
+# Subtest: paneItemToChatTarget maps a definition item to a definition target
+ok 447 - paneItemToChatTarget maps a definition item to a definition target
+  ---
+  duration_ms: 0.070458
+  type: 'test'
+  ...
+# Subtest: nextChatState resolves the panel state from flags and response
+ok 448 - nextChatState resolves the panel state from flags and response
+  ---
+  duration_ms: 0.091958
+  type: 'test'
+  ...
+# Subtest: chatComposerEnabled only allows input when loaded and idle
+ok 449 - chatComposerEnabled only allows input when loaded and idle
+  ---
+  duration_ms: 0.118541
+  type: 'test'
+  ...
+# Subtest: chatRunActive is true only while running
+ok 450 - chatRunActive is true only while running
+  ---
+  duration_ms: 0.049042
+  type: 'test'
+  ...
+# Subtest: chatBubbleClass distinguishes user and assistant bubbles
+ok 451 - chatBubbleClass distinguishes user and assistant bubbles
+  ---
+  duration_ms: 0.10875
+  type: 'test'
+  ...
+# Subtest: edit start returns no_session when the item has never been formalized
+ok 452 - edit start returns no_session when the item has never been formalized
+  ---
+  duration_ms: 15.824083
+  type: 'test'
+  ...
+# Subtest: edit start rejects an invalid payload before touching the adapter
+ok 453 - edit start rejects an invalid payload before touching the adapter
+  ---
+  duration_ms: 15.475333
+  type: 'test'
+  ...
+# Subtest: edit start resolves the session's current content and pre-save dependents
+ok 454 - edit start resolves the session's current content and pre-save dependents
+  ---
+  duration_ms: 13.669459
+  type: 'test'
+  ...
+# Subtest: a GitHub-imported ledger artifact can be edited without starting an independent check
+ok 455 - a GitHub-imported ledger artifact can be edited without starting an independent check
+  ---
+  duration_ms: 34.210458
+  type: 'test'
+  ...
+# Subtest: project namespace rename makes the pane and editor read the migrated working file
+ok 456 - project namespace rename makes the pane and editor read the migrated working file
+  ---
+  duration_ms: 52.759875
+  type: 'test'
+  ...
+# Subtest: edit save: a proof-body-only edit never triggers a cascade re-check
+ok 457 - edit save: a proof-body-only edit never triggers a cascade re-check
+  ---
+  duration_ms: 4.393291
+  type: 'test'
+  ...
+# Subtest: edit save: a signature edit cascades and reports a broken dependent, attributed to the upstream edit
+ok 458 - edit save: a signature edit cascades and reports a broken dependent, attributed to the upstream edit
+  ---
+  duration_ms: 4.071291
+  type: 'test'
+  ...
+# Subtest: edit save: a rename updates the cached declarationName on EVERY job under the item's key
+ok 459 - edit save: a rename updates the cached declarationName on EVERY job under the item's key
+  ---
+  duration_ms: 11.164459
+  type: 'test'
+  ...
+# Subtest: edit save: a proof-only edit never triggers a rebuild (no dependents to verify)
+ok 460 - edit save: a proof-only edit never triggers a rebuild (no dependents to verify)
+  ---
+  duration_ms: 23.641375
+  type: 'test'
+  ...
+# Subtest: edit save: fixing a previously-broken file re-verifies dependents even though the fix itself is proof-only
+ok 461 - edit save: fixing a previously-broken file re-verifies dependents even though the fix itself is proof-only
+  ---
+  duration_ms: 5.899709
+  type: 'test'
+  ...
+# Subtest: edit save: a proof-only edit to an already-healthy file still skips the cascade
+ok 462 - edit save: a proof-only edit to an already-healthy file still skips the cascade
+  ---
+  duration_ms: 2.401333
+  type: 'test'
+  ...
+# Subtest: edit save: a rebuild failure marks dependents unknown instead of trusting a stale recheck
+ok 463 - edit save: a rebuild failure marks dependents unknown instead of trusting a stale recheck
+  ---
+  duration_ms: 5.965584
+  type: 'test'
+  ...
+# Subtest: edit save: a def body edit cascades even with an unchanged signature
+ok 464 - edit save: a def body edit cascades even with an unchanged signature
+  ---
+  duration_ms: 5.453958
+  type: 'test'
+  ...
+# Subtest: edit save: no-op content short-circuits with no lean-check or cascade calls
+ok 465 - edit save: no-op content short-circuits with no lean-check or cascade calls
+  ---
+  duration_ms: 1.207375
+  type: 'test'
+  ...
+# Subtest: edit save is blocked with 409 while a run is already active for the item
+ok 466 - edit save is blocked with 409 while a run is already active for the item
+  ---
+  duration_ms: 1.063416
+  type: 'test'
+  ...
+# Subtest: edit save: a dependent with its own active run is skipped, not raced
+ok 467 - edit save: a dependent with its own active run is skipped, not raced
+  ---
+  duration_ms: 2.877417
+  type: 'test'
+  ...
+# Subtest: edit save flips the item's own status chip to invalid on the next manifest refresh (not just a side note)
+ok 468 - edit save flips the item's own status chip to invalid on the next manifest refresh (not just a side note)
+  ---
+  duration_ms: 36.106667
+  type: 'test'
+  ...
+# Subtest: edit start after a rename serves the post-rename content, and a second rename still classifies as a rename
+ok 469 - edit start after a rename serves the post-rename content, and a second rename still classifies as a rename
+  ---
+  duration_ms: 10.150292
+  type: 'test'
+  ...
+# Subtest: edit save: a cascade still attributes a dependent that was previously renamed
+ok 470 - edit save: a cascade still attributes a dependent that was previously renamed
+  ---
+  duration_ms: 6.750958
+  type: 'test'
+  ...
+# Subtest: edit start/save still resolve the session when the pane sends the post-rename declaration name
+ok 471 - edit start/save still resolve the session when the pane sends the post-rename declaration name
+  ---
+  duration_ms: 3.166041
+  type: 'test'
+  ...
+# Subtest: recipe 4: a signature edit flips the broken dependent AND propagates to transitive dependents
+ok 472 - recipe 4: a signature edit flips the broken dependent AND propagates to transitive dependents
+  ---
+  duration_ms: 39.828292
+  type: 'test'
+  ...
+# Subtest: recipe: a pure RENAME of an upstream flips a dependent that references the old name
+ok 473 - recipe: a pure RENAME of an upstream flips a dependent that references the old name
+  ---
+  duration_ms: 33.574625
+  type: 'test'
+  ...
+# Subtest: a breaking signature edit persists breakage attribution on the dependent's job (restart-surviving) and surfaces item.breakage
+ok 474 - a breaking signature edit persists breakage attribution on the dependent's job (restart-surviving) and surfaces item.breakage
+  ---
+  duration_ms: 13.015292
+  type: 'test'
+  ...
+# Subtest: an edit that breaks the item ITSELF records self-attribution, and dependents' repair offers are suppressed while upstream is broken
+ok 475 - an edit that breaks the item ITSELF records self-attribution, and dependents' repair offers are suppressed while upstream is broken
+  ---
+  duration_ms: 5.207292
+  type: 'test'
+  ...
+# Subtest: a recovery edit clears persisted breakage on the item and on re-verified dependents
+ok 476 - a recovery edit clears persisted breakage on the item and on re-verified dependents
+  ---
+  duration_ms: 7.256958
+  type: 'test'
+  ...
+# Subtest: a manual edit save clears a standing lastRepair outcome (needs_review does not outlive the human's own edit)
+ok 477 - a manual edit save clears a standing lastRepair outcome (needs_review does not outlive the human's own edit)
+  ---
+  duration_ms: 2.812917
+  type: 'test'
+  ...
+# Subtest: builds inventory from every marked tex file without requiring input/include
+ok 478 - builds inventory from every marked tex file without requiring input/include
+  ---
+  duration_ms: 19.043667
+  type: 'test'
+  ...
+# Subtest: omits environments without Lea comment labels and preserves source metadata
+ok 479 - omits environments without Lea comment labels and preserves source metadata
+  ---
+  duration_ms: 1.862166
+  type: 'test'
+  ...
+# Subtest: does not inventory LaTeX-labeled environments without Lea markers
+ok 480 - does not inventory LaTeX-labeled environments without Lea markers
+  ---
+  duration_ms: 0.729917
+  type: 'test'
+  ...
+# Subtest: source hashes match the formalize target parser for the same block
+ok 481 - source hashes match the formalize target parser for the same block
+  ---
+  duration_ms: 1.990667
+  type: 'test'
+  ...
+# Subtest: carries marker metadata so pane items can be formalized
+ok 482 - carries marker metadata so pane items can be formalized
+  ---
+  duration_ms: 0.4
+  type: 'test'
+  ...
+# Subtest: label-free theorem and definition appear as runnable pane items
+ok 483 - label-free theorem and definition appear as runnable pane items
+  ---
+  duration_ms: 0.775334
+  type: 'test'
+  ...
+# Subtest: marks items with a malformed marker as not formalizable
+ok 484 - marks items with a malformed marker as not formalizable
+  ---
+  duration_ms: 0.357833
+  type: 'test'
+  ...
+# Subtest: makes ids unique for duplicate kind+label items
+ok 485 - makes ids unique for duplicate kind+label items
+  ---
+  duration_ms: 0.284959
+  type: 'test'
+  ...
+# Subtest: inventories a tag-marked item in a custom (non-allowlisted) environment
+ok 486 - inventories a tag-marked item in a custom (non-allowlisted) environment
+  ---
+  duration_ms: 0.81575
+  type: 'test'
+  ...
+# Subtest: tag-marked and comment-marked items in allowlisted environments are equivalent
+ok 487 - tag-marked and comment-marked items in allowlisted environments are equivalent
+  ---
+  duration_ms: 0.687167
+  type: 'test'
+  ...
+# Subtest: a malformed tag still surfaces as a non-formalizable pane item
+ok 488 - a malformed tag still surfaces as a non-formalizable pane item
+  ---
+  duration_ms: 2.529291
+  type: 'test'
+  ...
+# Subtest: inventories a standalone (body-argument) tag with no enclosing environment
+ok 489 - inventories a standalone (body-argument) tag with no enclosing environment
+  ---
+  duration_ms: 1.636834
+  type: 'test'
+  ...
+# Subtest: reports duplicate labels without dropping items
+ok 490 - reports duplicate labels without dropping items
+  ---
+  duration_ms: 1.540875
+  type: 'test'
+  ...
+# Subtest: a % lea: line inside a verbatim-like environment is never treated as a marker
+ok 491 - a % lea: line inside a verbatim-like environment is never treated as a marker
+  ---
+  duration_ms: 0.756792
+  type: 'test'
+  ...
+# Subtest: lstlisting, minted, and comment environments are excluded the same way
+ok 492 - lstlisting, minted, and comment environments are excluded the same way
+  ---
+  duration_ms: 0.614
+  type: 'test'
+  ...
+# Subtest: a real outer environment containing a nested verbatim marker example is not itself promoted to an item
+ok 493 - a real outer environment containing a nested verbatim marker example is not itself promoted to an item
+  ---
+  duration_ms: 0.272042
+  type: 'test'
+  ...
+# Subtest: vendored KaTeX supports representative theorem notation
+ok 494 - vendored KaTeX supports representative theorem notation
+  ---
+  duration_ms: 8.071792
+  type: 'test'
+  ...
+# Subtest: renderPaneMath applies safe consistent KaTeX options
+ok 495 - renderPaneMath applies safe consistent KaTeX options
+  ---
+  duration_ms: 0.218875
+  type: 'test'
+  ...
+# Subtest: renderPaneMath reports unavailable and malformed-render failures
+ok 496 - renderPaneMath reports unavailable and malformed-render failures
+  ---
+  duration_ms: 0.084209
+  type: 'test'
+  ...
+# Subtest: repair start: no session recorded -> 404 no_session
+ok 497 - repair start: no session recorded -> 404 no_session
+  ---
+  duration_ms: 13.757166
+  type: 'test'
+  ...
+# Subtest: repair start: an item that compiles again is a no-op (alreadyFixed), never a run
+ok 498 - repair start: an item that compiles again is a no-op (alreadyFixed), never a run
+  ---
+  duration_ms: 25.539834
+  type: 'test'
+  ...
+# Subtest: repair start: a live run on the item -> 409 run_in_progress
+ok 499 - repair start: a live run on the item -> 409 run_in_progress
+  ---
+  duration_ms: 22.215417
+  type: 'test'
+  ...
+# Subtest: repair start: suppressed while the upstream item's own file is broken
+ok 500 - repair start: suppressed while the upstream item's own file is broken
+  ---
+  duration_ms: 8.726541
+  type: 'test'
+  ...
+# Subtest: repair run: dispatches on the item's own session with the repair prompt, verifies by rebuild, clears breakage on success
+ok 501 - repair run: dispatches on the item's own session with the repair prompt, verifies by rebuild, clears breakage on success
+  ---
+  duration_ms: 30.824917
+  type: 'test'
+  ...
+# Subtest: repair run: a repair that still fails to build ends repair_failed with the agent's explanation, breakage kept
+ok 502 - repair run: a repair that still fails to build ends repair_failed with the agent's explanation, breakage kept
+  ---
+  duration_ms: 24.647791
+  type: 'test'
+  ...
+# Subtest: repair run: statement guard flags a compiling repair whose header changed beyond the sanctioned rename
+ok 503 - repair run: statement guard flags a compiling repair whose header changed beyond the sanctioned rename
+  ---
+  duration_ms: 46.72025
+  type: 'test'
+  ...
+# Subtest: topologicalRepairOrder: an importer repairs after its import, including through non-batch modules
+ok 504 - topologicalRepairOrder: an importer repairs after its import, including through non-batch modules
+  ---
+  duration_ms: 16.54775
+  type: 'test'
+  ...
+# Subtest: topologicalRepairOrder: unattributable items sort last; a cycle falls back to given order with a flag
+ok 505 - topologicalRepairOrder: unattributable items sort last; a cycle falls back to given order with a flag
+  ---
+  duration_ms: 0.367959
+  type: 'test'
+  ...
+# Subtest: repair all: repairs in import order, skips transitive importers of a failed repair, and pauses for continue
+ok 506 - repair all: repairs in import order, skips transitive importers of a failed repair, and pauses for continue
+  ---
+  duration_ms: 111.788917
+  type: 'test'
+  ...
+# Subtest: repair all: already-fixed items are skipped up front without a run
+ok 507 - repair all: already-fixed items are skipped up front without a run
+  ---
+  duration_ms: 14.361417
+  type: 'test'
+  ...
+# Subtest: repair status: unknown batch id -> 404 (batches do not survive restarts)
+ok 508 - repair status: unknown batch id -> 404 (batches do not survive restarts)
+  ---
+  duration_ms: 4.560583
+  type: 'test'
+  ...
+# Subtest: parseLeanImports feeds the batch graph with exact module names
+ok 509 - parseLeanImports feeds the batch graph with exact module names
+  ---
+  duration_ms: 0.120583
+  type: 'test'
+  ...
+# Subtest: a repair that compiled clean but fails verification after a mid-run upstream rename reports the real reason and refreshes attribution
+ok 510 - a repair that compiled clean but fails verification after a mid-run upstream rename reports the real reason and refreshes attribution
+  ---
+  duration_ms: 15.106541
+  type: 'test'
+  ...
+# Subtest: formatPaneStatus maps known statuses and falls back to unknown
+ok 511 - formatPaneStatus maps known statuses and falls back to unknown
+  ---
+  duration_ms: 1.644334
+  type: 'test'
+  ...
+# Subtest: capitalize uppercases the first character only
+ok 512 - capitalize uppercases the first character only
+  ---
+  duration_ms: 0.088333
+  type: 'test'
+  ...
+# Subtest: shouldRefetchLeanPaneFiles forces a fetch on explicit request, empty cache, or project switch
+ok 513 - shouldRefetchLeanPaneFiles forces a fetch on explicit request, empty cache, or project switch
+  ---
+  duration_ms: 0.146041
+  type: 'test'
+  ...
+# Subtest: shouldRefetchLeanPaneFiles reuses the cache for same-project edits
+ok 514 - shouldRefetchLeanPaneFiles reuses the cache for same-project edits
+  ---
+  duration_ms: 0.054667
+  type: 'test'
+  ...
+# Subtest: overlayActiveTex overrides existing files only and never invents paths
+ok 515 - overlayActiveTex overrides existing files only and never invents paths
+  ---
+  duration_ms: 0.129209
+  type: 'test'
+  ...
+# Subtest: hasInProgressItems detects any in-progress item
+ok 516 - hasInProgressItems detects any in-progress item
+  ---
+  duration_ms: 0.066667
+  type: 'test'
+  ...
+# Subtest: canFormalizePaneItem keeps reruns available for settled items and blocks active runs
+ok 517 - canFormalizePaneItem keeps reruns available for settled items and blocks active runs
+  ---
+  duration_ms: 0.06975
+  type: 'test'
+  ...
+# Subtest: canContinueBestEffort is limited to source-obstruction pauses without an associated proof
+ok 518 - canContinueBestEffort is limited to source-obstruction pauses without an associated proof
+  ---
+  duration_ms: 0.081834
+  type: 'test'
+  ...
+# Subtest: canStubPaneItem offers sorry-stubbing only for an unformalized theorem
+ok 519 - canStubPaneItem offers sorry-stubbing only for an unformalized theorem
+  ---
+  duration_ms: 0.26375
+  type: 'test'
+  ...
+# Subtest: canViewPaneItemInLeaUi requires a target identity and a real run or artifact
+ok 520 - canViewPaneItemInLeaUi requires a target identity and a real run or artifact
+  ---
+  duration_ms: 0.380959
+  type: 'test'
+  ...
+# Subtest: paneItemActions puts Formalize primary with Stub in the overflow for an unformalized theorem
+ok 521 - paneItemActions puts Formalize primary with Stub in the overflow for an unformalized theorem
+  ---
+  duration_ms: 0.944875
+  type: 'test'
+  ...
+# Subtest: paneItemActions promotes Repair over Re-formalize on a broken item and keeps both reachable
+ok 522 - paneItemActions promotes Repair over Re-formalize on a broken item and keeps both reachable
+  ---
+  duration_ms: 1.079333
+  type: 'test'
+  ...
+# Subtest: paneItemActions keeps Re-formalize primary on a settled valid item
+ok 523 - paneItemActions keeps Re-formalize primary on a settled valid item
+  ---
+  duration_ms: 0.135
+  type: 'test'
+  ...
+# Subtest: paneItemActions offers best-effort continuation for an eligible source obstruction
+ok 524 - paneItemActions offers best-effort continuation for an eligible source obstruction
+  ---
+  duration_ms: 0.107875
+  type: 'test'
+  ...
+# Subtest: a paused solver keeps Resume and separate Re-formalize when its source becomes stale
+ok 525 - a paused solver keeps Resume and separate Re-formalize when its source becomes stale
+  ---
+  duration_ms: 0.077708
+  type: 'test'
+  ...
+# Subtest: paneItemActions suppresses state-changing actions while the item is being edited or running
+ok 526 - paneItemActions suppresses state-changing actions while the item is being edited or running
+  ---
+  duration_ms: 0.066958
+  type: 'test'
+  ...
+# Subtest: paneItemToFormalizeTarget shapes the /formalize payload from a pane item
+ok 527 - paneItemToFormalizeTarget shapes the /formalize payload from a pane item
+  ---
+  duration_ms: 0.082583
+  type: 'test'
+  ...
+# Subtest: paneItemToGithubImportTarget keeps the stable label and current declaration separate
+ok 528 - paneItemToGithubImportTarget keeps the stable label and current declaration separate
+  ---
+  duration_ms: 0.0585
+  type: 'test'
+  ...
+# Subtest: githubImportMatchedTargetKeys locks only matched declarations in importable files
+ok 529 - githubImportMatchedTargetKeys locks only matched declarations in importable files
+  ---
+  duration_ms: 0.221
+  type: 'test'
+  ...
+# Subtest: buildLeanPaneTree groups files into a compact source tree
+ok 530 - buildLeanPaneTree groups files into a compact source tree
+  ---
+  duration_ms: 0.361291
+  type: 'test'
+  ...
+# Subtest: buildLeanPaneTree omits files with no manifest items and preserves item order
+ok 531 - buildLeanPaneTree omits files with no manifest items and preserves item order
+  ---
+  duration_ms: 0.065541
+  type: 'test'
+  ...
+# Subtest: buildPaneUseRelationships resolves ordered uses and derives reverse edges by stable marker label
+ok 532 - buildPaneUseRelationships resolves ordered uses and derives reverse edges by stable marker label
+  ---
+  duration_ms: 0.142375
+  type: 'test'
+  ...
+# Subtest: buildPaneUseRelationships leaves duplicate labels ambiguous and handles cycles without traversal
+ok 533 - buildPaneUseRelationships leaves duplicate labels ambiguous and handles cycles without traversal
+  ---
+  duration_ms: 0.154292
+  type: 'test'
+  ...
+# Subtest: aggregatePaneStatus applies file status precedence
+ok 534 - aggregatePaneStatus applies file status precedence
+  ---
+  duration_ms: 0.061292
+  type: 'test'
+  ...
+# Subtest: paneProgressBucketForItem maps pane and companion statuses to progress buckets
+ok 535 - paneProgressBucketForItem maps pane and companion statuses to progress buckets
+  ---
+  duration_ms: 0.062958
+  type: 'test'
+  ...
+# Subtest: summarizePaneProgress counts representative fractional file summaries
+ok 536 - summarizePaneProgress counts representative fractional file summaries
+  ---
+  duration_ms: 0.115125
+  type: 'test'
+  ...
+# Subtest: paneProgressSegments returns ordered nonzero segments with percentages
+ok 537 - paneProgressSegments returns ordered nonzero segments with percentages
+  ---
+  duration_ms: 0.219416
+  type: 'test'
+  ...
+# Subtest: verified proofs and definitions are separate from checked disproofs
+ok 538 - verified proofs and definitions are separate from checked disproofs
+  ---
+  duration_ms: 0.082416
+  type: 'test'
+  ...
+# Subtest: pane progress gives stale items their own out-of-date segment
+ok 539 - pane progress gives stale items their own out-of-date segment
+  ---
+  duration_ms: 0.054458
+  type: 'test'
+  ...
+# Subtest: formatPaneProgressLabel omits zero-count buckets and includes running count
+ok 540 - formatPaneProgressLabel omits zero-count buckets and includes running count
+  ---
+  duration_ms: 0.040375
+  type: 'test'
+  ...
+# Subtest: treeAncestorIdsForFile returns expandable folder and file ids
+ok 541 - treeAncestorIdsForFile returns expandable folder and file ids
+  ---
+  duration_ms: 0.055917
+  type: 'test'
+  ...
+# Subtest: parsePaneLatex splits inline and display math delimiters
+ok 542 - parsePaneLatex splits inline and display math delimiters
+  ---
+  duration_ms: 0.237
+  type: 'test'
+  ...
+# Subtest: parsePaneLatex leaves unmatched delimiters as readable text
+ok 543 - parsePaneLatex leaves unmatched delimiters as readable text
+  ---
+  duration_ms: 0.042709
+  type: 'test'
+  ...
+# Subtest: formatLiteMath prettifies common theorem math without dependencies
+ok 544 - formatLiteMath prettifies common theorem math without dependencies
+  ---
+  duration_ms: 0.701625
+  type: 'test'
+  ...
+# Subtest: formatLiteMath keeps unknown commands visible as fallback text
+ok 545 - formatLiteMath keeps unknown commands visible as fallback text
+  ---
+  duration_ms: 0.049834
+  type: 'test'
+  ...
+# Subtest: formatLiteLatexText styles common prose and preserves unknown commands
+ok 546 - formatLiteLatexText styles common prose and preserves unknown commands
+  ---
+  duration_ms: 0.583125
+  type: 'test'
+  ...
+# Subtest: canEditPaneItem requires a recorded artifact
+ok 547 - canEditPaneItem requires a recorded artifact
+  ---
+  duration_ms: 0.054292
+  type: 'test'
+  ...
+# Subtest: paneItemToEditTarget shapes a theorem/definition target from a pane item
+ok 548 - paneItemToEditTarget shapes a theorem/definition target from a pane item
+  ---
+  duration_ms: 0.484916
+  type: 'test'
+  ...
+# Subtest: formatDependentsImpact summarizes an empty or non-empty dependents list
+ok 549 - formatDependentsImpact summarizes an empty or non-empty dependents list
+  ---
+  duration_ms: 1.889208
+  type: 'test'
+  ...
+# Subtest: formatDependentOutcome distinguishes broken/renamed/busy/unattributed/still-valid outcomes
+ok 550 - formatDependentOutcome distinguishes broken/renamed/busy/unattributed/still-valid outcomes
+  ---
+  duration_ms: 0.137041
+  type: 'test'
+  ...
+# Subtest: formatDependentOutcome distinguishes 'could not verify' from a genuine still-valid recheck
+ok 551 - formatDependentOutcome distinguishes 'could not verify' from a genuine still-valid recheck
+  ---
+  duration_ms: 0.057292
+  type: 'test'
+  ...
+# Subtest: highlightLeanLine marks Lean keywords, comments, strings, numbers, and types
+ok 552 - highlightLeanLine marks Lean keywords, comments, strings, numbers, and types
+  ---
+  duration_ms: 0.449459
+  type: 'test'
+  ...
+# Subtest: deriveShareControls gates Save on a changed draft and Push on remote+token
+ok 553 - deriveShareControls gates Save on a changed draft and Push on remote+token
+  ---
+  duration_ms: 0.182
+  type: 'test'
+  ...
+# Subtest: filenameFromContentDisposition extracts the quoted filename or falls back
+ok 554 - filenameFromContentDisposition extracts the quoted filename or falls back
+  ---
+  duration_ms: 0.082166
+  type: 'test'
+  ...
+# Subtest: canRepairPaneItem gates on breakage, suppression, in-progress, and a running repair
+ok 555 - canRepairPaneItem gates on breakage, suppression, in-progress, and a running repair
+  ---
+  duration_ms: 0.26425
+  type: 'test'
+  ...
+# Subtest: formatBreakageAttribution distinguishes self-break, rename, suppression, and generic upstream breaks
+ok 556 - formatBreakageAttribution distinguishes self-break, rename, suppression, and generic upstream breaks
+  ---
+  duration_ms: 0.2295
+  type: 'test'
+  ...
+# Subtest: formatRepairOutcome covers every batch item state
+ok 557 - formatRepairOutcome covers every batch item state
+  ---
+  duration_ms: 0.326375
+  type: 'test'
+  ...
+# Subtest: formatRepairOutcome is operation-aware for stub and formalize batches
+ok 558 - formatRepairOutcome is operation-aware for stub and formalize batches
+  ---
+  duration_ms: 0.485708
+  type: 'test'
+  ...
+# Subtest: stubbableItems / formalizableItems skip completed work in project-level batches
+ok 559 - stubbableItems / formalizableItems skip completed work in project-level batches
+  ---
+  duration_ms: 0.286709
+  type: 'test'
+  ...
+# Subtest: reconcileDependentsImpact: fixed, still-broken, repairing, and unmatched dependents
+ok 560 - reconcileDependentsImpact: fixed, still-broken, repairing, and unmatched dependents
+  ---
+  duration_ms: 0.644417
+  type: 'test'
+  ...
+# Subtest: reconcileDependentsImpact: an invalid item with no breakage is NOT counted as fixed, and label matching also works
+ok 561 - reconcileDependentsImpact: an invalid item with no breakage is NOT counted as fixed, and label matching also works
+  ---
+  duration_ms: 0.0575
+  type: 'test'
+  ...
+# Subtest: stillBrokenDependents keeps only currently-broken entries
+ok 562 - stillBrokenDependents keeps only currently-broken entries
+  ---
+  duration_ms: 0.338792
+  type: 'test'
+  ...
+# Subtest: formatDependentOutcome appends since-fixed / repair-in-progress only to lines that claimed a problem
+ok 563 - formatDependentOutcome appends since-fixed / repair-in-progress only to lines that claimed a problem
+  ---
+  duration_ms: 0.115834
+  type: 'test'
+  ...
+# Subtest: reconcileDependentsImpact upgrades a snapshot-busy entry to nowBroken when live truth says so
+ok 564 - reconcileDependentsImpact upgrades a snapshot-busy entry to nowBroken when live truth says so
+  ---
+  duration_ms: 0.366541
+  type: 'test'
+  ...
+# Subtest: stillBrokenDependents decides from live truth for matched entries, in BOTH directions
+ok 565 - stillBrokenDependents decides from live truth for matched entries, in BOTH directions
+  ---
+  duration_ms: 0.185125
+  type: 'test'
+  ...
+# Subtest: formatDependentOutcome corrects a stale busy line when the item is now broken
+ok 566 - formatDependentOutcome corrects a stale busy line when the item is now broken
+  ---
+  duration_ms: 0.202459
+  type: 'test'
+  ...
+# Subtest: parseDeclarationHeader extracts keyword/name/header for a theorem
+ok 567 - parseDeclarationHeader extracts keyword/name/header for a theorem
+  ---
+  duration_ms: 1.136333
+  type: 'test'
+  ...
+# Subtest: parseDeclarationHeader is not fooled by := inside a binder default value
+ok 568 - parseDeclarationHeader is not fooled by := inside a binder default value
+  ---
+  duration_ms: 0.248958
+  type: 'test'
+  ...
+# Subtest: parseDeclarationHeader normalizes whitespace/reformatting
+ok 569 - parseDeclarationHeader normalizes whitespace/reformatting
+  ---
+  duration_ms: 0.16875
+  type: 'test'
+  ...
+# Subtest: parseDeclarationHeader falls back to the first declaration when the named one isn't found
+ok 570 - parseDeclarationHeader falls back to the first declaration when the named one isn't found
+  ---
+  duration_ms: 0.283625
+  type: 'test'
+  ...
+# Subtest: parseDeclarationHeader returns null when nothing matches at all
+ok 571 - parseDeclarationHeader returns null when nothing matches at all
+  ---
+  duration_ms: 0.175084
+  type: 'test'
+  ...
+# Subtest: classifyEdit: proof-body-only edit to a theorem is proof-only (never cascades)
+ok 572 - classifyEdit: proof-body-only edit to a theorem is proof-only (never cascades)
+  ---
+  duration_ms: 1.974084
+  type: 'test'
+  ...
+# Subtest: classifyEdit: hypothesis/conclusion change to a theorem is a signature change
+ok 573 - classifyEdit: hypothesis/conclusion change to a theorem is a signature change
+  ---
+  duration_ms: 0.223667
+  type: 'test'
+  ...
+# Subtest: classifyEdit: renaming the declaration is reported distinctly from a same-name signature change
+ok 574 - classifyEdit: renaming the declaration is reported distinctly from a same-name signature change
+  ---
+  duration_ms: 0.235125
+  type: 'test'
+  ...
+# Subtest: classifyEdit: any edit to a def's body cascades even with an unchanged signature (definitional unfolding)
+ok 575 - classifyEdit: any edit to a def's body cascades even with an unchanged signature (definitional unfolding)
+  ---
+  duration_ms: 0.585833
+  type: 'test'
+  ...
+# Subtest: classifyEdit: an abbrev is treated the same as a def
+ok 576 - classifyEdit: an abbrev is treated the same as a def
+  ---
+  duration_ms: 0.697167
+  type: 'test'
+  ...
+# Subtest: classifyEdit: own check failing after the edit always cascades, taking priority
+ok 577 - classifyEdit: own check failing after the edit always cascades, taking priority
+  ---
+  duration_ms: 0.377125
+  type: 'test'
+  ...
+# Subtest: classifyEdit: an unparseable header on either side fails toward over-cascading
+ok 578 - classifyEdit: an unparseable header on either side fails toward over-cascading
+  ---
+  duration_ms: 0.059208
+  type: 'test'
+  ...
+# Subtest: model picker shows featured models before the user searches
+ok 579 - model picker shows featured models before the user searches
+  ---
+  duration_ms: 1.552
+  type: 'test'
+  ...
+# Subtest: model picker searches the exhaustive catalog by provider and caps rendered rows
+ok 580 - model picker searches the exhaustive catalog by provider and caps rendered rows
+  ---
+  duration_ms: 0.266209
+  type: 'test'
+  ...
+# Subtest: model picker offers arbitrary custom ids but not duplicate exact catalog ids
+ok 581 - model picker offers arbitrary custom ids but not duplicate exact catalog ids
+  ---
+  duration_ms: 0.160875
+  type: 'test'
+  ...
+# Subtest: page bridge positions target badges from badgeFrom
+ok 582 - page bridge positions target badges from badgeFrom
+  ---
+  duration_ms: 5.020583
+  type: 'test'
+  ...
+# Subtest: page bridge publishes a tag-sourced target the same way as a comment-sourced one
+ok 583 - page bridge publishes a tag-sourced target the same way as a comment-sourced one
+  ---
+  duration_ms: 2.317541
+  type: 'test'
+  ...
+# Subtest: page bridge selects and scrolls to a source range on OL_LEAN_NAVIGATE
+ok 584 - page bridge selects and scrolls to a source range on OL_LEAN_NAVIGATE
+  ---
+  duration_ms: 1.597666
+  type: 'test'
+  ...
+# Subtest: page bridge anchors navigation on the marker label even without an active path
+ok 585 - page bridge anchors navigation on the marker label even without an active path
+  ---
+  duration_ms: 1.462291
+  type: 'test'
+  ...
+# Subtest: page bridge does not apply cross-file offsets when active path is unknown
+ok 586 - page bridge does not apply cross-file offsets when active path is unknown
+  ---
+  duration_ms: 2.239375
+  type: 'test'
+  ...
+# Subtest: page bridge opens a different file and selects the block on cross-file navigation
+ok 587 - page bridge opens a different file and selects the block on cross-file navigation
+  ---
+  duration_ms: 1.427791
+  type: 'test'
+  ...
+# Subtest: page bridge uses current Overleaf editor tabs when the private IDE API is unavailable
+ok 588 - page bridge uses current Overleaf editor tabs when the private IDE API is unavailable
+  ---
+  duration_ms: 1.751417
+  type: 'test'
+  ...
+# Subtest: page bridge opens a nested file through the current Overleaf file tree
+ok 589 - page bridge opens a nested file through the current Overleaf file tree
+  ---
+  duration_ms: 1.471833
+  type: 'test'
+  ...
+# Subtest: page bridge resolves nested file-tree entities and opens by doc id
+ok 590 - page bridge resolves nested file-tree entities and opens by doc id
+  ---
+  duration_ms: 1.654125
+  type: 'test'
+  ...
+# Subtest: page bridge reports failure when a different file cannot be opened
+ok 591 - page bridge reports failure when a different file cannot be opened
+  ---
+  duration_ms: 1.563708
+  type: 'test'
+  ...
+# Subtest: page bridge clamps an out-of-range navigation target to the document
+ok 592 - page bridge clamps an out-of-range navigation target to the document
+  ---
+  duration_ms: 0.941667
+  type: 'test'
+  ...
+# Subtest: page bridge does not publish targets when CodeMirror has no coordinates
+ok 593 - page bridge does not publish targets when CodeMirror has no coordinates
+  ---
+  duration_ms: 1.611125
+  type: 'test'
+  ...
+# Subtest: version-2 source hashes match the cross-language golden fixture
+ok 594 - version-2 source hashes match the cross-language golden fixture
+  ---
+  duration_ms: 4.632542
+  type: 'test'
+  ...
+# Subtest: associates an adjacent proof with the preceding target
+ok 595 - associates an adjacent proof with the preceding target
+  ---
+  duration_ms: 2.703958
+  type: 'test'
+  ...
+# Subtest: an explicit proof-for marker can associate a proof across files
+ok 596 - an explicit proof-for marker can associate a proof across files
+  ---
+  duration_ms: 0.360584
+  type: 'test'
+  ...
+# Subtest: a generated target can associate a proof by its unique LaTeX label
+ok 597 - a generated target can associate a proof by its unique LaTeX label
+  ---
+  duration_ms: 0.653542
+  type: 'test'
+  ...
+# Subtest: duplicate LaTeX labels cannot claim an explicit proof
+ok 598 - duplicate LaTeX labels cannot claim an explicit proof
+  ---
+  duration_ms: 1.337875
+  type: 'test'
+  ...
+# Subtest: does not infer adjacency across an intervening target
+ok 599 - does not infer adjacency across an intervening target
+  ---
+  duration_ms: 0.525542
+  type: 'test'
+  ...
+# Subtest: does not infer adjacency across an unmarked statement environment
+ok 600 - does not infer adjacency across an unmarked statement environment
+  ---
+  duration_ms: 0.18575
+  type: 'test'
+  ...
+# Subtest: reports multiple explicit proof associations as ambiguous
+ok 601 - reports multiple explicit proof associations as ambiguous
+  ---
+  duration_ms: 0.347125
+  type: 'test'
+  ...
+# Subtest: source bundle hash changes when only the proof changes
+ok 602 - source bundle hash changes when only the proof changes
+  ---
+  duration_ms: 0.600917
+  type: 'test'
+  ...
+# Subtest: evaluator evidence changes do not make the target source identity stale
+ok 603 - evaluator evidence changes do not make the target source identity stale
+  ---
+  duration_ms: 0.498083
+  type: 'test'
+  ...
+# Subtest: definitions do not acquire a following proof environment
+ok 604 - definitions do not acquire a following proof environment
+  ---
+  duration_ms: 0.247959
+  type: 'test'
+  ...
+# Subtest: reports an explicit proof association that names no target
+ok 605 - reports an explicit proof association that names no target
+  ---
+  duration_ms: 0.109292
+  type: 'test'
+  ...
+# Subtest: repair prompt: rename variant carries the mapping, headers, diagnostic, and stop condition
+ok 606 - repair prompt: rename variant carries the mapping, headers, diagnostic, and stop condition
+  ---
+  duration_ms: 0.994959
+  type: 'test'
+  ...
+# Subtest: repair prompt: signature variant has no rename rule and names the upstream declaration
+ok 607 - repair prompt: signature variant has no rename rule and names the upstream declaration
+  ---
+  duration_ms: 0.099167
+  type: 'test'
+  ...
+# Subtest: repair prompt: self-repair variant (own edit broke the item) says so instead of citing an upstream import
+ok 608 - repair prompt: self-repair variant (own edit broke the item) says so instead of citing an upstream import
+  ---
+  duration_ms: 0.075167
+  type: 'test'
+  ...
+# Subtest: repair prompt: def-body variant explains definitional unfolding risk
+ok 609 - repair prompt: def-body variant explains definitional unfolding risk
+  ---
+  duration_ms: 0.070875
+  type: 'test'
+  ...
+# Subtest: preamble factor-out: buildChatPrompt first-message output includes explicit project identity
+ok 610 - preamble factor-out: buildChatPrompt first-message output includes explicit project identity
+  ---
+  duration_ms: 0.104666
+  type: 'test'
+  ...
+# Subtest: preamble prefers the user-visible project name over the Overleaf slug
+ok 611 - preamble prefers the user-visible project name over the Overleaf slug
+  ---
+  duration_ms: 0.064958
+  type: 'test'
+  ...
+# Subtest: selects the newest settled target run and excludes other targets and live runs
+ok 612 - selects the newest settled target run and excludes other targets and live runs
+  ---
+  duration_ms: 0.913667
+  type: 'test'
+  ...
+# Subtest: recaps failed with authoritative outcome and stop reason
+ok 613 - recaps failed with authoritative outcome and stop reason
+  ---
+  duration_ms: 0.38375
+  type: 'test'
+  ...
+# Subtest: recaps interrupted with authoritative outcome and stop reason
+ok 614 - recaps interrupted with authoritative outcome and stop reason
+  ---
+  duration_ms: 0.077459
+  type: 'test'
+  ...
+# Subtest: recaps max_turns with authoritative outcome and stop reason
+ok 615 - recaps max_turns with authoritative outcome and stop reason
+  ---
+  duration_ms: 0.065209
+  type: 'test'
+  ...
+# Subtest: recaps source_obstruction with authoritative outcome and stop reason
+ok 616 - recaps source_obstruction with authoritative outcome and stop reason
+  ---
+  duration_ms: 0.122875
+  type: 'test'
+  ...
+# Subtest: recaps disproved with authoritative outcome and stop reason
+ok 617 - recaps disproved with authoritative outcome and stop reason
+  ---
+  duration_ms: 0.059916
+  type: 'test'
+  ...
+# Subtest: recaps proved with authoritative outcome and stop reason
+ok 618 - recaps proved with authoritative outcome and stop reason
+  ---
+  duration_ms: 0.119125
+  type: 'test'
+  ...
+# Subtest: recaps defined with authoritative outcome and stop reason
+ok 619 - recaps defined with authoritative outcome and stop reason
+  ---
+  duration_ms: 0.0585
+  type: 'test'
+  ...
+# Subtest: describes source changes only when the saved bundle matches the prior run
+ok 620 - describes source changes only when the saved bundle matches the prior run
+  ---
+  duration_ms: 1.135958
+  type: 'test'
+  ...
+# Subtest: legacy fallback and unavailable history remain explicit
+ok 621 - legacy fallback and unavailable history remain explicit
+  ---
+  duration_ms: 0.417792
+  type: 'test'
+  ...
+# Subtest: a canonical run without a result kind does not inherit a stale legacy result
+ok 622 - a canonical run without a result kind does not inherit a stale legacy result
+  ---
+  duration_ms: 0.131333
+  type: 'test'
+  ...
+# Subtest: a legacy record cannot turn an adapter's live or unrelated run into a settled attempt
+ok 623 - a legacy record cannot turn an adapter's live or unrelated run into a settled attempt
+  ---
+  duration_ms: 0.069834
+  type: 'test'
+  ...
+# Subtest: diagnostics and file paths come only from this target
+ok 624 - diagnostics and file paths come only from this target
+  ---
+  duration_ms: 0.144875
+  type: 'test'
+  ...
+# Subtest: bounds recap, marks truncation, and quotes malicious diagnostic delimiters as data
+ok 625 - bounds recap, marks truncation, and quotes malicious diagnostic delimiters as data
+  ---
+  duration_ms: 0.238291
+  type: 'test'
+  ...
+# Subtest: retry instructions preserve work, source method and require a fresh check
+ok 626 - retry instructions preserve work, source method and require a fresh check
+  ---
+  duration_ms: 0.095334
+  type: 'test'
+  ...
+# Subtest: one shared failure exposes its obligation, both consumers, evidence, and retry
+ok 627 - one shared failure exposes its obligation, both consumers, evidence, and retry
+  ---
+  duration_ms: 4.374583
+  type: 'test'
+  ...
+# Subtest: verified reuse preserves disclosures and removes retry; interrupted work offers resume
+ok 628 - verified reuse preserves disclosures and removes retry; interrupted work offers resume
+  ---
+  duration_ms: 0.259375
+  type: 'test'
+  ...
+# Subtest: refresh transport reaches only the connected document and supports reconnect pull
+ok 629 - refresh transport reaches only the connected document and supports reconnect pull
+  ---
+  duration_ms: 3.155333
+  type: 'test'
+  ...
+# Subtest: multiple tabs fail explicitly while duplicate sockets from one tab are safe
+ok 630 - multiple tabs fail explicitly while duplicate sockets from one tab are safe
+  ---
+  duration_ms: 0.26875
+  type: 'test'
+  ...
+# Subtest: wrong document, target, and changed mirror never reach the adapter
+ok 631 - wrong document, target, and changed mirror never reach the adapter
+  ---
+  duration_ms: 0.16
+  type: 'test'
+  ...
+# Subtest: extension deduplicates pushes and reconnect pulls, and can retry a lost acknowledgement
+ok 632 - extension deduplicates pushes and reconnect pulls, and can retry a lost acknowledgement
+  ---
+  duration_ms: 0.181958
+  type: 'test'
+  ...
+# Subtest: target deletion and duplicate labels are reported instead of selecting a different item
+ok 633 - target deletion and duplicate labels are reported instead of selecting a different item
+  ---
+  duration_ms: 0.225166
+  type: 'test'
+  ...
+# Subtest: source requests are forwarded by the real events client
+ok 634 - source requests are forwarded by the real events client
+  ---
+  duration_ms: 0.282167
+  type: 'test'
+  ...
+# Subtest: extension core theme stays in parity with the standalone Lea palette
+ok 635 - extension core theme stays in parity with the standalone Lea palette
+  ---
+  duration_ms: 6.428334
+  type: 'test'
+  ...
+# Subtest: settings controls and popover stack above the Lean project pane
+ok 636 - settings controls and popover stack above the Lean project pane
+  ---
+  duration_ms: 3.294542
+  type: 'test'
+  ...
+# Subtest: extension surfaces load the shared theme before component CSS
+ok 637 - extension surfaces load the shared theme before component CSS
+  ---
+  duration_ms: 3.529
+  type: 'test'
+  ...
+# Subtest: retired warm-paper chrome colors do not return to extension surfaces
+ok 638 - retired warm-paper chrome colors do not return to extension surfaces
+  ---
+  duration_ms: 10.458833
+  type: 'test'
+  ...
+# Subtest: detects a comment-marked theorem target
+ok 639 - detects a comment-marked theorem target
+  ---
+  duration_ms: 5.084209
+  type: 'test'
+  ...
+# Subtest: formalization input hashes include uses and context while normalizing formatting
+ok 640 - formalization input hashes include uses and context while normalizing formatting
+  ---
+  duration_ms: 0.749166
+  type: 'test'
+  ...
+# Subtest: detects a definition target using lea define
+ok 641 - detects a definition target using lea define
+  ---
+  duration_ms: 0.457042
+  type: 'test'
+  ...
+# Subtest: anchors status badges after complete environment openers
+ok 642 - anchors status badges after complete environment openers
+  ---
+  duration_ms: 0.576917
+  type: 'test'
+  ...
+# Subtest: detects formalize kind=definition as a definition alias
+ok 643 - detects formalize kind=definition as a definition alias
+  ---
+  duration_ms: 0.135167
+  type: 'test'
+  ...
+# Subtest: detects multiline adjacent Lea marker metadata
+ok 644 - detects multiline adjacent Lea marker metadata
+  ---
+  duration_ms: 0.2005
+  type: 'test'
+  ...
+# Subtest: ignores unmarked environments and legacy custom theorem commands
+ok 645 - ignores unmarked environments and legacy custom theorem commands
+  ---
+  duration_ms: 0.197583
+  type: 'test'
+  ...
+# Subtest: generates missing labels and reports invalid or duplicate markers
+ok 646 - generates missing labels and reports invalid or duplicate markers
+  ---
+  duration_ms: 0.301625
+  type: 'test'
+  ...
+# Subtest: label-free targets have stable file-scoped candidates across statement edits
+ok 647 - label-free targets have stable file-scoped candidates across statement edits
+  ---
+  duration_ms: 0.760416
+  type: 'test'
+  ...
+# Subtest: a % lea: marker inside a verbatim-like environment produces no diagnostic and no target
+ok 648 - a % lea: marker inside a verbatim-like environment produces no diagnostic and no target
+  ---
+  duration_ms: 1.192125
+  type: 'test'
+  ...
+# Subtest: reports target/environment mismatches clearly
+ok 649 - reports target/environment mismatches clearly
+  ---
+  duration_ms: 0.269417
+  type: 'test'
+  ...
+# Subtest: removes Lea marker comments and LaTeX labels from target text
+ok 650 - removes Lea marker comments and LaTeX labels from target text
+  ---
+  duration_ms: 0.095084
+  type: 'test'
+  ...
+# Subtest: normalizes and hashes target text
+ok 651 - normalizes and hashes target text
+  ---
+  duration_ms: 1.623125
+  type: 'test'
+  ...
+# Subtest: validates Lean identifiers and infers declaration names
+ok 652 - validates Lean identifiers and infers declaration names
+  ---
+  duration_ms: 0.28275
+  type: 'test'
+  ...
+# Subtest: late timeout settlement records exact-run usage without rewriting the original job
+ok 653 - late timeout settlement records exact-run usage without rewriting the original job
+  ---
+  duration_ms: 8.037417
+  type: 'test'
+  ...
+# Subtest: unavailable adapter usage stays unconfirmed and retries with backoff
+ok 654 - unavailable adapter usage stays unconfirmed and retries with backoff
+  ---
+  duration_ms: 2.387166
+  type: 'test'
+  ...
+# Subtest: a legacy user_stop row cannot rewrite a locally observed timeout
+ok 655 - a legacy user_stop row cannot rewrite a locally observed timeout
+  ---
+  duration_ms: 2.200167
+  type: 'test'
+  ...
+1..655
+# tests 655
+# suites 0
+# pass 655
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 17577.978875
+
+> lea-interface@0.0.1 test:frontend
+> node --test src/app/*.test.mjs
+
+TAP version 13
+# Subtest: a busy save retains the server message after revision-conflict inspection
+ok 1 - a busy save retains the server message after revision-conflict inspection
+  ---
+  duration_ms: 33.466125
+  type: 'test'
+  ...
+# Subtest: a stale proof check explains refreshing the current revision
+ok 2 - a stale proof check explains refreshing the current revision
+  ---
+  duration_ms: 1.690917
+  type: 'test'
+  ...
+# Subtest: an optimistic save conflict still carries its revision metadata
+ok 3 - an optimistic save conflict still carries its revision metadata
+  ---
+  duration_ms: 0.979125
+  type: 'test'
+  ...
+# Subtest: isScratchPath matches scratch files case-insensitively
+ok 4 - isScratchPath matches scratch files case-insensitively
+  ---
+  duration_ms: 0.763666
+  type: 'test'
+  ...
+# Subtest: distinctFiles collapses per path with latest index + scratch flag
+ok 5 - distinctFiles collapses per path with latest index + scratch flag
+  ---
+  duration_ms: 0.745875
+  type: 'test'
+  ...
+# Subtest: latestIndexForPath finds a file’s newest snapshot
+ok 6 - latestIndexForPath finds a file’s newest snapshot
+  ---
+  duration_ms: 0.064
+  type: 'test'
+  ...
+# Subtest: mainFilePath / mainFileIndex pick the newest non-scratch file
+ok 7 - mainFilePath / mainFileIndex pick the newest non-scratch file
+  ---
+  duration_ms: 0.07025
+  type: 'test'
+  ...
+# Subtest: all-scratch falls back to the last step; empty → none
+ok 8 - all-scratch falls back to the last step; empty → none
+  ---
+  duration_ms: 0.057083
+  type: 'test'
+  ...
+# Subtest: marks inserted lines as added
+ok 9 - marks inserted lines as added
+  ---
+  duration_ms: 4.684125
+  type: 'test'
+  ...
+# Subtest: marks removed lines as removed
+ok 10 - marks removed lines as removed
+  ---
+  duration_ms: 0.146417
+  type: 'test'
+  ...
+# Subtest: marks replacements as removed then added
+ok 11 - marks replacements as removed then added
+  ---
+  duration_ms: 0.121584
+  type: 'test'
+  ...
+# Subtest: empty previous file renders current lines as added
+ok 12 - empty previous file renders current lines as added
+  ---
+  duration_ms: 0.06025
+  type: 'test'
+  ...
+# Subtest: path-aware previous step ignores other files
+ok 13 - path-aware previous step ignores other files
+  ---
+  duration_ms: 0.080208
+  type: 'test'
+  ...
+# Subtest: steps and files remain scoped to a formalization
+ok 14 - steps and files remain scoped to a formalization
+  ---
+  duration_ms: 6.894958
+  type: 'test'
+  ...
+# Subtest: selection restoration follows explicit, current, latest, active, all-work order
+ok 15 - selection restoration follows explicit, current, latest, active, all-work order
+  ---
+  duration_ms: 0.1865
+  type: 'test'
+  ...
+# Subtest: session summary keeps independent validity and activity counts
+ok 16 - session summary keeps independent validity and activity counts
+  ---
+  duration_ms: 0.089458
+  type: 'test'
+  ...
+# Subtest: composer inference follows an explicitly named formalization instead of the viewed item
+ok 17 - composer inference follows an explicitly named formalization instead of the viewed item
+  ---
+  duration_ms: 2.353125
+  type: 'test'
+  ...
+# Subtest: composer inference treats multiple named items as project-wide discussion
+ok 18 - composer inference treats multiple named items as project-wide discussion
+  ---
+  duration_ms: 0.739708
+  type: 'test'
+  ...
+# Subtest: composer inference recognizes new work and otherwise uses the viewed item as a hint
+ok 19 - composer inference recognizes new work and otherwise uses the viewed item as a hint
+  ---
+  duration_ms: 0.283542
+  type: 'test'
+  ...
+# Subtest: composer inference matches qualified declarations by their short name
+ok 20 - composer inference matches qualified declarations by their short name
+  ---
+  duration_ms: 1.17175
+  type: 'test'
+  ...
+# Subtest: composer inference does not confuse one-letter declarations with prose articles
+ok 21 - composer inference does not confuse one-letter declarations with prose articles
+  ---
+  duration_ms: 0.529167
+  type: 'test'
+  ...
+# Subtest: canonical and conversation snapshots remain separate canvas sources
+ok 22 - canonical and conversation snapshots remain separate canvas sources
+  ---
+  duration_ms: 0.305208
+  type: 'test'
+  ...
+# Subtest: recovery clears degradation and stops polling even with retained historical failure
+ok 23 - recovery clears degradation and stops polling even with retained historical failure
+  ---
+  duration_ms: 3.760667
+  type: 'test'
+  ...
+# Subtest: runtime backend and proof verdict stay separate
+ok 24 - runtime backend and proof verdict stay separate
+  ---
+  duration_ms: 0.297625
+  type: 'test'
+  ...
+# Subtest: is not ready until initialized, then loads
+ok 25 - is not ready until initialized, then loads
+  ---
+  duration_ms: 59.402042
+  type: 'test'
+  ...
+# Subtest: tokens are per-line and reconstruct the source exactly
+ok 26 - tokens are per-line and reconstruct the source exactly
+  ---
+  duration_ms: 23.142959
+  type: 'test'
+  ...
+# Subtest: assigns theme colors to tokens
+ok 27 - assigns theme colors to tokens
+  ---
+  duration_ms: 0.387667
+  type: 'test'
+  ...
+# Subtest: multi-line block comments are recognized (grammar is stateful)
+ok 28 - multi-line block comments are recognized (grammar is stateful)
+  ---
+  duration_ms: 0.231292
+  type: 'test'
+  ...
+# Subtest: parses inline math delimiters
+ok 29 - parses inline math delimiters
+  ---
+  duration_ms: 1.488959
+  type: 'test'
+  ...
+# Subtest: parses display math blocks
+ok 30 - parses display math blocks
+  ---
+  duration_ms: 0.350541
+  type: 'test'
+  ...
+# Subtest: does not parse math inside fenced code
+ok 31 - does not parse math inside fenced code
+  ---
+  duration_ms: 0.140584
+  type: 'test'
+  ...
+# Subtest: does not parse math inside inline code
+ok 32 - does not parse math inside inline code
+  ---
+  duration_ms: 0.111125
+  type: 'test'
+  ...
+# Subtest: keeps existing markdown segments
+ok 33 - keeps existing markdown segments
+  ---
+  duration_ms: 0.092292
+  type: 'test'
+  ...
+# Subtest: renders valid TeX with KaTeX
+ok 34 - renders valid TeX with KaTeX
+  ---
+  duration_ms: 3.963208
+  type: 'test'
+  ...
+# Subtest: falls back for invalid TeX
+ok 35 - falls back for invalid TeX
+  ---
+  duration_ms: 1.458083
+  type: 'test'
+  ...
+# Subtest: only the specifically selected Overleaf target acquires source
+ok 36 - only the specifically selected Overleaf target acquires source
+  ---
+  duration_ms: 1.552292
+  type: 'test'
+  ...
+# Subtest: acquisition failure admits nothing and does not mutate the draft
+ok 37 - acquisition failure admits nothing and does not mutate the draft
+  ---
+  duration_ms: 2.602167
+  type: 'test'
+  ...
+# Subtest: lost admission response reuses the exact snapshot and request identity
+ok 38 - lost admission response reuses the exact snapshot and request identity
+  ---
+  duration_ms: 0.150042
+  type: 'test'
+  ...
+# Subtest: definite stale-source rejection reacquires instead of replaying rejected evidence
+ok 39 - definite stale-source rejection reacquires instead of replaying rejected evidence
+  ---
+  duration_ms: 0.231
+  type: 'test'
+  ...
+# Subtest: navigation during acquisition prevents admission into the old conversation
+ok 40 - navigation during acquisition prevents admission into the old conversation
+  ---
+  duration_ms: 0.113042
+  type: 'test'
+  ...
+# Subtest: checkpoint retries also preserve their exact prepared source and identity
+ok 41 - checkpoint retries also preserve their exact prepared source and identity
+  ---
+  duration_ms: 0.252459
+  type: 'test'
+  ...
+# Subtest: checked code without sorry is displayed as proved
+ok 42 - checked code without sorry is displayed as proved
+  ---
+  duration_ms: 1.200667
+  type: 'test'
+  ...
+# Subtest: checked unknown artifact is displayed as checked code, not proof
+ok 43 - checked unknown artifact is displayed as checked code, not proof
+  ---
+  duration_ms: 0.204625
+  type: 'test'
+  ...
+# Subtest: checked code with sorry is displayed as stubbed
+ok 44 - checked code with sorry is displayed as stubbed
+  ---
+  duration_ms: 0.062875
+  type: 'test'
+  ...
+# Subtest: checked code with admit is displayed as stubbed
+ok 45 - checked code with admit is displayed as stubbed
+  ---
+  duration_ms: 0.052791
+  type: 'test'
+  ...
+# Subtest: Lean warning detail can mark unavailable code as stubbed
+ok 46 - Lean warning detail can mark unavailable code as stubbed
+  ---
+  duration_ms: 0.200208
+  type: 'test'
+  ...
+# Subtest: sorryAx detail is treated as a remaining stub
+ok 47 - sorryAx detail is treated as a remaining stub
+  ---
+  duration_ms: 0.050292
+  type: 'test'
+  ...
+# Subtest: failed checks remain failed even when code contains sorry
+ok 48 - failed checks remain failed even when code contains sorry
+  ---
+  duration_ms: 0.05025
+  type: 'test'
+  ...
+# Subtest: run proved with a sorry-bearing latest step is displayed as stubbed
+ok 49 - run proved with a sorry-bearing latest step is displayed as stubbed
+  ---
+  duration_ms: 0.087708
+  type: 'test'
+  ...
+# Subtest: run proved with defined result kind is displayed as definition creation
+ok 50 - run proved with defined result kind is displayed as definition creation
+  ---
+  duration_ms: 0.272208
+  type: 'test'
+  ...
+# Subtest: run disproved is displayed as disproof, not proof
+ok 51 - run disproved is displayed as disproof, not proof
+  ---
+  duration_ms: 0.335083
+  type: 'test'
+  ...
+# Subtest: reviewed theorem artifacts retain the review verdict
+ok 52 - reviewed theorem artifacts retain the review verdict
+  ---
+  duration_ms: 0.103958
+  type: 'test'
+  ...
+# Subtest: reviewed definition artifacts retain the review verdict
+ok 53 - reviewed definition artifacts retain the review verdict
+  ---
+  duration_ms: 0.042958
+  type: 'test'
+  ...
+# Subtest: reviewed unknown artifacts retain the review verdict
+ok 54 - reviewed unknown artifacts retain the review verdict
+  ---
+  duration_ms: 0.034666
+  type: 'test'
+  ...
+# Subtest: Lean comments mentioning sorry do not make the code a stub
+ok 55 - Lean comments mentioning sorry do not make the code a stub
+  ---
+  duration_ms: 0.038375
+  type: 'test'
+  ...
+# Subtest: current badges require evidence while history retains recorded checks
+ok 56 - current badges require evidence while history retains recorded checks
+  ---
+  duration_ms: 0.042459
+  type: 'test'
+  ...
+# Subtest: a late reconciliation cannot change the selected session
+ok 57 - a late reconciliation cannot change the selected session
+  ---
+  duration_ms: 12.937375
+  type: 'test'
+  ...
+# Subtest: a late reconnect response cannot reattach a switched-away run
+ok 58 - a late reconnect response cannot reattach a switched-away run
+  ---
+  duration_ms: 1.068708
+  type: 'test'
+  ...
+# Subtest: a late resync response cannot restore an old session
+ok 59 - a late resync response cannot restore an old session
+  ---
+  duration_ms: 0.5815
+  type: 'test'
+  ...
+# Subtest: callbacks queued on a closed stream cannot write into the new chat
+ok 60 - callbacks queued on a closed stream cannot write into the new chat
+  ---
+  duration_ms: 1.248625
+  type: 'test'
+  ...
+# Subtest: overlapping navigation applies only the latest request, including A B A
+ok 61 - overlapping navigation applies only the latest request, including A B A
+  ---
+  duration_ms: 0.756875
+  type: 'test'
+  ...
+# Subtest: the active reconciliation still applies fresh history
+ok 62 - the active reconciliation still applies fresh history
+  ---
+  duration_ms: 0.488375
+  type: 'test'
+  ...
+# Subtest: save and verify ownership expires on navigation or formalization change
+ok 63 - save and verify ownership expires on navigation or formalization change
+  ---
+  duration_ms: 0.486667
+  type: 'test'
+  ...
+# Subtest: App save/check completion cannot change another conversation or its busy state
+ok 64 - App save/check completion cannot change another conversation or its busy state
+  ---
+  duration_ms: 1.460792
+  type: 'test'
+  ...
+# Subtest: App delayed verification cannot replace the new chat verdict
+ok 65 - App delayed verification cannot replace the new chat verdict
+  ---
+  duration_ms: 1.045209
+  type: 'test'
+  ...
+# Subtest: App active save still reconciles and shows its result
+ok 66 - App active save still reconciles and shows its result
+  ---
+  duration_ms: 0.957625
+  type: 'test'
+  ...
+# Subtest: App verification expires on formalization changes within a chat
+ok 67 - App verification expires on formalization changes within a chat
+  ---
+  duration_ms: 0.736625
+  type: 'test'
+  ...
+# Subtest: readDeepLinkSessionId extracts the session param
+ok 68 - readDeepLinkSessionId extracts the session param
+  ---
+  duration_ms: 0.92125
+  type: 'test'
+  ...
+# Subtest: formalization deep links are parsed and navigation params can be stripped together
+ok 69 - formalization deep links are parsed and navigation params can be stripped together
+  ---
+  duration_ms: 0.179916
+  type: 'test'
+  ...
+# Subtest: stripSessionParam removes session but keeps other params
+ok 70 - stripSessionParam removes session but keeps other params
+  ---
+  duration_ms: 0.194292
+  type: 'test'
+  ...
+# Subtest: deep-link session wins over the saved session
+ok 71 - deep-link session wins over the saved session
+  ---
+  duration_ms: 0.727416
+  type: 'test'
+  ...
+# Subtest: deep-link id is honored even when not yet in the session list
+ok 72 - deep-link id is honored even when not yet in the session list
+  ---
+  duration_ms: 0.124667
+  type: 'test'
+  ...
+# Subtest: falls back to saved session only when it still exists
+ok 73 - falls back to saved session only when it still exists
+  ---
+  duration_ms: 0.071875
+  type: 'test'
+  ...
+# Subtest: returns none when there is nothing to restore
+ok 74 - returns none when there is nothing to restore
+  ---
+  duration_ms: 0.100708
+  type: 'test'
+  ...
+# Subtest: parseSlashCommand splits name and args
+ok 75 - parseSlashCommand splits name and args
+  ---
+  duration_ms: 1.63975
+  type: 'test'
+  ...
+# Subtest: parseSlashCommand rejects non-commands
+ok 76 - parseSlashCommand rejects non-commands
+  ---
+  duration_ms: 0.1175
+  type: 'test'
+  ...
+# Subtest: /compact is registered as an action command
+ok 77 - /compact is registered as an action command
+  ---
+  duration_ms: 0.100459
+  type: 'test'
+  ...
+# Subtest: findSlashCommand is case-insensitive and misses unknowns
+ok 78 - findSlashCommand is case-insensitive and misses unknowns
+  ---
+  duration_ms: 0.064
+  type: 'test'
+  ...
+# Subtest: matchSlashCommands drives the autocomplete
+ok 79 - matchSlashCommands drives the autocomplete
+  ---
+  duration_ms: 0.187125
+  type: 'test'
+  ...
+# Subtest: merges messages and code steps in seq order
+ok 80 - merges messages and code steps in seq order
+  ---
+  duration_ms: 1.481334
+  type: 'test'
+  ...
+# Subtest: code items carry a codeIndex into the sorted code list
+ok 81 - code items carry a codeIndex into the sorted code list
+  ---
+  duration_ms: 0.123583
+  type: 'test'
+  ...
+# Subtest: items without seq (live bubble) sort to the end deterministically
+ok 82 - items without seq (live bubble) sort to the end deterministically
+  ---
+  duration_ms: 0.12075
+  type: 'test'
+  ...
+# Subtest: sortCodeSteps falls back to created_at then id when seq ties
+ok 83 - sortCodeSteps falls back to created_at then id when seq ties
+  ---
+  duration_ms: 0.079875
+  type: 'test'
+  ...
+# Subtest: unknown pricing is never displayed as free
+ok 84 - unknown pricing is never displayed as free
+  ---
+  duration_ms: 15.576583
+  type: 'test'
+  ...
+# Subtest: historical amounts stay intact and details distinguish calculation bases
+ok 85 - historical amounts stay intact and details distinguish calculation bases
+  ---
+  duration_ms: 0.314792
+  type: 'test'
+  ...
+1..85
+# tests 85
+# suites 0
+# pass 85
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 300.614917

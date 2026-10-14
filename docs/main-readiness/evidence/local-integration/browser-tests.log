@@ -1,0 +1,14 @@
+
+> test:browser
+> playwright test -c tests/browser/playwright.config.mjs
+
+
+Running 3 tests using 1 worker
+
+(node:98935) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 tests/browser/smoke.spec.mjs:58:1 › current canvas requires recheck after an external edit and reload (646ms)
+  ✓  2 tests/browser/smoke.spec.mjs:78:1 › settings expose gateway routing and render the current catalog (396ms)
+  ✓  3 tests/browser/smoke.spec.mjs:89:1 › vendored KaTeX renders math and rejects trusted HTML in a browser (215ms)
+
+  3 passed (5.0s)

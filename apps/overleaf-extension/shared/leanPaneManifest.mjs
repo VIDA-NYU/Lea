@@ -2,12 +2,13 @@ import { hashTargetText, normalizeTargetText } from "./theoremParser.mjs";
 import {
   findEnvironments,
   isLineBreak,
-  maskOpaqueSpans,
+  scanLatexSource,
   parseBalancedSuffix,
   parseTargets,
   skipInlineWhitespace,
   stripLeaTargetText
 } from "../extension/targetParserCore.mjs";
+import { associateProofSources, buildFormalizationSourceBundle } from "./proofSource.mjs";
 
 // Used only as a display-kind fallback (leanKindFor) when an environment has
 // no validated target -- e.g. a malformed or mismatched marker. Custom
@@ -30,7 +31,9 @@ export const hashLeanPaneSource = hashTargetText;
 
 export function buildLeanPaneManifest({
   overleafProjectId = "unknown",
-  files = []
+  files = [],
+  mirror = null,
+  resolveGeneratedItems = null
 } = {}) {
   const normalizedFiles = normalizeFiles(files);
   const diagnostics = [];
@@ -44,7 +47,8 @@ export function buildLeanPaneManifest({
     // Reuse the formalize-path parser to recover full marker metadata (uses/context)
     // and confirm the marker is a valid formalize target. Keyed by environment
     // offset, which both parsers compute identically for the same source.
-    const targetByOffset = new Map(parseTargets(file.content).map((target) => [target.from, target]));
+    const targetByOffset = new Map(parseTargets(file.content, { sourcePath: sourceFile })
+      .map((target) => [target.from, target]));
     for (const item of parseLeanPaneItemsFromFile(file, items.length)) {
       const documentOrder = items.length;
       const matchedTarget = targetByOffset.get(item.sourceStartOffset);
@@ -57,16 +61,25 @@ export function buildLeanPaneManifest({
         ...item,
         // formalize-from-pane (item 12): only a valid marker is a runnable target.
         formalizable: Boolean(matchedTarget),
+        targetKind: matchedTarget?.targetKind || (item.leanKind === "def" ? "definition" : "theorem"),
         targetUses: matchedTarget?.targetUses || [],
         targetContext: matchedTarget?.targetContext || "",
         documentOrder
       });
-      const seen = labels.get(item.label) || [];
-      seen.push(item.sourceFile);
-      labels.set(item.label, seen);
     }
   }
 
+  const resolvedItems = (typeof resolveGeneratedItems === "function"
+    ? resolveGeneratedItems(items)
+    : items).map((item) => ({
+      ...item,
+      id: `${item.kind}:${item.label}:${item.documentOrder}`
+    }));
+  for (const item of resolvedItems) {
+    const seen = labels.get(item.label) || [];
+    seen.push(item.sourceFile);
+    labels.set(item.label, seen);
+  }
   for (const [label, sourceFiles] of labels.entries()) {
     if (sourceFiles.length <= 1) continue;
     diagnostics.push({
@@ -77,12 +90,29 @@ export function buildLeanPaneManifest({
     });
   }
 
+  const proofSources = associateProofSources({ targets: resolvedItems, files: normalizedFiles });
+
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
     rootFile: "",
-    items,
-    diagnostics
+    items: proofSources.targets.map((item) => {
+      const sourceBundle = buildFormalizationSourceBundle(item, {
+        targetContext: item.targetContext,
+        targetUses: item.targetUses,
+        files: normalizedFiles,
+        mirror
+      });
+      return {
+        ...item,
+        sourceBundle,
+        formalizationInputHash: sourceBundle.sourceIdentityHash || sourceBundle.bundleHash
+      };
+    }),
+    diagnostics: [
+      ...diagnostics,
+      ...proofSources.diagnostics.filter((diagnostic) => diagnostic.code !== "missing_source_proof")
+    ]
   };
 }
 
@@ -105,22 +135,12 @@ export function parseLeanPaneItemsFromFile(file, initialOrder = 0) {
   // here, but should still surface as a (non-formalizable) pane item -- see
   // extractLeaMarkerLabel below -- so this is consulted only for the
   // validated kind, not for whether to list the item at all.
-  const targets = parseTargets(content);
+  const targets = parseTargets(content, { sourcePath: sourceFile });
   const targetsByOffset = new Map(targets.map((target) => [target.from, target]));
   const coveredOffsets = new Set();
-  // Masked once, reused for every environment's marker check below. A real,
-  // legitimately-matched environment (e.g. \begin{enumerate} in a
-  // documentation file) can still *contain* a nested verbatim-like block --
-  // findEnvironments already keeps that nested block from becoming its own
-  // target, but extracted.rawLatex below is a plain substring of the
-  // ORIGINAL content, and would still literally contain whatever marker text
-  // sits inside that nested block. Searching the masked slice instead is
-  // what stops a real false positive: a recipe list containing a "% lea:
-  // ..." example inside a \begin{verbatim} block had the whole enclosing
-  // \begin{enumerate} promoted to its own phantom pane item, using the
-  // example's label. rawLatex itself (used for display) stays on the
-  // original content -- only the marker *search* uses the masked version.
-  const maskedContent = maskOpaqueSpans(content);
+  // The loose fallback must obey the same inactive-source rules as the
+  // strict parser, while still recognizing intentional "% lea:" markers.
+  const scan = scanLatexSource(content);
   // Collect candidates from both sources before sorting -- pushing straight
   // from two separate loops would order all environment-based items before
   // all standalone-tag items regardless of where they actually sit in the
@@ -130,13 +150,16 @@ export function parseLeanPaneItemsFromFile(file, initialOrder = 0) {
 
   for (const environment of environments) {
     const extracted = extractEnvironmentContent(content, environment);
-    const maskedRawLatex = maskedContent.slice(environment.bodyFrom, environment.bodyTo);
-    const leanName = extractLeaMarkerLabel(maskedRawLatex);
+    const target = targetsByOffset.get(environment.from);
+    const leanName = target?.targetLabel || extractLeaMarkerLabel(
+      scan.markerSource.slice(environment.bodyFrom, environment.bodyTo),
+      scan.activeSource.slice(environment.bodyFrom, environment.bodyTo)
+    );
     if (!leanName) continue;
     coveredOffsets.add(environment.from);
     candidates.push({
       kind: environment.name,
-      target: targetsByOffset.get(environment.from),
+      target,
       leanName,
       from: environment.from,
       to: environment.to,
@@ -177,13 +200,16 @@ export function parseLeanPaneItemsFromFile(file, initialOrder = 0) {
 
   const items = [];
   for (const { kind, target, leanName, from, to, rawLatex, title, latexLabel } of candidates.sort((a, b) => a.from - b.from)) {
-    const naturalLanguageLatex = stripLeaTargetText(rawLatex);
+    const naturalLanguageLatex = target?.targetText ?? stripLeaTargetText(rawLatex);
     const sourceStart = offsetToLineColumn(content, from);
     const sourceEnd = offsetToLineColumn(content, to);
     items.push({
       label: leanName,
+      labelSource: target?.labelSource || "explicit",
       kind,
-      title: title || undefined,
+      title: title || (target?.labelSource === "generated"
+        ? latexLabel || renderLightLatex(naturalLanguageLatex).slice(0, 80)
+        : undefined),
       latexLabel: latexLabel || undefined,
       documentOrder: initialOrder + items.length,
       sourceFile,
@@ -267,13 +293,13 @@ function renderLightLatex(source) {
 // mismatched marker still surfaces as a pane item (just not formalizable),
 // rather than silently disappearing from the inventory. Tries the comment
 // marker syntax first, then the tag syntax.
-function extractLeaMarkerLabel(source) {
-  const text = String(source || "");
+function extractLeaMarkerLabel(markerSource, activeSource) {
+  const text = String(markerSource || "");
   const commentMatch = text.match(/^[ \t]*%\s*lea:\s*(?:formalize|define)?[\s\S]*?\blabel\s*=\s*(?:\{([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/im);
   const commentValue = (commentMatch?.[1] || commentMatch?.[2] || "").trim();
   if (isValidLeanIdentifier(commentValue)) return commentValue;
 
-  const tagMatch = text.match(/\\(?:lea|leatheorem|lealemma|leaproposition|leacorollary|leadefinition)\b[\s\S]*?\blabel\s*=\s*(?:\{([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/);
+  const tagMatch = activeSource.match(/\\(?:lea|leatheorem|lealemma|leaproposition|leacorollary|leadefinition)\b[\s\S]*?\blabel\s*=\s*(?:\{([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/);
   const tagValue = (tagMatch?.[1] || tagMatch?.[2] || "").trim();
   return isValidLeanIdentifier(tagValue) ? tagValue : "";
 }

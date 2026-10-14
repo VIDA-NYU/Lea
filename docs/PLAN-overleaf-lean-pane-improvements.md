@@ -190,21 +190,17 @@ then `\label{…}`) so it survives byte-offset drift and path-format quirks, fal
 back to offsets. An unknown/unmatched active-doc path is treated as "navigate in the
 current view".
 
-**Cross-file navigation:** a known *different* file is opened through Overleaf's IDE
-API — `fileTreeManager.findEntityByPath` (tolerant of both return shapes and a
-leading slash) then `editorManager.openDoc(entity, { gotoLine })`, which scrolls
-natively — after which the bridge **polls until that doc is actually active** (~3s
-budget) and then anchor-selects. If the file can't be resolved/opened, it reports
-`OL_LEAN_NAVIGATE_RESULT { ok:false }` and the pane tells the user to open the file
-manually (it never mis-selects an unrelated range from the wrong file). Covered by
-`pageBridge.test.mjs` (same-file anchor/offset/clamp, cross-file open+select,
-cross-file failure) and `contentActions.test.mjs` (message posted).
-
-> Caveat: cross-file open depends on Overleaf's private `fileTreeManager` /
-> `editorManager` API, which varies by Overleaf version and can't be verified against
-> the live app from the test suite. The code tries the known method shapes
-> defensively and degrades to a clear "open it manually" message rather than failing
-> silently.
+**Cross-file navigation:** a known *different* file is opened through Overleaf's
+current editor tabs or accessible file-tree UI, including expanding nested folders
+one render at a time. Older Overleaf builds can still use the private
+`fileTreeManager` / `editorManager` API when it is present. The bridge then **polls
+until that doc is actually active** (~3s budget) and verifies the marker/LaTeX-label
+anchor before applying that file's offsets. If the file can't be resolved/opened,
+it reports `OL_LEAN_NAVIGATE_RESULT { ok:false }` and the pane tells the user to open
+the file manually (it never mis-selects an unrelated range from the wrong file).
+Covered by `pageBridge.test.mjs` (same-file anchor/offset/clamp, current-UI tab and
+nested-tree navigation, legacy-API navigation, and cross-file failure) and
+`contentActions.test.mjs` (message posted).
 
 ### 12. Formalize-from-pane actions — **Medium/High** — *specced V2*
 

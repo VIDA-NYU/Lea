@@ -1,0 +1,94 @@
+{
+  "database_integrity": [
+    "ok"
+  ],
+  "schema": [
+    "0031_usage_details"
+  ],
+  "active_runs": 0,
+  "canonical_paths": 119,
+  "counts": {
+    "matched": 104,
+    "different": 1,
+    "missing": 14,
+    "lost_snapshot": 0,
+    "unsafe_path": 0
+  },
+  "discrepancies": [
+    {
+      "step_id": 4731,
+      "path": "Shared/MixingEnergyStep_fe04c90ad7ec.lean",
+      "status": "missing"
+    },
+    {
+      "step_id": 4716,
+      "path": "mix_energy.lean",
+      "status": "missing"
+    },
+    {
+      "step_id": 4739,
+      "path": "mix_half_bound.lean",
+      "status": "missing"
+    },
+    {
+      "step_id": 4746,
+      "path": "mix_revision_bound.lean",
+      "status": "missing"
+    },
+    {
+      "step_id": 3987,
+      "path": "Probe.lean",
+      "status": "different"
+    },
+    {
+      "step_id": 4702,
+      "path": "candidate.lean",
+      "status": "missing"
+    },
+    {
+      "step_id": 2102,
+      "path": "criticalQ.lean",
+      "status": "missing"
+    },
+    {
+      "step_id": 1323,
+      "path": "lembootstrapcentralHelpers.lean",
+      "status": "missing"
+    },
+    {
+      "step_id": 1346,
+      "path": "lembootstrapcentralVerification.lean",
+      "status": "missing"
+    },
+    {
+      "step_id": 319,
+      "path": "probe_recovery.lean",
+      "status": "missing"
+    },
+    {
+      "step_id": 194,
+      "path": "probe_upper.lean",
+      "status": "missing"
+    },
+    {
+      "step_id": 496,
+      "path": "scratch_scale.lean",
+      "status": "missing"
+    },
+    {
+      "step_id": 4767,
+      "path": "Shared/MixingEnergyStep_d1a2930f9be0.lean",
+      "status": "missing"
+    },
+    {
+      "step_id": 4793,
+      "path": "mix_iterated_bound.lean",
+      "status": "missing"
+    },
+    {
+      "step_id": 4789,
+      "path": "mix_revision_bound.lean",
+      "status": "missing"
+    }
+  ]
+}

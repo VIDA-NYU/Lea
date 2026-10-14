@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import re
+from queue import Queue
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -27,7 +28,13 @@ from lea.interface import check as interface_check, rebuild as interface_rebuild
 from ..artifacts import classify_lean_artifact
 from ..config import load_config
 from .. import formalizations as formalization_service
-from .. import filesystem as fs_service, lsp_proxy, netguard, projects, store
+from .. import filesystem as fs_service, lsp_proxy, netguard, projects, store, project_coordination, proof_files
+
+
+def _session_project(arguments):
+    session = store.get_session(arguments["session_id"])
+    return session.get("project_id") if session else None
+
 
 router = APIRouter()
 logger = logging.getLogger("lea-interface.sessions")
@@ -151,11 +158,12 @@ async def session_list_events(request: Request) -> StreamingResponse:
 
 
 @router.get("/api/stats")
-def stats() -> dict:
-    return store.usage_stats()
+def stats(include_proof_status: bool = True) -> dict:
+    return store.usage_stats(include_proof_status=include_proof_status)
 
 
 @router.get("/api/sessions/{session_id}")
+@project_coordination.guarded(_session_project, metadata=True)
 def session_detail(session_id: str) -> dict:
     detail = store.session_detail(session_id)
     if not detail:
@@ -169,6 +177,7 @@ def session_detail(session_id: str) -> dict:
         **detail,
         "formalizations": items,
         "formalization_summary": formalization_service.summary(items),
+        "lean_check_runtime": lean_check_runtime(session_id),
         "latest_focus_formalization_id": (
             focused_runs[-1]["focus_formalization_id"] if focused_runs else None
         ),
@@ -209,8 +218,10 @@ def compact_session(session_id: str) -> dict:
     messages = latest["messages"]
     model = latest.get("model") or config.model
     before = condenser.estimate_tokens(messages)
+    action = store.begin_auxiliary_invocation(latest["run_id"], "manual_compaction", model)
     result = condenser.condense(messages, config, model=model,
                                 last_input_tokens=before, force=True)
+    store.finish_auxiliary_invocation(action, result.usage, result.cost)
     payload = {
         "manual": True,
         "changed": result.changed,
@@ -236,15 +247,12 @@ def compact_session(session_id: str) -> dict:
 
 
 @router.post("/api/sessions/{session_id}/file")
+@project_coordination.guarded(_session_project, write=True)
 def write_file_session(session_id: str, request: FileWriteRequest) -> dict:
-    """Write the canvas (a human edit) to the session's working copy and commit it
-    as a first-class run-less step (P2 / D9). The edit lands on disk
-    (filesystem-canonical, D3), is committed `author=user`, and becomes a
-    code_step with `run_id=NULL`. An optional `note` rides as a linked `edit_note`
-    message (D11). A no-op save (no actual change) creates no step.
+    """Save human edits in SQL, then atomically materialize their working file.
 
-    The edit is stored, not committed: the step holds the file's bytes (D7 inverted,
-    v2.3)."""
+    Coalesce only unchecked edits; preserve checked and verified history.
+    """
     config = load_config()
     if config.lea_root is None:
         raise HTTPException(status_code=422, detail="lea_root is not configured")
@@ -271,106 +279,47 @@ def write_file_session(session_id: str, request: FileWriteRequest) -> dict:
         raise HTTPException(status_code=404, detail="Session not found")
     gs, repo_key = resolved  # D24: project session → the shared repo; loose → its own
     repo = gs.init_session(repo_key)
-    abs_path = (repo / request.path).resolve()
     try:
-        abs_path.relative_to(repo.resolve())
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="path escapes the session directory") from exc
+        absolute = fs_service.safe_abs(repo, request.path)
+    except fs_service.FilesystemError as exc:
+        raise HTTPException(400, detail=str(exc)) from None
+    rel = absolute.relative_to(repo.resolve()).as_posix()
+    formalization_id = _validated_formalization_id(session_id, request.formalization_id)
+    return proof_files.save(session_id, rel, absolute, request.content,
+        formalization_id=formalization_id, base_revision=request.base_revision, note=request.note)
 
-    # A no-op save (auto-save fires on a debounce, not on a change) creates no step.
-    # This used to ask git whether the commit moved HEAD; now it compares the bytes
-    # directly against the stored step — the same question, without a second store
-    # having to agree. `before` is the stored content, not the file on disk: the disk
-    # is about to be overwritten either way, and the step is what history shows.
-    formalization_id = _validated_formalization_id(
-        session_id, request.formalization_id
-    )
-    current_snapshot = (
-        formalization_service.current_snapshot(
-            formalization_id, conversation_session_id=session_id
-        )
-        if formalization_id else None
-    )
-    if (
-        request.base_revision is not None
-        and current_snapshot
-        and request.base_revision != current_snapshot.get("revision_token")
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "revision_conflict",
-                "message": (
-                    "This formalization changed in another conversation. "
-                    "Refresh the current version before saving."
-                ),
-                "current_revision": current_snapshot.get("revision_token"),
-                "last_updated_session": current_snapshot.get(
-                    "last_updated_session"
-                ),
-            },
-        )
-    latest = None
-    if current_snapshot:
-        latest = next(
-            (
-                step for step in current_snapshot.get("files", [])
-                if step.get("path") == request.path
-            ),
-            None,
-        )
-    if latest is None:
-        latest = store.latest_code_step_for_path(session_id, request.path)
-    if latest and not latest.get("content_lost") and latest["code"] == request.content:
-        return {
-            "unchanged": True,
-            "code_step": None,
-            "note": None,
-            "revision_token": (
-                current_snapshot.get("revision_token")
-                if current_snapshot else None
-            ),
-        }
 
-    abs_path.parent.mkdir(parents=True, exist_ok=True)
-    abs_path.write_text(request.content)
-
-    # Coalesce rapid auto-saves into one 'your edit' timeline step (D62) — see
-    # store.upsert_user_code_step.
-    step = store.upsert_user_code_step(
-        session_id,
-        request.path,
-        content=request.content,
-        formalization_id=formalization_id,
-    )
-    if formalization_id:
-        store.link_formalization_file(formalization_id, request.path, "generated")
-    # A human edit changes the proof, so any prior SafeVerify verdict is stale.
-    store.set_session_safe_verify(session_id, None, None)
-    note_message = None
-    if request.note and request.note.strip():
-        note_message = store.add_message(
-            session_id, "user", request.note.strip(), None, kind="edit_note",
-            formalization_id=formalization_id,
-        )
-    updated_snapshot = (
-        formalization_service.current_snapshot(
-            formalization_id, conversation_session_id=session_id
-        )
-        if formalization_id else None
-    )
-    return {
-        "unchanged": False,
-        "code_step": step,
-        "note": note_message,
-        "revision_token": (
-            updated_snapshot.get("revision_token") if updated_snapshot else None
-        ),
-    }
+@router.get("/api/sessions/{session_id}/lean-check-runtime")
+def lean_check_runtime(session_id: str) -> dict:
+    """Read current shared-server health without starting Lean or creating files."""
+    from lea.lsp_daemon import runtime_snapshot
+    from lea.tools import _find_lake_root
+    session = store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    config = load_config()
+    if config.lea_root is None:
+        return {"state": "unavailable"}
+    project = store.get_project(session["project_id"]) if session.get("project_id") else None
+    repo = projects.repo_for_session(session, config.lea_root / "workspace" / "proofs", project)
+    return runtime_snapshot(_find_lake_root(str(repo / "Runtime.lean")))
 
 
 @router.post("/api/sessions/{session_id}/lean-check")
+@project_coordination.guarded(_session_project, write=True)
 def lean_check_session(session_id: str, request: PathRequest) -> dict:
+    from .. import runtime
+    try:
+        with runtime.operation():
+            return _lean_check_session(session_id, request)
+    except RuntimeError as exc:
+        if str(exc) == "adapter_draining":
+            raise HTTPException(status_code=503, detail={"error": "adapter_draining"},
+                                headers={"Retry-After": "5"}) from None
+        raise
+
+
+def _lean_check_session(session_id: str, request: PathRequest) -> dict:
     """Standalone `lean_check` on a session's working file (LSP fast path, no run,
     D2). Back-fills the verdict onto that file's latest code_step so the canvas +
     derived session status reflect it.
@@ -401,62 +350,25 @@ def lean_check_session(session_id: str, request: PathRequest) -> dict:
     formalization_id = _validated_formalization_id(
         session_id, request.formalization_id
     )
-    result = interface_check(abs_path)
-    artifact_kind = classify_lean_artifact(Path(abs_path).read_text()) if result.status == "ok" else None
-    session_step = store.latest_code_step_for_path(session_id, rel)
-    current_snapshot = (
-        formalization_service.current_snapshot(formalization_id)
-        if formalization_id else None
-    )
-    current_step = next(
-        (
-            item for item in (current_snapshot or {}).get("files", [])
-            if item.get("path") == rel
-        ),
-        None,
-    )
-    step = current_step or session_step
-    if step and (
-        request.author
-        or step.get("session_id") != session_id
-        or (
-            formalization_id
-            and step.get("formalization_id") != formalization_id
-        )
-    ):
-        new_step = store.add_code_step(
-            session_id,
-            None,
-            rel,
-            # The file is unchanged, so this is the same content — and because blobs
-            # are content-addressed, the re-check's step shares the existing blob
-            # rather than duplicating the proof.
-            content=Path(abs_path).read_text(),
-            author=request.author or step.get("author") or "user",
-            summary=request.summary,
-            check_status=result.status,
-            check_detail=result.detail,
-            artifact_kind=artifact_kind,
-            formalization_id=formalization_id or step.get("formalization_id"),
-        )
-        return {
-            "path": rel,
-            "status": result.status,
-            "detail": result.detail,
-            "formalization_id": new_step.get("formalization_id"),
-            "code_step": new_step,
-        }
-    if step:
-        store.set_code_step_check(step["id"], result.status, result.detail, artifact_kind=artifact_kind)
-    return {
-        "path": rel,
-        "status": result.status,
-        "detail": result.detail,
-        "formalization_id": formalization_id or (step or {}).get("formalization_id"),
-    }
+    from lea import diagnostics
+    from ..bridge import diagnose
+    recorded = []
+    def record_diagnostic(event):
+        recorded.append(diagnose(Queue(), session_id, None, event.severity, event.code,
+                                 event.message, source=event.source, remedy=event.remedy,
+                                 **{**event.context, "path": rel}))
+    token = diagnostics.begin_scope(sink=record_diagnostic)
+    try:
+        response = proof_files.check(session_id, rel, Path(abs_path), interface_check,
+            formalization_id=formalization_id, author=request.author, summary=request.summary)
+    finally:
+        diagnostics.end_scope(token)
+    return {**response, "diagnostics": recorded,
+            "lean_check_runtime": lean_check_runtime(session_id)}
 
 
 @router.post("/api/sessions/{session_id}/rebuild")
+@project_coordination.guarded(_session_project, write=True)
 def rebuild_session_module(session_id: str, request: PathRequest) -> dict:
     """Force a real `lake build` of a session's working file's module (D2-adjacent
     standalone capability, no agent run), so any *other* session's file that
@@ -487,6 +399,7 @@ def rebuild_session_module(session_id: str, request: PathRequest) -> dict:
 
 
 @router.post("/api/sessions/{session_id}/verify")
+@project_coordination.guarded(_session_project, write=True)
 def verify_session(session_id: str, request: PathRequest) -> dict:
     """Standalone SafeVerify on a session's working file (kernel replay + axiom
     audit, no run, D2). status: ok | rejected | error | unavailable."""
@@ -494,37 +407,8 @@ def verify_session(session_id: str, request: PathRequest) -> dict:
     formalization_id = _validated_formalization_id(
         session_id, request.formalization_id
     )
-    step = store.latest_code_step_for_path(session_id, rel)
-    if formalization_id:
-        current_snapshot = formalization_service.current_snapshot(formalization_id)
-        step = next(
-            (
-                item for item in (current_snapshot or {}).get("files", [])
-                if item.get("path") == rel
-            ),
-            step,
-        )
-    elif step:
-        formalization_id = step.get("formalization_id")
-    result = interface_verify(abs_path)
-    verification = store.record_verification_event(
-        session_id=session_id,
-        formalization_id=formalization_id,
-        path=rel,
-        status=result.status,
-        detail=result.detail,
-        code_step_id=step.get("id") if step else None,
-        run_id=step.get("run_id") if step else None,
-    )
-    # Persist the verdict so it survives reload (surfaced as session_detail.safe_verify).
-    store.set_session_safe_verify(session_id, result.status, result.detail)
-    return {
-        "path": rel,
-        "status": result.status,
-        "detail": result.detail,
-        "formalization_id": formalization_id,
-        "verification_event": verification,
-    }
+    return proof_files.verify(session_id, rel, Path(abs_path), interface_verify,
+                              formalization_id=formalization_id)
 
 
 @router.get("/api/sessions/{session_id}/lsp-info")

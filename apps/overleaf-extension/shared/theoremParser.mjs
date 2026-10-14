@@ -61,16 +61,16 @@ export function inferLeanDeclarationName(text) {
   return "";
 }
 
-export function parseTargetDocument(source) {
-  const result = parseTargetDocumentCore(source);
+export function parseTargetDocument(source, options) {
+  const result = parseTargetDocumentCore(source, options);
   return {
     targets: result.targets.map(withSourceHash),
     diagnostics: result.diagnostics
   };
 }
 
-export function parseTargets(source) {
-  return parseTargetsCore(source).map(withSourceHash);
+export function parseTargets(source, options) {
+  return parseTargetsCore(source, options).map(withSourceHash);
 }
 
 function withSourceHash(target) {

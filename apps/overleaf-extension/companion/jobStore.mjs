@@ -31,16 +31,17 @@ export function findLatestFinishedJob(jobs, jobKey) {
 }
 
 // The newest job whose terminal result can be the provenance of an artifact
-// that still exists. Failed attempts are deliberately excluded: a retry retires
-// the previous proof before running and restores it on failure, so attributing
-// the restored proof to the failed retry's source hash would incorrectly make
-// it look current.
+// that still exists. A failed attempt can leave the previous proof untouched
+// (or, for legacy retries, restore it), so its source hash must not automatically
+// become the unchanged artifact's provenance. Current file evidence lives in
+// the adapter ledger; the checked-stub exception below carries real provenance.
 const ARTIFACT_JOB_STATUSES = new Set([
   "formalized",
   "repaired",
   "needs_review",
   "disproved",
-  "sorry_stub"
+  "sorry_stub",
+  "paused"
 ]);
 
 function hasArtifactResult(job) {
@@ -100,7 +101,7 @@ export function pruneJobs(jobs, { keepPerKey = 20 } = {}) {
     const seenStatusMode = new Set();
     const seenSessionDecl = new Set();
     entries.forEach(([id, job], index) => {
-      if (index < keepPerKey || job?.status === "in_progress") {
+      if (index < keepPerKey || job?.status === "in_progress" || job?.status === "paused") {
         keepIds.add(id);
       }
       const statusMode = `${job?.status || ""}\u0000${job?.mode || ""}`;

@@ -1,0 +1,627 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 9.30kB done
+#1 DONE 0.0s
+
+#2 resolve image config for docker-image://docker.io/docker/dockerfile:1
+#2 DONE 0.9s
+
+#3 docker-image://docker.io/docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+#3 CACHED
+
+#4 [internal] load metadata for docker.io/library/node:22-bookworm-slim
+#4 ...
+
+#5 [internal] load metadata for docker.io/library/node:22-bookworm-slim
+#5 DONE 0.4s
+
+#4 [internal] load metadata for docker.io/library/node:22-bookworm-slim
+#4 DONE 0.4s
+
+#6 [internal] load metadata for ghcr.io/astral-sh/uv:python3.13-bookworm-slim
+#6 DONE 0.6s
+
+#7 [internal] load .dockerignore
+#7 transferring context: 1.16kB done
+#7 DONE 0.0s
+
+#8 [runtime  1/23] FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim@sha256:531f855bda2c73cd6ef67d56b733b357cea384185b3022bd09f05e002cd144ca
+#8 DONE 0.0s
+
+#9 [web  1/12] FROM docker.io/library/node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
+#9 DONE 0.0s
+
+#10 [companion-node 1/1] FROM docker.io/library/node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
+#10 CACHED
+
+#11 [internal] load build context
+#11 transferring context: 13.81kB 5.2s
+#11 transferring context: 39.04kB 9.3s done
+#11 DONE 9.3s
+
+#12 [runtime  2/23] RUN apt-get update  && apt-get install -y --no-install-recommends       git curl ca-certificates libgmp10  && rm -rf /var/lib/apt/lists/*
+#12 CACHED
+
+#13 [runtime  5/23] COPY apps/lea-standalone/prover ./prover
+#13 CACHED
+
+#14 [runtime  4/23] WORKDIR /app
+#14 CACHED
+
+#15 [runtime  3/23] RUN curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o /tmp/elan-init.sh  && sh /tmp/elan-init.sh -y --default-toolchain leanprover/lean4:v4.29.0  && rm /tmp/elan-init.sh  && lean --version
+#15 CACHED
+
+#16 [runtime  6/23] WORKDIR /app/prover
+#16 CACHED
+
+#17 [web  5/12] COPY apps/overleaf-extension/package.json ./apps/overleaf-extension/package.json
+#17 CACHED
+
+#18 [web  2/12] WORKDIR /web
+#18 CACHED
+
+#19 [web 11/12] COPY packages/lea-blueprint /web/packages/lea-blueprint
+#19 CACHED
+
+#20 [web  3/12] COPY package.json package-lock.json ./
+#20 CACHED
+
+#21 [web 10/12] COPY apps/lea-standalone/scripts/lean-assets.mjs ./scripts/lean-assets.mjs
+#21 CACHED
+
+#22 [web  4/12] COPY apps/lea-standalone/package.json ./apps/lea-standalone/package.json
+#22 CACHED
+
+#23 [web  9/12] COPY apps/lea-standalone/src ./src
+#23 CACHED
+
+#24 [web  8/12] COPY apps/lea-standalone/index.html apps/lea-standalone/vite.config.ts apps/lea-standalone/postcss.config.mjs ./
+#24 CACHED
+
+#25 [web  7/12] WORKDIR /web/apps/lea-standalone
+#25 CACHED
+
+#26 [web  6/12] RUN npm ci --workspace apps/lea-standalone
+#26 CACHED
+
+#27 [web 12/12] RUN npm run build   # -> /web/apps/lea-standalone/dist
+#27 CACHED
+
+#28 [runtime  7/23] RUN cd workspace  && (lake exe cache get || lake exe cache get      || echo "[build] Mathlib cache download incomplete; compiling missing targets.")  && lake build Mathlib  && lake build --no-build Mathlib  && echo "[build] complete Mathlib cache verified"  && cd /app/prover/third_party/SafeVerify  && rm -rf .lake/packages && mkdir -p .lake  && ln -s /app/prover/workspace/.lake/packages .lake/packages  && lake build safe_verify  && test -x .lake/build/bin/safe_verify  && echo "[build] SafeVerify built against the shared Mathlib"  && rm -rf /root/.cache/mathlib  && echo "[build] retained dependency metadata for runtime cache repair"
+#28 5.033 info: mathlib: cloning https://github.com/leanprover-community/mathlib4
+#28 155.3 info: mathlib: checking out revision '8a178386ffc0f5fef0b77738bb5449d50efeea95'
+#28 165.1 info: plausible: cloning https://github.com/leanprover-community/plausible
+#28 171.7 info: plausible: checking out revision '83e90935a17ca19ebe4b7893c7f7066e266f50d3'
+#28 171.8 info: LeanSearchClient: cloning https://github.com/leanprover-community/LeanSearchClient
+#28 176.3 info: LeanSearchClient: checking out revision 'c5d5b8fe6e5158def25cd28eb94e4141ad97c843'
+#28 176.4 info: importGraph: cloning https://github.com/leanprover-community/import-graph
+#28 177.6 info: importGraph: checking out revision '48d5698bc464786347c1b0d859b18f938420f060'
+#28 177.7 info: proofwidgets: cloning https://github.com/leanprover-community/ProofWidgets4
+#28 183.0 info: proofwidgets: checking out revision '3c52dee17f0cd89c1ec14de78920d1bdaa3d26b3'
+#28 188.9 info: aesop: cloning https://github.com/leanprover-community/aesop
+#28 191.0 info: aesop: checking out revision '7152850e7b216a0d409701617721b6e469d34bf6'
+#28 191.1 info: Qq: cloning https://github.com/leanprover-community/quote4
+#28 195.3 info: Qq: checking out revision '707efb56d0696634e9e965523a1bbe9ac6ce141d'
+#28 195.4 info: batteries: cloning https://github.com/leanprover-community/batteries
+#28 217.5 info: batteries: checking out revision '756e3321fd3b02a85ffda19fef789916223e578c'
+#28 217.7 info: Cli: cloning https://github.com/leanprover/lean4-cli
+#28 218.8 info: Cli: checking out revision '7802da01beb530bf051ab657443f9cd9bc3e1a29'
+#28 221.7 ✔ [2/22] Built Cache.Init (2.7s)
+#28 223.2 ✔ [3/22] Built Cache.Init:c.o (1.4s)
+#28 223.6 ✔ [4/22] Built Cache.Lean (4.6s)
+#28 225.7 ✔ [5/22] Built Cache.Lean:c.o (2.0s)
+#28 234.9 ✔ [11/22] Built Batteries.Data.String.Basic:c.o (1.9s)
+#28 235.8 ✔ [12/22] Built Batteries.Data.String.Matcher:c.o (2.8s)
+#28 236.1 ✔ [13/22] Built Batteries.Data.Array.Match:c.o (3.1s)
+#28 236.4 ✔ [14/22] Built Cache.IO (12s)
+#28 243.1 ✔ [15/22] Built Cache.Hashing (6.7s)
+#28 248.3 ✔ [16/22] Built Cache.Hashing:c.o (5.1s)
+#28 250.2 ✔ [17/22] Built Cache.IO:c.o (13s)
+#28 262.5 ✔ [18/22] Built Cache.Requests (19s)
+#28 269.7 ✔ [19/22] Built Cache.Main (7.3s)
+#28 275.4 ✔ [20/22] Built Cache.Main:c.o (5.6s)
+#28 281.5 ✔ [21/22] Built Cache.Requests:c.o (18s)
+#28 283.6 ✔ [22/22] Built cache:exe (2.1s)
+#28 304.6   % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+#28 304.6                                  Dload  Upload   Total   Spent    Left  Speed
+#28 304.6
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0
+  0     0    0     0    0     0      0      0 --:--:--  0:00:02 --:--:--     0
+  0     0    0     0    0     0      0      0 --:--:--  0:00:02 --:--:--     0
+  0     0    0     0    0     0      0      0 --:--:--  0:00:03 --:--:--     0
+  0     0    0     0    0     0      0      0 --:--:--  0:00:04 --:--:--     0
+  0     0    0     0    0     0      0      0 --:--:--  0:00:05 --:--:--     0
+  0     0    0     0    0     0      0      0 --:--:--  0:00:05 --:--:--     0
+#28 304.6
+ 41 1119k   41  462k    0     0  70569      0  0:00:16  0:00:06  0:00:10 70569
+100 1119k  100 1119k    0     0   151k      0  0:00:07  0:00:07 --:--:--  974k
+#28 304.6
+#28 314.2 installing leantar 0.1.17
+#28 314.2 Fetching ProofWidgets cloud release... done!
+#28 314.2 Current branch: HEAD
+#28 314.2 Using cache (Azure) from origin: leanprover-community/mathlib4
+#28 314.2 Attempting to download 8232 file(s) from leanprover-community/mathlib4 cache
+#28 334.3
+Downloaded: 1 file(s) [attempted 1/8232 = 0%, 0 KB/s], Decompressed: 0
+Downloaded: 22 file(s) [attempted 22/8232 = 0%, 4 KB/s], Decompressed: 1
+Downloaded: 23 file(s) [attempted 23/8232 = 0%, 1 KB/s], Decompressed: 12
+Downloaded: 27 file(s) [attempted 27/8232 = 0%, 89 KB/s], Decompressed: 12
+Downloaded: 44 file(s) [attempted 44/8232 = 0%, 196 KB/s], Decompressed: 41
+Downloaded: 56 file(s) [attempted 56/8232 = 0%, 1 KB/s], Decompressed: 44
+Downloaded: 60 file(s) [attempted 60/8232 = 0%, 132 KB/s], Decompressed: 56
+Downloaded: 84 file(s) [attempted 84/8232 = 1%, 164 KB/s], Decompressed: 60
+Downloaded: 101 file(s) [attempted 101/8232 = 1%, 165 KB/s], Decompressed: 60
+Downloaded: 109 file(s) [attempted 109/8232 = 1%, 115 KB/s], Decompressed: 84
+Downloaded: 113 file(s) [attempted 113/8232 = 1%, 68 KB/s], Decompressed: 109
+Downloaded: 134 file(s) [attempted 134/8232 = 1%, 67 KB/s], Decompressed: 113
+Downloaded: 152 file(s) [attempted 152/8232 = 1%, 3 KB/s], Decompressed: 134
+Downloaded: 177 file(s) [attempted 177/8232 = 2%, 13 KB/s], Decompressed: 134
+Downloaded: 208 file(s) [attempted 208/8232 = 2%, 133 KB/s], Decompressed: 152
+Downloaded: 235 file(s) [attempted 235/8232 = 2%, 523 KB/s], Decompressed: 152
+Downloaded: 270 file(s) [attempted 270/8232 = 3%, 181 KB/s], Decompressed: 187
+Downloaded: 305 file(s) [attempted 305/8232 = 3%, 288 KB/s], Decompressed: 187
+Downloaded: 339 file(s) [attempted 339/8232 = 4%, 281 KB/s], Decompressed: 187
+Downloaded: 370 file(s) [attempted 370/8232 = 4%, 253 KB/s], Decompressed: 187
+Downloaded: 405 file(s) [attempted 405/8232 = 4%, 149 KB/s], Decompressed: 263
+Downloaded: 436 file(s) [attempted 436/8232 = 5%, 117 KB/s], Decompressed: 263
+Downloaded: 459 file(s) [attempted 459/8232 = 5%, 2158 KB/s], Decompressed: 263
+Downloaded: 490 file(s) [attempted 490/8232 = 5%, 1863 KB/s], Decompressed: 263
+Downloaded: 522 file(s) [attempted 522/8232 = 6%, 349 KB/s], Decompressed: 263
+Downloaded: 556 file(s) [attempted 556/8232 = 6%, 72 KB/s], Decompressed: 263
+Downloaded: 597 file(s) [attempted 597/8232 = 7%, 322 KB/s], Decompressed: 381
+Downloaded: 635 file(s) [attempted 635/8232 = 7%, 462 KB/s], Decompressed: 381
+Downloaded: 673 file(s) [attempted 673/8232 = 8%, 352 KB/s], Decompressed: 381
+Downloaded: 713 file(s) [attempted 713/8232 = 8%, 444 KB/s], Decompressed: 381
+Downloaded: 752 file(s) [attempted 752/8232 = 9%, 579 KB/s], Decompressed: 381
+Downloaded: 776 file(s) [attempted 776/8232 = 9%, 156 KB/s], Decompressed: 381
+Downloaded: 814 file(s) [attempted 814/8232 = 9%, 522 KB/s], Decompressed: 381
+Downloaded: 855 file(s) [attempted 855/8232 = 10%, 85 KB/s], Decompressed: 381
+Downloaded: 886 file(s) [attempted 886/8232 = 10%, 1078 KB/s], Decompressed: 381
+Downloaded: 913 file(s) [attempted 913/8232 = 11%, 66 KB/s], Decompressed: 580
+Downloaded: 951 file(s) [attempted 951/8232 = 11%, 204 KB/s], Decompressed: 580
+Downloaded: 992 file(s) [attempted 992/8232 = 12%, 488 KB/s], Decompressed: 580
+Downloaded: 1026 file(s) [attempted 1026/8232 = 12%, 233 KB/s], Decompressed: 580
+Downloaded: 1065 file(s) [attempted 1065/8232 = 12%, 99 KB/s], Decompressed: 580
+Downloaded: 1096 file(s) [attempted 1096/8232 = 13%, 410 KB/s], Decompressed: 580
+Downloaded: 1120 file(s) [attempted 1120/8232 = 13%, 399 KB/s], Decompressed: 580
+Downloaded: 1157 file(s) [attempted 1157/8232 = 14%, 1294 KB/s], Decompressed: 580
+Downloaded: 1192 file(s) [attempted 1192/8232 = 14%, 396 KB/s], Decompressed: 580
+Downloaded: 1229 file(s) [attempted 1229/8232 = 14%, 239 KB/s], Decompressed: 580
+Downloaded: 1267 file(s) [attempted 1267/8232 = 15%, 32 KB/s], Decompressed: 580
+Downloaded: 1301 file(s) [attempted 1301/8232 = 15%, 563 KB/s], Decompressed: 580
+Downloaded: 1342 file(s) [attempted 1342/8232 = 16%, 655 KB/s], Decompressed: 913
+Downloaded: 1384 file(s) [attempted 1384/8232 = 16%, 340 KB/s], Decompressed: 913
+Downloaded: 1438 file(s) [attempted 1438/8232 = 17%, 163 KB/s], Decompressed: 913
+Downloaded: 1476 file(s) [attempted 1476/8232 = 17%, 333 KB/s], Decompressed: 913
+Downloaded: 1510 file(s) [attempted 1510/8232 = 18%, 300 KB/s], Decompressed: 913
+Downloaded: 1545 file(s) [attempted 1545/8232 = 18%, 151 KB/s], Decompressed: 913
+Downloaded: 1582 file(s) [attempted 1582/8232 = 19%, 372 KB/s], Decompressed: 913
+Downloaded: 1623 file(s) [attempted 1623/8232 = 19%, 795 KB/s], Decompressed: 913
+Downloaded: 1666 file(s) [attempted 1666/8232 = 20%, 972 KB/s], Decompressed: 913
+Downloaded: 1707 file(s) [attempted 1707/8232 = 20%, 419 KB/s], Decompressed: 913
+Downloaded: 1733 file(s) [attempted 1733/8232 = 21%, 739 KB/s], Decompressed: 913
+Downloaded: 1772 file(s) [attempted 1772/8232 = 21%, 264 KB/s], Decompressed: 913
+Downloaded: 1815 file(s) [attempted 1815/8232 = 22%, 915 KB/s], Decompressed: 913
+Downloaded: 1839 file(s) [attempted 1839/8232 = 22%, 121 KB/s], Decompressed: 913
+Downloaded: 1865 file(s) [attempted 1865/8232 = 22%, 98 KB/s], Decompressed: 913
+Downloaded: 1898 file(s) [attempted 1898/8232 = 23%, 45 KB/s], Decompressed: 913
+Downloaded: 1922 file(s) [attempted 1922/8232 = 23%, 240 KB/s], Decompressed: 913
+Downloaded: 1956 file(s) [attempted 1956/8232 = 23%, 328 KB/s], Decompressed: 1332
+Downloaded: 1990 file(s) [attempted 1990/8232 = 24%, 33 KB/s], Decompressed: 1332
+Downloaded: 2028 file(s) [attempted 2028/8232 = 24%, 140 KB/s], Decompressed: 1332
+Downloaded: 2068 file(s) [attempted 2068/8232 = 25%, 670 KB/s], Decompressed: 1332
+Downloaded: 2097 file(s) [attempted 2097/8232 = 25%, 103 KB/s], Decompressed: 1332
+Downloaded: 2138 file(s) [attempted 2138/8232 = 25%, 1005 KB/s], Decompressed: 1332
+Downloaded: 2179 file(s) [attempted 2179/8232 = 26%, 438 KB/s], Decompressed: 1332
+Downloaded: 2220 file(s) [attempted 2220/8232 = 26%, 715 KB/s], Decompressed: 1332
+Downloaded: 2254 file(s) [attempted 2254/8232 = 27%, 382 KB/s], Decompressed: 1332
+Downloaded: 2292 file(s) [attempted 2292/8232 = 27%, 379 KB/s], Decompressed: 1332
+Downloaded: 2333 file(s) [attempted 2333/8232 = 28%, 119 KB/s], Decompressed: 1332
+Downloaded: 2371 file(s) [attempted 2371/8232 = 28%, 26 KB/s], Decompressed: 1332
+Downloaded: 2408 file(s) [attempted 2408/8232 = 29%, 1522 KB/s], Decompressed: 1332
+Downloaded: 2449 file(s) [attempted 2449/8232 = 29%, 476 KB/s], Decompressed: 1332
+Downloaded: 2485 file(s) [attempted 2485/8232 = 30%, 260 KB/s], Decompressed: 1332
+Downloaded: 2518 file(s) [attempted 2518/8232 = 30%, 593 KB/s], Decompressed: 1332
+Downloaded: 2549 file(s) [attempted 2549/8232 = 30%, 32 KB/s], Decompressed: 1332
+Downloaded: 2580 file(s) [attempted 2580/8232 = 31%, 329 KB/s], Decompressed: 1332
+Downloaded: 2628 file(s) [attempted 2628/8232 = 31%, 211 KB/s], Decompressed: 1332
+Downloaded: 2669 file(s) [attempted 2669/8232 = 32%, 141 KB/s], Decompressed: 1332
+Downloaded: 2710 file(s) [attempted 2710/8232 = 32%, 1014 KB/s], Decompressed: 1332
+Downloaded: 2755 file(s) [attempted 2755/8232 = 33%, 802 KB/s], Decompressed: 1332
+Downloaded: 2799 file(s) [attempted 2799/8232 = 34%, 262 KB/s], Decompressed: 1942
+Downloaded: 2853 file(s) [attempted 2853/8232 = 34%, 1044 KB/s], Decompressed: 1942
+Downloaded: 2893 file(s) [attempted 2893/8232 = 35%, 243 KB/s], Decompressed: 1942
+Downloaded: 2919 file(s) [attempted 2919/8232 = 35%, 392 KB/s], Decompressed: 1942
+Downloaded: 2953 file(s) [attempted 2953/8232 = 35%, 221 KB/s], Decompressed: 1942
+Downloaded: 2995 file(s) [attempted 2995/8232 = 36%, 701 KB/s], Decompressed: 1942
+Downloaded: 3043 file(s) [attempted 3043/8232 = 36%, 2092 KB/s], Decompressed: 1942
+Downloaded: 3080 file(s) [attempted 3080/8232 = 37%, 624 KB/s], Decompressed: 1942
+Downloaded: 3115 file(s) [attempted 3115/8232 = 37%, 63 KB/s], Decompressed: 1942
+Downloaded: 3145 file(s) [attempted 3145/8232 = 38%, 348 KB/s], Decompressed: 1942
+Downloaded: 3188 file(s) [attempted 3188/8232 = 38%, 308 KB/s], Decompressed: 1942
+Downloaded: 3224 file(s) [attempted 3224/8232 = 39%, 1336 KB/s], Decompressed: 1942
+Downloaded: 3265 file(s) [attempted 3265/8232 = 39%, 88 KB/s], Decompressed: 1942
+Downloaded: 3313 file(s) [attempted 3313/8232 = 40%, 870 KB/s], Decompressed: 1942
+Downloaded: 3331 file(s) [attempted 3331/8232 = 40%, 1242 KB/s], Decompressed: 1942
+Downloaded: 3362 file(s) [attempted 3362/8232 = 40%, 607 KB/s], Decompressed: 1942
+Downloaded: 3406 file(s) [attempted 3406/8232 = 41%, 110 KB/s], Decompressed: 1942
+Downloaded: 3416 file(s) [attempted 3416/8232 = 41%, 33 KB/s], Decompressed: 1942
+Downloaded: 3457 file(s) [attempted 3457/8232 = 41%, 100 KB/s], Decompressed: 1942
+Downloaded: 3492 file(s) [attempted 3492/8232 = 42%, 77 KB/s], Decompressed: 1942
+Downloaded: 3512 file(s) [attempted 3512/8232 = 42%, 1804 KB/s], Decompressed: 1942
+Downloaded: 3553 file(s) [attempted 3553/8232 = 43%, 540 KB/s], Decompressed: 1942
+Downloaded: 3594 file(s) [attempted 3594/8232 = 43%, 206 KB/s], Decompressed: 1942
+Downloaded: 3618 file(s) [attempted 3618/8232 = 43%, 373 KB/s], Decompressed: 1942
+Downloaded: 3660 file(s) [attempted 3660/8232 = 44%, 450 KB/s], Decompressed: 1942
+Downloaded: 3701 file(s) [attempted 3701/8232 = 44%, 130 KB/s], Decompressed: 1942
+Downloaded: 3728 file(s) [attempted 3728/8232 = 45%, 395 KB/s], Decompressed: 1942
+Downloaded: 3760 file(s) [attempted 3760/8232 = 45%, 79 KB/s], Decompressed: 1942
+Downloaded: 3797 file(s) [attempted 3797/8232 = 46%, 1291 KB/s], Decompressed: 1942
+Downloaded: 3824 file(s) [attempted 3824/8232 = 46%, 92 KB/s], Decompressed: 1942
+Downloaded: 3869 file(s) [attempted 3869/8232 = 46%, 318 KB/s], Decompressed: 1942
+Downloaded: 3904 file(s) [attempted 3904/8232 = 47%, 77 KB/s], Decompressed: 1942
+Downloaded: 3937 file(s) [attempted 3937/8232 = 47%, 145 KB/s], Decompressed: 1942
+Downloaded: 3972 file(s) [attempted 3972/8232 = 48%, 492 KB/s], Decompressed: 1942
+Downloaded: 3998 file(s) [attempted 3998/8232 = 48%, 36 KB/s], Decompressed: 1942
+Downloaded: 4047 file(s) [attempted 4047/8232 = 49%, 224 KB/s], Decompressed: 1942
+Downloaded: 4095 file(s) [attempted 4095/8232 = 49%, 351 KB/s], Decompressed: 1942
+Downloaded: 4146 file(s) [attempted 4146/8232 = 50%, 49 KB/s], Decompressed: 1942
+Downloaded: 4200 file(s) [attempted 4200/8232 = 51%, 844 KB/s], Decompressed: 1942
+Downloaded: 4242 file(s) [attempted 4242/8232 = 51%, 773 KB/s], Decompressed: 2799
+Downloaded: 4283 file(s) [attempted 4283/8232 = 52%, 53 KB/s], Decompressed: 2799
+Downloaded: 4328 file(s) [attempted 4328/8232 = 52%, 495 KB/s], Decompressed: 2799
+Downloaded: 4369 file(s) [attempted 4369/8232 = 53%, 604 KB/s], Decompressed: 2799
+Downloaded: 4410 file(s) [attempted 4410/8232 = 53%, 641 KB/s], Decompressed: 2799
+Downloaded: 4445 file(s) [attempted 4445/8232 = 53%, 47 KB/s], Decompressed: 2799
+Downloaded: 4486 file(s) [attempted 4486/8232 = 54%, 28 KB/s], Decompressed: 2799
+Downloaded: 4506 file(s) [attempted 4506/8232 = 54%, 1600 KB/s], Decompressed: 2799
+Downloaded: 4548 file(s) [attempted 4548/8232 = 55%, 1698 KB/s], Decompressed: 2799
+Downloaded: 4592 file(s) [attempted 4592/8232 = 55%, 373 KB/s], Decompressed: 2799
+Downloaded: 4619 file(s) [attempted 4619/8232 = 56%, 118 KB/s], Decompressed: 2799
+Downloaded: 4664 file(s) [attempted 4664/8232 = 56%, 858 KB/s], Decompressed: 2799
+Downloaded: 4709 file(s) [attempted 4709/8232 = 57%, 169 KB/s], Decompressed: 2799
+Downloaded: 4750 file(s) [attempted 4750/8232 = 57%, 874 KB/s], Decompressed: 2799
+Downloaded: 4779 file(s) [attempted 4779/8232 = 58%, 565 KB/s], Decompressed: 2799
+Downloaded: 4815 file(s) [attempted 4815/8232 = 58%, 683 KB/s], Decompressed: 2799
+Downloaded: 4859 file(s) [attempted 4859/8232 = 59%, 87 KB/s], Decompressed: 2799
+Downloaded: 4900 file(s) [attempted 4900/8232 = 59%, 462 KB/s], Decompressed: 2799
+Downloaded: 4915 file(s) [attempted 4915/8232 = 59%, 388 KB/s], Decompressed: 2799
+Downloaded: 4959 file(s) [attempted 4959/8232 = 60%, 43 KB/s], Decompressed: 2799
+Downloaded: 5004 file(s) [attempted 5004/8232 = 60%, 87 KB/s], Decompressed: 2799
+Downloaded: 5031 file(s) [attempted 5031/8232 = 61%, 88 KB/s], Decompressed: 2799
+Downloaded: 5048 file(s) [attempted 5048/8232 = 61%, 580 KB/s], Decompressed: 2799
+Downloaded: 5087 file(s) [attempted 5087/8232 = 61%, 50 KB/s], Decompressed: 2799
+Downloaded: 5127 file(s) [attempted 5127/8232 = 62%, 758 KB/s], Decompressed: 2799
+Downloaded: 5165 file(s) [attempted 5165/8232 = 62%, 506 KB/s], Decompressed: 2799
+Downloaded: 5202 file(s) [attempted 5202/8232 = 63%, 237 KB/s], Decompressed: 2799
+Downloaded: 5235 file(s) [attempted 5235/8232 = 63%, 458 KB/s], Decompressed: 2799
+Downloaded: 5260 file(s) [attempted 5260/8232 = 63%, 93 KB/s], Decompressed: 2799
+Downloaded: 5281 file(s) [attempted 5281/8232 = 64%, 135 KB/s], Decompressed: 2799
+Downloaded: 5329 file(s) [attempted 5329/8232 = 64%, 343 KB/s], Decompressed: 2799
+Downloaded: 5374 file(s) [attempted 5374/8232 = 65%, 701 KB/s], Decompressed: 2799
+Downloaded: 5414 file(s) [attempted 5414/8232 = 65%, 92 KB/s], Decompressed: 2799
+Downloaded: 5449 file(s) [attempted 5449/8232 = 66%, 124 KB/s], Decompressed: 2799
+Downloaded: 5490 file(s) [attempted 5490/8232 = 66%, 44 KB/s], Decompressed: 2799
+Downloaded: 5531 file(s) [attempted 5531/8232 = 67%, 999 KB/s], Decompressed: 2799
+Downloaded: 5572 file(s) [attempted 5572/8232 = 67%, 273 KB/s], Decompressed: 2799
+Downloaded: 5596 file(s) [attempted 5596/8232 = 67%, 431 KB/s], Decompressed: 2799
+Downloaded: 5629 file(s) [attempted 5629/8232 = 68%, 118 KB/s], Decompressed: 2799
+Downloaded: 5668 file(s) [attempted 5668/8232 = 68%, 167 KB/s], Decompressed: 2799
+Downloaded: 5706 file(s) [attempted 5706/8232 = 69%, 502 KB/s], Decompressed: 2799
+Downloaded: 5747 file(s) [attempted 5747/8232 = 69%, 131 KB/s], Decompressed: 2799
+Downloaded: 5778 file(s) [attempted 5778/8232 = 70%, 486 KB/s], Decompressed: 2799
+Downloaded: 5809 file(s) [attempted 5809/8232 = 70%, 136 KB/s], Decompressed: 2799
+Downloaded: 5850 file(s) [attempted 5850/8232 = 71%, 1130 KB/s], Decompressed: 2799
+Downloaded: 5888 file(s) [attempted 5888/8232 = 71%, 121 KB/s], Decompressed: 2799
+Downloaded: 5905 file(s) [attempted 5905/8232 = 71%, 177 KB/s], Decompressed: 2799
+Downloaded: 5925 file(s) [attempted 5925/8232 = 71%, 116 KB/s], Decompressed: 2799
+Downloaded: 5953 file(s) [attempted 5953/8232 = 72%, 1960 KB/s], Decompressed: 2799
+Downloaded: 5984 file(s) [attempted 5984/8232 = 72%, 69 KB/s], Decompressed: 2799
+Downloaded: 6015 file(s) [attempted 6015/8232 = 73%, 315 KB/s], Decompressed: 2799
+Downloaded: 6043 file(s) [attempted 6043/8232 = 73%, 526 KB/s], Decompressed: 2799
+Downloaded: 6076 file(s) [attempted 6076/8232 = 73%, 73 KB/s], Decompressed: 2799
+Downloaded: 6117 file(s) [attempted 6117/8232 = 74%, 47 KB/s], Decompressed: 2799
+Downloaded: 6153 file(s) [attempted 6153/8232 = 74%, 980 KB/s], Decompressed: 2799
+Downloaded: 6193 file(s) [attempted 6193/8232 = 75%, 361 KB/s], Decompressed: 2799
+Downloaded: 6237 file(s) [attempted 6237/8232 = 75%, 547 KB/s], Decompressed: 4205
+Downloaded: 6241 file(s) [attempted 6241/8232 = 75%, 77 KB/s], Decompressed: 4205
+Downloaded: 6244 file(s) [attempted 6244/8232 = 75%, 875 KB/s], Decompressed: 4205
+Downloaded: 6248 file(s) [attempted 6248/8232 = 75%, 349 KB/s], Decompressed: 4205
+Downloaded: 6254 file(s) [attempted 6254/8232 = 75%, 3 KB/s], Decompressed: 4205
+Downloaded: 6265 file(s) [attempted 6265/8232 = 76%, 41 KB/s], Decompressed: 4205
+Downloaded: 6272 file(s) [attempted 6272/8232 = 76%, 62 KB/s], Decompressed: 4205
+Downloaded: 6275 file(s) [attempted 6275/8232 = 76%, 107 KB/s], Decompressed: 4205
+Downloaded: 6278 file(s) [attempted 6278/8232 = 76%, 166 KB/s], Decompressed: 4205
+Downloaded: 6282 file(s) [attempted 6282/8232 = 76%, 349 KB/s], Decompressed: 4205
+Downloaded: 6285 file(s) [attempted 6285/8232 = 76%, 3 KB/s], Decompressed: 4205
+Downloaded: 6292 file(s) [attempted 6292/8232 = 76%, 16 KB/s], Decompressed: 4205
+Downloaded: 6306 file(s) [attempted 6306/8232 = 76%, 8 KB/s], Decompressed: 4205
+Downloaded: 6309 file(s) [attempted 6309/8232 = 76%, 109 KB/s], Decompressed: 4205
+Downloaded: 6316 file(s) [attempted 6316/8232 = 76%, 7 KB/s], Decompressed: 4205
+Downloaded: 6323 file(s) [attempted 6323/8232 = 76%, 58 KB/s], Decompressed: 4205
+Downloaded: 6327 file(s) [attempted 6327/8232 = 76%, 9 KB/s], Decompressed: 4205
+Downloaded: 6337 file(s) [attempted 6337/8232 = 76%, 17 KB/s], Decompressed: 4205
+Downloaded: 6347 file(s) [attempted 6347/8232 = 77%, 55 KB/s], Decompressed: 4205
+Downloaded: 6357 file(s) [attempted 6357/8232 = 77%, 792 KB/s], Decompressed: 4205
+Downloaded: 6368 file(s) [attempted 6368/8232 = 77%, 41 KB/s], Decompressed: 4205
+Downloaded: 6381 file(s) [attempted 6381/8232 = 77%, 1069 KB/s], Decompressed: 4205
+Downloaded: 6398 file(s) [attempted 6398/8232 = 77%, 171 KB/s], Decompressed: 4205
+Downloaded: 6419 file(s) [attempted 6419/8232 = 77%, 136 KB/s], Decompressed: 4205
+Downloaded: 6443 file(s) [attempted 6443/8232 = 78%, 144 KB/s], Decompressed: 4205
+Downloaded: 6467 file(s) [attempted 6467/8232 = 78%, 231 KB/s], Decompressed: 4205
+Downloaded: 6495 file(s) [attempted 6495/8232 = 78%, 150 KB/s], Decompressed: 4205
+Downloaded: 6524 file(s) [attempted 6524/8232 = 79%, 222 KB/s], Decompressed: 4205
+Downloaded: 6549 file(s) [attempted 6549/8232 = 79%, 417 KB/s], Decompressed: 4205
+Downloaded: 6567 file(s) [attempted 6567/8232 = 79%, 89 KB/s], Decompressed: 4205
+Downloaded: 6594 file(s) [attempted 6594/8232 = 80%, 441 KB/s], Decompressed: 4205
+Downloaded: 6623 file(s) [attempted 6623/8232 = 80%, 252 KB/s], Decompressed: 4205
+Downloaded: 6652 file(s) [attempted 6652/8232 = 80%, 443 KB/s], Decompressed: 4205
+Downloaded: 6683 file(s) [attempted 6683/8232 = 81%, 391 KB/s], Decompressed: 4205
+Downloaded: 6717 file(s) [attempted 6717/8232 = 81%, 1393 KB/s], Decompressed: 4205
+Downloaded: 6738 file(s) [attempted 6738/8232 = 81%, 56 KB/s], Decompressed: 4205
+Downloaded: 6765 file(s) [attempted 6765/8232 = 82%, 232 KB/s], Decompressed: 4205
+Downloaded: 6804 file(s) [attempted 6804/8232 = 82%, 388 KB/s], Decompressed: 4205
+Downloaded: 6844 file(s) [attempted 6844/8232 = 83%, 324 KB/s], Decompressed: 4205
+Downloaded: 6878 file(s) [attempted 6878/8232 = 83%, 58 KB/s], Decompressed: 4205
+Downloaded: 6920 file(s) [attempted 6920/8232 = 84%, 138 KB/s], Decompressed: 4205
+Downloaded: 6961 file(s) [attempted 6961/8232 = 84%, 217 KB/s], Decompressed: 4205
+Downloaded: 6995 file(s) [attempted 6995/8232 = 84%, 171 KB/s], Decompressed: 4205
+Downloaded: 7016 file(s) [attempted 7016/8232 = 85%, 441 KB/s], Decompressed: 4205
+Downloaded: 7053 file(s) [attempted 7053/8232 = 85%, 564 KB/s], Decompressed: 4205
+Downloaded: 7085 file(s) [attempted 7085/8232 = 86%, 421 KB/s], Decompressed: 4205
+Downloaded: 7118 file(s) [attempted 7118/8232 = 86%, 66 KB/s], Decompressed: 4205
+Downloaded: 7156 file(s) [attempted 7156/8232 = 86%, 478 KB/s], Decompressed: 4205
+Downloaded: 7190 file(s) [attempted 7190/8232 = 87%, 448 KB/s], Decompressed: 4205
+Downloaded: 7235 file(s) [attempted 7235/8232 = 87%, 693 KB/s], Decompressed: 4205
+Downloaded: 7276 file(s) [attempted 7276/8232 = 88%, 1866 KB/s], Decompressed: 4205
+Downloaded: 7313 file(s) [attempted 7313/8232 = 88%, 367 KB/s], Decompressed: 4205
+Downloaded: 7341 file(s) [attempted 7341/8232 = 89%, 114 KB/s], Decompressed: 4205
+Downloaded: 7374 file(s) [attempted 7374/8232 = 89%, 221 KB/s], Decompressed: 4205
+Downloaded: 7410 file(s) [attempted 7410/8232 = 90%, 695 KB/s], Decompressed: 4205
+Downloaded: 7441 file(s) [attempted 7441/8232 = 90%, 265 KB/s], Decompressed: 4205
+Downloaded: 7472 file(s) [attempted 7472/8232 = 90%, 415 KB/s], Decompressed: 4205
+Downloaded: 7505 file(s) [attempted 7505/8232 = 91%, 129 KB/s], Decompressed: 4205
+Downloaded: 7533 file(s) [attempted 7533/8232 = 91%, 146 KB/s], Decompressed: 4205
+Downloaded: 7567 file(s) [attempted 7567/8232 = 91%, 145 KB/s], Decompressed: 4205
+Downloaded: 7602 file(s) [attempted 7602/8232 = 92%, 196 KB/s], Decompressed: 4205
+Downloaded: 7639 file(s) [attempted 7639/8232 = 92%, 405 KB/s], Decompressed: 4205
+Downloaded: 7677 file(s) [attempted 7677/8232 = 93%, 798 KB/s], Decompressed: 6237
+Downloaded: 7718 file(s) [attempted 7718/8232 = 93%, 283 KB/s], Decompressed: 6237
+Downloaded: 7739 file(s) [attempted 7739/8232 = 94%, 139 KB/s], Decompressed: 6237
+Downloaded: 7780 file(s) [attempted 7780/8232 = 94%, 246 KB/s], Decompressed: 6237
+Downloaded: 7807 file(s) [attempted 7807/8232 = 94%, 668 KB/s], Decompressed: 6237
+Downloaded: 7845 file(s) [attempted 7845/8232 = 95%, 599 KB/s], Decompressed: 6237
+Downloaded: 7888 file(s) [attempted 7888/8232 = 95%, 200 KB/s], Decompressed: 6237
+Downloaded: 7924 file(s) [attempted 7924/8232 = 96%, 232 KB/s], Decompressed: 6237
+Downloaded: 7951 file(s) [attempted 7951/8232 = 96%, 61 KB/s], Decompressed: 6237
+Downloaded: 7993 file(s) [attempted 7993/8232 = 97%, 630 KB/s], Decompressed: 6237
+Downloaded: 8034 file(s) [attempted 8034/8232 = 97%, 346 KB/s], Decompressed: 6237
+Downloaded: 8068 file(s) [attempted 8068/8232 = 98%, 1154 KB/s], Decompressed: 6237
+Downloaded: 8111 file(s) [attempted 8111/8232 = 98%, 385 KB/s], Decompressed: 6237
+Downloaded: 8150 file(s) [attempted 8150/8232 = 99%, 328 KB/s], Decompressed: 6237
+Downloaded: 8174 file(s) [attempted 8174/8232 = 99%, 279 KB/s], Decompressed: 6237
+Downloaded: 8215 file(s) [attempted 8215/8232 = 99%, 331 KB/s], Decompressed: 6237
+Downloaded: 8222 file(s) [attempted 8222/8232 = 99%, 681 KB/s], Decompressed: 7643
+Downloaded: 8224 file(s) [attempted 8226/8232 = 99%], Decompressed: 7643, 2 download failed
+Downloaded: 8224 file(s) [attempted 8229/8232 = 99%], Decompressed: 7643, 5 download failed
+Downloaded: 8224 file(s) [attempted 8232/8232 = 100%], Decompressed: 7643, 8 download failed
+Downloaded: 8224 file(s) [attempted 8232/8232 = 100%], Decompressed: 7643, 8 download failed
+#28 421.1 /root/.cache/mathlib/2c481b1f2a19ac1a.ltar.part: Transfer failed (error code: 0): OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to lakecache.blob.core.windows.net:443
+#28 421.1 /root/.cache/mathlib/512e2e22c56b4df4.ltar.part: Transfer failed (error code: 0): OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to lakecache.blob.core.windows.net:443
+#28 421.1 /root/.cache/mathlib/f952d4b3a02a528e.ltar.part: Transfer failed (error code: 0): OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to lakecache.blob.core.windows.net:443
+#28 421.1 /root/.cache/mathlib/ed54ee60ba730003.ltar.part: Transfer failed (error code: 0): OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to lakecache.blob.core.windows.net:443
+#28 421.1 /root/.cache/mathlib/905fca971bf85ba4.ltar.part: Transfer failed (error code: 0): OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to lakecache.blob.core.windows.net:443
+#28 421.1 /root/.cache/mathlib/bb3ca432f5e332cd.ltar.part: Transfer failed (error code: 0): OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to lakecache.blob.core.windows.net:443
+#28 421.1 /root/.cache/mathlib/63cbe1d7196e16fa.ltar.part: Transfer failed (error code: 0): OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to lakecache.blob.core.windows.net:443
+#28 421.1 /root/.cache/mathlib/e725e91d9e462799.ltar.part: Transfer failed (error code: 0): OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to lakecache.blob.core.windows.net:443
+#28 421.1 Decompressed 8224 file(s)
+#28 421.1 8 download(s) failed
+#28 421.1 Downloading 8 files failed
+#28 442.1 Current branch: HEAD
+#28 442.1 Using cache (Azure) from origin: leanprover-community/mathlib4
+#28 442.1 Attempting to download 8 file(s) from leanprover-community/mathlib4 cache
+#28 448.3
+Downloaded: 1 file(s) [attempted 1/8 = 12%, 16 KB/s], Decompressed: 0
+Downloaded: 6 file(s) [attempted 6/8 = 75%, 4 KB/s], Decompressed: 1
+Downloaded: 7 file(s) [attempted 7/8 = 87%, 4 KB/s], Decompressed: 6
+Downloaded: 8 file(s) [attempted 8/8 = 100%, 4 KB/s], Decompressed: 6
+#28 452.5 Decompressed 8 file(s)
+#28 452.5 Already decompressed 8232 file(s)
+#28 467.6 Build completed successfully (8247 jobs).
+#28 482.4 All targets up-to-date (8247 jobs).
+#28 482.4 [build] complete Mathlib cache verified
+#28 491.9 ✔ [7/22] Built Cli:c.o (1.2s)
+#28 498.1 ✔ [8/22] Built Cli.Extensions:c.o (7.5s)
+#28 499.5 ✔ [9/22] Built SafeVerify.Types (11s)
+#28 504.6 ✔ [10/22] Built SafeVerify.Types:c.o (5.1s)
+#28 508.0 ✔ [11/22] Built SafeVerify.Printing (8.5s)
+#28 509.3 ✔ [12/22] Built SafeVerify.Monads (9.8s)
+#28 509.6 ✔ [13/22] Built SafeVerify.Printing:c.o (1.5s)
+#28 509.7 ✔ [14/22] Built SafeVerify.Util (10s)
+#28 511.0 ✔ [15/22] Built SafeVerify.Monads:c.o (1.7s)
+#28 512.2 ✔ [16/22] Built SafeVerify.Util:c.o (2.6s)
+#28 514.0 ✔ [17/22] Built SafeVerify (4.3s)
+#28 515.1 ✔ [18/22] Built SafeVerify:c.o (1.2s)
+#28 914.2 ✔ [19/22] Built Main (16s)
+#28 917.3 ✔ [20/22] Built Cli.Basic:c.o (42s)
+#28 927.0 ✔ [21/22] Built Main:c.o (12s)
+#28 930.1 ✔ [22/22] Built safe_verify:exe (3.2s)
+#28 930.1 Build completed successfully (22 jobs).
+#28 930.1 [build] SafeVerify built against the shared Mathlib
+#28 930.2 [build] retained dependency metadata for runtime cache repair
+#28 DONE 930.6s
+
+#29 [runtime  8/23] WORKDIR /app/adapter
+#29 DONE 0.0s
+
+#30 [runtime  9/23] COPY apps/lea-standalone/adapter ./
+#30 DONE 0.0s
+
+#31 [runtime 10/23] RUN uv sync --frozen --no-dev
+#31 2.642 Using CPython 3.13.11 interpreter at: /usr/local/bin/python3
+#31 2.645 Creating virtual environment at: .venv
+#31 2.847    Building lea-prover @ file:///app/prover
+#31 3.175 Downloading pdfminer-six (6.3MiB)
+#31 3.176 Downloading lxml (5.0MiB)
+#31 3.178 Downloading openai (1.3MiB)
+#31 3.188 Downloading cryptography (4.5MiB)
+#31 3.189 Downloading pydantic-core (2.0MiB)
+#31 3.193 Downloading aiohttp (1.7MiB)
+#31 3.195 Downloading tiktoken (1.1MiB)
+#31 3.197 Downloading tokenizers (3.2MiB)
+#31 3.200 Downloading sqlalchemy (3.1MiB)
+#31 3.205 Downloading pygments (1.2MiB)
+#31 3.207 Downloading litellm (14.6MiB)
+#31 3.212 Downloading hf-xet (4.3MiB)
+#31 3.214 Downloading uvloop (4.2MiB)
+#31 4.543  Downloaded tiktoken
+#31 5.001  Downloaded aiohttp
+#31 5.007  Downloaded pydantic-core
+#31 5.322  Downloaded pygments
+#31 5.598  Downloaded tokenizers
+#31 5.648  Downloaded sqlalchemy
+#31 5.786  Downloaded hf-xet
+#31 5.864  Downloaded uvloop
+#31 5.927  Downloaded pdfminer-six
+#31 5.958  Downloaded cryptography
+#31 5.987  Downloaded lxml
+#31 6.250  Downloaded openai
+#31 7.045  Downloaded litellm
+#31 10.75       Built lea-prover @ file:///app/prover
+#31 10.76 Prepared 86 packages in 7.98s
+#31 10.86 Installed 86 packages in 90ms
+#31 10.86  + aiohappyeyeballs==2.6.2
+#31 10.86  + aiohttp==3.14.1
+#31 10.86  + aiosignal==1.4.0
+#31 10.86  + alembic==1.18.5
+#31 10.86  + annotated-doc==0.0.4
+#31 10.86  + annotated-types==0.7.0
+#31 10.86  + anthropic==0.109.2
+#31 10.86  + anyio==4.13.0
+#31 10.86  + attrs==26.1.0
+#31 10.86  + certifi==2026.5.20
+#31 10.86  + cffi==2.0.0
+#31 10.86  + charset-normalizer==3.4.7
+#31 10.86  + click==8.4.1
+#31 10.86  + cryptography==49.0.0
+#31 10.86  + distro==1.9.0
+#31 10.86  + docstring-parser==0.18.0
+#31 10.86  + fastapi==0.136.3
+#31 10.86  + fastuuid==0.14.0
+#31 10.86  + filelock==3.29.3
+#31 10.86  + frozenlist==1.8.0
+#31 10.86  + fsspec==2026.4.0
+#31 10.86  + google-auth==2.55.0
+#31 10.86  + google-genai==2.8.0
+#31 10.86  + greenlet==3.5.3
+#31 10.86  + h11==0.16.0
+#31 10.86  + hf-xet==1.5.1
+#31 10.86  + httpcore==1.0.9
+#31 10.86  + httptools==0.8.0
+#31 10.86  + httpx==0.28.1
+#31 10.86  + httpx-sse==0.4.3
+#31 10.86  + huggingface-hub==1.19.0
+#31 10.86  + idna==3.18
+#31 10.86  + importlib-metadata==8.9.0
+#31 10.86  + jinja2==3.1.6
+#31 10.86  + jiter==0.15.0
+#31 10.86  + jsonschema==4.26.0
+#31 10.86  + jsonschema-specifications==2025.9.1
+#31 10.86  + lea-prover==0.1.0 (from file:///app/prover)
+#31 10.86  + litellm==1.88.1
+#31 10.86  + lxml==6.1.1
+#31 10.86  + mako==1.3.12
+#31 10.86  + markdown-it-py==4.2.0
+#31 10.86  + markupsafe==3.0.3
+#31 10.86  + mcp==1.28.0
+#31 10.86  + mdurl==0.1.2
+#31 10.86  + multidict==6.7.1
+#31 10.86  + openai==2.41.1
+#31 10.86  + packaging==26.2
+#31 10.86  + pdfminer-six==20260107
+#31 10.86  + propcache==0.5.2
+#31 10.86  + pyasn1==0.6.3
+#31 10.86  + pyasn1-modules==0.4.2
+#31 10.86  + pycparser==3.0
+#31 10.86  + pydantic==2.13.4
+#31 10.86  + pydantic-core==2.46.4
+#31 10.86  + pydantic-settings==2.14.1
+#31 10.86  + pygments==2.20.0
+#31 10.86  + pyjwt==2.13.0
+#31 10.86  + python-docx==1.2.0
+#31 10.86  + python-dotenv==1.2.2
+#31 10.86  + python-multipart==0.0.32
+#31 10.86  + pyyaml==6.0.3
+#31 10.86  + referencing==0.37.0
+#31 10.86  + regex==2026.5.9
+#31 10.86  + requests==2.34.2
+#31 10.86  + rich==15.0.0
+#31 10.86  + rpds-py==2026.5.1
+#31 10.86  + shellingham==1.5.4
+#31 10.86  + sniffio==1.3.1
+#31 10.86  + sqlalchemy==2.0.51
+#31 10.86  + sse-starlette==3.4.4
+#31 10.86  + starlette==1.2.1
+#31 10.87  + tenacity==9.1.4
+#31 10.87  + tiktoken==0.13.0
+#31 10.87  + tokenizers==0.23.1
+#31 10.87  + tqdm==4.68.2
+#31 10.87  + typer==0.25.1
+#31 10.87  + typing-extensions==4.15.0
+#31 10.87  + typing-inspection==0.4.2
+#31 10.87  + urllib3==2.7.0
+#31 10.87  + uvicorn==0.48.0
+#31 10.87  + uvloop==0.22.1
+#31 10.87  + watchfiles==1.2.0
+#31 10.87  + websockets==16.0
+#31 10.87  + yarl==1.24.2
+#31 10.87  + zipp==4.1.0
+#31 DONE 11.3s
+
+#32 [runtime 11/23] COPY --from=companion-node /usr/local/bin/node /usr/local/bin/node
+#32 DONE 0.3s
+
+#33 [runtime 12/23] COPY apps/overleaf-extension/companion  /app/apps/overleaf-extension/companion
+#33 DONE 0.0s
+
+#34 [runtime 13/23] COPY apps/overleaf-extension/shared     /app/apps/overleaf-extension/shared
+#34 DONE 0.0s
+
+#35 [runtime 14/23] COPY apps/overleaf-extension/extension  /app/apps/overleaf-extension/extension
+#35 DONE 0.0s
+
+#36 [runtime 15/23] COPY apps/lea-standalone/src/app/lib/leanCheckRuntime.mjs /app/apps/lea-standalone/src/app/lib/leanCheckRuntime.mjs
+#36 DONE 0.0s
+
+#37 [runtime 16/23] COPY scripts                            /app/scripts
+#37 DONE 0.0s
+
+#38 [runtime 17/23] COPY packages/lea-model-catalog         /app/packages/lea-model-catalog
+#38 DONE 0.0s
+
+#39 [runtime 18/23] RUN mkdir -p /app/apps/overleaf-extension/.overleaf-lean-stub
+#39 DONE 0.1s
+
+#40 [runtime 19/23] COPY --from=web /web/apps/lea-standalone/dist /app/dist
+#40 DONE 0.1s
+
+#41 [runtime 20/23] COPY apps/lea-standalone/docker/entrypoint.sh /app/entrypoint.sh
+#41 DONE 0.0s
+
+#42 [runtime 21/23] COPY apps/lea-standalone/docker/prepare-mathlib.sh /app/prepare-mathlib.sh
+#42 DONE 0.0s
+
+#43 [runtime 22/23] RUN chmod +x /app/entrypoint.sh /app/prepare-mathlib.sh
+#43 DONE 0.1s
+
+#44 [runtime 23/23] WORKDIR /app
+#44 DONE 0.0s
+
+#45 exporting to image
+#45 exporting layers
+#45 exporting layers 32.4s done
+#45 writing image sha256:e2ad2d2a4c8e3782e7f732ddd7abc92154f736de020d725bfa0b380801b1e3a5 done
+#45 naming to docker.io/library/lea-readiness:amd64 done
+#45 DONE 32.5s

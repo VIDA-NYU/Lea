@@ -3,7 +3,7 @@ import type { SafeVerifyResult } from '../lib/api';
 import { LeanQuery } from '../lib/leanQuery';
 import { useProofSession } from '../stores/proofSession';
 
-type SaveResult = { status: string; detail?: string | null };
+type SaveResult = { status: string; detail?: string | null; current?: boolean; check_current?: boolean; check_stale_reason?: string | null };
 
 // How long after the last keystroke we auto-save. Long enough not to commit on
 // every character (git churn / redundant checks), short enough to feel automatic.
@@ -30,8 +30,10 @@ export function LiveEditor({
   locked,
   onSave,
   onVerify,
+  captureSelection,
 }: {
   sessionId: string;
+  captureSelection: () => () => boolean;
   locked?: boolean;
   onSave?: (content: string, path: string) => Promise<SaveResult>;
   onVerify?: (path: string) => Promise<SaveResult>;
@@ -94,16 +96,20 @@ export function LiveEditor({
       setSave({ state: 'saving', detail: '' });
       try {
         const result = await onSaveFn(value, pathRef.current);
+        if (disposed) return;
         // The write always persists (a snapshot); the verdict just annotates it.
         setSave({
           state: 'saved',
-          detail: result.status === 'ok' ? 'lean_check: 0 errors' : result.detail || `lean_check: ${result.status}`,
+          detail: result.status === 'ok'
+            ? result.check_current === true ? 'lean_check: 0 errors' : 'recheck required'
+            : result.detail || `lean_check: ${result.status}`,
         });
       } catch (err) {
+        if (disposed) return;
         setSave({ state: 'saved', detail: err instanceof Error ? err.message : String(err) });
       } finally {
         savingRef.current = false;
-        if (pendingRef.current) {
+        if (!disposed && pendingRef.current) {
           pendingRef.current = false;
           scheduleSave();
         }
@@ -111,7 +117,7 @@ export function LiveEditor({
     };
 
     const scheduleSave = () => {
-      if (lockedRef.current) return;
+      if (disposed || lockedRef.current) return;
       setSave((s) => ({ state: 'dirty', detail: s.detail }));
       if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = window.setTimeout(() => void runSave(), AUTOSAVE_MS);
@@ -224,6 +230,7 @@ export function LiveEditor({
   // user can ask Lea about it. Queries the human's own session (current buffer,
   // even mid-edit), so no save is required.
   const handleAskGoal = async () => {
+    const owned = captureSelection();
     setGoalNote(null);
     const q = leanQueryRef.current;
     const pos = q?.cursor();
@@ -237,6 +244,7 @@ export function LiveEditor({
     }
     try {
       const result = await q.plainGoal();
+      if (!owned()) return;
       const goals = result?.goals ?? [];
       const rendered = (result?.rendered ?? goals.join('\n\n')).trim();
       if (!result || !rendered || goals.length === 0) {
@@ -246,19 +254,23 @@ export function LiveEditor({
       }
       setGoalSurface({ rendered, line: pos.line });
     } catch (err) {
+      if (!owned()) return;
       setGoalNote(err instanceof Error ? err.message : String(err));
     }
   };
   const handleVerify = async () => {
     if (!onVerify) return;
+    const owned = captureSelection();
     setVerify({ state: 'running' });
     setVerifySurface(null); // clear any prior box while this run is in flight
     try {
       const result = await onVerify(pathRef.current);
+      if (!owned()) return;
       setVerify({ state: 'done', status: result.status, detail: result.detail ?? undefined });
       // Surface the result as a box above the composer (collapse / send-to-Lea).
-      setVerifySurface({ status: result.status, detail: result.detail ?? null } as SafeVerifyResult);
+      setVerifySurface({ status: result.status, detail: result.detail ?? null, current: result.current } as SafeVerifyResult);
     } catch (err) {
+      if (!owned()) return;
       const detail = err instanceof Error ? err.message : String(err);
       setVerify({ state: 'done', status: 'error', detail });
       setVerifySurface({ status: 'error', detail } as SafeVerifyResult);
@@ -268,15 +280,18 @@ export function LiveEditor({
   // Pull the latest on-disk file (e.g. after the agent edited it) into the buffer.
   // Suppress the resulting change event so it isn't treated as a user edit.
   const handleReload = async () => {
+    const owned = captureSelection();
     try {
       const res = await fetch(`/api/sessions/${sessionId}/lsp-info`);
       if (!res.ok) throw new Error(`lsp-info ${res.status}`);
       const info = (await res.json()) as { content: string };
+      if (!owned()) return;
       suppressChangeRef.current = true;
       editorApiRef.current?.editor?.getModel()?.setValue(info.content ?? '');
       suppressChangeRef.current = false;
       setSave({ state: 'clean', detail: 'reloaded from disk' });
     } catch (err) {
+      if (!owned()) return;
       setSave({ state: 'clean', detail: err instanceof Error ? err.message : String(err) });
     }
   };

@@ -10,7 +10,7 @@ import react from '@vitejs/plugin-react'
 // copied into the served tree.
 import importMetaUrlPlugin from '@codingame/esbuild-import-meta-url-plugin'
 import { nodePolyfills } from 'vite-plugin-node-polyfills'
-import { viteStaticCopy } from 'vite-plugin-static-copy'
+import { leanAssets } from './scripts/lean-assets.mjs'
 
 const require = createRequire(import.meta.url)
 
@@ -59,12 +59,7 @@ export default defineConfig({
     }),
     // Serve the Lean InfoView webview + codicon font the live editor loads at
     // runtime. Dest paths ('infoview', 'assets') match lean4monaco's expectations.
-    viteStaticCopy({
-      targets: [
-        { src: [`${infoviewDist}/*`, `${lean4monacoDist}/webview/webview.js`], dest: 'infoview' },
-        { src: [`${infoviewDist}/codicon.ttf`], dest: 'assets' },
-      ],
-    }),
+    leanAssets({ infoviewDist, lean4monacoDist }),
   ],
   resolve: {
     alias: {

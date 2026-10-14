@@ -1,0 +1,6 @@
+lsp_daemon concurrent real-Lean test (this is slow — cold Mathlib load):
+  good verdicts: 3/3, bad: 3/3
+  multi-child: 4 concurrent same-basename docs, 16 checks, no cross-talk
+  reap-while-busy: closed 1 (child0), siblings still open: True
+
+Concurrent real-Lean checks passed: 2-thread + multi-child, no cross-talk, reap-while-busy clean.

@@ -39,9 +39,8 @@ export function createEventBus() {
 // by reading state.eventBus afterwards). Event shape:
 //   { type, overleafProjectId?, ...fields, at }
 // Types (all "something changed — refetch it" signals):
-//   jobs-changed         any job mutation was persisted (registration, turn
-//                        progress, verdicts, terminal status, usage) — the one
-//                        catch-all, published by the jobs persistence seam
+//   jobs-changed         visible job/accounting changes were persisted; scoped
+//                        to a project when known. Retry bookkeeping stays silent.
 //   chat-updated         a chat run started/streamed/settled for a target
 //   repair-batch-updated a repair batch advanced
 export function publishEvent(state, type, fields = {}) {

@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyEnvDefaults, loadDotEnv } from "./config.mjs";
+import { fetchAdapterHealth } from "./leaApiClient.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SETTINGS_PATH = path.join(PROJECT_ROOT, ".overleaf-lean-stub", "settings.json");
@@ -39,6 +40,17 @@ const adapterVenv = settings.leaRepoPath
 checkPath("Lea adapter virtualenv", adapterVenv, () => true, "run `npm run setup` from the monorepo root");
 checkUrl("Lea adapter URL", settings.leaApiBaseUrl || "http://127.0.0.1:8001");
 
+const health = await fetchAdapterHealth({ baseUrl: settings.leaApiBaseUrl || "http://127.0.0.1:8001",
+  fetchImpl: (url, options) => fetch(url, { ...options, signal: AbortSignal.timeout(1500) }) });
+if (health.ok) {
+  const capability = health.body?.capabilities?.lea_status;
+  checks.push({ ok: capability?.version === 1 && capability?.independent_checks === false,
+    label: "Live Lea Status v1", detail: capability?.version === 1
+      ? (capability.admission_enabled ? "enabled; independent evaluator retired" : "new admissions disabled")
+      : "restart the updated adapter and reload the extension" });
+} else {
+  console.log("• Live Lea Status capability will be checked when the adapter starts.");
+}
 console.log("Overleaf Lea Formalizer doctor\n");
 console.log(`${dotenv.loaded ? "✓" : "•"} root .env ${dotenv.loaded ? `loaded from ${dotenv.path}` : "not found; using shell/settings only"}`);
 for (const check of checks) {

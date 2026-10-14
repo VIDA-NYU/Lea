@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,7 +9,11 @@ from typing import Iterator
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = ROOT / "data" / "lea-interface.sqlite3"
+_configured_data_dir = os.environ.get("LEA_SHARED_DATA_DIR")
+_data_dir = Path(_configured_data_dir) if _configured_data_dir else ROOT / "data"
+if not _data_dir.is_absolute():
+    _data_dir = ROOT.parents[1] / _data_dir
+DB_PATH = _data_dir / "lea-interface.sqlite3"
 
 
 def utc_now() -> str:

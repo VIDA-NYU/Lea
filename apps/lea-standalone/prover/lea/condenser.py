@@ -265,11 +265,10 @@ def _summarize(model: str, forgotten_log: str, config: LeaConfig) -> tuple[str, 
             if isinstance(event, TextDelta):
                 text += event.text
             elif isinstance(event, Done):
-                usage.input_tokens += event.usage.input_tokens
-                usage.output_tokens += event.usage.output_tokens
+                usage.add(event.usage)
                 cost += event.cost
     except Exception:  # noqa: BLE001 — a best-effort terminal path, never fatal
-        return "", Usage(), 0.0
+        return "", usage, cost
     return text.strip(), usage, cost
 
 
@@ -349,8 +348,7 @@ def condense(
     if force or (trigger and after_prune_real >= trigger):
         work, summarized, s_usage, s_cost = summarize_middle(
             work, config.compaction_keep_recent_turns, model, config)
-        usage.input_tokens += s_usage.input_tokens
-        usage.output_tokens += s_usage.output_tokens
+        usage.add(s_usage)
         cost += s_cost
 
     after_est_real = estimate_tokens(work) + overhead

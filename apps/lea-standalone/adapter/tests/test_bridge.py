@@ -11,9 +11,10 @@ order — ending with `done`.
 
 import sqlite3
 import time
+from dataclasses import replace
 from pathlib import Path
 from queue import Queue
-from threading import Event, Thread
+from threading import Event, Thread, enumerate as enumerate_threads
 
 import pytest
 
@@ -31,7 +32,7 @@ from lea.interface import (
 )
 from lea.providers import Usage
 
-from app import bridge, db, projects, runbroker, runregistry, store
+from app import bridge, db, formalizations, projects, runbroker, runregistry, store
 from app.config import LeaConfig
 from app.runregistry import RunRegistry
 
@@ -60,7 +61,7 @@ def _fake_run_events(events):
     """Build a fake run_events that writes a file into working_dir then replays
     `events` (a callable taking the absolute proof path, returning the sequence)."""
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         proof = Path(working_dir) / "Lea" / "Misc" / "proof.lean"
         proof.parent.mkdir(parents=True, exist_ok=True)
         proof.write_text("import Mathlib\n\ntheorem t : True := by trivial\n")
@@ -129,7 +130,7 @@ def test_happy_path_commits_steps_and_persists_run(tmp_path, monkeypatch):
     assert types[-1] == "done"
 
 
-def test_definition_artifact_persists_defined_result_kind(tmp_path, monkeypatch):
+def test_definition_artifact_preserves_explicit_review_result_kind(tmp_path, monkeypatch):
     ctx, queue = _context(tmp_path, monkeypatch, task="Define a subadditive predicate")
 
     def script(proof_path):
@@ -160,17 +161,17 @@ def test_definition_artifact_persists_defined_result_kind(tmp_path, monkeypatch)
     bridge.run_lea(ctx)
 
     run = store.get_run(ctx.run_id)
-    assert run["status"] == "proved"
-    assert run["result_kind"] == "defined"
-    assert run["result_detail"] is None
+    assert run["status"] == "needs_review"
+    assert run["result_kind"] == "needs_review"
+    assert run["result_detail"] == "NEEDS_REVIEW"
 
     done = _drain(queue)[-1]
     assert done["type"] == "done"
-    assert done["payload"]["status"] == "proved"
-    assert done["payload"]["result_kind"] == "defined"
+    assert done["payload"]["status"] == "needs_review"
+    assert done["payload"]["result_kind"] == "needs_review"
 
 
-def test_needs_review_proof_artifact_keeps_proved_session_status(tmp_path, monkeypatch):
+def test_needs_review_proof_artifact_keeps_review_session_status(tmp_path, monkeypatch):
     ctx, queue = _context(tmp_path, monkeypatch, task="Prove True")
 
     def script(proof_path):
@@ -197,7 +198,7 @@ def test_needs_review_proof_artifact_keeps_proved_session_status(tmp_path, monke
     bridge.run_lea(ctx)
 
     detail = store.session_detail(ctx.session_id)
-    assert detail["status"] == "proved"
+    assert detail["status"] == "needs_review"
     assert detail["code_steps"][0]["artifact_kind"] == "proof"
 
     run = store.get_run(ctx.run_id)
@@ -208,6 +209,126 @@ def test_needs_review_proof_artifact_keeps_proved_session_status(tmp_path, monke
     assert done["type"] == "done"
     assert done["payload"]["status"] == "needs_review"
     assert done["payload"]["result_kind"] == "needs_review"
+
+
+@pytest.mark.parametrize("kind,counterexample,outcome", [
+    ("theorem", False, "proved"), ("definition", False, "defined"),
+    ("theorem", True, "disproved"),
+])
+def test_focused_review_run_records_an_approvable_final_candidate(tmp_path, monkeypatch, kind, counterexample, outcome):
+    from app import formalization_reviews
+    ctx, _ = _context(tmp_path, monkeypatch)
+    target = store.create_formalization(project_id=None, loose_session_id=ctx.session_id,
+        display_title="t", declaration_name="t", kind=kind)
+    with db.write() as conn:
+        conn.execute("update runs set focus_formalization_id=? where id=?", (target["id"], ctx.run_id))
+
+    def script(proof_path):
+        if counterexample:
+            Path(proof_path).write_text("theorem counterexample : ¬False := by simp\n")
+        elif kind == "definition":
+            Path(proof_path).write_text("def t : Nat := 1\n")
+        yield TurnStarted(1)
+        yield FileChanged(proof_path)
+        yield CheckResult(proof_path, "ok", None)
+        yield Finished("completed", "Please review.", 1, ctx.session_id, "gemini/test",
+            Usage(input_tokens=1, output_tokens=1), 0.0, {}, result_kind="needs_review",
+            result_detail="NEEDS_REVIEW", candidate_path=proof_path if counterexample else None)
+
+    monkeypatch.setattr(bridge, "run_events", _fake_run_events(script))
+    bridge.run_lea(ctx)
+    context = formalization_reviews.context(target["id"])
+    assert context["review"]["eligible"]
+    assert any(f["role"] == "primary" for f in context["formalization"]["files"])
+    before = store.get_run(ctx.run_id)
+    result = formalization_reviews.decide(target["id"], dict(action="approve", outcome=outcome,
+        revision_token=context["review"]["revision_token"], idempotency_key="bridge-approval"))
+    assert result["formalization"]["validity_status"] == outcome
+    assert store.get_run(ctx.run_id) == before
+    assert before["result_kind"] == "needs_review"
+
+
+def test_focused_run_cannot_certify_a_compiling_helper_instead_of_target(tmp_path, monkeypatch):
+    ctx, queue = _context(tmp_path, monkeypatch, task="Prove thmB")
+    target = store.create_formalization(
+        project_id=None, loose_session_id=ctx.session_id,
+        display_title="thmB", declaration_name="thmB", kind="theorem",
+    )
+    with db.write() as conn:
+        conn.execute("update runs set focus_formalization_id = ? where id = ?",
+                     (target["id"], ctx.run_id))
+
+    def script(proof_path):
+        Path(proof_path).write_text("import Mathlib\n\ndef helper : Prop := True\n")
+        yield TurnStarted(1)
+        yield FileChanged(proof_path)
+        yield CheckResult(proof_path, "ok", None)
+        yield Finished("completed", "All done.", 1, ctx.session_id, "gemini/test",
+                       Usage(input_tokens=10, output_tokens=5), 0.01, {},
+                       result_kind="proved")
+
+    monkeypatch.setattr(bridge, "run_events", _fake_run_events(script))
+    bridge.run_lea(ctx)
+
+    run = store.get_run(ctx.run_id)
+    assert run["status"] == run["result_kind"] == "needs_review"
+    assert "thmB" in run["result_detail"]
+    assert store.session_detail(ctx.session_id)["status"] == "unchecked"
+    assert formalizations.get(target["id"])["validity_status"] == "unchecked"
+    assert not any(item["declaration_name"] == "thmB" for item in store.list_artifacts_for_scope(ctx.session_id))
+    assert any(item["role"] == "support" for item in formalizations.get(target["id"])["files"])
+    assert _drain(queue)[-1]["payload"]["result_kind"] == "needs_review"
+
+
+@pytest.mark.parametrize("recheck", [True, False])
+def test_retry_of_unchanged_proof_requires_a_check_in_the_new_run(tmp_path, monkeypatch, recheck):
+    ctx, queue = _context(tmp_path, monkeypatch, task="Prove t")
+    target = store.create_formalization(
+        project_id=None, loose_session_id=ctx.session_id,
+        display_title="t", declaration_name="t", kind="theorem",
+    )
+    with db.write() as conn:
+        conn.execute("update runs set focus_formalization_id = ? where id = ?",
+                     (target["id"], ctx.run_id))
+
+    def first(proof_path):
+        yield TurnStarted(1)
+        yield FileChanged(proof_path)
+        yield CheckResult(proof_path, "ok", None)
+        yield Finished("completed", "Proved.", 1, ctx.session_id, "gemini/test",
+                       Usage(input_tokens=1, output_tokens=1), 0.0, {}, result_kind="proved")
+
+    monkeypatch.setattr(bridge, "run_events", _fake_run_events(first))
+    bridge.run_lea(ctx)
+    assert store.get_run(ctx.run_id)["status"] == "proved"
+    previous_step = store.session_detail(ctx.session_id)["code_steps"][-1]
+
+    second = store.create_run(ctx.session_id, "gemini/test", None, 3,
+                              focus_formalization_id=target["id"])
+    retry_queue = Queue()
+
+    def retry(config, messages, *, working_dir=None, **kwargs):
+        proof = Path(working_dir) / previous_step["path"]
+        assert proof.read_text() == previous_step["code"]
+        yield TurnStarted(1)
+        # No FileChanged event: the retry can keep a good proof untouched.
+        if recheck:
+            yield CheckResult(str(proof), "ok", None)
+        yield Finished("completed", "Existing proof reviewed.", 1, ctx.session_id, "gemini/test",
+                       Usage(input_tokens=1, output_tokens=1), 0.0, {}, result_kind="proved")
+
+    monkeypatch.setattr(bridge, "run_events", retry)
+    bridge.run_lea(replace(ctx, run_id=second["id"], task="Try again", events=retry_queue))
+    expected = "proved" if recheck else "needs_review"
+    assert store.get_run(second["id"])["status"] == expected
+    assert formalizations.get(target["id"])["validity_status"] == expected
+    steps = store.session_detail(ctx.session_id)["code_steps"]
+    current = [step for step in steps if step["run_id"] == second["id"]]
+    assert len(current) == (1 if recheck else 0)
+    if recheck:
+        assert current[0]["check_status"] == "ok"
+        assert current[0]["code"] == previous_step["code"]
+    assert _drain(retry_queue)[-1]["payload"]["result_kind"] == expected
 
 
 def test_disproof_result_persists_and_streams_distinct_outcome(tmp_path, monkeypatch):
@@ -266,7 +387,7 @@ def test_project_run_uses_shared_repo_namespace_and_context(tmp_path, monkeypatc
     )
     captured: dict = {}
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         captured["namespace"] = namespace
         captured["working_dir"] = working_dir
         captured["messages"] = list(messages)
@@ -324,7 +445,7 @@ def _policy_recording_fake(received: dict):
     """A fake run_events that records the prompt_variant + gate it was handed,
     then finishes cleanly. Lets us assert the autonomous policy without a model."""
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         received["prompt_variant"] = config.prompt_variant
         received["gate"] = gate
         yield TurnStarted(1)
@@ -357,6 +478,33 @@ def test_autonomous_run_disables_gate_and_uses_default_variant(tmp_path, monkeyp
     assert bool(store.get_run(run["id"])["autonomous"]) is True
 
 
+def test_overleaf_solver_uses_faithful_variant_without_changing_general_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    session = store.create_session("Translate the supplied proof")
+    run = store.create_run(
+        session["id"], "gemini/test", None, 3,
+        autonomous=True, purpose="overleaf_solver",
+    )
+    config = LeaConfig(
+        model="gemini/test", max_turns=3, lea_root=tmp_path,
+        prompt_variant="interactive",
+    )
+    ctx = bridge.RunnerContext(
+        session_id=session["id"], run_id=run["id"],
+        task="Translate the supplied proof", config=config, events=Queue(),
+        autonomous=True, purpose="overleaf_solver",
+    )
+
+    received: dict = {}
+    monkeypatch.setattr(bridge, "run_events", _policy_recording_fake(received))
+    bridge.run_lea(ctx)
+
+    assert received["gate"] is None
+    assert received["prompt_variant"] == "overleaf_faithful"
+    assert store.get_run(run["id"])["purpose"] == "overleaf_solver"
+
+
 def test_interactive_run_keeps_gate_and_config_variant(tmp_path, monkeypatch):
     # UI path (default): the gate is wired and the configured prompt variant is
     # left untouched — current behavior is preserved.
@@ -383,7 +531,7 @@ def test_done_emitted_and_run_failed_on_exception(tmp_path, monkeypatch):
 
     def boom(
         config, messages, *, namespace=None, session_id=None, working_dir=None,
-        should_stop=None, gate=None,
+        should_stop=None, gate=None, **kwargs,
     ):
         yield TurnStarted(1)
         raise RuntimeError("model exploded")
@@ -411,7 +559,7 @@ def test_exception_detail_is_redacted_before_streaming_or_persistence(tmp_path, 
 
     def boom(
         config, messages, *, namespace=None, session_id=None, working_dir=None,
-        should_stop=None, gate=None,
+        should_stop=None, gate=None, **kwargs,
     ):
         raise RuntimeError(f"provider rejected {secret}")
         yield  # pragma: no cover — keep this a generator like run_events
@@ -431,7 +579,7 @@ def _recording_fake(received: list, transcript_messages: list):
     """A fake run_events that records the `messages` it was handed, then Finishes
     with a given transcript (so the bridge persists it for the next activation)."""
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         received.append(messages)
         yield TurnStarted(1)
         yield Finished("completed", "done", 1, session_id, "gemini/test",
@@ -492,7 +640,7 @@ def test_followup_replays_prior_transcript(tmp_path, monkeypatch):
 def test_interrupt_maps_finished_interrupted_to_cancelled(tmp_path, monkeypatch):
     ctx, queue = _context(tmp_path, monkeypatch)
 
-    def interrupted(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def interrupted(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         yield TurnStarted(1)
         yield Finished("interrupted", "Run interrupted by the user.", 1, session_id,
                        "gemini/test", Usage(input_tokens=2, output_tokens=1), 0.0, {"messages": []})
@@ -511,7 +659,7 @@ def test_request_stop_flag_reaches_the_run(tmp_path, monkeypatch):
     # Stop was hit before the run loop got going — the endpoint pre-set the flag.
     bridge.request_stop(ctx.run_id)
 
-    def stops_when_asked(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def stops_when_asked(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         # the agent honors should_stop at its turn boundary
         if should_stop():
             yield Finished("interrupted", "stopped", 0, session_id, "gemini/test",
@@ -526,6 +674,40 @@ def test_request_stop_flag_reaches_the_run(tmp_path, monkeypatch):
     assert store.get_run(ctx.run_id)["status"] == "cancelled"
     # the flag is cleaned up once the run ends
     assert ctx.run_id not in bridge._stop_events
+
+
+def test_timeout_keeps_observed_usage_and_real_stop_cause(tmp_path, monkeypatch):
+    ctx, queue = _context(tmp_path, monkeypatch)
+    def fake(config, messages, *, session_id=None, **kwargs):
+        yield TurnStarted(1)
+        yield UsageUpdated(100, 20, 0.037)
+        bridge.request_stop(ctx.run_id, reason="timeout", source="companion")
+        yield Finished("interrupted", "Run stopped at a turn boundary.", 1,
+                       session_id, "gemini/test", Usage(100, 20), 0.037, {"messages": []})
+    monkeypatch.setattr(bridge, "run_events", fake)
+    bridge.run_lea(ctx)
+    row = store.get_run(ctx.run_id)
+    assert row["status"] == "cancelled"
+    assert row["stop_reason"] == "timeout"
+    assert row["usage_status"] == "final"
+    assert row["usage_revision"] == 1
+    assert row["cost_usd"] == pytest.approx(0.037)
+    done = _drain(queue)[-1]["payload"]
+    assert done["stop_reason"] == "timeout"
+    assert done["cost_usd"] == pytest.approx(0.037)
+
+
+def test_crash_retains_usage_checkpoint(tmp_path, monkeypatch):
+    ctx, _queue = _context(tmp_path, monkeypatch)
+    def fake(config, messages, **kwargs):
+        yield UsageUpdated(50, 7, 0.012)
+        raise RuntimeError("provider disconnected")
+    monkeypatch.setattr(bridge, "run_events", fake)
+    bridge.run_lea(ctx)
+    row = store.get_run(ctx.run_id)
+    assert row["status"] == "failed"
+    assert row["usage_status"] == "partial"
+    assert row["cost_usd"] == pytest.approx(0.012)
 
 
 def test_gate_policy_gates_only_impactful_tools():
@@ -558,7 +740,7 @@ def test_resolve_approval_matches_and_rejects_stale():
 def _gated_fake(received: dict, decision_sink: str = "decision"):
     """A fake run_events that gates one bash call, records the decision it gets
     back, then Finishes."""
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         received[decision_sink] = yield ToolApprovalRequested("bash", {"command": "ls"})
         yield Finished("completed", "done", 1, session_id, "gemini/test",
                        Usage(input_tokens=1, output_tokens=1), 0.0, {"messages": []})
@@ -590,7 +772,7 @@ def test_approval_relay_allow(tmp_path, monkeypatch):
     _run_in_thread_and_resolve(ctx, "allow")
 
     assert received["decision"] == "allow"  # the decision reached the generator
-    assert store.get_run(ctx.run_id)["status"] == "proved"
+    assert store.get_run(ctx.run_id)["status"] == "needs_review"
     types = [i["type"] for i in _drain(queue)]
     assert "approval_requested" in types and "approval_resolved" in types
 
@@ -704,7 +886,7 @@ def _skills_recording_fake(received: dict):
     reads each file's content *while the temp dir still exists* (before the run's
     finally cleans it up), then finishes cleanly."""
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         received["skills"] = list(config.skills)
         received["bodies"] = {Path(p).name: Path(p).read_text() for p in config.skills}
         yield TurnStarted(1)
@@ -818,7 +1000,7 @@ def test_mid_run_spend_cap_requests_stop_and_labels_result(tmp_path, monkeypatch
     # result_kind="max_spend" (status stays "cancelled" — vocabulary unchanged).
     ctx, queue = _context(tmp_path, monkeypatch, max_spend_usd=0.02)
 
-    def capped(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def capped(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         yield TurnStarted(1)
         yield AssistantTextDelta("Working on it.")
         yield UsageUpdated(10, 5, 0.03)
@@ -852,7 +1034,7 @@ def test_spend_cap_baseline_includes_prior_runs(tmp_path, monkeypatch):
     prior_run = store.create_run(ctx.session_id, "gemini/test", None, 3)
     store.update_run(prior_run["id"], "proved", input_tokens=100, output_tokens=50, cost_usd=0.095)
 
-    def capped(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def capped(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         yield TurnStarted(1)
         yield UsageUpdated(10, 5, 0.01)
         assert should_stop()
@@ -910,7 +1092,7 @@ def test_enqueued_runs_execute_fifo(tmp_path, monkeypatch):
     runbroker._brokers.clear()
     executed = []
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         executed.append(messages[-1]["content"])
         yield TurnStarted(1)
         yield Finished("completed", "done", 1, session_id, "gemini/test",
@@ -932,7 +1114,7 @@ def test_enqueued_runs_execute_fifo(tmp_path, monkeypatch):
     )), "all queued runs reach a terminal status"
     assert executed == ["first", "second", "third"], "FIFO order preserved"
     for run_id in run_ids:
-        assert store.get_run(run_id)["status"] == "proved"
+        assert store.get_run(run_id)["status"] == "needs_review"
 
 
 def test_queued_run_executes_its_snapshotted_model(tmp_path, monkeypatch):
@@ -955,7 +1137,7 @@ def test_queued_run_executes_its_snapshotted_model(tmp_path, monkeypatch):
         session_id=None,
         working_dir=None,
         should_stop=None,
-        gate=None,
+        gate=None, **kwargs,
     ):
         executed_models.append(config.model)
         yield TurnStarted(1)
@@ -984,7 +1166,7 @@ def test_finished_broker_buffer_ends_in_done(tmp_path, monkeypatch):
         lambda: LeaConfig(model="gemini/test", max_turns=3, lea_root=tmp_path),
     )
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         yield TurnStarted(1)
         yield AssistantTextDelta("thinking…")
         yield Finished("completed", "done", 1, session_id, "gemini/test",
@@ -1002,7 +1184,7 @@ def test_finished_broker_buffer_ends_in_done(tmp_path, monkeypatch):
     types = [item["type"] for item in replay]
     assert "assistant_delta" in types
     assert types[-1] == "done"
-    assert replay[-1]["payload"]["status"] == "proved"
+    assert replay[-1]["payload"]["status"] == "needs_review"
 
 
 def test_interrupted_queued_run_is_skipped_and_broker_sealed(tmp_path, monkeypatch):
@@ -1050,7 +1232,7 @@ def test_run_records_structured_artifact_rows(tmp_path, monkeypatch):
         session_id=session["id"], run_id=run["id"], task="prove foo", config=config, events=queue,
     )
 
-    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+    def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
         proof = Path(working_dir) / "chapter" / "foo_theorem.lean"
         proof.parent.mkdir(parents=True, exist_ok=True)
         proof.write_text("import Mathlib\n\ntheorem foo_theorem : True := by trivial\n")
@@ -1094,7 +1276,7 @@ def test_reformalize_updates_the_artifact_row_in_place(tmp_path, monkeypatch):
             config=config, events=Queue(),
         )
 
-        def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None):
+        def fake(config, messages, *, namespace=None, session_id=None, working_dir=None, should_stop=None, gate=None, **kwargs):
             proof = Path(working_dir) / path_name
             proof.write_text("import Mathlib\n\ntheorem same_decl : True := by trivial\n")
             yield TurnStarted(1)
@@ -1275,7 +1457,7 @@ def test_a_session_busy_run_does_not_block_a_different_session(tmp_path, monkeyp
     started: list[str] = []
 
     def fake(config, messages, *, namespace=None, session_id=None, working_dir=None,
-             should_stop=None, gate=None):
+             should_stop=None, gate=None, **kwargs):
         task = messages[-1]["content"]
         started.append(task)
         yield TurnStarted(1)
@@ -1332,7 +1514,7 @@ def test_deferred_runs_keep_their_relative_order(tmp_path, monkeypatch):
     started: list[str] = []
 
     def fake(config, messages, *, namespace=None, session_id=None, working_dir=None,
-             should_stop=None, gate=None):
+             should_stop=None, gate=None, **kwargs):
         task = messages[-1]["content"]
         started.append(task)
         yield TurnStarted(1)
@@ -1360,6 +1542,13 @@ def test_deferred_runs_keep_their_relative_order(tmp_path, monkeypatch):
         store.get_run(r)["status"] not in {"pending", "running"} for r in waiting
     ), timeout=15.0)
     assert [t for t in started if t.startswith("q")] == ["q1", "q2", "q3"]
+    # Terminal status is persisted before the driver's final bookkeeping.
+    # Finish those threads before monkeypatch restores the database path.
+    worker_names = {f"lea-run-{run_id[:8]}" for run_id in [holder, *waiting]}
+    for thread in enumerate_threads():
+        if thread.name in worker_names:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
 
 
 def test_a_supersede_is_requested_once_per_incumbent(tmp_path, monkeypatch):
@@ -1369,7 +1558,7 @@ def test_a_supersede_is_requested_once_per_incumbent(tmp_path, monkeypatch):
     db.init_db()
     monkeypatch.setattr(runregistry, "registry", RunRegistry(max_concurrent=4))
     stops = []
-    monkeypatch.setattr(bridge, "request_stop", lambda run_id: stops.append(run_id))
+    monkeypatch.setattr(bridge, "request_stop", lambda run_id, **_kw: stops.append(run_id))
 
     session = store.create_session("S")
     incumbent = store.create_run(session["id"], "gemini/test", None, 3)
@@ -1503,7 +1692,7 @@ def _finishing_run(tmp_path, monkeypatch, *, result="proved"):
     config = LeaConfig(model="gemini/test", max_turns=3, lea_root=tmp_path)
 
     def fake(config, messages, *, namespace=None, session_id=None, working_dir=None,
-             should_stop=None, gate=None):
+             should_stop=None, gate=None, **kwargs):
         proof = Path(working_dir) / "Lea" / "Misc" / "p.lean"
         proof.parent.mkdir(parents=True, exist_ok=True)
         proof.write_text("import Mathlib\n\ntheorem t : True := by trivial\n")
@@ -1818,3 +2007,7 @@ def test_coordinator_toolset_does_not_freeze_out_dynamic_tools(tmp_path, monkeyp
 
     assert "late_tool" in names, "a tool registered during the run was excluded"
     assert "spawn_subagent" in names
+
+
+# This module mocks compiler behavior; bind those mock verdicts to their inputs.
+pytestmark = pytest.mark.usefixtures("certified_unit_inputs")

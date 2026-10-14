@@ -1,0 +1,16 @@
+{
+  "uvicorn_cli_restart": {
+    "initial_state": "ready",
+    "state_after_shutdown": "ready",
+    "health_ok": true,
+    "restart_supported": false,
+    "ready": true,
+    "control_http_status": 409,
+    "control_detail": {
+      "code": "restart_unavailable",
+      "message": "Start the adapter through run_api.py to enable restart control."
+    },
+    "process_still_running": true,
+    "new_run_http_status": 200
+  }
+}

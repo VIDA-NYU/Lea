@@ -1,23 +1,23 @@
 ---
 title: Install Lea
-description: Get Lea running on your machine — Docker in one command, or a local install with the Overleaf extension. Includes first-proof walkthrough and troubleshooting.
-updated: 2026-08-11
+description: Run Lea from VIDA's prebuilt Docker image, or use a local development install. Includes the Overleaf extension, first-proof walkthrough, and troubleshooting.
+updated: 2026-10-13
 ---
 
-Lea runs entirely on your own machine: the web client, the adapter, the prover, Lean and
-Mathlib. Nothing is hosted by us, and there is no account to create. The only thing that leaves
-your computer is the prompt you send to whichever model provider you choose.
+Lea runs on your own machine: the web client, adapter, companion, prover, Lean, and Mathlib.
+VIDA hosts the downloadable container image, but there is no Lea account or hosted runtime.
+The only runtime data that leaves your computer is the prompt sent to your chosen model provider.
 
-Pick **Docker** if you want the standalone web client with nothing else to install. Pick the
-**local install** if you want the Overleaf extension too, or if you plan to work on Lea itself.
+Pick **Docker** for both applications without installing Lea's local toolchains. Pick the
+**local install** if you plan to develop Lea itself.
 
-> **Note.** First-time setup downloads Lean and Mathlib. That is several gigabytes and can take
-> a while on a slow connection. It happens once.
+> **Note.** The Docker image downloads about 3.7 GB and occupies about 10.7 GB after extraction.
+> Keep at least 20 GB free in Docker's storage for extraction. It happens once.
 
 ## Before you start
 
-You need one API key from a model provider. Lea ships with 13 models across three families and
-you can switch between them at any time from the Settings pane.
+You need one API key from a model provider. You can select any model provider and model in the
+Settings pane, and switch at any time.
 
 | Provider | Where to get a key | Env var |
 | --- | --- | --- |
@@ -25,16 +25,45 @@ you can switch between them at any time from the Settings pane.
 | Anthropic | [console.anthropic.com](https://console.anthropic.com/settings/keys) | `ANTHROPIC_API_KEY` |
 | Google Gemini | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `GEMINI_API_KEY` |
 
+> **Note.** These three are the common ones, but you can use any model provider and model from
+> the Settings pane. [LiteLLM's provider pages](https://docs.litellm.ai/docs/providers) give the
+> model ID and env var for the rest — DeepSeek, for example, is `deepseek/deepseek-v4-flash`
+> with `DEEPSEEK_API_KEY`.
+
 You do not need to set the environment variable if you would rather paste the key into the app.
 Both work; the Settings pane is the simpler path.
+
+You can even use open-weight models you host yourself. For example, for a model served by vLLM,
+point Lea at your server on the way in:
+
+```bash
+export HOSTED_VLLM_API_BASE=http://localhost:<PORT>/v1 && ./start-dev.sh
+```
+
+Then add the model `hosted_vllm/<your-model>` and its key in the Settings pane.
 
 **Supported platforms.** macOS (Apple Silicon and Intel) and Linux for the local install; Docker
 works anywhere Docker Desktop does. Windows users should use Docker or WSL2.
 
+> **Note.** If `git clone` reports that Git or command-line developer tools are missing, install
+> them with the command for your system, let the installer finish, and then retry the clone step.
+
+```bash
+# macOS — installs Apple's Command Line Tools, including Git
+xcode-select --install
+
+# Ubuntu, Debian, or WSL2
+sudo apt-get update
+sudo apt-get install -y git
+```
+
+Run `git --version` to confirm that Git is available before continuing.
+
 ## Option A — Docker, no toolchain
 
-The whole standalone app in one container: UI, adapter, Lean and a baked Mathlib cache. The only
-thing you install is Docker itself.
+The standalone UI, adapter, Overleaf companion, Lean, and a baked Mathlib cache run in one
+container. There is no Node, Python, Lean, or Mathlib toolchain to install locally; after cloning
+the repository, Docker handles the rest.
 
 1. **Install Docker Desktop** from [docker.com](https://www.docker.com/products/docker-desktop/)
    and open it once. Wait until it reports *running*, then check:
@@ -46,29 +75,31 @@ docker --version
 2. **Clone the repo and enter the app folder:**
 
 ```bash
-git clone https://github.com/darturi/UnifiedLeaEcosystem.git
-cd UnifiedLeaEcosystem/apps/lea-standalone
+git clone https://github.com/VIDA-NYU/Lea.git
+cd Lea/apps/lea-standalone
 ```
 
-3. **Build and start:**
+3. **Download and start:**
 
 ```bash
-docker compose build    # slow the first time — it downloads and bakes Mathlib
-docker compose up       # every later start jumps straight to here
+docker compose pull
+docker compose up
 ```
 
-The build targets your machine's own CPU, so there are no architecture flags to pass.
+The VIDA image supports `linux/amd64` and `linux/arm64`; Docker selects the correct variant.
 
 4. **Open [http://localhost:8001](http://localhost:8001).** The app boots without a key.
 
 5. **Add your key.** Open **Settings**, choose a model, paste the matching API key, save. The key
    is validated against the provider immediately, so a typo tells you right away.
 
-Sessions, proofs and your key persist on your machine under `apps/lea-standalone/data` and
-`apps/lea-standalone/config`, so they survive restarts. Stop with `Ctrl+C`, or `docker compose down`.
+Session metadata, your key, proof repositories, project registry, and Overleaf state persist
+under `apps/lea-standalone/{data,config,proofs,projects,overleaf-state}`. Stop with `Ctrl+C`;
+`docker compose down` and image updates preserve these directories.
 
-> **Note.** Docker covers the standalone web client only. The Overleaf extension side-loads a
-> Chrome extension and needs the local install below.
+To use Overleaf, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**,
+and select `apps/overleaf-extension/extension`. Leave its companion URL at
+`http://127.0.0.1:31245`; the container already runs that service.
 
 On macOS there is also a double-clickable `start-lea.command` in `apps/lea-standalone/` that does
 all of the above and opens your browser — useful for handing the app to someone who does not live
@@ -89,8 +120,8 @@ node --version   # want v22 or newer
 2. **Clone the repo:**
 
 ```bash
-git clone https://github.com/darturi/UnifiedLeaEcosystem.git
-cd UnifiedLeaEcosystem
+git clone https://github.com/VIDA-NYU/Lea.git
+cd Lea
 ```
 
 3. **Bootstrap and provision.** Install the full stack: the standalone web client, Overleaf companion, and SafeVerify audit build:
@@ -149,7 +180,7 @@ there is one backend and not two.
 ## Overleaf extension
 
 The extension needs the adapter on `:8001` and the companion on `:31245`.
-If you followed the local-install steps and started `./start-dev.sh`, both are already running.
+Both `./start-dev.sh` and the Docker setup start these services for you.
 Keep Lea running while using the extension.
 
 > **Note.** If you started the web client separately with `npm run dev:ui`, start the companion
@@ -160,6 +191,9 @@ Keep Lea running while using the extension.
 1. Open `chrome://extensions`.
 2. Enable **Developer Mode**.
 3. Choose **Load unpacked** and select `apps/overleaf-extension/extension/`.
+
+Next: [Overleaf extension usage guide](/overleaf/) — mark your mathematical content, formalize
+it from the Lean pane, and review or refine the results.
 
 ## Your first proof
 
@@ -244,7 +278,7 @@ fix that before compiling, since an undefined command fails the whole Overleaf b
 named theorem is not formalized yet. Do it first, or drop it from `uses`.
 
 Still stuck? Ask in [Discord](https://discord.gg/CtEJvUTjm) or
-[open an issue](https://github.com/darturi/UnifiedLeaEcosystem/issues) — a transcript link and the
+[open an issue](https://github.com/VIDA-NYU/Lea/issues) — a transcript link and the
 output of `npm run doctor` make it much faster to help.
 
 ## Where things live

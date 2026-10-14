@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   getCurrentFormalization,
   type CodeStep,
@@ -19,6 +19,9 @@ import {
 export interface CheckOutcome {
   status: string;
   detail?: string | null;
+  current?: boolean;
+  check_current?: boolean;
+  check_stale_reason?: string | null;
 }
 
 // The right-hand canvas: navigable, syntax-highlighted Lean snapshots with a
@@ -31,10 +34,12 @@ export function Canvas({
   onSaveAndCheck,
   onVerify,
   onOpenSession,
+  captureSelection,
 }: {
   // Present once the session is persisted; the Live editor needs it for the
   // per-session LSP WebSocket. Absent on a brand-new, unsaved session.
   sessionId?: string;
+  captureSelection: () => () => boolean;
   onClose: () => void;
   onSaveAndCheck: (
     content: string,
@@ -97,6 +102,7 @@ export function Canvas({
           ? {
               status: currentSnapshot.safe_verify.status,
               detail: currentSnapshot.safe_verify.detail,
+              current: true,
             }
           : null
       )
@@ -172,7 +178,7 @@ export function Canvas({
   const pickFile = (path: string) => onIndexChange(latestIndexForPath(codeSteps, path));
 
   const [busy, setBusy] = useState(false);
-  const [verify, setVerify] = useState<{ status: SafeVerifyStatus; detail?: string | null } | null>(null);
+  const [verify, setVerify] = useState<{ status: SafeVerifyStatus; detail?: string | null; current?: boolean } | null>(null);
 
   // Reset the transient SafeVerify result when the shown step changes.
   useEffect(() => {
@@ -214,20 +220,27 @@ export function Canvas({
     [hlReady, step?.code],
   );
 
+  const verifyGeneration = useRef(0);
+  useEffect(() => { verifyGeneration.current += 1; setBusy(false); }, [shownPath, step?.id]);
   const runVerify = async () => {
+    const owned = captureSelection();
+    const generation = verifyGeneration.current;
+    const current = () => owned() && generation === verifyGeneration.current;
     setBusy(true);
     setVerify({ status: 'running' });
     try {
       const result = await onVerify(shownPath);
-      setVerify({ status: result.status as SafeVerifyStatus, detail: result.detail });
+      if (!current()) return;
+      setVerify({ status: result.status as SafeVerifyStatus, detail: result.detail, current: result.current });
     } catch (err) {
+      if (!current()) return;
       setVerify({ status: 'error', detail: err instanceof Error ? err.message : String(err) });
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   };
 
-  const proofStatus = deriveCodeStepProofStatus(step);
+  const proofStatus = deriveCodeStepProofStatus(step, { historical: !isFileCurrent });
   const verdict = proofStatus === 'proved'
     ? { cls: 'ok', text: '✓ compiles' }
     : proofStatus === 'defined'
@@ -238,12 +251,13 @@ export function Canvas({
     ? { cls: 'stub', text: '○ checked stub' }
     : proofStatus === 'failed'
     ? { cls: 'err', text: '✗ errors' }
-    : { cls: 'idle', text: '○ not checked' };
+    : { cls: 'idle', text: step?.check_stale_reason ? '○ recheck required' : '○ not checked' };
 
   // Live result (this session) wins; otherwise fall back to the persisted verdict
   // when viewing the shown file's current snapshot, so a reload still shows
   // SafeVerify ✓ (M24) — and it stays on the main proof, not a later scratch.
-  const shownVerify = verify ?? (isFileCurrent ? persistedVerify ?? null : null);
+  const liveVerify = verify?.status === 'ok' && (verify.current !== true || step?.check_current !== true) ? null : verify;
+  const shownVerify = liveVerify ?? (isFileCurrent && persistedVerify?.current === true ? persistedVerify : null);
   const conversationBehind = Boolean(
     showingCurrent
     && currentSnapshot?.conversation
@@ -331,6 +345,7 @@ export function Canvas({
       {mode === 'live' && sessionId ? (
         <LiveEditor
           sessionId={sessionId}
+          captureSelection={captureSelection}
           locked={isRunning}
           onSave={(content, path) => onSaveAndCheck(
             content,
@@ -363,6 +378,12 @@ export function Canvas({
             {step?.author === 'user' ? <span className="stepname"> · your edit</span> : null}
           </span>
           <span className="spacer" />
+          {showingCurrent && currentSnapshot?.review?.reason && (
+            <span className={`verdict ${currentSnapshot.certification?.source === 'user_review' ? 'ok' : 'idle'}`}>
+              {currentSnapshot.validity_status === 'needs_review' ? 'Needs review' : currentSnapshot.validity_status}
+              {currentSnapshot.certification?.source === 'user_review' ? ' · Approved by user' : ''}
+            </span>
+          )}
           <span className={`verdict ${verdict.cls}`}>{verdict.text}</span>
         </div>
       )}

@@ -7,18 +7,23 @@ so existing callers (CLI, eval) keep working unchanged.
 """
 
 import contextvars
+import hashlib
 import json
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .status_reporting import TOOL_NAME, validate_payload, LeaStatusUpdateRequested, LeaStatusUpdateAck
+from .project_library_tools import TOOL_NAMES as LIBRARY_TOOLS, ProjectLibraryRequested, ProjectLibraryAck
 from .config import LeaConfig
 from . import condenser
+from .stall import StallDetector
 from . import diagnostics
 from .runctx import run_context
 from .prompt import compose_role_prompt, domain_cascade_hint, load_system_prompt
-from .providers import stream, TextDelta, ToolCall, Done, _ToolMeta, Usage
+from .providers import stream as _provider_stream, TextDelta, ToolCall, Done, _ToolMeta, Usage
 from . import safeverify
 from . import subagents  # subagent-result collector (item 22); also registers spawn_subagent via tools
 from . import tools as _tools  # noqa: F401 — importing registers the built-in tools
@@ -28,6 +33,8 @@ from .tools import (
 )
 from .registry import build_toolset, import_tool_modules, pop_scope, push_scope
 from .events import (
+    DependencyReadinessRequested,
+    DependencyReadinessAck,
     TurnStarted,
     AssistantTextDelta,
     ToolCalled,
@@ -48,6 +55,35 @@ from .events import (
 # (write_file/edit_file/lean_check/bash) stays serial and in order — a write→check pair
 # must never be reordered. `spawn_subagent` has its own concurrency path (E2).
 _PARALLEL_SAFE_TOOLS = frozenset({"read_file", "search_mathlib"})
+
+# The adapter may install a synchronous journal. CLI users leave it unset. Each
+# provider call (including classification, narration, compaction, and summaries)
+# is marked dispatched before any network work begins. A missing result is never
+# silently retried after a crash.
+_checkpoint_hook = contextvars.ContextVar("lea_checkpoint_hook", default=None)
+_checkpoint_turn = contextvars.ContextVar("lea_checkpoint_turn", default=0)
+
+
+def _record(event: str, payload: dict) -> None:
+    hook = _checkpoint_hook.get()
+    if hook is not None:
+        hook(event, payload)
+
+
+def stream(*args, **kwargs):
+    invocation_id = uuid.uuid4().hex
+    _record("invocation_start", {"id": invocation_id, "kind": "model", "name": "stream",
+                                 "turn": _checkpoint_turn.get(), "input": {"model": args[0] if args else None}})
+    completed = False
+    for item in _provider_stream(*args, **kwargs):
+        if isinstance(item, Done):
+            _record("invocation_result", {"id": invocation_id, "result": {"completed": True,
+                "input_tokens": item.usage.input_tokens, "output_tokens": item.usage.output_tokens,
+                "cost_usd": item.cost, "usage_details": item.usage_details, "raw_usage": item.raw_usage}})
+            completed = True
+        yield item
+    if not completed:
+        _record("invocation_result", {"id": invocation_id, "result": {"completed": True}})
 
 
 _NARRATE_TOOL_STEPS_INSTRUCTION = """
@@ -184,8 +220,7 @@ def _summarize_on_max_turns(model: str, system: str, messages: list, config: Lea
         if isinstance(event, TextDelta):
             text += event.text
         elif isinstance(event, Done):
-            usage.input_tokens += event.usage.input_tokens
-            usage.output_tokens += event.usage.output_tokens
+            usage.add(event.usage)
             cost += event.cost
     return text.strip(), usage, cost
 
@@ -211,8 +246,7 @@ def _classify_intent(model: str, messages: list, config: LeaConfig) -> tuple[str
         if isinstance(event, TextDelta):
             text += event.text
         elif isinstance(event, Done):
-            usage.input_tokens += event.usage.input_tokens
-            usage.output_tokens += event.usage.output_tokens
+            usage.add(event.usage)
             cost += event.cost
     decision = "ASSISTANT" if "ASSISTANT" in text.strip().upper() else "FORMALIZE"
     return decision, usage, cost
@@ -236,7 +270,12 @@ def _content_text(content) -> str:
 
 def _latest_user_request(messages: list) -> str:
     for msg in reversed(messages):
-        if msg.get("role") != "user":
+        if msg.get("mathematical_request"):
+            return json.dumps(msg["mathematical_request"], ensure_ascii=False)
+        if msg.get("role") != "user" or msg.get("lea_status_context"):
+            continue
+        if msg.get("lea_continuation_context") or (isinstance(msg.get("content"), list)
+                and any(p.get("type") == "tool_result" for p in msg["content"] if isinstance(p, dict))):
             continue
         text = _content_text(msg.get("content")).strip()
         if text:
@@ -254,14 +293,8 @@ def _theorem_signature(path: str | None) -> str:
 
 
 def _parse_result_kind(text: str) -> str:
-    value = (text or "").strip().upper()
-    if "DISPROVED" in value:
-        return "disproved"
-    if "PROVED" in value:
-        return "proved"
-    if "NEEDS_REVIEW" in value or "NEEDS REVIEW" in value:
-        return "needs_review"
-    return "needs_review"
+    return {"PROVED": "proved", "DISPROVED": "disproved", "NEEDS_REVIEW": "needs_review"}.get(
+        (text or "").strip().upper(), "needs_review")
 
 
 def _classify_final_result(
@@ -277,7 +310,8 @@ def _classify_final_result(
     This is intentionally conservative: parse failures, provider errors, or any
     non-conforming answer become needs_review, not proof success.
     """
-    request = _latest_user_request(messages)
+    source = config.status_context.get("source_bundle") if config.status_reporting else None
+    request = json.dumps(source, ensure_ascii=False) if source else _latest_user_request(messages)
     classifier_messages = [{
         "role": "user",
         "content": (
@@ -304,11 +338,10 @@ def _classify_final_result(
             if isinstance(event, TextDelta):
                 text += event.text
             elif isinstance(event, Done):
-                usage.input_tokens += event.usage.input_tokens
-                usage.output_tokens += event.usage.output_tokens
+                usage.add(event.usage)
                 cost += event.cost
     except Exception as exc:
-        return "needs_review", f"Result classification failed: {type(exc).__name__}: {exc}", usage, cost
+        return "needs_review", f"Result classification failed ({type(exc).__name__}). Review the result or retry.", usage, cost
     kind = _parse_result_kind(text)
     detail = text.strip() or None
     return kind, detail, usage, cost
@@ -359,15 +392,17 @@ def _meaning_events(tool_name: str, args: dict, result: str) -> list:
     # carried the unresolved name, `_relativize` could not place it under the parent's
     # working dir, and the adapter looked for it in the session root. No candidate, no
     # code step, no error — just a child that appeared to have produced nothing.
-    path = str(_run_relative_path(raw))
+    path = getattr(result, "snapshot_path", None) or (getattr(result, "execution", None) or {}).get("source_path") or str(_run_relative_path(raw))
     if tool_name in {"write_file", "edit_file"}:
         if path.endswith(".lean") and _tool_result_ok(result):
-            return [FileChanged(path)]
+            return [FileChanged(path, content=getattr(result, "captured_content", None))]
         return []
     if tool_name == "lean_check":
         err = _lean_check_has_error(result)
         return [CheckResult(path, "error" if err else "ok",
-                            _first_error_line(result) if err else None)]
+                            _first_error_line(result) if err else None,
+                            execution=getattr(result, "execution", None),
+                            content=getattr(result, "captured_content", None))]
     return []
 
 
@@ -380,6 +415,8 @@ class ProofVerificationState:
         self.latest_check_path: str | None = None
         self.latest_check_output: str | None = None
         self.latest_check_passed: bool | None = None
+        self.latest_check_execution: dict | None = None
+        self.latest_check_content: str | None = None
 
     def note_tool_result(self, tool_name: str, args: dict, result: str) -> None:
         raw = args.get("path")
@@ -391,7 +428,7 @@ class ProofVerificationState:
         # below silently fails when the model writes `candidate.lean` and then checks
         # `./candidate.lean` — two spellings of one file, so a checked proof reads as
         # an unchecked write.
-        path = str(_run_relative_path(raw))
+        path = getattr(result, "snapshot_path", None) or (getattr(result, "execution", None) or {}).get("source_path") or str(_run_relative_path(raw))
         if tool_name in {"write_file", "edit_file"}:
             if _tool_result_ok(result) and path.endswith(".lean"):
                 self.latest_proof_path = path
@@ -402,6 +439,9 @@ class ProofVerificationState:
             # — `sorry` is a warning, so checking errors alone would accept a
             # skeleton as a finished proof (a false "Proved").
             passed = not _lean_check_has_error(result) and not _lean_check_has_sorry(result)
+            self.latest_proof_path = self.latest_proof_path or path
+            self.latest_check_execution = getattr(result, "execution", None)
+            self.latest_check_content = getattr(result, "captured_content", None)
             self.latest_check_path = path
             self.latest_check_output = result
             self.latest_check_passed = passed
@@ -411,8 +451,11 @@ class ProofVerificationState:
     def needs_final_check(self) -> bool:
         if not self.latest_proof_path:
             return False
+        from .check_evidence import freshness
         return (
-            self.unchecked_write
+            self.latest_check_content is None
+            or not freshness(self.latest_check_execution, self.latest_proof_path)[0]
+            or self.unchecked_write
             or self.latest_check_path != self.latest_proof_path
         )
 
@@ -422,12 +465,13 @@ class ProofVerificationState:
             and not self.unchecked_write
             and self.latest_check_path == self.latest_proof_path
             and self.latest_check_passed is True
+            and not self.needs_final_check()
         )
 
 
 _FINAL_GATE_FAILURE_MESSAGE = (
-    "Error: final verification gate failed. Lea claimed the proof was complete, "
-    "but the latest proof file did not pass lean_check."
+    "Error: the final verification requirement is unmet. "
+    "The latest proof file has not passed lean_check without errors or sorry."
 )
 
 _NO_PROOF_ARTIFACT_MESSAGE = (
@@ -487,8 +531,7 @@ def _forced_tool_narration(
                 text += event.text
                 yield event
             elif isinstance(event, Done):
-                usage.input_tokens += event.usage.input_tokens
-                usage.output_tokens += event.usage.output_tokens
+                usage.add(event.usage)
                 cost += event.cost
     except Exception:
         fallback = _fallback_tool_narration(tool_name, tool_args)
@@ -533,6 +576,8 @@ def run_events(
     should_stop=None,
     gate=None,
     depth: int = 0,
+    resume_state: dict | None = None,
+    checkpoint_callback=None,
 ):
     """Core loop as a generator: yields typed events, never prints.
 
@@ -634,6 +679,7 @@ def run_events(
     # lock/scratch keys later items build on. It wraps the `yield from`, so the
     # ContextVars stay set through every tool call delegated to the inner loop.
     run_key = session_id or uuid.uuid4().hex[:12]
+    checkpoint_token = _checkpoint_hook.set(checkpoint_callback)
     try:
         # `depth` (item 18) records this activation's nesting; `config` is stashed so
         # spawn_subagent can derive a child config. Both ride the ContextVars through
@@ -652,11 +698,13 @@ def run_events(
                 yield from _run_events_inner(
                     config, messages, namespace=namespace, session_id=session_id,
                     working_dir=working_dir, should_stop=should_stop, gate=gate,
+                    resume_state=resume_state,
                 )
             finally:
                 diagnostics.end_scope(diag_token)
                 subagents.end_results_scope(results_token)
     finally:
+        _checkpoint_hook.reset(checkpoint_token)
         # A8: do NOT stop the manager — the pool owns its lifetime, and stopping it here
         # is exactly what made every run pay the cold-start again. `pop_scope` drops this
         # activation's tool registrations, which is all this run owned.
@@ -672,11 +720,16 @@ def _run_events_inner(
     working_dir: str | None = None,
     should_stop=None,
     gate=None,
+    resume_state: dict | None = None,
 ):
     # `namespace` (e.g. "Lea.Foo") lets the adapter state the active write
     # namespace for a project run (D32); None keeps the default Lea.Misc block.
+    # The prompt builder already defaults to no automatic source pause. Keep the
+    # ordinary call shape unchanged for standalone runs and injected builders.
+    source_pause_policy = {"allow_source_pause": True} if config.allow_source_pause else {}
     system = load_system_prompt(
         config.prompt_variant, config.skills, workspace=working_dir, namespace=namespace,
+        **source_pause_policy,
     )
     if config.narrate_tool_steps:
         system += _NARRATE_TOOL_STEPS_INSTRUCTION
@@ -691,19 +744,76 @@ def _run_events_inner(
     # tools register, then select per config (None → all registered tools).
     import_tool_modules(config.tool_modules)
     tools_schema, tool_handlers = build_toolset(config.tools, config.extra_tools)
+    if config.status_reporting:
+        tools_schema = [schema for schema in tools_schema if schema["name"] != "spawn_subagent"]
+        tool_handlers.pop("spawn_subagent", None)
+    tool_schema_digest = hashlib.sha256(json.dumps(tools_schema, sort_keys=True).encode()).hexdigest()
+    if (resume_state and resume_state.get("tool_schema_digest")
+            and resume_state["tool_schema_digest"] != tool_schema_digest):
+        raise ValueError("Saved agent tools are incompatible with the current runtime. Use Re-formalize to start a new attempt.")
 
     # Stateless (D16): the caller owns the transcript. Work on a private copy so we
     # never mutate the caller's list in place; the final state rides out via the
     # Finished transcript. Per-activation usage starts at zero — the adapter
     # accumulates across activations. The adapter owns session identity; we only
     # generate a label if it didn't pass one (e.g. a standalone/test call).
-    messages = list(messages)
+    messages = list(resume_state["messages"] if resume_state else messages)
+    status_context = dict(resume_state.get("status_context", config.status_context) if resume_state else config.status_context)
+    elapsed_since_status = max(0.0, time.time() - float(resume_state.get("last_status_wall", time.time()))) if resume_state else 0.0
+    last_status_at = time.monotonic() - elapsed_since_status
+    tools_since_status = int(resume_state.get("tools_since_status", 0)) if resume_state else 0
+    reporting_stop = resume_state.get("reporting_stop") if resume_state else None
     if session_id is None:
         session_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     total_usage = Usage()
-
-    total_cost = 0.0
+    if resume_state:
+        total_usage.input_tokens = int(resume_state.get("input_tokens", 0))
+        total_usage.output_tokens = int(resume_state.get("output_tokens", 0))
+        total_usage.usage_details = resume_state.get("usage_details")
+    total_cost = float(resume_state.get("cost_usd", 0.0)) if resume_state else 0.0
+    from .check_runtime import serialize_result, restore_result
     proof_state = ProofVerificationState()
+    if resume_state:
+        proof_state.__dict__.update(resume_state.get("proof_state", {}))
+    stall = StallDetector(resume_state.get("stall_detector") if resume_state else None)
+    dependency_evidence = resume_state.get("dependency_evidence", {}) if resume_state else {}
+    resuming_model = bool(resume_state and resume_state.get("stage") == "model_complete")
+    saved_material_rejection = bool(resume_state.get("material_publication_rejected")) if resume_state else False
+    turn = (int(resume_state.get("turn", 0)) - (1 if resuming_model else 0)) if resume_state else 0
+    last_input_tokens = int(resume_state.get("last_input_tokens", 0)) if resume_state else 0
+    surfaced_domains: set[str] = set(resume_state.get("surfaced_domains", [])) if resume_state else set()
+
+    def save_position(stage: str, *, assistant_parts=None, tool_calls=None,
+                      completed_tools=None, final_result=None,
+                      material_publication_rejected=None) -> None:
+        state = {
+            "stage": stage, "messages": messages, "turn": turn,
+            "tool_schema_digest": tool_schema_digest,
+            "input_tokens": total_usage.input_tokens,
+            "output_tokens": total_usage.output_tokens, "cost_usd": total_cost,
+            "max_turns": config.max_turns, "max_cost_usd": config.max_cost_usd,
+            "proof_state": vars(proof_state).copy(),
+            "stall_detector": stall.state(), "dependency_evidence": dependency_evidence,
+            "usage_details": total_usage.usage_details,
+            "status_context": status_context.copy(),
+            "last_input_tokens": last_input_tokens,
+            "surfaced_domains": sorted(surfaced_domains),
+            "assistant_mode": assistant_mode,
+            "last_status_wall": time.time() - max(0.0, time.monotonic() - last_status_at),
+            "tools_since_status": tools_since_status,
+            "reporting_stop": reporting_stop,
+        }
+        if assistant_parts is not None:
+            state["assistant_parts"] = assistant_parts
+        if tool_calls is not None:
+            state["tool_calls"] = tool_calls
+        if completed_tools is not None:
+            state["completed_tools"] = {str(k): serialize_result(v) for k, v in completed_tools.items()}
+        if final_result is not None:
+            state["final_result"] = final_result
+        if material_publication_rejected is not None:
+            state["material_publication_rejected"] = material_publication_rejected
+        _record("checkpoint", state)
 
     def transcript(turns: int) -> dict:
         clean = []
@@ -719,9 +829,40 @@ def _run_events_inner(
             "session_id": session_id,
             "model": model,
             "turns": turns,
-            "usage": {"input_tokens": total_usage.input_tokens, "output_tokens": total_usage.output_tokens},
+            "usage": {"input_tokens": total_usage.input_tokens, "output_tokens": total_usage.output_tokens, "usage_details": total_usage.usage_details},
             "messages": clean,
         }
+
+    def dependency_gate():
+        nonlocal dependency_evidence, reporting_stop
+        if not config.project_library:
+            return False
+        ack = yield DependencyReadinessRequested(proof_state.latest_proof_path)
+        if not isinstance(ack, DependencyReadinessAck):
+            raise ValueError("Canonical dependency readiness was not acknowledged by the host.")
+        if dependency_evidence != ack.evidence and proof_state.latest_proof_path:
+            proof_state.unchecked_write = True
+        dependency_evidence = ack.evidence
+        if ack.dependency_ids:
+            reporting_stop = "dependency_wait"
+            save_position("turn_boundary")
+            yield Finished("dependency_wait", "Waiting for canonical dependencies: " + ", ".join(ack.dependency_ids)
+                           + ". Resolve the dependency attempt before resuming this target.",
+                           turn, session_id, model, total_usage, total_cost, transcript(turn))
+            return True
+        return False
+
+    def failed_gate():
+        nonlocal reporting_stop
+        if (yield from dependency_gate()):
+            return True
+        if stall.failure(proof_state, status_context.get("source_bundle"), dependency_evidence, working_dir):
+            reporting_stop = "stalled"
+            save_position("turn_boundary")
+            yield Finished("stalled", stall.explanation(proof_state), turn, session_id, model,
+                           total_usage, total_cost, transcript(turn))
+            return True
+        return False
 
     # Interactive chat: classify whether this turn is a new formalization or an
     # assistant/QA request (explain, look up a lemma, etc.), and route. Only fires
@@ -729,32 +870,54 @@ def _run_events_inner(
     # always a formalization, so the cold-start path is untouched. (Keying off a
     # prior assistant turn, not message count, stays correct even when the caller
     # prepends project context to a fresh run.)
-    assistant_mode = False
-    if config.prompt_variant == "interactive" and any(m.get("role") == "assistant" for m in messages):
+    assistant_mode = bool(resume_state.get("assistant_mode")) if resume_state else False
+    if resume_state and resume_state.get("stage") == "final_result":
+        final = resume_state["final_result"]
+        kind, detail = final['kind'], final['detail']
+        if kind in {'proved', 'disproved', 'defined'} and not proof_state.latest_proof_verified():
+            kind, detail = 'needs_review', 'Saved completion has no current proof evidence. Recheck the current revision.'
+        yield Finished("completed", final["text"], turn, session_id, model,
+                       total_usage, total_cost, transcript(turn),
+                       result_kind=kind, result_detail=detail,
+                       candidate_path=proof_state.latest_proof_path)
+        return
+    if resume_state and reporting_stop == "stalled":
+        yield Finished("stalled", stall.explanation(proof_state), turn, session_id, model,
+                       total_usage, total_cost, transcript(turn))
+        return
+    if resume_state and not resuming_model and (yield from dependency_gate()):
+        return
+    if resume_state is None:
+        save_position("before_intent")
+    if (resume_state is None or resume_state.get("stage") == "before_intent") and config.prompt_variant in {"interactive", "interactive_overleaf"} and any(m.get("role") == "assistant" for m in messages):
         decision, intent_usage, intent_cost = _classify_intent(model, messages, config)
-        total_usage.input_tokens += intent_usage.input_tokens
-        total_usage.output_tokens += intent_usage.output_tokens
+        total_usage.add(intent_usage)
         total_cost += intent_cost
-        if intent_usage.input_tokens or intent_usage.output_tokens or intent_cost:
-            yield UsageUpdated(intent_usage.input_tokens, intent_usage.output_tokens, intent_cost)
+        if intent_usage.input_tokens or intent_usage.output_tokens or intent_cost or intent_usage.usage_details:
+            yield UsageUpdated(intent_usage.input_tokens, intent_usage.output_tokens, intent_cost, intent_usage.usage_details)
         assistant_mode = decision == "ASSISTANT"
 
     # Domains whose tactic cascade has already been surfaced this activation (item 26),
     # so a domain hint rides a lean_check result once, not on every check.
-    surfaced_domains: set[str] = set()
-
-    turn = 0
     # The real input-token count from the previous turn's provider `Done` — the compaction
     # trigger signal (G1). 0 on the first turn (nothing sent yet → nothing to compact).
-    last_input_tokens = 0
+    if resume_state is None or resume_state.get("stage") == "before_intent":
+        save_position("turn_boundary")
     while True:
         # Cooperative interrupt (D18): the human asked to stop. `turn` is the count
         # of completed turns, so the last step's write is already committed and the
         # canvas is accurate — a clean stop, not a hard kill. The transcript so far
         # rides out so a follow-up still has a coherent base.
         if should_stop is not None and should_stop():
-            yield Finished("interrupted", "Run interrupted by the user.",
+            yield Finished("interrupted", "Run stopped at a turn boundary.",
                            turn, session_id, model, total_usage, total_cost, transcript(turn))
+            return
+
+        if config.status_reporting and ((config.max_turns and turn >= config.max_turns)
+                or (config.max_cost_usd is not None and total_cost >= config.max_cost_usd)):
+            reason = "max_cost" if config.max_cost_usd is not None and total_cost >= config.max_cost_usd else "max_turns"
+            yield Finished(reason, "Run budget reached; last Lea Status retained.", turn,
+                           session_id, model, total_usage, total_cost, transcript(turn))
             return
 
         # Context compaction (G1): before spending another turn, if the last turn's real
@@ -764,17 +927,22 @@ def _run_events_inner(
         # goal or the recent state. The condenser is copy-on-write; `messages` is rebound to
         # the condensed history the next `stream` call sends. Only the model context shrinks —
         # the durable record the adapter keeps is built from the event stream, not from here.
-        if condenser.should_compact(last_input_tokens, config):
+        if not resuming_model and condenser.should_compact(last_input_tokens, config):
+            compaction_id = uuid.uuid4().hex
+            _record("invocation_start", {"id": compaction_id, "kind": "model",
+                                         "name": "compaction", "turn": turn,
+                                         "input": {"last_input_tokens": last_input_tokens}})
             result = condenser.condense(messages, config, model=model,
                                         last_input_tokens=last_input_tokens)
+            _record("invocation_result", {"id": compaction_id,
+                "result": {"changed": result.changed, "raw_usage": result.usage.raw_usages,
+                           "usage_details": result.usage.usage_details, "cost_usd": result.cost}})
+            total_usage.add(result.usage)
+            total_cost += result.cost
+            if result.usage.input_tokens or result.usage.output_tokens or result.cost or result.usage.usage_details:
+                yield UsageUpdated(result.usage.input_tokens, result.usage.output_tokens, result.cost, result.usage.usage_details)
             if result.changed:
                 messages = result.messages
-                total_usage.input_tokens += result.usage.input_tokens
-                total_usage.output_tokens += result.usage.output_tokens
-                total_cost += result.cost
-                if result.usage.input_tokens or result.usage.output_tokens or result.cost:
-                    yield UsageUpdated(result.usage.input_tokens, result.usage.output_tokens,
-                                       result.cost)
                 yield Compacted(result.before_tokens, result.after_tokens,
                                 result.pruned, result.summarized)
                 # Reflect the condensed size so we don't immediately re-trigger next turn on
@@ -782,11 +950,27 @@ def _run_events_inner(
                 last_input_tokens = result.after_tokens
 
         turn += 1
+        _checkpoint_turn.set(turn)
         # D6: a per-run cost cap ends the run the same clean way the turn cap does. Checked
         # at the turn boundary against the spend so far (a sub-agent's `max_cost` override
         # flows here via `max_cost_usd`); None → uncapped, so top-level runs are unaffected.
         cost_capped = config.max_cost_usd is not None and total_cost >= config.max_cost_usd
         if (config.max_turns and turn > config.max_turns) or cost_capped:
+            if cost_capped or config.status_reporting:
+                # A cost boundary must not trigger another paid request. Preserve the
+                # transcript and partial artifact and let the caller present Resume.
+                yield Finished(
+                    "max_cost" if cost_capped else "max_turns",
+                    ("Reached the run budget; the last Lea Status and partial artifact are retained."
+                     if config.status_reporting else "Reached the run cost budget without completing the task."),
+                    turn - 1,
+                    session_id,
+                    model,
+                    total_usage,
+                    total_cost,
+                    transcript(turn - 1),
+                )
+                return
             # Budget exhausted. Don't discard the work with a canned error — spend one
             # final tool-less turn asking the model to summarize its findings + best next
             # step, and return THAT as the result. For a delegated sub-agent this is the
@@ -797,101 +981,109 @@ def _run_events_inner(
                 summary, s_usage, s_cost = _summarize_on_max_turns(model, system, messages, config)
             except Exception:  # noqa: BLE001 — a terminal-path best effort, never fatal
                 summary, s_usage, s_cost = "", Usage(), 0.0
-            total_usage.input_tokens += s_usage.input_tokens
-            total_usage.output_tokens += s_usage.output_tokens
+            total_usage.add(s_usage)
             total_cost += s_cost
-            if s_usage.input_tokens or s_usage.output_tokens or s_cost:
-                yield UsageUpdated(s_usage.input_tokens, s_usage.output_tokens, s_cost)
+            if s_usage.input_tokens or s_usage.output_tokens or s_cost or s_usage.usage_details:
+                yield UsageUpdated(s_usage.input_tokens, s_usage.output_tokens, s_cost, s_usage.usage_details)
             if summary:
                 # Surface it live + fold it into the transcript, so both the UI and the
                 # materialized sub-agent view carry the findings as the final message.
                 yield AssistantTextDelta(summary)
                 messages.append({"role": "assistant", "content": summary})
-            final_text = summary or (
-                "Reached the cost budget without completing the task." if cost_capped
-                else "Reached the turn budget without completing the task."
-            )
+            final_text = summary or "Reached the turn budget without completing the task."
             yield Finished("max_turns", final_text,
                            turn - 1, session_id, model, total_usage, total_cost, transcript(turn - 1))
             return
 
+        if config.status_reporting and not resuming_model:
+            messages = [m for m in messages if not m.get("lea_status_context")]
+            due = tools_since_status >= 5 or time.monotonic() - last_status_at >= 60
+            reminder = " Publish a useful update_lea_status at this opportunity." if due else ""
+            messages.append({"role": "user", "lea_status_context": True, "content":
+                "Retained Lea Status context (not a new mathematical request): "
+                + json.dumps(status_context, ensure_ascii=False) + reminder})
         yield TurnStarted(turn)
 
-        assistant_parts = []
-        current_text = ""
-        tool_calls = []
-        reasoning_items = []
-        forced_narration_emitted = False
+        if resuming_model:
+            assistant_parts = resume_state["assistant_parts"]
+            tool_calls = resume_state["tool_calls"]
+            resuming_model = False
+        else:
+            assistant_parts = []
+            current_text = ""
+            tool_calls = []
+            reasoning_items = []
+            forced_narration_emitted = False
 
-        for event in stream(model, system, messages, tools_schema, config.model_kwargs, streaming=config.stream):
-            if isinstance(event, TextDelta):
-                current_text += event.text
-                yield AssistantTextDelta(event.text)
-            elif isinstance(event, ToolCall):
-                if config.narrate_tool_steps and not forced_narration_emitted and not current_text and not any(
-                    part.get("type") == "text" and part.get("text") for part in assistant_parts
-                ):
-                    narration = _forced_tool_narration(
-                        model=model,
-                        system=system,
-                        messages=messages,
-                        tool_name=event.name,
-                        tool_args=event.args,
-                        config=config,
-                    )
-                    try:
-                        while True:
-                            narration_event = next(narration)
-                            current_text += narration_event.text
-                            yield AssistantTextDelta(narration_event.text)
-                    except StopIteration as result:
-                        _, narration_usage, narration_cost = result.value
-                        total_usage.input_tokens += narration_usage.input_tokens
-                        total_usage.output_tokens += narration_usage.output_tokens
-                        total_cost += narration_cost
-                        if narration_usage.input_tokens or narration_usage.output_tokens or narration_cost:
-                            yield UsageUpdated(
-                                narration_usage.input_tokens,
-                                narration_usage.output_tokens,
-                                narration_cost,
-                            )
-                    forced_narration_emitted = True
-                if current_text:
-                    assistant_parts.append({"type": "text", "text": current_text})
-                    current_text = ""
-                yield ToolCalled(event.name, event.args)
-                tool_calls.append({"name": event.name, "args": event.args, "id": None, "raw_part": event.raw_part})
-            elif isinstance(event, _ToolMeta):
-                if tool_calls:
-                    tool_calls[-1]["id"] = event.tool_use_id
-            elif isinstance(event, Done):
-                reasoning_items = event.reasoning_items
-                total_usage.input_tokens += event.usage.input_tokens
-                total_usage.output_tokens += event.usage.output_tokens
-                total_cost += event.cost
-                # The real context size of this turn — the G1 compaction trigger for next turn.
-                last_input_tokens = event.usage.input_tokens
-                yield UsageUpdated(event.usage.input_tokens, event.usage.output_tokens, event.cost)
+            for event in stream(model, system, messages, tools_schema, config.model_kwargs, streaming=config.stream):
+                if isinstance(event, TextDelta):
+                    current_text += event.text
+                    yield AssistantTextDelta(event.text)
+                elif isinstance(event, ToolCall):
+                    if config.narrate_tool_steps and not forced_narration_emitted and not current_text and not any(
+                        part.get("type") == "text" and part.get("text") for part in assistant_parts
+                    ):
+                        narration = _forced_tool_narration(
+                            model=model,
+                            system=system,
+                            messages=messages,
+                            tool_name=event.name,
+                            tool_args=event.args,
+                            config=config,
+                        )
+                        try:
+                            while True:
+                                narration_event = next(narration)
+                                current_text += narration_event.text
+                                yield AssistantTextDelta(narration_event.text)
+                        except StopIteration as result:
+                            _, narration_usage, narration_cost = result.value
+                            total_usage.add(narration_usage)
+                            total_cost += narration_cost
+                            if narration_usage.input_tokens or narration_usage.output_tokens or narration_cost or narration_usage.usage_details:
+                                yield UsageUpdated(
+                                    narration_usage.input_tokens,
+                                    narration_usage.output_tokens,
+                                    narration_cost,
+                                    narration_usage.usage_details,
+                                )
+                        forced_narration_emitted = True
+                    if current_text:
+                        assistant_parts.append({"type": "text", "text": current_text})
+                        current_text = ""
+                    yield ToolCalled(event.name, event.args)
+                    tool_calls.append({"name": event.name, "args": event.args, "id": None, "raw_part": event.raw_part})
+                elif isinstance(event, _ToolMeta):
+                    if tool_calls:
+                        tool_calls[-1]["id"] = event.tool_use_id
+                elif isinstance(event, Done):
+                    reasoning_items = event.reasoning_items
+                    total_usage.add(event.usage)
+                    total_cost += event.cost
+                    # The real context size of this turn — the G1 compaction trigger for next turn.
+                    last_input_tokens = event.usage.input_tokens
+                    yield UsageUpdated(event.usage.input_tokens, event.usage.output_tokens, event.cost, event.usage.usage_details)
 
-        if current_text:
-            assistant_parts.append({"type": "text", "text": current_text})
-        if reasoning_items:
-            # Internal continuation state for the Responses API.  It is persisted
-            # with this exact assistant turn but never rendered as user-facing text.
-            assistant_parts.append({"type": "reasoning", "items": reasoning_items})
-        for tc in tool_calls:
-            assistant_parts.append({
-                "type": "tool_call",
-                "name": tc["name"],
-                "args": tc["args"],
-                "id": tc["id"],
-                "raw_part": tc.get("raw_part"),
-            })
-        messages.append({"role": "assistant", "content": assistant_parts})
+            if current_text:
+                assistant_parts.append({"type": "text", "text": current_text})
+            if reasoning_items:
+                # Internal continuation state for the Responses API.  It is persisted
+                # with this exact assistant turn but never rendered as user-facing text.
+                assistant_parts.append({"type": "reasoning", "items": reasoning_items})
+            for tc in tool_calls:
+                assistant_parts.append({
+                    "type": "tool_call",
+                    "name": tc["name"],
+                    "args": tc["args"],
+                    "id": tc["id"],
+                    "raw_part": tc.get("raw_part"),
+                })
+            messages.append({"role": "assistant", "content": assistant_parts})
+        save_position("model_complete", assistant_parts=assistant_parts, tool_calls=tool_calls)
 
         if not tool_calls:
             text = "".join(p["text"] for p in assistant_parts if p["type"] == "text")
-            if assistant_mode:
+            if assistant_mode or (config.prompt_variant in {"overleaf_continuation", "interactive_overleaf"} and not proof_state.latest_proof_path):
                 # Chat/assistant turn — not a formalization run, so skip the
                 # final proof gate entirely.
                 yield Finished("assistant", text or "(no response)", turn, session_id, model,
@@ -908,32 +1100,47 @@ def _run_events_inner(
                     yield Finished("assistant", text or "(no response)", turn, session_id,
                                    model, total_usage, total_cost, transcript(turn))
                     return
+                if (yield from failed_gate()):
+                    return
                 messages.append({"role": "user", "content": _NO_PROOF_ARTIFACT_MESSAGE})
+                save_position("turn_boundary")
                 continue
             if proof_state.needs_final_check():
                 check_path = proof_state.latest_proof_path
                 assert check_path is not None
                 check_args = {"path": check_path}
-                yield ToolCalled("lean_check", check_args)
-                handler = tool_handlers.get("lean_check")
-                if handler:
-                    try:
-                        result = handler(check_args)
-                    except Exception as e:
-                        result = f"Error: tool 'lean_check' raised {type(e).__name__}: {e}"
+                saved_final_check = (
+                    (resume_state.get("completed_tools") or {}).get("-1")
+                    if resume_state and resume_state.get("stage") == "model_complete" else None
+                )
+                if saved_final_check is not None:
+                    result = restore_result(saved_final_check)
+                else:
+                    yield ToolCalled("lean_check", check_args)
+                    final_check_id = uuid.uuid4().hex
+                    _record("invocation_start", {"id": final_check_id, "kind": "tool",
+                                                 "name": "lean_check", "turn": turn,
+                                                 "call_index": -1, "input": check_args})
+                    handler = tool_handlers.get("lean_check")
+                    if handler:
+                        try:
+                            result = handler(check_args)
+                        except Exception as e:
+                            result = f"Error: tool 'lean_check' raised {type(e).__name__}: {e}"
+                            diagnostics.report(
+                                "step_error", "tool.raised",
+                                f"The final verification check failed to run: {type(e).__name__}: {e}",
+                                tool="lean_check", turn=turn, path=check_path,
+                            )
+                    else:
+                        result = "Error: unknown tool 'lean_check'"
                         diagnostics.report(
-                            "step_error", "tool.raised",
-                            f"The final verification check failed to run: {type(e).__name__}: {e}",
+                            "step_error", "tool.unknown",
+                            "The final verification check could not run: lean_check is not "
+                            "in this run's toolset.",
                             tool="lean_check", turn=turn, path=check_path,
                         )
-                else:
-                    result = "Error: unknown tool 'lean_check'"
-                    diagnostics.report(
-                        "step_error", "tool.unknown",
-                        "The final verification check could not run: lean_check is not "
-                        "in this run's toolset.",
-                        tool="lean_check", turn=turn, path=check_path,
-                    )
+                    _record("invocation_result", {"id": final_check_id, "result": serialize_result(result)})
                 preview = result[:200] + "..." if len(result) > 200 else result
                 yield ToolResulted("lean_check", result, preview)
                 for ev in _meaning_events("lean_check", check_args, result):
@@ -956,6 +1163,8 @@ def _run_events_inner(
                 tool_result["tool_use_id"] = gate_call_id
                 tool_result["tool_call_id"] = gate_call_id
                 messages.append({"role": "user", "content": [tool_result]})
+                save_position("model_complete", assistant_parts=assistant_parts, tool_calls=[],
+                              completed_tools={-1: result})
             if proof_state.latest_proof_path and not proof_state.latest_proof_verified():
                 if config.prompt_variant == "interactive":
                     # Collaborator: the proof isn't actually done (errors, or still
@@ -965,8 +1174,11 @@ def _run_events_inner(
                     yield Finished("assistant", text or "(no response)", turn, session_id,
                                    model, total_usage, total_cost, transcript(turn))
                     return
+                if (yield from failed_gate()):
+                    return
                 diagnostic = proof_state.latest_check_output or "No successful lean_check was observed."
                 messages.append({"role": "user", "content": f"{_FINAL_GATE_FAILURE_MESSAGE}\n\n{diagnostic}"})
+                save_position("turn_boundary")
                 continue
 
             final_text = text or "(no response)"
@@ -974,18 +1186,23 @@ def _run_events_inner(
                 model=model,
                 messages=messages,
                 final_text=final_text,
-                theorem_signature=_theorem_signature(proof_state.latest_proof_path),
+                theorem_signature=safeverify.theorem_signature(proof_state.latest_check_content or "") or "",
                 config=config,
             )
-            total_usage.input_tokens += result_usage.input_tokens
-            total_usage.output_tokens += result_usage.output_tokens
+            total_usage.add(result_usage)
             total_cost += result_cost
-            if result_usage.input_tokens or result_usage.output_tokens or result_cost:
-                yield UsageUpdated(result_usage.input_tokens, result_usage.output_tokens, result_cost)
+            if result_usage.input_tokens or result_usage.output_tokens or result_cost or result_usage.usage_details:
+                yield UsageUpdated(result_usage.input_tokens, result_usage.output_tokens, result_cost, result_usage.usage_details)
+            if not proof_state.latest_proof_verified():
+                result_kind, result_detail = "needs_review", "Proof inputs changed after the final check. Recheck the current revision."
+            save_position("final_result", final_result={
+                "text": final_text, "kind": result_kind, "detail": result_detail,
+            })
             final_transcript = transcript(turn)
             yield Finished("completed", final_text, turn, session_id, model,
                            total_usage, total_cost, final_transcript,
-                           result_kind=result_kind, result_detail=result_detail)
+                           result_kind=result_kind, result_detail=result_detail,
+                           candidate_path=proof_state.latest_proof_path)
             return
 
         def _exec_tool(tc):
@@ -998,6 +1215,11 @@ def _run_events_inner(
             around a broken tool. `diagnostics.report` is the human's copy; the loop
             drains it in Phase 4. Reporting (not yielding) is what lets this stay a
             plain function callable from an E3 worker thread."""
+            invocation_id = uuid.uuid4().hex
+            _record("invocation_start", {"id": invocation_id, "kind": "tool",
+                                         "name": tc["name"], "turn": turn,
+                                         "call_index": tc.get("_index"),
+                                         "input": tc.get("args")})
             handler = tool_handlers.get(tc["name"])
             if handler:
                 try:
@@ -1024,14 +1246,20 @@ def _run_events_inner(
             if tc["name"] == "lean_check":
                 hint = _domain_cascade_for_check(tc.get("args") or {}, working_dir, surfaced_domains)
                 if hint:
-                    r = f"{r}\n\n{hint}"
+                    from .check_runtime import CheckText
+                    r = CheckText(f"{r}\n\n{hint}", getattr(r, "execution", None), getattr(r, "captured_content", None))
+            _record("invocation_result", {"id": invocation_id, "result": serialize_result(r)})
             return r
 
         # Results by tool-call index, reassembled in the original order below so the
         # provider matches each tool_result to its call. A turn's spawns run CONCURRENTLY
         # (E2) and its independent read-only tools may too (E3); everything else stays
         # serial and in order.
-        results_by_idx: dict[int, str] = {}
+        results_by_idx: dict[int, str] = {
+            int(k): restore_result(v) for k, v in (resume_state.get("completed_tools", {}) if resume_state else {}).items()
+        } if resume_state and resume_state.get("stage") == "model_complete" else {}
+        if resume_state and resume_state.get("stage") == "model_complete":
+            resume_state = None
         spawn_specs = []      # (idx, tc, plan) — approved spawns with a real plan
         serial_calls = []     # (idx, tc) — approved non-spawn tools to execute
         # Calls that never ran because the human denied or cancelled the gate. Tracked
@@ -1047,6 +1275,9 @@ def _run_events_inner(
         # Phase 1 — gate every call (D19; a two-way approval must run on the generator),
         # prepare + announce spawns, and bucket the rest for execution.
         for idx, tc in enumerate(tool_calls):
+            tc["_index"] = idx
+            if idx in results_by_idx:
+                continue
             approved = True
             if gate is not None and gate(tc["name"], tc["args"]):
                 decision = yield ToolApprovalRequested(tc["name"], tc["args"])
@@ -1070,6 +1301,9 @@ def _run_events_inner(
                         "message, explain to the user what you were about to do and why, then ask how "
                         "they'd like to proceed — and wait for their reply before acting."
                     )
+            elif tc["name"] == "spawn_subagent" and config.status_reporting:
+                refused_idx.add(idx)
+                results_by_idx[idx] = "Error: delegated work is unavailable in source-bound status runs; perform the work in this run."
             elif tc["name"] == "spawn_subagent":
                 try:
                     plan = subagents.prepare_spawn(tc["args"])
@@ -1087,6 +1321,10 @@ def _run_events_inner(
                 if isinstance(plan, str):
                     results_by_idx[idx] = plan  # refused → no child, no started event
                 else:
+                    tc["_invocation_id"] = uuid.uuid4().hex
+                    _record("invocation_start", {"id": tc["_invocation_id"], "kind": "tool",
+                                                 "name": "spawn_subagent", "turn": turn,
+                                                 "call_index": idx, "input": tc["args"]})
                     # D1: announce every spawn as running BEFORE launching, so the UI shows
                     # the whole batch live from the outset.
                     # The full delegated task travels with the start event — the child's
@@ -1099,11 +1337,19 @@ def _run_events_inner(
             else:
                 serial_calls.append((idx, tc))
 
+        if results_by_idx:
+            save_position("model_complete", assistant_parts=assistant_parts,
+                          tool_calls=tool_calls, completed_tools=results_by_idx,
+                          material_publication_rejected=saved_material_rejection)
+
+        emitted_idx: set[int] = set()
+        material_publication_rejected = saved_material_rejection
+
         # Phase 2 — non-spawn tools. E3: if a turn issues several INDEPENDENT read-only
         # tools, run them concurrently (a real win for F1's multi-modal search); otherwise
         # execute inline in order (any writer/checker/bash — a write→check pair must not
         # be reordered).
-        if len(serial_calls) > 1 and all(tc["name"] in _PARALLEL_SAFE_TOOLS for _i, tc in serial_calls):
+        if _checkpoint_hook.get() is None and not config.status_reporting and len(serial_calls) > 1 and all(tc["name"] in _PARALLEL_SAFE_TOOLS for _i, tc in serial_calls):
             out: dict[int, str] = {}
             threads = []
             for _i, _tc in serial_calls:
@@ -1117,7 +1363,102 @@ def _run_events_inner(
             results_by_idx.update(out)
         else:
             for idx, tc in serial_calls:
-                results_by_idx[idx] = _exec_tool(tc)
+                if config.status_reporting and material_publication_rejected and tc["name"] != TOOL_NAME:
+                    refused_idx.add(idx)
+                    results_by_idx[idx] = "Error: tool deferred because the preceding material Lea Status update was rejected. Publish the finding successfully before continuing."
+                    continue
+                if (config.status_reporting or config.project_library) and (reporting_stop or (should_stop and should_stop())):
+                    reporting_stop = reporting_stop or "interrupted"
+                    refused_idx.add(idx)
+                    results_by_idx[idx] = "Error: tool canceled because the run was paused."
+                    continue
+                if tc["name"] in LIBRARY_TOOLS and config.project_library:
+                    invocation_id = uuid.uuid4().hex
+                    _record("invocation_start", {"id": invocation_id, "kind": "tool", "name": tc["name"],
+                        "turn": turn, "call_index": idx, "input": tc["args"]})
+                    try:
+                        ack = yield ProjectLibraryRequested(tc["name"], tc["args"], f"{turn}:{idx}:{tc.get('id') or ''}")
+                        if not isinstance(ack, ProjectLibraryAck) or ack.error:
+                            raise ValueError(ack.error if isinstance(ack, ProjectLibraryAck) else "Project host did not acknowledge the tool.")
+                        result = json.dumps(ack.result, ensure_ascii=False)
+                        reporting_stop = ack.result.get("stop_reason")
+                        if ack.result.get("outcome") == "inline":
+                            config.project_context.setdefault("reserved_paths", []).append(ack.result["path"])
+                    except (ValueError, TypeError) as exc:
+                        result = f"Error: {exc}"
+                    _record("invocation_result", {"id": invocation_id, "result": result})
+                elif tc["name"] == TOOL_NAME and config.status_reporting:
+                    status_invocation_id = uuid.uuid4().hex
+                    _record("invocation_start", {"id": status_invocation_id,
+                                                 "kind": "tool", "name": TOOL_NAME,
+                                                 "turn": turn, "call_index": idx,
+                                                 "input": tc["args"]})
+                    try:
+                        payload = validate_payload(tc["args"])
+                        ack = yield LeaStatusUpdateRequested(payload, f"{turn}:{idx}:{tc.get('id') or ''}")
+                        if not isinstance(ack, LeaStatusUpdateAck):
+                            raise ValueError("Reporting host did not acknowledge publication")
+                        if not ack.accepted:
+                            reporting_stop = ack.stop_reason
+                            raise ValueError(ack.error or "Publication failed")
+                        result = json.dumps({"accepted": True, "update_id": ack.update_id, "sequence": ack.sequence})
+                        status_context["assessment"] = ack.assessment
+                        status_context.pop("previous_assessment", None)
+                        last_status_at = time.monotonic()
+                        tools_since_status = 0
+                        reporting_stop = ack.stop_reason
+                        material_publication_rejected = False
+                    except (ValueError, TypeError) as exc:
+                        attempted_findings = tc["args"].get("finding_updates", []) if isinstance(tc["args"], dict) else []
+                        material_publication_rejected = isinstance(attempted_findings, list) and any(
+                            isinstance(f, dict) and f.get("severity") in {"warning", "blocking"} for f in attempted_findings)
+                        result = f"Error: {exc}"
+                    _record("invocation_result", {"id": status_invocation_id, "result": result})
+                else:
+                    # Checkers can recover or compile for minutes. Drain their
+                    # human-facing events while they run, preserving serial tool
+                    # order and the invocation's ContextVars on the worker.
+                    if tc["name"] in {"lean_check", "suggest_imports"}:
+                        pending = {}
+                        ctx = contextvars.copy_context()
+                        def check_work(call=tc):
+                            try:
+                                pending["result"] = ctx.run(_exec_tool, call)
+                            except BaseException as exc:
+                                pending["error"] = exc
+                        worker = threading.Thread(target=check_work, daemon=True)
+                        worker.start()
+                        while worker.is_alive():
+                            worker.join(timeout=0.05)
+                            for diag in diagnostics.drain():
+                                yield diag
+                        if "error" in pending:
+                            raise pending["error"]
+                        result = pending.get("result", "Error: Lean check worker failed")
+                    else:
+                        result = _exec_tool(tc)
+                    tools_since_status += 1
+                results_by_idx[idx] = result
+                save_position("model_complete", assistant_parts=assistant_parts,
+                              tool_calls=tool_calls, completed_tools=results_by_idx,
+                              material_publication_rejected=material_publication_rejected)
+                # Publish serial meaning before another tool can mutate the file.
+                if idx not in refused_idx:
+                    yield ToolResulted(tc["name"], result, result[:200])
+                    for ev in _meaning_events(tc["name"], tc["args"], result):
+                        yield ev
+                    proof_state.note_tool_result(tc["name"], tc["args"], result)
+                    if tc['name'] == 'bash' and proof_state.latest_proof_path:
+                        from .check_evidence import digest
+                        changed_path = Path(proof_state.latest_proof_path)
+                        try:
+                            changed = changed_path.read_bytes().decode('utf-8')
+                            if digest(changed.encode()) != (proof_state.latest_check_execution or {}).get('content_sha256'):
+                                yield FileChanged(str(changed_path), content=changed)
+                                proof_state.unchecked_write = True
+                        except (OSError, UnicodeError):
+                            proof_state.unchecked_write = True
+                    emitted_idx.add(idx)
 
         # Phase 3 — E2: run this turn's spawns concurrently, streaming all their live
         # events up as they arrive (the coordinator's model context stays isolated —
@@ -1128,6 +1469,11 @@ def _run_events_inner(
                 results_by_idx[idx] = renders.get(plan.result_id) or (
                     f"Error: subagent '{plan.subagent_type}' produced no result."
                 )
+                _record("invocation_result", {"id": _tc["_invocation_id"],
+                                               "result": results_by_idx[idx]})
+                save_position("model_complete", assistant_parts=assistant_parts,
+                              tool_calls=tool_calls, completed_tools=results_by_idx,
+                              material_publication_rejected=material_publication_rejected)
 
         # Phase 4 — emit each tool's downstream events + assemble tool_results IN ORDER.
         # First surface anything the tools reported for the HUMAN (C1/C4). Drained here,
@@ -1142,14 +1488,16 @@ def _run_events_inner(
         for idx, tc in enumerate(tool_calls):
             result = results_by_idx.get(idx, f"Error: tool '{tc['name']}' produced no result")
             preview = result[:200] + "..." if len(result) > 200 else result
-            yield ToolResulted(tc["name"], result, preview)
+            if idx not in emitted_idx:
+                yield ToolResulted(tc["name"], result, preview)
             # A refused call had no effect, so it has no meaning events and must not
             # move the proof state — otherwise a denied write marks the proof as
             # freshly written and due a check.
-            if idx not in refused_idx:
+            if idx not in refused_idx and idx not in emitted_idx:
                 for ev in _meaning_events(tc["name"], tc["args"], result):
                     yield ev
                 proof_state.note_tool_result(tc["name"], tc["args"], result)
+            stall.note_tool(tc["name"], tc["args"], result, successful=idx not in refused_idx)
             tool_result = {"type": "tool_result", "tool_name": tc["name"], "content": result}
             if tc["id"]:
                 tool_result["tool_use_id"] = tc["id"]
@@ -1170,3 +1518,9 @@ def _run_events_inner(
                 yield child_result.to_event()
 
         messages.append({"role": "user", "content": tool_results})
+        save_position("turn_boundary")
+        saved_material_rejection = False
+        if reporting_stop:
+            yield Finished(reporting_stop, "Formalization waiting for a canonical project dependency." if reporting_stop == "dependency_wait" else "Formalization paused; inspect the latest Lea Status for details.",
+                           turn, session_id, model, total_usage, total_cost, transcript(turn))
+            return

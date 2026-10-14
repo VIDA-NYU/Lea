@@ -70,6 +70,7 @@ test("omits environments without Lea comment labels and preserves source metadat
   assert.equal(manifest.items.length, 1);
   const [item] = manifest.items;
   assert.equal(item.kind, "corollary");
+  assert.equal(item.targetKind, "theorem");
   assert.equal(item.label, "main_corollary");
   assert.equal(item.latexLabel, "cor:main");
   assert.equal(item.sourceFile, "main.tex");
@@ -145,6 +146,26 @@ test("carries marker metadata so pane items can be formalized", () => {
   assert.equal(item.targetContext, "Start from the cover.");
 });
 
+test("label-free theorem and definition appear as runnable pane items", () => {
+  const source = [
+    "\\begin{theorem}\\label{thm:base}",
+    "% lea: formalize",
+    "Base statement.",
+    "\\end{theorem}",
+    "\\begin{definition}",
+    "% lea: define",
+    "A useful definition.",
+    "\\end{definition}"
+  ].join("\n");
+  const manifest = buildLeanPaneManifest({ files: [{ path: "main.tex", content: source }] });
+  assert.equal(manifest.items.length, 2);
+  assert.deepEqual(manifest.items.map((item) => item.formalizable), [true, true]);
+  assert.deepEqual(manifest.items.map((item) => item.labelSource), ["generated", "generated"]);
+  assert.equal(manifest.items[0].title, "thm:base");
+  assert.equal(manifest.items[1].title, "A useful definition.");
+  assert.deepEqual(manifest.diagnostics, []);
+});
+
 test("marks items with a malformed marker as not formalizable", () => {
   const manifest = buildLeanPaneManifest({
     files: [{
@@ -203,6 +224,7 @@ test("inventories a tag-marked item in a custom (non-allowlisted) environment", 
   assert.equal(manifest.items.length, 2);
   const [claim, fact] = manifest.items;
   assert.equal(claim.kind, "claim");
+  assert.equal(claim.targetKind, "theorem");
   assert.equal(claim.label, "foo_claim");
   assert.equal(claim.leanKind, "theorem");
   assert.equal(claim.formalizable, true);

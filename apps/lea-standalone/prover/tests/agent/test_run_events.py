@@ -86,11 +86,12 @@ def install_silent_tool_fake():
     return calls
 
 
-def cfg(max_turns=None, tools=None, skills=None, narrate_tool_steps=False):
+def cfg(max_turns=None, tools=None, skills=None, narrate_tool_steps=False, max_cost_usd=None):
     return LeaConfig(model="gemini/test", model_kwargs={}, stream=True,
                      prompt_variant="default", max_turns=max_turns,
                      tools=tools, tool_modules=[], skills=skills or [],
                      narrate_tool_steps=narrate_tool_steps,
+                     max_cost_usd=max_cost_usd,
                      mcp_servers={})
 
 
@@ -297,6 +298,7 @@ def test_run_events_sequence():
     check("Finished cumulative usage", fin.usage == Usage(122, 51))
     check("Finished cumulative cost", abs(fin.cost - 0.0041) < 1e-9)
     check("Finished result kind proved", fin.result_kind == "proved")
+    check("Finished names the final checked candidate", fin.candidate_path is not None and fin.candidate_path.endswith("Basic.lean"))
     check("transcript turns", fin.transcript["turns"] == 2)
     check("transcript has messages", len(fin.transcript["messages"]) >= 3)
 
@@ -339,6 +341,16 @@ def test_max_turns_hands_back_a_summary():
           any(isinstance(e, AssistantTextDelta) and "FINDINGS" in e.text for e in events))
     check("summary folded into the returned transcript",
           any("FINDINGS" in str(m.get("content")) for m in fin.transcript["messages"]))
+
+
+def test_max_cost_pauses_without_a_paid_summary_turn():
+    calls = install_fakes()
+    events = list(agent.run_events(cfg(max_cost_usd=0.001), msgs("prove it")))
+    fin = events[-1]
+    check("max_cost Finished reason", isinstance(fin, Finished) and fin.reason == "max_cost")
+    check("max_cost runs no summary request", calls["n"] == 1)
+    check("max_cost preserves incurred usage", fin.usage == Usage(100, 40))
+    check("max_cost preserves incurred cost", abs(fin.cost - 0.003) < 1e-9)
 
 
 def test_should_stop_interrupts_before_first_turn():
@@ -410,7 +422,7 @@ def test_final_gate_failed_check_resumes_loop():
     check("failed gate resumed the model loop", calls["n"] == 4)
     saw_failure_prompt = any(
         isinstance(message.get("content"), str)
-        and "final verification gate failed" in message["content"]
+        and "final verification requirement is unmet" in message["content"]
         and "No goals to be solved" in message["content"]
         for message in calls["messages"][2]
     )
@@ -718,6 +730,7 @@ def main():
     test_run_events_sequence()
     test_max_turns()
     test_max_turns_hands_back_a_summary()
+    test_max_cost_pauses_without_a_paid_summary_turn()
     test_narrate_tool_steps_instruction()
     test_narrate_tool_steps_forces_text_before_silent_tool_call()
     test_final_gate_failed_check_resumes_loop()
@@ -743,4 +756,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from tests.check_fixtures import mocked_tool_inputs
+    with mocked_tool_inputs():
+        main()

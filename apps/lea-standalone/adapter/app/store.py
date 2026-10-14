@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from . import usage_details as usage_metadata
+
 import hashlib
 import json
 import re
 import sqlite3
 import threading
+from contextlib import nullcontext
 from collections import Counter
 from uuid import uuid4
 
@@ -13,6 +16,8 @@ from . import authoring as _authoring
 from typing import Any
 
 from .db import ROOT, connect, row_to_dict, utc_now, write
+from .public_errors import redact, run_detail
+from .read_projections import read_projection
 
 
 RAW_EVENT_LOG_DIR = ROOT / "data" / "lea-api-events"
@@ -180,6 +185,7 @@ def search_sessions(query: str, limit: int = 30) -> list[dict]:
 DEFAULT_SESSION_PAGE = 100
 
 
+@read_projection
 def _list_sessions(
     extra_where: str = "", params: tuple = (), limit: int = DEFAULT_SESSION_PAGE
 ) -> list[dict]:
@@ -193,6 +199,8 @@ def _list_sessions(
                 coalesce(sum(r.output_tokens), 0) as output_tokens,
                 coalesce(sum(r.input_tokens + r.output_tokens), 0) as total_tokens,
                 coalesce(sum(r.cost_usd), 0) as cost_usd,
+                coalesce(sum(case when r.usage_status in ('pending', 'partial') then 1 else 0 end), 0) as incomplete_usage_runs,
+                coalesce(sum(case when r.id is not null and (r.usage_status is null or r.usage_status = 'unknown') then 1 else 0 end), 0) as unconfirmed_usage_runs,
                 count(distinct r.id) as run_count,
                 (
                     select count(*)
@@ -230,15 +238,39 @@ def _list_sessions(
                     order by cs.id desc
                     limit 1
                 ) as latest_artifact_kind,
-                (
-                    select rcs.status
-                    from timeline cs
+                coalesce(
+                    (select cs.formalization_id from timeline cs
+                     where cs.session_id = s.id and cs.kind = 'code'
+                       and lower(cs.path) not like '%scratch%'
+                     order by cs.id desc limit 1),
+                    (select rcs.focus_formalization_id from runs rcs
+                     where rcs.session_id = s.id
+                       and rcs.result_kind in ('proved', 'defined', 'needs_review')
+                     order by rcs.created_at desc, rcs.id desc limit 1)
+                ) as latest_code_formalization_id,
+                case when (
+                    select rcs.result_kind from runs rcs
+                    where rcs.session_id = s.id
+                      and rcs.result_kind in ('proved', 'defined', 'needs_review')
+                      and (
+                        (select cs.formalization_id from timeline cs
+                         where cs.session_id = s.id and cs.kind = 'code'
+                           and lower(cs.path) not like '%scratch%'
+                         order by cs.id desc limit 1) is null
+                        or rcs.focus_formalization_id = (
+                          select cs.formalization_id from timeline cs
+                          where cs.session_id = s.id and cs.kind = 'code'
+                            and lower(cs.path) not like '%scratch%'
+                          order by cs.id desc limit 1)
+                      )
+                    order by rcs.created_at desc, rcs.id desc limit 1
+                ) = 'needs_review' then 'needs_review' else (
+                    select rcs.status from timeline cs
                     left join runs rcs on rcs.id = cs.run_id
                     where cs.session_id = s.id and cs.kind = 'code'
                       and lower(cs.path) not like '%scratch%'
-                    order by cs.id desc
-                    limit 1
-                ) as latest_code_run_status,
+                    order by cs.id desc limit 1
+                ) end as latest_code_run_status,
                 (
                     select count(*) from timeline cs
                     where cs.session_id = s.id and cs.kind = 'code'
@@ -249,6 +281,8 @@ def _list_sessions(
                     from runs r3
                     where r3.session_id = s.id and r3.status in ('pending', 'running')
                 ) as active_run_count,
+                (select rr.recovery_state from runs rr where rr.session_id = s.id
+                 order by rr.created_at desc, rr.id desc limit 1) as latest_recovery_state,
                 -- Sub-agents (bug-fix): a CHILD's final output — its last agent message —
                 -- so the coordinator's spawn box can show a collapsed preview + expand
                 -- without a second fetch. Gated on parent_id so a normal session's list
@@ -289,17 +323,30 @@ def _list_sessions(
             """,
             (*params, int(limit)),
         ).fetchall()
+    heads = {}
+    if rows:
+        with connect() as conn:
+            ids = [row['id'] for row in rows]
+            marks = ','.join('?' for _ in ids)
+            latest = conn.execute(f"{TIMELINE_WITH_BLOB} where t.id in (select max(id) from timeline "
+                f"where kind='code' and lower(path) not like '%scratch%' and session_id in ({marks}) group by session_id)", ids).fetchall()
+        heads = {row['session_id']: _code_step_from_row(row) for row in latest}
     sessions = []
+    status_targets = []
     for row in rows:
         data = row_to_dict(row)
+        status_targets.append(data.pop("latest_code_formalization_id", None))
         # v2.3 item 13: keep the integer active-run count on the row (not just the
         # bool the derived status consumes). Derived status deliberately stays a
         # working-copy verdict (D14), so a session that already has code but is
         # re-running reads 'proved'/'ok', never 'running' — the sidebar needs this
         # separate signal to show a running dot for background runs.
         active_run_count = int(data.pop("active_run_count", 0) or 0)
+        recorded_status = data.pop("latest_check_status", None)
+        projected = heads.get(data['id'])
+        recorded_status = recorded_status if projected and projected.get('check_current') else None
         data["status"] = _derive_session_status(
-            data.pop("latest_check_status", None),
+            recorded_status,
             data.pop("latest_artifact_kind", None),
             int(data.pop("code_step_count", 0) or 0),
             bool(active_run_count),
@@ -307,6 +354,29 @@ def _list_sessions(
         )
         data["active_run_count"] = active_run_count
         sessions.append(_normalize_usage_session(data))
+    if sessions:
+        ids = [item["id"] for item in sessions]
+        with connect() as conn:
+            marks = ",".join("?" for _ in ids)
+            detail_rows = conn.execute(f"select session_id,input_tokens,output_tokens,cost_usd,usage_details_json from runs where session_id in ({marks}) union all select session_id,input_tokens,output_tokens,cost_usd,usage_details_json from alignment_checks where session_id in ({marks})", (*ids, *ids)).fetchall()
+        grouped = {}
+        for r in detail_rows:
+            grouped.setdefault(r["session_id"], []).append(r)
+        for item in sessions:
+            item["usage_details"] = usage_metadata.aggregate(grouped.get(item["id"], []))
+    target_ids = list({fid for fid in status_targets if fid})
+    if target_ids:
+        from . import formalizations as formalization_service
+        with connect() as conn:
+            marks = ",".join("?" for _ in target_ids)
+            raw = [row_to_dict(row) for row in conn.execute(
+                f"select * from formalizations where id in ({marks})", target_ids
+            ).fetchall()]
+        target_verdicts = {item['id']: item['validity_status'] for item in formalization_service.decorate(raw)
+                           if item['validity_status'] in {'needs_review', 'disproved'} or item.get('review', {}).get('reason')}
+        for session, fid in zip(sessions, status_targets):
+            if fid in target_verdicts:
+                session["status"] = target_verdicts[fid]
     return sessions
 
 
@@ -324,13 +394,15 @@ def sessions_digest() -> str:
                 (select count(*) from sessions) as session_count,
                 (select coalesce(max(updated_at), '') from sessions) as max_updated_at,
                 (select count(*) from runs where status in ('pending', 'running')) as active_runs,
-                (select coalesce(max(updated_at), '') from runs) as max_run_updated_at
+                (select coalesce(max(updated_at), '') from runs) as max_run_updated_at,
+                (select count(*) from formalization_review_events) as review_count,
+                (select coalesce(max(created_at), '') from formalization_review_events) as max_review_at
             """
         ).fetchone()
     data = row_to_dict(row)
     return "|".join(
         str(data.get(key, ""))
-        for key in ("session_count", "max_updated_at", "active_runs", "max_run_updated_at")
+        for key in ("session_count", "max_updated_at", "active_runs", "max_run_updated_at", "review_count", "max_review_at")
     )
 
 
@@ -343,22 +415,27 @@ def create_run(
     autonomous: bool = False,
     focus_formalization_id: str | None = None,
     focus_source_hash: str | None = None,
+    purpose: str = "general",
+    approval_mode: str | None = None,
 ) -> dict:
+    if approval_mode not in {None, "stepwise", "none"}:
+        raise ValueError("unsupported approval mode")
+    approval_mode = "none" if autonomous else (approval_mode or "stepwise")
     now = utc_now()
     run_id = str(uuid4())
     with connect() as conn:
         conn.execute(
             """
             insert into runs (
-                id, session_id, project_id, status, autonomous, model, provider,
-                max_turns, focus_formalization_id, focus_source_hash, created_at, updated_at
+                id, session_id, project_id, status, autonomous, approval_mode, model, provider,
+                max_turns, focus_formalization_id, focus_source_hash, purpose, usage_status, created_at, updated_at
             )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
             """,
             (
                 run_id, session_id, project_id, "pending",
-                1 if autonomous else 0, model, provider, max_turns,
-                focus_formalization_id, focus_source_hash, now, now,
+                1 if autonomous else 0, approval_mode, model, provider, max_turns,
+                focus_formalization_id, focus_source_hash, purpose, now, now,
             ),
         )
         row = conn.execute("select * from runs where id = ?", (run_id,)).fetchone()
@@ -585,6 +662,34 @@ def list_formalization_files(formalization_id: str) -> list[dict]:
     return [row_to_dict(row) for row in rows]
 
 
+def unlink_missing_formalization_support(formalization_id: str, repo: Path) -> list[str]:
+    """Retire deleted support files before capturing a live status snapshot.
+
+    A helper can be replaced by another module and deleted through a shell
+    command, which does not emit a FileChanged event. Keep primary/generated
+    registrations intact: their disappearance must remain a reporting error.
+    """
+    removed: list[str] = []
+    root = repo.resolve()
+    with write() as conn:
+        rows = conn.execute(
+            "select path from formalization_files where formalization_id = ? and role = 'support'",
+            (formalization_id,),
+        ).fetchall()
+        for row in rows:
+            path = (root / row["path"]).resolve()
+            if not path.is_relative_to(root):
+                continue
+            if path.is_file():
+                continue
+            conn.execute(
+                "delete from formalization_files where formalization_id = ? and path = ? and role = 'support'",
+                (formalization_id, row["path"]),
+            )
+            removed.append(row["path"])
+    return removed
+
+
 def list_raw_project_formalizations(project_id: str) -> list[dict]:
     with connect() as conn:
         rows = conn.execute(
@@ -642,12 +747,71 @@ def create_run_bundle(
     focus_formalization_id: str | None = None,
     focus_source_hash: str | None = None,
     new_formalization: dict | None = None,
+    purpose: str = "general",
+    source_bundle: dict | None = None,
+    allow_source_pause: bool = False,
+    client_request_id: str | None = None,
+    client_request_hash: str | None = None,
+    resumes_run_id: str | None = None,
+    source_context_ref: str | None = None,
+    resume_checkpoint_id: int | None = None,
+    continuation_best_effort: bool = False,
+    deadline_at: str | None = None,
+    dependency_id: str | None = None,
+    initiating_run_id: str | None = None,
+    automation_budget: dict | None = None,
 ) -> dict:
     """Atomically create/resolve the conversation scope, run, and user message."""
     if focus_formalization_id and new_formalization:
         raise ValueError("choose an existing focus or a new formalization, not both")
+    if source_bundle is not None:
+        from .source_context import validate_source
+        source_bundle = validate_source(source_bundle)
+        focus_source_hash = source_bundle["sourceIdentityHash"]
     now = utc_now()
     with write() as conn:
+        if client_request_id:
+            existing = conn.execute("select * from runs where client_request_id = ?",
+                                    (client_request_id,)).fetchone()
+            if existing:
+                old = row_to_dict(existing)
+                if client_request_hash and old.get("client_request_hash") and old["client_request_hash"] != client_request_hash:
+                    raise ValueError("Idempotency key belongs to a different request")
+                if session_id and old["session_id"] != session_id:
+                    raise ValueError("Idempotency key belongs to a different session")
+                old_message = conn.execute("""select * from timeline where run_id = ?
+                                           and kind = 'message' and author = 'user'
+                                           order by id limit 1""", (old["id"],)).fetchone()
+                if old_message is None or old_message["content"] != message:
+                    raise ValueError("Idempotency key belongs to a different request")
+                old_formalization = (_formalization_from_conn(conn, old["focus_formalization_id"])
+                                     if old.get("focus_formalization_id") else None)
+                return {"session": row_to_dict(conn.execute("select * from sessions where id = ?",
+                                                         (old["session_id"],)).fetchone()),
+                        "run": old, "formalization": old_formalization,
+                        "message": _message_from_row(old_message), "created": False}
+        if source_context_ref:
+            from .overleaf_source import resolve
+            resolved_source = resolve(conn, source_context_ref, focus_formalization_id)
+            if source_bundle != resolved_source:
+                raise ValueError("Prepared source does not match this run's source bundle.")
+        if resume_checkpoint_id is not None:
+            predecessor = conn.execute("select * from runs where id = ?", (resumes_run_id,)).fetchone()
+            checkpoint = conn.execute("select * from run_checkpoints where id = ? and run_id = ?",
+                                      (resume_checkpoint_id, resumes_run_id)).fetchone()
+            if (not predecessor or not checkpoint or predecessor["session_id"] != session_id
+                    or predecessor["focus_formalization_id"] != focus_formalization_id
+                    or predecessor["status"] not in {"cancelled", "max_turns"}
+                    or predecessor["stop_reason"] == "superseded"
+                    or not predecessor["recoverable"] or predecessor["recovery_state"] == "review"):
+                raise ValueError("This run is not available for checkpoint continuation.")
+            successor = conn.execute("select id from runs where resumes_run_id = ?", (resumes_run_id,)).fetchone()
+            newer = conn.execute("select id from runs where focus_formalization_id = ? and id != ? and created_at >= ?",
+                                 (focus_formalization_id, resumes_run_id, predecessor["created_at"])).fetchone()
+            active = conn.execute("select id from runs where session_id = ? and status in ('pending', 'running')",
+                                  (session_id,)).fetchone()
+            if successor or newer or active:
+                raise ValueError("This paused run has been superseded. Refresh the pane before resuming.")
         if session_id:
             session_row = conn.execute(
                 "select * from sessions where id = ?", (session_id,)
@@ -773,21 +937,58 @@ def create_run_bundle(
                 )
                 formalization["source_hash"] = source_hash
 
+        # Resolve approvals only after all session/formalization membership checks.
+        # The linkage update shares this transaction, so failed admissions cannot
+        # change another project's policy. Session origin remains provenance.
+        overleaf_origin = any(
+            str(origin or "").strip() == "overleaf"
+            for origin in (
+                session.get("origin"), session_origin,
+                (formalization or {}).get("origin"),
+                (new_formalization or {}).get("origin"),
+            )
+        )
+        project_row = None
+        if project_id:
+            project_row = (
+                mark_project_overleaf_linked(project_id, conn=conn)
+                if overleaf_origin else conn.execute(
+                    "select * from projects where id = ?", (project_id,),
+                ).fetchone()
+            )
+        linked_project = bool(project_row and project_row["overleaf_linked"])
+        approval_mode = "none" if autonomous or overleaf_origin or linked_project else "stepwise"
+
         run_id = str(uuid4())
+        if dependency_id:
+            from .project_dependencies import admit_worker
+            admit_worker(conn, dependency_id, project_id, run_id, resumes_run_id, initiating_run_id)
+        if resumes_run_id:
+            conn.execute("""update project_dependencies set owner_run_id=?,state='inline',updated_at=?
+                where owner_run_id=? and state='waiting'""", (run_id, now, resumes_run_id))
         conn.execute(
             """
             insert into runs (
-                id, session_id, project_id, status, autonomous, model, provider,
-                max_turns, focus_formalization_id, focus_source_hash,
+                id, session_id, project_id, status, autonomous, approval_mode, model, provider,
+                max_turns, focus_formalization_id, focus_source_hash, purpose, allow_source_pause, usage_status,
+                client_request_id, client_request_hash, resumes_run_id, resume_checkpoint_id, continuation_best_effort, deadline_at, source_context_ref,
                 created_at, updated_at
-            ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                run_id, session_id, project_id, 1 if autonomous else 0,
+                run_id, session_id, project_id, 1 if autonomous else 0, approval_mode,
                 model, provider, max_turns, focus_formalization_id,
-                str(focus_source_hash or "").strip() or None, now, now,
+                str(focus_source_hash or "").strip() or None, purpose,
+                1 if allow_source_pause else 0, client_request_id, client_request_hash, resumes_run_id,
+                resume_checkpoint_id, int(continuation_best_effort),
+                deadline_at, source_context_ref, now, now,
             ),
         )
+        if source_bundle is not None:
+            from .lea_status_store import admit
+            admit(conn, run_id, focus_formalization_id, session_id, project_id, purpose, source_bundle)
+        conn.execute("update runs set dependency_id=?,automation_budget_json=? where id=?",
+                     (dependency_id, json.dumps(automation_budget) if automation_budget else None, run_id))
         message_cursor = conn.execute(
             """
             insert into timeline (
@@ -815,8 +1016,35 @@ def create_run_bundle(
         "session": session,
         "formalization": formalization,
         "run": run,
+        "created": True,
         "message": user_message,
     }
+
+
+def _normalize_project(row: dict) -> dict:
+    row["overleaf_linked"] = bool(row.get("overleaf_linked"))
+    return row
+
+
+def mark_project_overleaf_linked(
+    project_id: str, *, conn: sqlite3.Connection | None = None,
+) -> dict | None:
+    """Establish durable linkage, optionally inside an admission transaction.
+
+    A conditional update makes repeated/concurrent calls harmless and preserves
+    updated_at on a no-op. Removing source files or chats does not unlink a project.
+    """
+    transaction = nullcontext(conn) if conn is not None else write()
+    with transaction as db_conn:
+        changed = db_conn.execute(
+            "update projects set overleaf_linked = 1, updated_at = ? "
+            "where id = ? and overleaf_linked = 0",
+            (utc_now(), project_id),
+        ).rowcount
+        row = db_conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
+    if changed and conn is None:
+        _bump_sessions_changed()
+    return _normalize_project(row_to_dict(row)) if row else None
 
 
 def list_projects() -> list[dict]:
@@ -833,27 +1061,27 @@ def list_projects() -> list[dict]:
             order by p.updated_at desc, p.title asc
             """
         ).fetchall()
-    return [row_to_dict(row) for row in rows]
+    return [_normalize_project(row_to_dict(row)) for row in rows]
 
 
 def get_project(project_id: str) -> dict | None:
     with connect() as conn:
         row = conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
-    return row_to_dict(row) if row else None
+    return _normalize_project(row_to_dict(row)) if row else None
 
 
 def get_project_by_slug(slug: str) -> dict | None:
     value = validate_project_slug(slug)
     with connect() as conn:
         row = conn.execute("select * from projects where slug = ?", (value,)).fetchone()
-    return row_to_dict(row) if row else None
+    return _normalize_project(row_to_dict(row)) if row else None
 
 
 def get_project_by_namespace(namespace: str) -> dict | None:
     value = validate_project_namespace(namespace)
     with connect() as conn:
         row = conn.execute("select * from projects where namespace = ?", (value,)).fetchone()
-    return row_to_dict(row) if row else None
+    return _normalize_project(row_to_dict(row)) if row else None
 
 
 def validate_project_namespace(namespace: str) -> str:
@@ -906,6 +1134,9 @@ def create_project(
     namespace: str | None = None,
     repo_path: str | None = None,
     remote_url: str | None = None,
+    *,
+    name_source: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> dict:
     """Insert a project index row (D21/D30). `namespace`/`repo_path` default to the
     slug-derived values so the Overleaf tag-only path keeps working; P2's project
@@ -916,17 +1147,22 @@ def create_project(
     project_title = (title or slug).strip() or slug
     ns = validate_project_namespace(namespace) if namespace else project_namespace_for_slug(slug)
     repo = repo_path or repo_path_for_namespace(ns)
-    with connect() as conn:
-        conn.execute(
+    transaction = nullcontext(conn) if conn is not None else write()
+    with transaction as db_conn:
+        name_column = ", name_source" if name_source is not None else ""
+        name_placeholder = ", ?" if name_source is not None else ""
+        values = (project_id, slug, project_title, description, ns, repo, remote_url, now, now)
+        if name_source is not None:
+            values += (name_source,)
+        db_conn.execute(
             """
             insert into projects
-                (id, slug, title, description, namespace, repo_path, remote_url, created_at, updated_at)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (project_id, slug, project_title, description, ns, repo, remote_url, now, now),
+                (id, slug, title, description, namespace, repo_path, remote_url, created_at, updated_at"""
+            + name_column + ") values (?, ?, ?, ?, ?, ?, ?, ?, ?" + name_placeholder + ")",
+            values,
         )
-        row = conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
-    return row_to_dict(row)
+        row = db_conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
+    return _normalize_project(row_to_dict(row))
 
 
 def update_project(
@@ -939,7 +1175,7 @@ def update_project(
     slug → namespace → repo_path chain is immutable (D22), so those never change
     here. Pass a field as None to leave it untouched."""
     now = utc_now()
-    with connect() as conn:
+    with write() as conn:
         row = conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
         if not row:
             return None
@@ -947,7 +1183,8 @@ def update_project(
         conn.execute(
             """
             update projects
-            set title = ?, description = ?, remote_url = ?, updated_at = ?
+            set title = ?, description = ?, remote_url = ?, updated_at = ?,
+                name_source = case when ? is not null then 'custom' else name_source end
             where id = ?
             """,
             (
@@ -955,11 +1192,12 @@ def update_project(
                 description if description is not None else current["description"],
                 remote_url if remote_url is not None else current["remote_url"],
                 now,
+                title,
                 project_id,
             ),
         )
         updated = conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
-    return row_to_dict(updated)
+    return _normalize_project(row_to_dict(updated))
 
 
 def update_project_identity(
@@ -980,13 +1218,13 @@ def update_project_identity(
         conn.execute(
             """
             update projects
-            set title = ?, namespace = ?, repo_path = ?, updated_at = ?
+            set title = ?, namespace = ?, repo_path = ?, updated_at = ?, name_source = 'custom'
             where id = ?
             """,
             ((title or "").strip() or row["title"], ns, repo_path, now, project_id),
         )
         updated = conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
-    return row_to_dict(updated)
+    return _normalize_project(row_to_dict(updated))
 
 
 def create_project_file(
@@ -1065,6 +1303,11 @@ def delete_project_cascade(project_id: str) -> bool:
     with connect() as conn:
         if not conn.execute("select 1 from projects where id = ?", (project_id,)).fetchone():
             return False
+        conn.execute("delete from project_library_invocations where run_id in (select id from runs where project_id=?)", (project_id,))
+        conn.execute("delete from project_dependency_attempts where dependency_id in (select id from project_dependencies where project_id=?)", (project_id,))
+        for table in ("project_dependency_edges", "project_dependencies", "project_library_modules"):
+            conn.execute(f"delete from {table} where project_id=?", (project_id,))
+        conn.execute("delete from formalize_batch_reports where project_id = ?", (project_id,))
         import_ids = [
             row["id"] for row in conn.execute(
                 "select id from github_imports where project_id = ?", (project_id,)
@@ -1110,7 +1353,16 @@ def delete_project_cascade(project_id: str) -> bool:
                 session_ids,
             )
         if formalization_ids:
+            status_marks = ",".join("?" for _ in formalization_ids)
+            conn.execute(f"delete from formalization_review_requests where formalization_id in ({status_marks})", formalization_ids)
+            conn.execute(f"delete from formalization_review_events where formalization_id in ({status_marks})", formalization_ids)
+            for status_table in ("lea_status_updates", "lea_status_run_contexts"):
+                conn.execute(f"delete from {status_table} where formalization_id in ({status_marks})", formalization_ids)
             form_marks = ",".join("?" for _ in formalization_ids)
+            conn.execute(
+                f"delete from alignment_checks where formalization_id in ({form_marks})",
+                formalization_ids,
+            )
             conn.execute(
                 f"delete from verification_events where formalization_id in ({form_marks})",
                 formalization_ids,
@@ -1129,10 +1381,12 @@ def delete_project_cascade(project_id: str) -> bool:
             )
         if session_ids:
             marks = ",".join("?" for _ in session_ids)
+            conn.execute(f"delete from formalization_review_requests where event_id in (select id from formalization_review_events where session_id in ({marks}))", session_ids)
+            conn.execute(f"delete from formalization_review_events where session_id in ({marks})", session_ids)
             # `messages`/`code_steps` are pre-cutover rows kept until the contract
             # step drops them; they're still cleared so a delete doesn't leave half
             # a session behind in tables that are still readable.
-            for table in ("timeline", "messages", "code_steps", "status_events",
+            for table in ("proof_check_evidence", "timeline", "messages", "code_steps", "status_events",
                           "run_usage_breakdown", "runs"):
                 conn.execute(f"delete from {table} where session_id in ({marks})", session_ids)
             conn.execute(f"delete from sessions where id in ({marks})", session_ids)
@@ -1142,7 +1396,10 @@ def delete_project_cascade(project_id: str) -> bool:
             # eagerly here would silently blank another project's history.
             conn.execute(
                 "delete from artifact_blobs where id not in "
-                "(select after_blob_id from timeline where after_blob_id is not null)"
+                "(select after_blob_id from timeline where after_blob_id is not null "
+                "union select blob_id from proof_check_evidence "
+                "union select json_extract(value, '$.blob_id') from formalization_review_events, json_each(evidence_json) where json_extract(value, '$.blob_id') is not null "
+                "union select blob_id from verification_events where blob_id is not null)"
             )
         # The artifact index is scoped by project OR by session (`scope` is whichever
         # applies), and was left behind entirely (AUDIT-2026-07-24 C9). A stale row
@@ -1158,6 +1415,8 @@ def delete_project_cascade(project_id: str) -> bool:
         conn.execute("delete from project_files where project_id = ?", (project_id,))
         if formalization_ids:
             form_marks = ",".join("?" for _ in formalization_ids)
+            conn.execute(f"delete from overleaf_source_requests where formalization_id in ({form_marks})", formalization_ids)
+            conn.execute(f"delete from overleaf_bindings where formalization_id in ({form_marks})", formalization_ids)
             conn.execute(
                 f"delete from formalizations where id in ({form_marks})",
                 formalization_ids,
@@ -2185,8 +2444,14 @@ def update_run(
     cost_usd: float | None = None,
     result_kind: str | None = None,
     result_detail: str | None = None,
+    stop_reason: str | None = None,
+    recoverable: bool | None = None,
+    usage_status: str | None = None,
+    usage_details: dict | None = None,
 ) -> None:
     now = utc_now()
+    if result_detail:
+        result_detail = redact(result_detail)
     with connect() as conn:
         conn.execute(
             """
@@ -2195,14 +2460,104 @@ def update_run(
                 final_text = coalesce(?, final_text),
                 result_kind = coalesce(?, result_kind),
                 result_detail = coalesce(?, result_detail),
+                stop_reason = coalesce(?, stop_reason),
+                recoverable = coalesce(?, recoverable),
                 input_tokens = coalesce(?, input_tokens),
                 output_tokens = coalesce(?, output_tokens),
                 cost_usd = coalesce(?, cost_usd),
+                usage_status = coalesce(?, usage_status),
+                usage_details_json = coalesce(?, usage_details_json),
+                usage_updated_at = case when ? is not null then ? else usage_updated_at end,
                 updated_at = ?
             where id = ?
             """,
-            (status, final_text, result_kind, result_detail, input_tokens, output_tokens, cost_usd, now, run_id),
+            (
+                status, final_text, result_kind, result_detail, stop_reason,
+                None if recoverable is None else (1 if recoverable else 0),
+                input_tokens, output_tokens, cost_usd, usage_status, usage_metadata.encode(usage_details),
+                usage_status, now, now, run_id,
+            ),
         )
+    _bump_sessions_changed()
+
+
+def record_stop_request(run_id: str, reason: str, source: str) -> dict | None:
+    """First accepted active-run stop cause wins; terminal runs stay terminal."""
+    now = utc_now()
+    with write() as conn:
+        conn.execute("""update runs set stop_requested_reason = ?, stop_requested_by = ?,
+                    stop_requested_at = ?, updated_at = ?
+                    where id = ? and status in ('pending', 'running')
+                      and stop_requested_reason is null""",
+                     (reason, source, now, now, run_id))
+        row = conn.execute("select * from runs where id = ?", (run_id,)).fetchone()
+    if row:
+        _bump_sessions_changed()
+    return _normalize_run(row_to_dict(row)) if row else None
+
+
+def checkpoint_run_usage(run_id: str, input_tokens: int, output_tokens: int,
+                         cost_usd: float, revision: int, usage_details: dict | None = None) -> bool:
+    """Replace one run's cumulative observation; stale checkpoints cannot regress it."""
+    now = utc_now()
+    with connect() as conn:
+        cursor = conn.execute("""update runs set input_tokens = ?, output_tokens = ?,
+                    cost_usd = ?, usage_status = 'partial', usage_revision = ?, usage_details_json = ?,
+                    usage_updated_at = ?, updated_at = ?
+                    where id = ? and status = 'running' and usage_revision < ?""",
+                    (input_tokens, output_tokens, cost_usd, revision, usage_metadata.encode(usage_details), now, now, run_id, revision))
+    if cursor.rowcount:
+        _bump_sessions_changed()
+    return cursor.rowcount > 0
+
+
+def mark_run_usage_unknown(run_id: str) -> None:
+    """A crashed run retains checkpoints; absent accounting stays explicitly unknown."""
+    with connect() as conn:
+        conn.execute("""update runs set usage_status = case
+                    when usage_revision > 0 then 'partial' else 'unknown' end
+                    where id = ? and usage_status != 'final'""", (run_id,))
+
+
+def begin_auxiliary_invocation(run_id: str, name: str, model: str) -> str:
+    """Journal a tool-free auxiliary call against its existing run."""
+    action, attempt, now = str(uuid4()), str(uuid4()), utc_now()
+    with write() as conn:
+        conn.execute("insert into run_attempts(id,run_id,runtime_id,started_at,outcome) values (?,?,?,?,?)",
+                     (attempt, run_id, "auxiliary", now, name))
+        conn.execute("""insert into run_invocations(id,run_id,attempt_id,kind,name,turn,input_json,started_at)
+                        values (?,?,?,'model_auxiliary',?,0,?,?)""",
+                     (action, run_id, attempt, name, json.dumps({"model": model}), now))
+    return action
+
+
+def finish_auxiliary_invocation(action: str, usage, cost: float) -> None:
+    """Atomically retain raw usage and add this charge exactly once."""
+    now = utc_now()
+    with write() as conn:
+        invocation = conn.execute("select * from run_invocations where id=?", (action,)).fetchone()
+        if not invocation or invocation["completed_at"]:
+            return
+        run = conn.execute("select * from runs where id=?", (invocation["run_id"],)).fetchone()
+        details = usage_metadata.aggregate([run])
+        details = usage_metadata.merge_details(details, usage.usage_details)
+        result = {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
+                  "cost_usd": cost, "usage_details": usage.usage_details, "raw_usage": usage.raw_usages}
+        conn.execute("update run_invocations set result_json=?,completed_at=? where id=?",
+                     (json.dumps(result), now, action))
+        conn.execute("update run_attempts set ended_at=? where id=?", (now, invocation["attempt_id"]))
+        conn.execute("""update runs set input_tokens=input_tokens+?,output_tokens=output_tokens+?,
+                      cost_usd=cost_usd+?,usage_details_json=?,usage_revision=usage_revision+1,
+                      usage_updated_at=? where id=?""",
+                     (usage.input_tokens, usage.output_tokens, cost, usage_metadata.encode(details), now, run["id"]))
+        if usage.input_tokens or usage.output_tokens or cost or usage.usage_details:
+            ordinal = conn.execute("select coalesce(max(ordinal),0)+1 from run_usage_breakdown where run_id=?", (run["id"],)).fetchone()[0]
+            number = conn.execute("select count(*) from runs where session_id=? and created_at<=?", (run["session_id"], run["created_at"])).fetchone()[0]
+            conn.execute("""insert into run_usage_breakdown(id,session_id,run_id,run_number,ordinal,phase,label,
+                         input_tokens,output_tokens,cost_usd,event_count,created_at,usage_details_json)
+                         values (?,?,?,?,?,'compaction','Manual compaction',?,?,?,1,?,?)""",
+                         (str(uuid4()), run["session_id"], run["id"], number, ordinal, usage.input_tokens,
+                          usage.output_tokens, cost, now, usage_metadata.encode(usage.usage_details)))
     _bump_sessions_changed()
 
 
@@ -2216,10 +2571,12 @@ def fail_pending_run(run_id: str, detail: str) -> bool:
     can win."""
     with connect() as conn:
         cursor = conn.execute(
-            "update runs set status = 'failed', result_kind = coalesce(result_kind, 'failed'),"
-            " result_detail = coalesce(result_detail, ?), updated_at = ?"
+            "update runs set status = 'cancelled', result_kind = coalesce(result_kind, 'cancelled'),"
+            " result_detail = coalesce(result_detail, ?), stop_reason = stop_requested_reason,"
+            " recoverable = 1, usage_status = 'final', usage_revision = usage_revision + 1,"
+            " usage_updated_at = ?, updated_at = ?"
             " where id = ? and status = 'pending'",
-            (detail, utc_now(), run_id),
+            (detail, utc_now(), utc_now(), run_id),
         )
     _bump_sessions_changed()
     return cursor.rowcount > 0
@@ -2254,6 +2611,7 @@ def fail_stale_active_runs() -> int:
             """
             update runs
             set status = 'failed',
+                usage_status = case when usage_revision > 0 then 'partial' else 'unknown' end,
                 result_kind = coalesce(result_kind, 'failed'),
                 result_detail = coalesce(result_detail, ?),
                 updated_at = ?
@@ -2309,25 +2667,43 @@ def record_verification_event(
     detail: str | None,
     code_step_id: str | int | None,
     run_id: str | None = None,
-) -> dict:
+    expected: dict | None = None,
+    require_current: bool = False,
+    persist_session: bool = False,
+    execution: dict | None = None,
+    content: str | None = None,
+) -> dict | None:
     event_id = str(uuid4())
     with write() as conn:
+        if require_current:
+            current = current_proof_step(session_id, path, conn=conn)
+            if ((expected is None) != (current is None) or (expected and (
+                current["id"] != expected["id"] or current["blob_id"] != expected["blob_id"]
+            ))):
+                return None
         conn.execute(
             """
             insert into verification_events (
                 id, formalization_id, session_id, run_id, code_step_id,
-                path, status, detail, created_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                path, status, detail, created_at, blob_id, evidence_json
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_id, formalization_id, session_id, run_id,
                 int(code_step_id) if code_step_id is not None else None,
                 path, status, detail, utc_now(),
+                _put_blob(conn, content) if content is not None else None,
+                json.dumps(execution) if execution else None,
             ),
         )
         row = conn.execute(
             "select * from verification_events where id = ?", (event_id,)
         ).fetchone()
+        if persist_session:
+            conn.execute("update runs set safe_verify_status=?,safe_verify_detail=? "
+                "where id=(select id from runs where session_id=? order by created_at desc,id desc limit 1)",
+                (status, detail, session_id))
+    _bump_sessions_changed()
     return row_to_dict(row)
 
 
@@ -2345,10 +2721,70 @@ def latest_code_step_for_path(session_id: str, path: str) -> dict | None:
     return _code_step_from_row(row) if row else None
 
 
+def current_proof_step(session_id: str, path: str, *, conn=None) -> dict | None:
+    """Canonical path record with immutable blob identity, optionally in a write transaction."""
+    with nullcontext(conn) if conn is not None else connect() as connection:
+        session = connection.execute("select project_id from sessions where id=?", (session_id,)).fetchone()
+        if not session:
+            return None
+        scope, scope_id = ("s.project_id", session["project_id"]) if session["project_id"] else ("t.session_id", session_id)
+        row = connection.execute(
+            f"{TIMELINE_WITH_BLOB} join sessions s on s.id=t.session_id "
+            f"where t.kind='code' and t.path=? and {scope}=? order by t.created_at desc,t.id desc limit 1",
+            (path, scope_id),
+        ).fetchone()
+        if not row:
+            return None
+        result = _code_step_from_row(row)
+        result["blob_id"] = row["after_blob_id"]
+        result["blob_sha256"] = hashlib.sha256(result["code"].encode()).hexdigest()
+        return result
+
+
+def persist_pinned_check(session_id: str, path: str, expected: dict | None, *,
+                         status: str, detail: str | None, artifact_kind: str | None,
+                         formalization_id: str | None = None, author: str | None = None,
+                         summary: str | None = None) -> tuple[bool, dict | None]:
+    """Compare canonical head + blob and record its verdict in one write transaction."""
+    with write() as conn:
+        current = current_proof_step(session_id, path, conn=conn)
+        if ((expected is None) != (current is None) or (expected and (
+            current["id"] != expected["id"] or current["blob_id"] != expected["blob_id"]
+        ))):
+            return False, None
+        if expected is None:
+            return True, None
+        create = author or current["session_id"] != session_id or (
+            formalization_id and current.get("formalization_id") != formalization_id)
+        kind = artifact_kind if status == "ok" else None
+        if create:
+            source = author or current["author"]
+            reason = source if source not in {"user", "agent", "environment"} else None
+            cursor = conn.execute(
+                "insert into timeline (session_id,run_id,kind,author,path,after_blob_id,summary,"
+                "check_status,check_detail,artifact_kind,data,formalization_id,created_at,content_lost) "
+                "values (?,NULL,'code',?,?,?,?,?,?,?,?,?,?,0)",
+                (session_id, "agent" if reason else source, path, current["blob_id"], summary,
+                 status, detail, kind, json.dumps({"reason": reason}) if reason else None,
+                 formalization_id or current.get("formalization_id"), utc_now()),
+            )
+            step_id = cursor.lastrowid
+        else:
+            step_id = int(current["id"])
+            conn.execute("update timeline set check_status=?,check_detail=?,artifact_kind=? where id=? and after_blob_id=?",
+                         (status, detail, kind, step_id, expected["blob_id"]))
+        row = conn.execute(f"{TIMELINE_WITH_BLOB} where t.id=?", (step_id,)).fetchone()
+        result = _code_step_from_row(row)
+    _bump_sessions_changed()
+    return True, result
+
+
+@read_projection
 def current_code_steps_for_formalization(
     formalization_id: str,
     *,
     session_id: str | None = None,
+    run_id: str | None = None,
 ) -> list[dict]:
     """Latest snapshot of every linked path for a formalization.
 
@@ -2374,13 +2810,19 @@ def current_code_steps_for_formalization(
           ))
         )
         """
+    revision_clause = ""
+    if run_id is not None:
+        # A status run can assess its own writes and the revision it started from,
+        # never a later write from another run sharing the same project file.
+        revision_clause = "and (t.run_id = ? or t.created_at <= (select created_at from runs where id = ?))"
+        params.extend([run_id, run_id])
     with connect() as conn:
         rows = conn.execute(
             f"""
             select * from (
               select
                 t.*,
-                b.content as blob_content,
+                b.content as blob_content, {PROOF_EVIDENCE_COLUMNS},
                 b.sha256 as blob_sha256,
                 ff.role as formalization_file_role,
                 s.title as updating_session_title,
@@ -2392,8 +2834,8 @@ def current_code_steps_for_formalization(
               join formalizations f on f.id = ff.formalization_id
               join timeline t on t.kind = 'code' and t.path = ff.path
               join sessions s on s.id = t.session_id
-              left join artifact_blobs b on b.id = t.after_blob_id
-              where ff.formalization_id = ? and {scope_clause}
+              left join artifact_blobs b on b.id = t.after_blob_id {PROOF_EVIDENCE_JOINS}
+              where ff.formalization_id = ? and {scope_clause} {revision_clause}
             )
             where rn = 1
             order by case formalization_file_role
@@ -2435,17 +2877,12 @@ def code_steps_for_project_path(
     reads only `check_status`/`session_id`/`created_at`, so hydrating every historical
     revision of every file — each formerly its own connection and its own full copy of
     the proof — was work whose result was discarded."""
-    content_join = "left join artifact_blobs b on b.id = c.after_blob_id" if include_content else ""
-    content_column = "b.content as blob_content" if include_content else "'' as blob_content"
     with connect() as conn:
-        rows = conn.execute(
-            f"select c.*, {content_column} from timeline c "
-            f"join sessions s on s.id = c.session_id {content_join} "
-            "where s.project_id = ? and c.kind = 'code' and c.path = ? "
-            "order by c.created_at desc, c.id desc",
-            (project_id, path),
-        ).fetchall()
-    return [_code_step_from_row(r) for r in rows]
+        rows = conn.execute(f"{TIMELINE_WITH_BLOB} join sessions s on s.id=t.session_id "
+            "where s.project_id=? and t.kind='code' and t.path=? order by t.created_at desc,t.id desc",
+            (project_id, path)).fetchall()
+    projected = [_code_step_from_row(r) for r in rows]
+    return projected if include_content else [{**step, 'code': ''} for step in projected]
 
 
 def safe_verify_ok_sessions(project_id: str) -> set[str]:
@@ -2466,7 +2903,16 @@ def safe_verify_ok_sessions(project_id: str) -> set[str]:
             "where s.project_id = ? and r.safe_verify_status = 'ok'",
             (project_id,),
         ).fetchall()
-    return {row["id"] for row in rows}
+    from .proof_evidence import verification_current
+    result = set()
+    for row in rows:
+        with connect() as conn:
+            event = conn.execute('select * from verification_events where session_id=? order by created_at desc limit 1', (row['id'],)).fetchone()
+        if event:
+            step = current_proof_step(row['id'], event['path'])
+            if verification_current(dict(event), step):
+                result.add(row['id'])
+    return result
 
 
 def latest_agent_code_step(session_id: str) -> dict | None:
@@ -2528,6 +2974,30 @@ def get_run(run_id: str) -> dict | None:
     return _normalize_run(row_to_dict(row)) if row else None
 
 
+def get_run_by_client_request_id(client_request_id: str) -> dict | None:
+    with connect() as conn:
+        row = conn.execute("select * from runs where client_request_id = ?",
+                           (client_request_id,)).fetchone()
+    return _normalize_run(row_to_dict(row)) if row else None
+
+
+def get_run_submission(client_request_id: str) -> dict | None:
+    with connect() as conn:
+        row = conn.execute("select * from runs where client_request_id = ?",
+                           (client_request_id,)).fetchone()
+        if not row:
+            return None
+        run = row_to_dict(row)
+        session = row_to_dict(conn.execute("select * from sessions where id = ?",
+                                           (run["session_id"],)).fetchone())
+        message = conn.execute("""select * from timeline where run_id = ? and kind = 'message'
+                                  and author = 'user' order by id limit 1""", (run["id"],)).fetchone()
+        formalization = (_formalization_from_conn(conn, run["focus_formalization_id"])
+                         if run.get("focus_formalization_id") else None)
+    return {"session": session, "run": run, "message": _message_from_row(message) if message else None,
+            "formalization": formalization, "created": False}
+
+
 def get_run_status(run_id: str) -> dict | None:
     """The cheap run-row read (v2.3 item 16): just the four outcome columns a
     poller needs — id + lifecycle status + terminal kind/detail. Deliberately
@@ -2538,10 +3008,19 @@ def get_run_status(run_id: str) -> dict | None:
     detail there was a self-inflicted DB-contention source under concurrency."""
     with connect() as conn:
         row = conn.execute(
-            "select id, status, result_kind, result_detail from runs where id = ?",
+            """select id, status, result_kind, result_detail, stop_reason,
+                      stop_requested_reason, stop_requested_at, stop_requested_by,
+                      recoverable, input_tokens, output_tokens, cost_usd, usage_details_json,
+                      usage_status, usage_revision, usage_updated_at,
+                      attempt_id, recovery_state, recovery_reason, recovery_count,
+                      checkpoint_at, deadline_at, resumes_run_id, resume_checkpoint_id,
+                      session_id, focus_formalization_id, purpose, created_at,
+                      dependency_id, waiting_dependencies_json, automation_budget_json, project_id,
+                      autonomous, approval_mode
+               from runs where id = ?""",
             (run_id,),
         ).fetchone()
-    return row_to_dict(row) if row else None
+    return usage_metadata.decode(run_detail(_normalize_run_policy(row_to_dict(row)))) if row else None
 
 
 def list_runs_by_status(status: str) -> list[dict]:
@@ -2616,9 +3095,12 @@ def latest_check_for_project_path(project_id: str, path: str) -> dict | None:
     with connect() as conn:
         row = conn.execute(
             """
-            select t.check_status, t.check_detail, t.author, t.data, t.created_at
+            select t.check_status, t.check_detail, t.author, t.data, t.created_at,
+                   b.sha256 as checked_sha256, t.check_evidence_id, t.session_id, t.path,
+                   b.content as code, t.after_blob_id as blob_id
             from timeline t
             join sessions s on s.id = t.session_id
+            left join artifact_blobs b on b.id = t.after_blob_id
             where s.project_id = ? and t.kind = 'code' and t.path = ?
               and t.check_status is not null
             order by t.created_at desc, t.id desc
@@ -2629,6 +3111,8 @@ def latest_check_for_project_path(project_id: str, path: str) -> dict | None:
     if not row:
         return None
     result = row_to_dict(row)
+    from .proof_evidence import project_step
+    result = project_step(result)
     if result.get("data"):
         try:
             result["author"] = json.loads(result["data"]).get("reason") or result["author"]
@@ -2875,9 +3359,16 @@ def _message_from_row(row) -> dict:
 # with 200 steps opened 200 connections; `graph.build_graph` did it per revision of
 # per file. Aliased to `blob_content` because `timeline.content` already exists (it
 # holds message text), so `b.content` would collide on the way out.
+PROOF_EVIDENCE_COLUMNS = "e.evidence_json as proof_evidence_json, ep.namespace as evidence_namespace, es.parent_id as evidence_parent_id"
+PROOF_EVIDENCE_JOINS = (
+    " left join sessions es on es.id=t.session_id "
+    "left join projects ep on ep.id=es.project_id "
+    "left join proof_check_evidence e on e.id=t.check_evidence_id and e.blob_id=t.after_blob_id "
+    "and e.session_id=t.session_id and e.path=t.path and e.project_id is es.project_id "
+)
 TIMELINE_WITH_BLOB = (
-    "select t.*, b.content as blob_content from timeline t "
-    "left join artifact_blobs b on b.id = t.after_blob_id"
+    f"select t.*, b.content as blob_content, {PROOF_EVIDENCE_COLUMNS} from timeline t "
+    "left join artifact_blobs b on b.id = t.after_blob_id" + PROOF_EVIDENCE_JOINS
 )
 
 
@@ -2897,7 +3388,7 @@ def _code_step_from_row(row, *, code: str | None = None) -> dict:
         if code is None:
             code = blob_content(d["after_blob_id"]) or ""
     d.pop("blob_content", None)
-    return {
+    result = {
         "id": str(d["id"]),
         "session_id": d["session_id"],
         "run_id": d["run_id"],
@@ -2913,7 +3404,13 @@ def _code_step_from_row(row, *, code: str | None = None) -> dict:
         "content_lost": bool(d["content_lost"]),
         "created_at": d["created_at"],
         "code": code,
+        "blob_id": d.get("after_blob_id"),
+        "check_evidence_id": d.get("check_evidence_id"),
     }
+    from .proof_evidence import project_step
+    record = {'evidence_json': d.get('proof_evidence_json'), 'namespace': d.get('evidence_namespace'),
+              'parent_id': d.get('evidence_parent_id')} if 'proof_evidence_json' in d else None
+    return project_step(result, record)
 
 
 def add_message(
@@ -3169,6 +3666,7 @@ def create_github_import(
     source_ref: str | None = None,
     source_namespace: str | None = None,
     destination_snapshot: str | None = None,
+    targets: list[dict] | None = None,
     import_id: str | None = None,
 ) -> dict:
     now = utc_now()
@@ -3179,12 +3677,13 @@ def create_github_import(
             insert or ignore into github_imports (
                 id, project_id, source_url, source_ref, source_commit_sha,
                 source_namespace, destination_namespace, status,
-                destination_snapshot, created_at, updated_at
-            ) values (?, ?, ?, ?, ?, ?, ?, 'applying', ?, ?, ?)
+                destination_snapshot, targets_json, created_at, updated_at
+            ) values (?, ?, ?, ?, ?, ?, ?, 'applying', ?, ?, ?, ?)
             """,
             (
                 row_id, project_id, source_url, source_ref, source_commit_sha,
-                source_namespace, destination_namespace, destination_snapshot, now, now,
+                source_namespace, destination_namespace, destination_snapshot,
+                json.dumps(targets or [], ensure_ascii=False), now, now,
             ),
         )
         row = conn.execute(
@@ -3455,8 +3954,9 @@ def github_import_progress(import_id: str) -> dict | None:
     declarations = list_github_import_declarations(import_id)
     disposition_counts = Counter(row["disposition"] for row in files)
     check_counts = Counter(row["check_status"] or "unstarted" for row in files)
+    public_import = {key: value for key, value in imported.items() if key != "targets_json"}
     return {
-        **imported,
+        **public_import,
         "files": files,
         "declarations": declarations,
         "counts": {
@@ -3490,6 +3990,7 @@ def upsert_user_code_step(
     *,
     content: str,
     formalization_id: str | None = None,
+    coalesce: bool = True,
 ) -> dict:
     """Record a user edit, coalescing rapid successive edits into one timeline step.
 
@@ -3507,21 +4008,25 @@ def upsert_user_code_step(
     addressed, so an intermediate state that recurs anywhere else is still reachable."""
     latest = latest_code_step_for_path(session_id, path)
     if (
-        latest
+        coalesce and latest
         and latest.get("author") == "user"
         and latest.get("run_id") is None
         and latest.get("formalization_id") == formalization_id
     ):
         with write() as conn:
-            blob_id = _put_blob(conn, content)
-            conn.execute(
-                "update timeline set after_blob_id = ?, content_lost = 0, check_status = NULL, "
-                "check_detail = NULL, artifact_kind = NULL where id = ?",
-                (blob_id, int(latest["id"])),
-            )
-            row = conn.execute("select * from timeline where id = ?", (int(latest["id"]),)).fetchone()
-        touch_session(session_id)
-        return _code_step_from_row(row, code=content)
+            row = conn.execute("select * from timeline where id=?", (int(latest["id"]),)).fetchone()
+            verified = conn.execute("select 1 from verification_events where code_step_id=? limit 1",
+                                    (int(latest["id"]),)).fetchone()
+            if row and row["check_status"] is None and not verified:
+                blob_id = _put_blob(conn, content)
+                conn.execute("update timeline set after_blob_id=?,content_lost=0,check_detail=NULL,artifact_kind=NULL where id=?",
+                             (blob_id, int(latest["id"])))
+                row = conn.execute("select * from timeline where id=?", (int(latest["id"]),)).fetchone()
+            else:
+                row = None
+        if row is not None:
+            touch_session(session_id)
+            return _code_step_from_row(row, code=content)
     return add_code_step(
         session_id, None, path, content=content, author="user",
         formalization_id=formalization_id,
@@ -3593,9 +4098,9 @@ def replace_run_usage_breakdown(run_id: str, rows: list[dict[str, Any]]) -> None
                 """
                 insert into run_usage_breakdown (
                     id, session_id, run_id, run_number, ordinal, phase, label, turn, candidate,
-                    input_tokens, output_tokens, cost_usd, event_count, created_at
+                    input_tokens, output_tokens, cost_usd, event_count, created_at, usage_details_json
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(row.get("id") or uuid4()),
@@ -3612,6 +4117,7 @@ def replace_run_usage_breakdown(run_id: str, rows: list[dict[str, Any]]) -> None
                     float(row.get("cost_usd") or 0),
                     int(row.get("event_count") or 0),
                     str(row.get("created_at") or now),
+                    usage_metadata.encode(row.get("usage_details")),
                 ),
             )
 
@@ -3633,6 +4139,7 @@ def usage_breakdown_for_session(session_id: str) -> list[dict]:
     return _usage_breakdown_from_raw_logs(session_id)
 
 
+@read_projection
 def session_detail(session_id: str) -> dict | None:
     session = get_session(session_id)
     if not session:
@@ -3697,8 +4204,9 @@ def session_detail(session_id: str) -> dict | None:
         # by the Phase 1 integration harness, PLAN-system-hardening).
         runs = conn.execute(
             "select id, status, result_kind, result_detail,"
-            " input_tokens, output_tokens, cost_usd, focus_formalization_id,"
-            " focus_source_hash"
+            " input_tokens, output_tokens, cost_usd, usage_details_json, focus_formalization_id,"
+            " focus_source_hash, attempt_id, recovery_state, recovery_reason, checkpoint_at, resumes_run_id,"
+            " session_id, purpose, recoverable, stop_reason, created_at, client_request_id, autonomous, approval_mode"
             " from runs where session_id = ? order by created_at asc, id asc",
             (session_id,),
         ).fetchall()
@@ -3708,6 +4216,8 @@ def session_detail(session_id: str) -> dict | None:
                 "select * from projects where id = ?",
                 (session["project_id"],),
             ).fetchone()
+    from .recovery import available_action
+    runs = [{**usage_metadata.decode(run_detail(dict(r))), "available_recovery_action": available_action(dict(r))} for r in runs]
     # Split back into the two lists the API exposes. Code rows carry their content
     # already — a read no longer needs a second store to be reachable, so there is
     # no separate hydrate step that can silently come back empty.
@@ -3726,36 +4236,62 @@ def session_detail(session_id: str) -> dict | None:
             "duration_seconds": _duration_seconds(session["created_at"], session["updated_at"]),
         }
     )
+    with connect() as conn:
+        detail_rows = conn.execute("select input_tokens,output_tokens,cost_usd,usage_details_json from runs where session_id=? union all select input_tokens,output_tokens,cost_usd,usage_details_json from alignment_checks where session_id=?", (session_id, session_id)).fetchall()
+    usage["usage_details"] = usage_metadata.aggregate(detail_rows)
     # working-copy verdict, derived from the latest *real* code_step (asc by seq).
     # Scratch/probe files (exact?/apply? scratchpads) are excluded so a session is
     # only 'ok' when an actual proof compiles, not when a throwaway probe does (M14).
     real_steps = [c for c in code_steps if "scratch" not in (c["path"] or "").lower()]
-    latest_check_status = real_steps[-1]["check_status"] if real_steps else None
+    latest_check_status = real_steps[-1]["check_status"] if real_steps and real_steps[-1].get("check_current") else None
     latest_artifact_kind = real_steps[-1]["artifact_kind"] if real_steps else None
     latest_code_run_status = None
-    if real_steps and real_steps[-1]["run_id"]:
+    run_row = None
+    if real_steps:
         with connect() as conn:
             run_row = conn.execute(
-                "select status from runs where id = ?",
-                (real_steps[-1]["run_id"],),
+                """select result_kind, focus_formalization_id from runs where session_id = ?
+                   and result_kind in ('proved', 'defined', 'needs_review')
+                   and (? is null or focus_formalization_id = ?)
+                   order by created_at desc, id desc limit 1""",
+                (session_id, real_steps[-1].get("formalization_id"),
+                 real_steps[-1].get("formalization_id")),
             ).fetchone()
-        latest_code_run_status = run_row["status"] if run_row else None
+            if run_row and run_row["result_kind"] == "needs_review":
+                latest_code_run_status = "needs_review"
+            elif real_steps[-1]["run_id"]:
+                step_run = conn.execute(
+                    "select status from runs where id = ?", (real_steps[-1]["run_id"],)
+                ).fetchone()
+                latest_code_run_status = step_run["status"] if step_run else None
+    derived_status = _derive_session_status(
+        latest_check_status, latest_artifact_kind, len(real_steps),
+        active_run is not None, latest_code_run_status,
+    )
+    latest_formalization_id = (
+        (real_steps[-1].get("formalization_id") if real_steps else None)
+        or (run_row["focus_formalization_id"] if run_row else None)
+    )
+    if latest_formalization_id:
+        from . import formalizations as formalization_service
+        target = formalization_service.get(latest_formalization_id)
+        if target and (target['validity_status'] in {'needs_review', 'disproved'} or target.get('review', {}).get('reason')):
+            derived_status = target["validity_status"]
     return {
         **session,
         **usage,
-        "status": _derive_session_status(
-            latest_check_status, latest_artifact_kind, len(real_steps), active_run is not None, latest_code_run_status
-        ),
+        "status": derived_status,
         "messages": messages,
         "code_steps": [_normalize_code_step(step) for step in code_steps],
         "diagnostics": diagnostics_out,
         "status_events": [row_to_dict(row) for row in status_events],
         "approval_events": approval_events_for_session(session_id),
+        "review_events": review_events_for_session(session_id),
         "usage_breakdown": usage_breakdown_for_session(session_id),
         "active_run": _normalize_run(row_to_dict(active_run)) if active_run else None,
-        "runs": [row_to_dict(r) for r in runs],
+        "runs": [_normalize_run_policy(row_to_dict(r)) for r in runs],
         "safe_verify": _safe_verify_summary(row_to_dict(latest_run)) if latest_run else None,
-        "project": row_to_dict(project) if project else None,
+        "project": _normalize_project(row_to_dict(project)) if project else None,
     }
 
 
@@ -3774,6 +4310,8 @@ def _derive_session_status(
     an Overleaf-driven one whose first file hasn't been written yet — surfaces as
     in-progress in the session list and stats the moment it starts."""
     if code_step_count:
+        if latest_code_run_status == "needs_review":
+            return "needs_review"
         if latest_check_status == "ok":
             if latest_code_run_status == "disproved":
                 return "disproved"
@@ -3793,7 +4331,11 @@ def _safe_verify_summary(run: dict) -> dict | None:
     status = run.get("safe_verify_status")
     if not status:
         return None
-    return {"run_id": run.get("id"), "status": status, "detail": run.get("safe_verify_detail")}
+    with connect() as conn:
+        event = conn.execute('select * from verification_events where session_id=? order by created_at desc limit 1', (run['session_id'],)).fetchone()
+    from .proof_evidence import verification_current
+    current = verification_current(dict(event), current_proof_step(run['session_id'], event['path'])) if event else False
+    return {"run_id": run.get("id"), "status": status, "detail": run.get("safe_verify_detail"), "current": current}
 
 
 # --- whole-database usage aggregates (AUDIT-2026-07-24 C1) -------------------
@@ -3818,8 +4360,28 @@ def total_spend_usd() -> float:
     that through the full stats payload is both what made it wrong (above) and a
     heavy per-event query against a single-writer database."""
     with connect() as conn:
-        row = conn.execute("select coalesce(sum(cost_usd), 0) as cost_usd from runs").fetchone()
-    return float(row["cost_usd"] or 0)
+        solver = conn.execute(
+            "select coalesce(sum(cost_usd), 0) as cost_usd from runs"
+        ).fetchone()
+        has_alignment = conn.execute(
+            "select 1 from sqlite_master where type = 'table' and name = 'alignment_checks'"
+        ).fetchone()
+        evaluator_cost = 0.0
+        if has_alignment:
+            evaluator = conn.execute(
+                "select coalesce(sum(cost_usd), 0) as cost_usd from alignment_checks"
+            ).fetchone()
+            evaluator_cost = float(evaluator["cost_usd"] or 0)
+        has_reports = conn.execute(
+            "select 1 from sqlite_master where type = 'table' and name = 'formalize_batch_reports'"
+        ).fetchone()
+        report_cost = 0.0
+        if has_reports:
+            report_row = conn.execute(
+                "select coalesce(sum(cost_usd), 0) as cost_usd from formalize_batch_reports"
+            ).fetchone()
+            report_cost = float(report_row["cost_usd"] or 0)
+    return float(solver["cost_usd"] or 0) + evaluator_cost + report_cost
 
 
 def global_usage() -> dict:
@@ -3830,12 +4392,20 @@ def global_usage() -> dict:
             select
                 (select count(*) from sessions) as session_count,
                 (select count(*) from timeline where kind != 'code') as message_count,
-                coalesce(sum(input_tokens), 0) as input_tokens,
-                coalesce(sum(output_tokens), 0) as output_tokens,
-                coalesce(sum(cost_usd), 0) as cost_usd
-            from runs
+                (select coalesce(sum(input_tokens), 0) from runs)
+                  + (select coalesce(sum(input_tokens), 0) from alignment_checks)
+                  + (select coalesce(sum(input_tokens), 0) from formalize_batch_reports) as input_tokens,
+                (select coalesce(sum(output_tokens), 0) from runs)
+                  + (select coalesce(sum(output_tokens), 0) from alignment_checks)
+                  + (select coalesce(sum(output_tokens), 0) from formalize_batch_reports) as output_tokens,
+                (select coalesce(sum(cost_usd), 0) from runs)
+                  + (select coalesce(sum(cost_usd), 0) from alignment_checks)
+                  + (select coalesce(sum(cost_usd), 0) from formalize_batch_reports) as cost_usd,
+                (select count(*) from runs where usage_status in ('pending', 'partial')) as incomplete_usage_runs,
+                (select count(*) from runs where usage_status is null or usage_status = 'unknown') as unconfirmed_usage_runs
             """
         ).fetchone()
+        details = usage_metadata.aggregate(conn.execute("select input_tokens,output_tokens,cost_usd,usage_details_json from runs union all select input_tokens,output_tokens,cost_usd,usage_details_json from alignment_checks union all select input_tokens,output_tokens,cost_usd,usage_details_json from formalize_batch_reports").fetchall())
     data = row_to_dict(row)
     session_count = int(data["session_count"] or 0)
     message_count = int(data["message_count"] or 0)
@@ -3850,17 +4420,42 @@ def global_usage() -> dict:
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
         "cost_usd": cost_usd,
+        "usage_details": details,
+        "incomplete_usage_runs": int(data["incomplete_usage_runs"] or 0),
+        "unconfirmed_usage_runs": int(data["unconfirmed_usage_runs"] or 0),
         "average_tokens_per_session": round(total_tokens / session_count) if session_count else 0,
         "average_cost_per_session": cost_usd / session_count if session_count else 0,
         "average_messages_per_session": round(message_count / session_count) if session_count else 0,
     }
 
 
-def usage_stats() -> dict:
+def accounting_sessions() -> list[dict]:
+    """Full accounting rows, without source blobs or certification projections."""
+    with connect() as conn:
+        rows = conn.execute("""select s.id,p.slug as project_slug,
+            coalesce(sum(r.input_tokens),0) as input_tokens,
+            coalesce(sum(r.output_tokens),0) as output_tokens,
+            coalesce(sum(r.cost_usd),0) as cost_usd,count(r.id) as run_count,
+            coalesce(sum(r.usage_status in ('pending','partial')),0) as incomplete_usage_runs,
+            coalesce(sum(r.id is not null and (r.usage_status is null or r.usage_status='unknown')),0)
+                as unconfirmed_usage_runs
+            from sessions s left join projects p on p.id=s.project_id
+            left join runs r on r.session_id=s.id group by s.id order by s.updated_at desc""").fetchall()
+        details = conn.execute("""select session_id,input_tokens,output_tokens,cost_usd,usage_details_json
+            from runs union all select session_id,input_tokens,output_tokens,cost_usd,usage_details_json
+            from alignment_checks""").fetchall()
+    grouped = {}
+    for row in details:
+        grouped.setdefault(row['session_id'], []).append(row)
+    return [{**dict(row), 'total_tokens': row['input_tokens'] + row['output_tokens'],
+             'usage_details': usage_metadata.aggregate(grouped.get(row['id'], []))} for row in rows]
+
+
+def usage_stats(*, include_proof_status: bool = True) -> dict:
     # `sessions` stays the (100-row) list the Stats table renders — truncating a
     # rendered list is fine. `global` and `origins` are full-table aggregates, so
     # they no longer inherit that truncation.
-    sessions = list_sessions()
+    sessions = list_sessions() if include_proof_status else accounting_sessions()
     with connect() as conn:
         daily_rows = conn.execute(
             """
@@ -3872,7 +4467,15 @@ def usage_stats() -> dict:
                 coalesce(sum(cost_usd), 0) as cost_usd,
                 count(distinct id) as run_count,
                 count(distinct session_id) as session_count
-            from runs
+            from (
+                select id, session_id, updated_at, input_tokens, output_tokens, cost_usd from runs
+                union all
+                select id, session_id, updated_at, input_tokens, output_tokens, cost_usd
+                from alignment_checks
+                union all
+                select batch_id, null, updated_at, input_tokens, output_tokens, cost_usd
+                from formalize_batch_reports where attempts > 0
+            ) usage_events
             group by date(updated_at)
             order by day asc
             """
@@ -3887,19 +4490,93 @@ def usage_stats() -> dict:
                 coalesce(sum(cost_usd), 0) as cost_usd,
                 count(*) as run_count,
                 count(distinct session_id) as session_count
-            from runs
+            from (
+                select id, session_id, model, input_tokens, output_tokens, cost_usd from runs
+                union all
+                select id, session_id, model, input_tokens, output_tokens, cost_usd
+                from alignment_checks
+                union all
+                select batch_id, null, model, input_tokens, output_tokens, cost_usd
+                from formalize_batch_reports where attempts > 0
+            ) usage_events
             group by model
             order by cost_usd desc, total_tokens desc
             """
         ).fetchall()
 
+        detail_rows = conn.execute("select model,updated_at,input_tokens,output_tokens,cost_usd,usage_details_json from runs union all select model,updated_at,input_tokens,output_tokens,cost_usd,usage_details_json from alignment_checks union all select model,updated_at,input_tokens,output_tokens,cost_usd,usage_details_json from formalize_batch_reports where attempts>0").fetchall()
+    by_model, by_day = {}, {}
+    for r in detail_rows:
+        by_model.setdefault(r["model"], []).append(r)
+        by_day.setdefault(str(r["updated_at"])[:10], []).append(r)
+    daily = [_normalize_usage_day(row_to_dict(row)) for row in daily_rows]
+    models = [_normalize_usage_model(row_to_dict(row)) for row in model_rows]
+    for row in daily:
+        row["usage_details"] = usage_metadata.aggregate(by_day.get(row["day"], []))
+    for row in models:
+        row["usage_details"] = usage_metadata.aggregate(by_model.get(row["model"], []))
+
     return {
         "sessions": sessions,
         "origins": _origin_rollup(),
         "global": global_usage(),
-        "daily": [_normalize_usage_day(row_to_dict(row)) for row in daily_rows],
-        "models": [_normalize_usage_model(row_to_dict(row)) for row in model_rows],
+        "alignment": alignment_usage(),
+        "formalize_batch_reports": formalize_batch_report_usage(),
+        "project_report_usage": project_report_usage(),
+        "daily": daily,
+        "models": models,
     }
+
+
+def alignment_usage() -> dict:
+    """Evaluator-only usage, kept distinct while still included in global totals."""
+    with connect() as conn:
+        row = conn.execute(
+            """
+            select count(*) as run_count,
+                   coalesce(sum(input_tokens), 0) as input_tokens,
+                   coalesce(sum(output_tokens), 0) as output_tokens,
+                   coalesce(sum(cost_usd), 0) as cost_usd
+            from alignment_checks
+            """
+        ).fetchone()
+    data = row_to_dict(row)
+    input_tokens = int(data["input_tokens"] or 0)
+    output_tokens = int(data["output_tokens"] or 0)
+    return {
+        "run_count": int(data["run_count"] or 0),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "cost_usd": float(data["cost_usd"] or 0),
+    }
+
+
+def formalize_batch_report_usage() -> dict:
+    with connect() as conn:
+        row = conn.execute("""select coalesce(sum(attempts), 0) as run_count,
+            coalesce(sum(input_tokens), 0) as input_tokens,
+            coalesce(sum(output_tokens), 0) as output_tokens,
+            coalesce(sum(cost_usd), 0) as cost_usd from formalize_batch_reports""").fetchone()
+    data = row_to_dict(row)
+    return {"run_count": int(data["run_count"]), "input_tokens": int(data["input_tokens"]),
+            "output_tokens": int(data["output_tokens"]), "cost_usd": float(data["cost_usd"])}
+
+
+def project_report_usage() -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute("""select p.slug as project_slug,
+            coalesce(sum(r.input_tokens), 0) as input_tokens,
+            coalesce(sum(r.output_tokens), 0) as output_tokens,
+            coalesce(sum(r.cost_usd), 0) as cost_usd,
+            coalesce(sum(r.attempts), 0) as run_count
+            from formalize_batch_reports r join projects p on p.id = r.project_id
+            group by p.slug""").fetchall()
+        metadata = conn.execute("select p.slug as project_slug,r.input_tokens,r.output_tokens,r.cost_usd,r.usage_details_json from formalize_batch_reports r join projects p on p.id=r.project_id").fetchall()
+    results = [row_to_dict(row) for row in rows]
+    for row in results:
+        row["usage_details"] = usage_metadata.aggregate([r for r in metadata if r["project_slug"] == row["project_slug"]])
+    return results
 
 
 def _empty_origin_bucket(origin: str) -> dict:
@@ -3927,14 +4604,24 @@ def _origin_rollup() -> list[dict]:
     with connect() as conn:
         rows = conn.execute(
             """
+            with usage_events as (
+                select r.session_id, r.input_tokens, r.output_tokens, r.cost_usd
+                from runs r
+                union all
+                select coalesce(ac.session_id, sr.session_id, f.loose_session_id) as session_id,
+                       ac.input_tokens, ac.output_tokens, ac.cost_usd
+                from alignment_checks ac
+                left join runs sr on sr.id = ac.solver_run_id
+                left join formalizations f on f.id = ac.formalization_id
+            )
             select
                 coalesce(nullif(trim(s.origin), ''), 'ui') as origin,
                 count(distinct s.id) as session_count,
-                coalesce(sum(r.input_tokens), 0) as input_tokens,
-                coalesce(sum(r.output_tokens), 0) as output_tokens,
-                coalesce(sum(r.cost_usd), 0) as cost_usd
+                coalesce(sum(u.input_tokens), 0) as input_tokens,
+                coalesce(sum(u.output_tokens), 0) as output_tokens,
+                coalesce(sum(u.cost_usd), 0) as cost_usd
             from sessions s
-            left join runs r on r.session_id = s.id
+            left join usage_events u on u.session_id = s.id
             group by 1
             """
         ).fetchall()
@@ -3949,6 +4636,16 @@ def _origin_rollup() -> list[dict]:
         bucket["output_tokens"] += int(data["output_tokens"] or 0)
         bucket["total_tokens"] += int(data["input_tokens"] or 0) + int(data["output_tokens"] or 0)
         bucket["cost_usd"] += float(data["cost_usd"] or 0)
+    with connect() as conn:
+        metadata_rows = conn.execute("select coalesce(nullif(trim(s.origin),''),'ui') as origin,r.input_tokens,r.output_tokens,r.cost_usd,r.usage_details_json from runs r join sessions s on s.id=r.session_id union all select coalesce(nullif(trim(s.origin),''),'ui'),a.input_tokens,a.output_tokens,a.cost_usd,a.usage_details_json from alignment_checks a left join runs sr on sr.id=a.solver_run_id left join formalizations f on f.id=a.formalization_id left join sessions s on s.id=coalesce(a.session_id,sr.session_id,f.loose_session_id)").fetchall()
+        report_metadata = conn.execute("select input_tokens,output_tokens,cost_usd,usage_details_json from formalize_batch_reports").fetchall()
+    for origin, bucket in buckets.items():
+        bucket["usage_details"] = usage_metadata.aggregate([r for r in metadata_rows if r["origin"] == origin] + (report_metadata if origin == "overleaf" else []))
+    report_usage = formalize_batch_report_usage()
+    buckets["overleaf"]["input_tokens"] += report_usage["input_tokens"]
+    buckets["overleaf"]["output_tokens"] += report_usage["output_tokens"]
+    buckets["overleaf"]["total_tokens"] += report_usage["input_tokens"] + report_usage["output_tokens"]
+    buckets["overleaf"]["cost_usd"] += report_usage["cost_usd"]
     # 'ui' and 'overleaf' first (stable UI order), then any unexpected origins.
     ordered = ["ui", "overleaf"] + [k for k in buckets if k not in ("ui", "overleaf")]
     return [buckets[k] for k in ordered]
@@ -3964,6 +4661,8 @@ def _normalize_usage_session(row: dict) -> dict:
     for key in ("input_tokens", "output_tokens", "total_tokens", "message_count", "run_count", "duration_seconds"):
         row[key] = int(row.get(key) or 0)
     row["cost_usd"] = float(row.get("cost_usd") or 0)
+    row["incomplete_usage_runs"] = int(row.get("incomplete_usage_runs") or 0)
+    row["unconfirmed_usage_runs"] = int(row.get("unconfirmed_usage_runs") or 0)
     row["started_at"] = row.get("started_at")
     row["ended_at"] = row.get("ended_at")
     return row
@@ -3993,6 +4692,7 @@ def _normalize_usage_model(row: dict) -> dict:
 
 
 def _normalize_usage_breakdown_row(row: dict) -> dict:
+    row = usage_metadata.decode(row)
     for key in ("run_number", "ordinal", "input_tokens", "output_tokens", "event_count"):
         row[key] = int(row.get(key) or 0)
     row["turn"] = _optional_int(row.get("turn"))
@@ -4002,7 +4702,14 @@ def _normalize_usage_breakdown_row(row: dict) -> dict:
     return row
 
 
+def _normalize_run_policy(row: dict) -> dict:
+    row["autonomous"] = bool(row.get("autonomous"))
+    return row
+
+
 def _normalize_run(row: dict) -> dict:
+    row = _normalize_run_policy(row)
+    row = usage_metadata.decode(run_detail(row))
     raw_pending = row.get("pending_approval")
     if isinstance(raw_pending, str) and raw_pending:
         try:
@@ -4055,6 +4762,13 @@ def _usage_breakdown_from_raw_logs(session_id: str) -> list[dict]:
             row["ordinal"] = ordinal
         rows.extend(_normalize_usage_breakdown_row(row) for row in run_rows)
     return rows
+
+
+def review_events_for_session(session_id: str) -> list[dict]:
+    with connect() as conn:
+        return [dict(row) for row in conn.execute('''select id, formalization_id, run_id, action, outcome,
+            approval_id, revision_token, created_at from formalization_review_events
+            where session_id=? order by rowid''', (session_id,))]
 
 
 def approval_events_for_session(session_id: str) -> list[dict]:

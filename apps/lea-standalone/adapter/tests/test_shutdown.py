@@ -28,6 +28,21 @@ def test_launcher_second_interrupt_bypasses_python_teardown(monkeypatch):
     assert exits == [130]
 
 
+def test_bound_launcher_drains_before_exit_and_second_interrupt_can_force(monkeypatch):
+    drains, exits = [], []
+    monkeypatch.setattr(run_api.runtime, "begin_drain", lambda **kwargs: drains.append(kwargs))
+    monkeypatch.setattr(run_api.os, "_exit", exits.append)
+    server = create_server(FastAPI(), port=0)
+    server._runtime_bound = True
+    server.handle_exit(signal.SIGINT, None)
+    assert drains == [{"restart": False}]
+    assert server.config.app.state.shutting_down
+    assert not server.should_exit  # The coordinator waits for active work.
+    server.handle_exit(signal.SIGINT, None)
+    assert exits == [130]
+    assert server.force_exit
+
+
 @pytest.fixture
 def running_server(tmp_path):
     with socket.socket() as reservation:

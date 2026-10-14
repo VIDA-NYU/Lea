@@ -1,0 +1,15 @@
+{
+  "branch": "LeaCheckAddition",
+  "adapter_tests_passed": 1008,
+  "adapter_unhandled_thread_exceptions": 0,
+  "javascript_tests_passed": 741,
+  "cross_layer_tests_passed": 8,
+  "prover_modules_passed": 42,
+  "real_lean_recovery_tests_passed": 5,
+  "real_lean_concurrency": "passed",
+  "real_lean_cascade": "passed",
+  "process_lifecycle_tests_passed": 8,
+  "container_entrypoint": "passed",
+  "typecheck": "passed",
+  "production_build": "passed"
+}

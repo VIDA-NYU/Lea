@@ -7,6 +7,7 @@ import os
 import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -15,6 +16,7 @@ from lea.interface import check as interface_check
 
 from . import formalizations as formalizations_service
 from . import store
+from .alignment_schemas import SourceBundle
 from .artifacts import (
     classify_lean_artifact,
     declaration_contains_sorry,
@@ -23,6 +25,7 @@ from .artifacts import (
 )
 from .config import github_token
 from .db import ROOT
+from . import db
 from .github_project_import import (
     ImportPlanningError,
     TaggedTarget,
@@ -123,6 +126,34 @@ def _persist_planned_files(import_id: str, plan) -> None:
         )
 
 
+def _target_payload(target: TaggedTarget) -> dict:
+    payload = asdict(target)
+    bundle = payload.get("source_bundle")
+    if hasattr(bundle, "model_dump"):
+        payload["source_bundle"] = bundle.model_dump()
+    return payload
+
+
+def _stored_targets(imported: dict) -> list[TaggedTarget]:
+    try:
+        rows = json.loads(imported.get("targets_json") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(rows, list):
+        return []
+    targets: list[TaggedTarget] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            targets.append(TaggedTarget(**row))
+        except TypeError:
+            # A malformed or future-version descriptor must not prevent recovery
+            # of the imported Lean files and their compiler verdicts.
+            continue
+    return targets
+
+
 def _upsert_target(project_id: str, target: TaggedTarget) -> tuple[dict | None, str | None]:
     by_origin = store.find_formalization_by_origin(project_id, "overleaf", target.origin_key)
     by_declaration = store.find_formalization_by_declaration(
@@ -168,6 +199,13 @@ def sync_targets(project: dict, targets: list[TaggedTarget], proofs_root: Path) 
         row, conflict = _upsert_target(project["id"], target)
         adoption = None
         if row:
+            if row.get("origin") == "overleaf":
+                from .overleaf_source import bind
+                binding_source = target.source_bundle or {
+                    "targetKey": target.label,
+                    "targetKind": "definition" if target.kind in {"def", "definition"} else "theorem"}
+                with db.write() as conn:
+                    bind(conn, row, binding_source)
             adoption = try_adopt_imported_declaration(project, row, proofs_root)
         results.append(
             {
@@ -243,6 +281,7 @@ def confirm_import(
         source_namespace=preview.plan.source_namespace,
         destination_namespace=project["namespace"],
         destination_snapshot=preview.plan.destination_snapshot,
+        targets=[_target_payload(target) for target in preview.targets],
     )
     _persist_planned_files(import_id, preview.plan)
     try:
@@ -259,6 +298,12 @@ def confirm_import(
 
 
 def _exclusive_add(path: Path, content: str, expected_hash: str) -> str:
+    from lea.check_evidence import mutation
+    with mutation(path):
+        return _exclusive_add_impl(path, content, expected_hash)
+
+
+def _exclusive_add_impl(path: Path, content: str, expected_hash: str) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
@@ -465,6 +510,34 @@ def enqueue_import(import_id: str, proofs_root: Path) -> None:
     _executor.submit(_check_import, import_id, Path(proofs_root))
 
 
+def _matching_import_target(
+    declaration: dict,
+    formalization: dict,
+    targets: list[TaggedTarget],
+) -> TaggedTarget | None:
+    origin_key = str(formalization.get("origin_key") or "")
+    if origin_key:
+        by_origin = [target for target in targets if target.origin_key == origin_key]
+        if len(by_origin) == 1:
+            return by_origin[0]
+    names = {
+        str(declaration.get("declaration_name") or ""),
+        str(declaration.get("full_name") or ""),
+        str(formalization.get("declaration_name") or ""),
+    }
+    names.discard("")
+    by_name = [
+        target
+        for target in targets
+        if target.declaration_name in names
+        and formalization_kind_compatible(
+            str(formalization.get("kind") or "other"),
+            str(declaration.get("kind") or "other"),
+        )
+    ]
+    return by_name[0] if len(by_name) == 1 else None
+
+
 def _check_import(import_id: str, proofs_root: Path) -> None:
     try:
         imported = store.get_github_import(import_id)
@@ -484,6 +557,7 @@ def _check_import(import_id: str, proofs_root: Path) -> None:
             if row.get("check_status") in {"ok", "error"}:
                 continue
             absolute = repo / path
+            result = None
             try:
                 result = interface_check(str(absolute))
                 status = "ok" if result.status == "ok" else "error"
@@ -491,13 +565,12 @@ def _check_import(import_id: str, proofs_root: Path) -> None:
             except Exception as exc:
                 status, detail = "error", str(exc)
             if row.get("code_step_id"):
-                content = absolute.read_text(encoding="utf-8", errors="replace") if absolute.is_file() else ""
-                store.set_code_step_check(
-                    str(row["code_step_id"]),
-                    status,
-                    detail,
-                    classify_lean_artifact(content),
-                )
+                from .proof_evidence import record_check
+                if result is not None:
+                    current = store.current_proof_step(imported['session_id'], path) or {}
+                    record_check(imported['session_id'], path, absolute, result,
+                        formalization_id=current.get('formalization_id'))
+
             store.set_github_import_file_check(import_id, row["source_path"], status, detail)
 
         progress = store.github_import_progress(import_id)
@@ -517,9 +590,11 @@ def _check_import(import_id: str, proofs_root: Path) -> None:
                 continue
             if declaration_contains_sorry(content, declaration["full_name"]):
                 issues = True
+        error_detail = None
         store.set_github_import_status(
             import_id,
             "complete_with_issues" if issues else "complete",
+            error_detail=error_detail,
         )
         shutil.rmtree(_staging_source(import_id).parent, ignore_errors=True)
     finally:
@@ -537,7 +612,9 @@ def recover_github_imports_at_startup(proofs_root: Path | None) -> None:
             if staging.is_dir() and project:
                 try:
                     inventory = inventory_source(staging)
-                    _apply_import(imported, project, proofs_root, inventory, [])
+                    _apply_import(
+                        imported, project, proofs_root, inventory, _stored_targets(imported)
+                    )
                 except Exception as exc:
                     store.set_github_import_status(
                         imported["id"], "failed", error_detail=f"Recovery failed: {exc}"

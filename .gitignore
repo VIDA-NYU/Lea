@@ -4,6 +4,8 @@ dist/
 .venv/
 __pycache__/
 .pytest_cache/
+test-results/
+playwright-report/
 *.pyc
 .lake/
 
@@ -37,3 +39,14 @@ data/
 *.synctex.gz
 docs/*.log
 docs/*.pdf
+
+# Documentation used only for coding-agent navigation and instructions
+AGENTS.md
+CLAUDE.md
+
+# Local Impeccable skill, hooks, and generated design context
+/.agents/skills/impeccable/
+/.codex/hooks.json
+/.impeccable/
+/PRODUCT.md
+/DESIGN.md

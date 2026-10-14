@@ -404,7 +404,7 @@ Add job/provenance metadata without storing duplicate project content:
 ```text
 github_imports(
   id, project_id, source_url, source_ref, source_commit_sha,
-  status, destination_snapshot, created_at, updated_at, error_detail
+  status, destination_snapshot, targets_json, created_at, updated_at, error_detail
 )
 
 github_import_files(
@@ -451,9 +451,19 @@ matched by the import.
    and artifact/formalization links for accepted matches.
 9. **Check.** Run each added or reconciled file once, preferably in project-local import
    dependency order, and backfill check evidence/progress.
-10. **Refresh clients.** Reload formalizations, target status, Blueprint graph, and file
-    inventory. The Overleaf pane merges those ledger facts through its existing status
-    engine.
+10. **Evaluate matches.** After file checks settle, start one idempotent semantic Lea Check
+    for every matched Overleaf formalization whose frozen source bundle accompanied the
+    import. Several declarations in one Lean file receive separate Lea Checks.
+11. **Refresh clients.** Reload formalizations, target status, Blueprint graph, and file
+   inventory. The Overleaf pane merges those ledger facts through its existing status
+   engine.
+
+Matched imports remain first-class editable formalizations. Target status exposes the
+session that owns the current artifact revision; when no companion solver job exists,
+the pane reconstructs and persists the minimal session/formalization association from
+that ledger evidence. A pane edit therefore follows the normal path: save a user code
+step, run Lean Check, cascade when the declaration interface changed, supersede the old
+revision-bound Lea Check, and start a new Lea Check with trigger `manual`.
 
 Interrupted verification is recoverable: on startup, resume imports in `checking` state
 by checking only files whose import code step lacks a verdict. Index writes and matches

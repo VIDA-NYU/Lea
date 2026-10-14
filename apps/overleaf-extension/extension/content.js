@@ -7,11 +7,10 @@
   const DEFAULT_LEA_MODEL = "o4-mini";
   const DEFAULT_LEA_MAX_TURNS = 20;
   const DEFAULT_LEA_TEX_MIRROR_ENABLED = true;
-  const LEA_UI_VIEW_STATUSES = new Set(["formalized", "defined", "disproved", "in_progress", "sorry_stub", "stale"]);
+  const REFORMALIZE_HELP_TEXT = "Try again using the previous attempt and current LaTeX, keeping existing Lean work.";
+  const LEA_UI_VIEW_STATUSES = new Set(["formalized", "defined", "disproved", "needs_review", "in_progress", "paused", "sorry_stub", "stale"]);
   const TEX_MIRROR_SYNC_DELAY_MS = 1500;
   const TEX_MIRROR_FULL_SYNC_INTERVAL_MS = 10 * 60 * 1000;
-  const TARGET_CONTEXT_RADIUS_LINES = 24;
-  const TARGET_CONTEXT_MAX_CHARS = 12000;
   const MAX_SPEND_ERROR_CODE = "max_spend_reached";
   const MAX_SPEND_PANE_MESSAGE = "Lea could not complete this formalization because the configured maximum spend has been reached. Increase or clear the cap in Lea settings, then try again.";
   const LEAN_PANE_REFRESH_DELAY_MS = 1500;
@@ -53,7 +52,8 @@
   const MODEL_FAMILY_LABELS = {
     openai: "OpenAI",
     google: "Google AI",
-    anthropic: "Anthropic"
+    anthropic: "Anthropic",
+    portkey: "Portkey gateway"
   };
   const DEFAULT_MODEL_OPTIONS = [
     { value: DEFAULT_LEA_MODEL, label: DEFAULT_LEA_MODEL, family: "openai" }
@@ -64,6 +64,9 @@
   let statusRefreshTimer = null;
   let usageRefreshTimer = null;
   let latestTargets = [];
+  let resolvedTargetsRevision = "";
+  let resolvedTargetsMap = new Map();
+  let resolvingTargets = null;
   let latestDiagnostics = [];
   let latestActiveTex = "";
   let latestActiveTexPath = "";
@@ -75,10 +78,146 @@
   let texMirrorSyncedOnce = false;
   let texMirrorSyncTimer = null;
   let texMirrorSyncPromise = null;
+  let defaultNameLoadedProjectId = "";
   // When the last zip-download full sync ran (PLAN 3.2): ordinary edits ship
   // only the active buffer; the zip refresh happens on this cadence.
   let lastTexMirrorFullSyncAt = 0;
   let latestStatuses = {};
+  // One project-scoped reconciliation loop. Request generations prevent an old
+  // response from repainting statuses or code after a rename (or navigation).
+  let displayProjectId = "";
+  let displayGeneration = 0;
+  let displayNamespaceRevision = "";
+  const displayRequests = {};
+  let projectRenaming = false;
+  let renameNotice = null;
+  let renameRetryTimer = null;
+  let renameReconcileRunning = false;
+
+  function selectDisplayProject(projectId) {
+    if (displayProjectId === projectId) return;
+    const hadProject = Boolean(displayProjectId);
+    displayProjectId = projectId;
+    displayGeneration += 1;
+    displayNamespaceRevision = "";
+    projectRenaming = false;
+    clearTimeout(renameRetryTimer);
+    renameRetryTimer = null;
+    clearTimeout(leanPanePollTimer);
+    leanPanePollTimer = null;
+    clearLeanPaneRefreshFailure();
+    if (hadProject) {
+      latestBaseStatuses = {};
+      latestStatuses = {};
+      lastProjectIdentity = null;
+      defaultNameLoadedProjectId = "";
+      lastLeanPaneManifest = null;
+      leanPaneBlueprintGraph = null;
+    }
+    renderRenameNotice();
+  }
+
+  function displayRequest(surface) {
+    const projectId = extractOverleafProjectId();
+    selectDisplayProject(projectId);
+    const sequence = (displayRequests[surface] || 0) + 1;
+    displayRequests[surface] = sequence;
+    return { projectId, generation: displayGeneration, surface, sequence };
+  }
+
+  function currentDisplayRequest(request) {
+    return request.projectId === extractOverleafProjectId()
+      && request.projectId === displayProjectId
+      && request.generation === displayGeneration
+      && request.sequence === displayRequests[request.surface];
+  }
+
+  function acceptDisplayResponse(request, revision) {
+    if (!currentDisplayRequest(request)) return false;
+    if (revision && displayNamespaceRevision && revision !== displayNamespaceRevision) {
+      markProjectRenaming(request.projectId, true);
+    }
+    if (revision) displayNamespaceRevision = revision;
+    return true;
+  }
+
+  function renderRenameNotice() {
+    if (!projectRenaming) {
+      renameNotice?.remove();
+      renameNotice = null;
+      return;
+    }
+    if (!renameNotice) {
+      renameNotice = document.createElement("p");
+      renameNotice.className = "ol-lean-project-rename-notice";
+      renameNotice.setAttribute("role", "status");
+      renameNotice.setAttribute("aria-live", "polite");
+      renameNotice.textContent = "Renaming project…";
+    }
+    const header = leanPane?.querySelector(".ol-lean-project-pane-titlewrap");
+    renameNotice.classList.toggle("is-floating", !header);
+    (header || document.body).appendChild(renameNotice);
+  }
+
+  function markProjectRenaming(projectId = extractOverleafProjectId(), invalidate = false) {
+    if (projectId !== extractOverleafProjectId()) return;
+    selectDisplayProject(projectId);
+    if (!projectRenaming || invalidate) displayGeneration += 1;
+    projectRenaming = true;
+    clearTimeout(statusRefreshTimer);
+    clearTimeout(leanPaneRefreshTimer);
+    clearTimeout(leanPanePollTimer);
+    renderRenameNotice();
+    scheduleRenameReconciliation();
+  }
+
+  function scheduleRenameReconciliation(delay = 1000) {
+    if (!projectRenaming || document.hidden || renameRetryTimer != null || renameReconcileRunning) return;
+    renameRetryTimer = setTimeout(() => {
+      renameRetryTimer = null;
+      reconcileProjectRename().catch(() => {});
+    }, delay);
+  }
+
+  async function reconcileProjectRename() {
+    if (renameReconcileRunning || document.hidden) return false;
+    clearTimeout(renameRetryTimer);
+    renameRetryTimer = null;
+    renameReconcileRunning = true;
+    const projectId = extractOverleafProjectId();
+    try {
+      const settings = await getSettings();
+      const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
+      const identity = await loadProjectIdentity({ baseUrl, projectId });
+      if (projectId !== extractOverleafProjectId()) return false;
+      lastProjectIdentity = identity;
+      renderLeanPaneProjectIdentity(identity);
+      const generation = displayGeneration;
+      const statusesReady = await refreshStatusesNow();
+      const paneReady = !leanPane ? true : leanPaneMainView === "blueprint"
+        ? await renderLeanPaneBlueprint({ background: true })
+        : await refreshLeanPaneNow({ background: true });
+      if (statusesReady && paneReady && generation === displayGeneration && projectId === extractOverleafProjectId()) {
+        projectRenaming = false;
+        renderRenameNotice();
+        return true;
+      }
+      return false;
+    } catch (error) {
+      if (error?.code === "project_renaming") markProjectRenaming(projectId);
+      else if (error?.code !== "superseded" && projectId === extractOverleafProjectId()) {
+        projectRenaming = false;
+        renderRenameNotice();
+        postStatusError(error);
+        if (leanPane) renderLeanPaneError(error);
+      }
+      return false;
+    } finally {
+      renameReconcileRunning = false;
+      scheduleRenameReconciliation();
+    }
+  }
+
   // Server-provided target truth is kept separately from the short-lived UI
   // overlay used while imported proofs are being checked. This prevents an
   // ordinary /statuses refresh from re-enabling a matched target mid-import.
@@ -92,6 +231,7 @@
   let humanApprovalBusyKeys = new Set();
   let badgeLayer = null;
   let settingsButton = null;
+  let apiKeyNudge = null;
   let leanPaneButton = null;
   let leanPane = null;
   let leanPaneBody = null;
@@ -102,6 +242,8 @@
   let leanPaneResizeState = null;
   let leanPaneRefreshTimer = null;
   let leanPanePollTimer = null;
+  let leanPaneRefreshFailure = "";
+  let leanPaneRefreshFailures = 0;
   let leanPaneStartupWatchdogTimer = null;
   let leanPaneView = null;
   let leanPaneExpandedTreeNodeIds = new Set();
@@ -114,12 +256,14 @@
   let lastLeanPaneFiles = null;
   let lastLeanPaneProjectId = "";
   let leanPaneInventoryWarning = "";
+  let leanPaneSourceCoverage = "partial";
   let leanPaneArchiveLoad = null;
   // Share panel (D34): remote + push against the adapter's project repo, via the
   // companion's /share/github passthroughs. One panel, toggled from the header.
   let leanPaneSharePanel = null;
   let leanPaneShareState = null;
   let leanPaneShareBusy = false;
+  let leaTagsSetupControls = null;
   // GitHub pushes use a Lea-owned confirmation surface. Browser-native confirm
   // dialogs cannot inherit the extension's typography, spacing, or theme.
   let githubPushDialogState = null;
@@ -178,7 +322,18 @@
   // Batch queue disclosure survives the pane's replaceChildren re-render, but
   // is scoped to one batch id so a new run always starts compact.
   let leanPaneExpandedBatchQueueId = "";
+  let leanPaneExpandedBatchAttentionId = "";
   let leanPaneExpandedBatchCompletedId = "";
+  const leanPaneBatchNavigationBusy = new Set();
+  let leanPaneBatchNavigationStatus = null;
+  let leanPaneBatchReports = [];
+  let leanPaneBatchReportsProjectId = "";
+  let leanPaneBatchReportsOpen = false;
+  let leanPaneBatchReportsLoading = false;
+  let leanPaneBatchReportsLoadingProjectId = "";
+  let leanPaneBatchReportsNextCursor = null;
+  let leanPaneBatchReportDetail = null;
+  let leanPaneBatchReportError = "";
   // A repair DISPATCH failure, scoped to what was being dispatched:
   // { itemKey, message } with itemKey = the single item's target label, or
   // "batch" (PLAN-self-repair-stale-offers Fix 4 -- a global string rendered
@@ -206,6 +361,7 @@
   // Push channel (PLAN 3.1): one EventSource on the companion's /events.
   // pushConnected is consulted by every poll scheduler when picking a delay.
   let eventsClient = null;
+  let sourceRefreshHandler = null;
   let pushConnected = false;
 
   window.addEventListener("message", (event) => {
@@ -216,8 +372,21 @@
       return;
     }
     if (event.data?.type === "OL_LEAN_TARGET_CLICK") {
-      rememberTarget(event.data.target);
-      showTargetPopover(event.data.clientX, event.data.clientY, event.data.target);
+      const clicked = latestTargets.find((target) => (
+        target.from === event.data.target?.from && target.to === event.data.target?.to
+      )) || event.data.target;
+      if (clicked === event.data.target) {
+        rememberTarget(clicked);
+        resolvedTargetsRevision = "";
+      }
+      if (clicked.labelSource !== "generated"
+        && !(clicked.targetUses || []).some((use) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(use))) {
+        showTargetPopover(event.data.clientX, event.data.clientY, clicked);
+      } else {
+        resolveVisibleTargets().then(() => {
+          showTargetPopover(event.data.clientX, event.data.clientY, clicked);
+        }).catch(postStatusError);
+      }
       return;
     }
     if (event.data?.type === "OL_LEAN_DIAGNOSTIC_CLICK") {
@@ -234,12 +403,24 @@
     if (event.data?.type === "OL_LEAN_TARGETS_VISIBLE") {
       const nextActiveTex = typeof event.data.activeTex === "string" ? event.data.activeTex : "";
       const nextProjectId = extractOverleafProjectId();
+      selectDisplayProject(nextProjectId);
       const activeTexChanged = nextActiveTex !== latestActiveTex || nextProjectId !== latestActiveTexProjectId;
       latestTargets = event.data.targets || [];
       latestDiagnostics = event.data.diagnostics || [];
       latestActiveTex = nextActiveTex;
       latestActiveTexPath = typeof event.data.activePath === "string" ? event.data.activePath : latestActiveTexPath;
       latestActiveTexProjectId = nextProjectId;
+      initializeOverleafNameOnOpen(nextProjectId, nextActiveTex).catch(() => {});
+      const revision = `${nextProjectId}\0${normalizeDocPath(latestActiveTexPath)}\0${nextActiveTex}`;
+      if (resolvedTargetsRevision === revision) {
+        for (const target of latestTargets) {
+          const resolved = resolvedTargetsMap.get(`${target.from}:${target.to}:${target.targetKind}`);
+          if (resolved) {
+            target.targetLabel = resolved.targetLabel;
+            target.targetUses = resolved.targetUses;
+          }
+        }
+      }
       renderStatusBadges();
       if (activeTexChanged) {
         texMirrorDirty = true;
@@ -256,6 +437,7 @@
   requestTargetsSoon();
   renderSettingsButton();
   renderLeanPaneButton();
+  refreshApiKeyNudge();
   hydrateLeanPaneWidthFromStorage();
   hydrateSettingsPopoverWidthFromStorage();
   loadHumanApprovals().then(() => {
@@ -332,7 +514,10 @@
     settingsButton.setAttribute("aria-label", "Open Lea settings and usage");
     settingsButton.title = "Lea settings and usage";
     settingsButton.innerHTML = `
-      <span class="ol-lean-trigger-mark">L</span>
+      <svg class="ol-lean-trigger-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+        <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831 2.34 2.34 0 0 1 2.33-4.033 2.34 2.34 0 0 0 3.32-1.915" />
+        <circle cx="12" cy="12" r="3" />
+      </svg>
     `;
     settingsButton.addEventListener("click", (event) => {
       event.preventDefault();
@@ -340,6 +525,54 @@
       showSettingsPopover();
     });
     (document.body || document.documentElement).appendChild(settingsButton);
+  }
+
+  function updateApiKeyNudge(settings) {
+    const requirements = settings?.leaModelRequirements;
+    if (!requirements || typeof requirements.satisfied !== "boolean") return;
+
+    const keyMissing = requirements.satisfied === false;
+    settingsButton?.classList.toggle("ol-lean-settings-trigger-attention", keyMissing);
+    if (!keyMissing) {
+      apiKeyNudge?.remove();
+      apiKeyNudge = null;
+      return;
+    }
+    if (apiKeyNudge?.isConnected) return;
+
+    const nudge = document.createElement("div");
+    nudge.className = "ol-lean-api-key-nudge";
+    nudge.setAttribute("role", "status");
+    nudge.setAttribute("aria-live", "polite");
+
+    const copy = document.createElement("span");
+    copy.textContent = "👋 To start proving, add an API key for your selected model.";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.textContent = "Open Settings";
+    open.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showSettingsPopover({ focusMissingCredential: true });
+    });
+    nudge.appendChild(copy);
+    nudge.appendChild(open);
+    (document.body || document.documentElement).appendChild(nudge);
+    apiKeyNudge = nudge;
+  }
+
+  async function refreshApiKeyNudge() {
+    try {
+      const stored = await getSettings();
+      const baseUrl = String(stored.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
+      const response = await fetch(`${baseUrl}/settings`);
+      if (!response.ok) return;
+      const payload = await response.json().catch(() => ({}));
+      updateApiKeyNudge({ leaModelRequirements: payload.leaModelRequirements });
+    } catch {
+      // The companion may not be running yet. Leave the ordinary Lea controls
+      // available and retry naturally the next time settings are opened.
+    }
   }
 
   function renderLeanPaneButton() {
@@ -351,7 +584,8 @@
     leanPaneButton.title = "Lean project pane";
     const mark = document.createElement("span");
     mark.className = "ol-lean-trigger-mark";
-    mark.textContent = "Π";
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = "L";
     leanPaneButton.appendChild(mark);
     leanPaneButton.addEventListener("click", (event) => {
       event.preventDefault();
@@ -469,6 +703,25 @@
     header.appendChild(controls);
 
     const viewTabs = buildLeanPaneViewTabs();
+    const tagsSetupSlot = document.createElement("div");
+    const ownerPane = leanPane;
+    import(chrome.runtime.getURL("leaTagsSetupUI.mjs"))
+      .then(({ mountLeaTagsSetup }) => {
+        if (leanPane !== ownerPane) return;
+        leaTagsSetupControls = mountLeaTagsSetup({
+          slot: tagsSetupSlot, window, document, chrome,
+          getProjectId: extractOverleafProjectId,
+          onChanged: () => {
+            lastLeanPaneFiles = null;
+            lastMirrorFiles = null;
+            leanPaneArchiveLoad = null;
+            texMirrorDirty = true;
+            requestTargets();
+            refreshLeanPaneNow({ forceFetch: true }).catch(renderLeanPaneError);
+          }
+        });
+      })
+      .catch(() => { tagsSetupSlot.textContent = "Reload the extension to enable Lea tag setup."; });
 
     leanPaneStatus = document.createElement("p");
     leanPaneStatus.className = "ol-lean-project-pane-status";
@@ -478,15 +731,17 @@
     leanPane.appendChild(resizer);
     leanPane.appendChild(header);
     leanPane.appendChild(viewTabs);
+    leanPane.appendChild(tagsSetupSlot);
     leanPane.appendChild(leanPaneStatus);
     leanPane.appendChild(leanPaneBody);
     document.body.appendChild(leanPane);
+    renderRenameNotice();
     leanPane.focus({ preventScroll: true });
     if (!deferRefresh) {
       clearTimeout(leanPaneStartupWatchdogTimer);
       leanPaneStartupWatchdogTimer = setTimeout(() => {
         if (leanPane && leanPaneStatus?.textContent === "Loading project inventory...") {
-          renderLeanPaneError(new Error(
+          renderLeanPaneRefreshError(new Error(
             "Pane startup stalled before the project manifest rendered. The extension resource or browser storage request did not settle."
           ));
         }
@@ -501,6 +756,8 @@
   }
 
   function closeLeanPane() {
+    leaTagsSetupControls?.dispose();
+    leaTagsSetupControls = null;
     closeGithubPushConfirmation({ restoreFocus: false });
     if (projectIdentityEditorState?.source === "lean-pane") {
       closeProjectIdentityEditor({ restoreFocus: false });
@@ -509,6 +766,8 @@
     leanPaneRefreshTimer = null;
     clearTimeout(leanPanePollTimer);
     leanPanePollTimer = null;
+    displayRequests.manifest = (displayRequests.manifest || 0) + 1;
+    clearLeanPaneRefreshFailure();
     clearTimeout(leanPaneStartupWatchdogTimer);
     leanPaneStartupWatchdogTimer = null;
     clearTimeout(leanPaneHighlightTimer);
@@ -524,6 +783,7 @@
     if (!leanPane) return;
     leanPane.remove();
     leanPane = null;
+    renderRenameNotice();
     leanPaneBody = null;
     leanPaneStatus = null;
     leanPaneProjectTitle = null;
@@ -1365,12 +1625,14 @@
       status: item.githubImportPreviousStatus,
       inProgress: item.githubImportPreviousInProgress,
       message: item.githubImportPreviousMessage,
+      leanCheck: item.githubImportPreviousLeanCheck,
     };
     delete restored.githubImportPending;
     delete restored.githubImportId;
     delete restored.githubImportPreviousStatus;
     delete restored.githubImportPreviousInProgress;
     delete restored.githubImportPreviousMessage;
+    delete restored.githubImportPreviousLeanCheck;
     return restored;
   }
 
@@ -1386,11 +1648,17 @@
         status: "in-progress",
         inProgress: true,
         message: githubImportProgressText(activeGithubImport.progress),
+        leanCheck: {
+          ...(item.leanCheck || {}),
+          status: "in-progress",
+          reason: "github_import_check"
+        },
         githubImportPending: true,
         githubImportId: activeGithubImport.id,
         githubImportPreviousStatus: item.status,
         githubImportPreviousInProgress: item.inProgress,
         githubImportPreviousMessage: item.message,
+        githubImportPreviousLeanCheck: item.leanCheck,
       };
     });
     return { ...manifest, items };
@@ -1676,6 +1944,7 @@
     if (view === leanPaneMainView || !leanPane) return;
     leanPaneMainView = view;
     updateLeanPaneViewTabs();
+    renderLeanPaneRefreshWarning();
     if (view === "blueprint") {
       closeLeanPaneChat();
       closeActiveOverflowMenu();
@@ -1696,8 +1965,9 @@
   async function renderLeanPaneBlueprint({ background = false } = {}) {
     if (!leanPane || !leanPaneBody || !leanPaneStatus) return;
     if (leanPaneMainView !== "blueprint") return;
+    const request = displayRequest("blueprint");
     await ensureBlueprintPaneView();
-    if (!background) {
+    if (!background && !leanPaneBlueprintGraph) {
       leanPaneStatus.textContent = "Loading blueprint…";
       leanPaneBody.replaceChildren();
     }
@@ -1707,9 +1977,13 @@
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
     try {
       const identity = await loadProjectIdentity({ baseUrl, projectId });
+      if (!currentDisplayRequest(request)) return false;
       lastProjectIdentity = identity;
       renderLeanPaneProjectIdentity(identity);
-    } catch {}
+    } catch (error) {
+      if (error?.code === "project_renaming") { markProjectRenaming(); return false; }
+      if (error?.code === "superseded") return false;
+    }
 
     let payload;
     try {
@@ -1718,18 +1992,21 @@
       );
       payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+        throw companionRequestError(response, payload);
       }
     } catch (error) {
+      if (!currentDisplayRequest(request)) return false;
+      if (error?.code === "project_renaming") { markProjectRenaming(); return false; }
       if (leanPaneMainView !== "blueprint" || !leanPaneBody) return;
       leanPaneStatus.textContent = "Blueprint unavailable.";
       leanPaneBody.replaceChildren(buildBlueprintToolbar(), buildBlueprintMessage(errorText(error), "error"));
       return;
     }
 
-    if (leanPaneMainView !== "blueprint") return; // toggled away mid-fetch
+    if (leanPaneMainView !== "blueprint" || !acceptDisplayResponse(request, payload.namespaceRevision)) return false;
     leanPaneBlueprintGraph = payload;
     renderBlueprintBody(payload);
+    return true;
   }
 
   // Render the cached graph payload into the body: no-project / empty / populated.
@@ -1812,6 +2089,7 @@
   // POST the generate request, then render the returned graph and report what changed.
   async function generateBlueprint() {
     if (!leanPane || !leanPaneBody || !leanPaneStatus || leanPaneMainView !== "blueprint") return;
+    const request = displayRequest("blueprint");
     if (leanPaneBlueprintGenerateBtn) {
       leanPaneBlueprintGenerateBtn.disabled = true;
       leanPaneBlueprintGenerateBtn.textContent = "Generating…";
@@ -1830,16 +2108,22 @@
       });
       payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+        throw companionRequestError(response, payload);
       }
     } catch (error) {
+      if (!currentDisplayRequest(request)) return;
+      if (error?.code === "project_renaming") {
+        if (leanPaneBlueprintGraph) renderBlueprintBody(leanPaneBlueprintGraph);
+        markProjectRenaming();
+        return;
+      }
       if (leanPaneMainView !== "blueprint" || !leanPaneBody) return;
       leanPaneStatus.textContent = "Blueprint unavailable.";
       leanPaneBody.replaceChildren(buildBlueprintToolbar(), buildBlueprintMessage(errorText(error), "error"));
       return;
     }
 
-    if (leanPaneMainView !== "blueprint") return;
+    if (leanPaneMainView !== "blueprint" || !acceptDisplayResponse(request, payload.namespaceRevision)) return;
     leanPaneBlueprintGraph = payload;
     leanPaneBlueprintSelectedKey = null;
     renderBlueprintBody(payload); // rebuilds the toolbar (button re-enabled) + graph
@@ -1875,6 +2159,7 @@
   // Edits to the open document re-render the pane from the cached file set with the
   // live buffer overlaid — a cheap, no-blink background refresh (no project download).
   function scheduleLeanPaneRefresh() {
+    if (projectRenaming) { scheduleRenameReconciliation(); return; }
     clearTimeout(leanPaneRefreshTimer);
     leanPaneRefreshTimer = setTimeout(() => {
       refreshLeanPaneNow({ background: true }).catch(renderLeanPaneError);
@@ -1883,8 +2168,28 @@
 
   // `forceFetch` re-downloads the project archive; `background` skips the blanking
   // "Loading…" state and preserves scroll, for edit-driven and poll refreshes.
-  async function refreshLeanPaneNow({ forceFetch = false, background = false } = {}) {
-    if (!leanPane || !leanPaneBody || !leanPaneStatus) return;
+  async function refreshLeanPaneNow(options = {}) {
+    const request = { ...displayRequest("manifest"), view: leanPaneMainView };
+    try { return await refreshLeanPaneSnapshot({ ...options, request }); }
+    catch (error) {
+      if (!currentDisplayRequest(request) || request.view !== leanPaneMainView) return false;
+      if (error?.code === "project_renaming") {
+        markProjectRenaming();
+        return false;
+      }
+      if (leanPaneMainView !== "items") throw error;
+      renderLeanPaneRefreshError(error);
+      // Callers that need a successful inventory (e.g. import preview) must
+      // still receive a rejection. Presentation catches must not erase the
+      // pane again after the refresh failure has already been displayed.
+      const reported = new Error(normalizeErrorMessage(error));
+      reported.leanPaneRefreshHandled = true;
+      throw reported;
+    }
+  }
+
+  async function refreshLeanPaneSnapshot({ forceFetch = false, background = false, request } = {}) {
+    if (!leanPane || !leanPaneBody || !leanPaneStatus || (background && document.hidden)) return;
     clearTimeout(leanPaneRefreshTimer);
     leanPaneRefreshTimer = null;
     clearTimeout(leanPanePollTimer);
@@ -1899,7 +2204,7 @@
       return;
     }
     await ensureLeanPaneView();
-    if (!background) {
+    if (!background && !lastLeanPaneManifest) {
       leanPaneStatus.textContent = "Loading project inventory...";
       leanPaneBody.replaceChildren();
     }
@@ -1914,10 +2219,11 @@
     // always settle into either content or a useful error state.
     loadProjectIdentity({ baseUrl, projectId })
       .then((identity) => {
+        if (!currentDisplayRequest(request)) return;
         lastProjectIdentity = identity;
         renderLeanPaneProjectIdentity(identity);
       })
-      .catch(() => {});
+      .catch((error) => { if (error?.code === "project_renaming") markProjectRenaming(); });
     const files = await getLeanPaneProjectFiles({
       projectId,
       forceFetch,
@@ -1932,14 +2238,37 @@
       body: JSON.stringify({
         overleafProjectId: projectId,
         activePath: latestActiveTexPath || "",
+        sourceCoverage: leanPaneSourceCoverage,
         files
       })
     }, {
       timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
       timeoutMessage: "The Lea companion timed out while loading the project inventory."
     });
-    if (!response.ok) {
-      throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+    if (!currentDisplayRequest(request) || request.view !== leanPaneMainView) return false;
+    if (!response.ok) throw companionRequestError(response, payload);
+    if (!acceptDisplayResponse(request, payload.namespaceRevision)) return false;
+    // The pane may load more files than the live editor resolver knew about.
+    // If that inventory disambiguates a generated ID, update the badge's key
+    // before its next status request so both UI surfaces keep one identity.
+    let identityChanged = false;
+    for (const target of latestTargets) {
+      if (target.labelSource !== "generated") continue;
+      const item = (payload.items || []).find((candidate) => (
+        normalizeDocPath(candidate.sourceFile) === normalizeDocPath(latestActiveTexPath)
+        && candidate.sourceStartOffset === target.from
+        && candidate.sourceEndOffset === target.to
+      ));
+      if (item && item.label !== target.targetLabel) {
+        target.targetLabel = item.label;
+        target.targetUses = item.targetUses || target.targetUses;
+        identityChanged = true;
+      }
+    }
+    if (identityChanged) {
+      resolvedTargetsRevision = "";
+      renderStatusBadges();
+      scheduleStatusRefresh();
     }
     // Personal-approval storage is presentation metadata, not project
     // inventory. Chrome storage can occasionally be slow to wake after an
@@ -1954,6 +2283,8 @@
       if (
         changed
         &&
+        currentDisplayRequest(request)
+        &&
         leanPane
         && leanPaneMainView === "items"
         && lastLeanPaneManifest
@@ -1962,21 +2293,95 @@
         renderLeanPaneManifest(lastLeanPaneManifest);
       }
     }).catch(() => {});
+    clearLeanPaneRefreshFailure();
     renderLeanPaneManifest(payload);
     scheduleLeanPanePollIfNeeded(payload);
+    return true;
   }
 
   // Keep refreshing while any item is still being formalized; stop once it settles.
-  function scheduleLeanPanePollIfNeeded(manifest) {
-    if (!leanPane || !leanPaneView?.hasInProgressItems(manifest?.items)) return;
+  document.addEventListener("visibilitychange", () => {
+    clearTimeout(renameRetryTimer);
+    renameRetryTimer = null;
+    if (!document.hidden && projectRenaming) { scheduleRenameReconciliation(0); return; }
     clearTimeout(leanPanePollTimer);
+    clearTimeout(leanPaneChatPollTimer);
+    if (!document.hidden) {
+      scheduleStatusRefresh();
+      if (leanPaneMainView === "blueprint" && leanPane) renderLeanPaneBlueprint({ background: true }).catch(() => {});
+      else if (leanPane) refreshLeanPaneNow({ background: true }).catch(() => {});
+      if (leanPaneChatPanel) pollChatSession().catch(() => {});
+    }
+  });
+
+  function scheduleLeanPanePollIfNeeded(manifest) {
+    clearTimeout(leanPanePollTimer);
+    leanPanePollTimer = null;
+    if (leanPaneRefreshFailure) { scheduleLeanPaneRefreshRetry(); return; }
+    if (!leanPane || document.hidden || (!manifest?.leanCheckRuntimePolling && !leanPaneView?.hasInProgressItems(manifest?.items))) return;
     leanPanePollTimer = setTimeout(() => {
       refreshLeanPaneNow({ background: true }).catch(renderLeanPaneError);
-    }, pushConnected ? LEAN_PANE_POLL_RECONCILE_MS : LEAN_PANE_POLL_DELAY_MS);
+    }, 5000);
+  }
+
+  function clearLeanPaneRefreshFailure() {
+    leanPaneRefreshFailure = "";
+    leanPaneRefreshFailures = 0;
+    leanPane?.querySelector(".ol-lean-project-pane-refresh-warning")?.remove();
+  }
+
+  function leanPaneRefreshRetryDelay() {
+    return Math.min(30000, 5000 * 2 ** Math.min(3, Math.max(0, leanPaneRefreshFailures - 1)));
+  }
+
+  function scheduleLeanPaneRefreshRetry() {
+    clearTimeout(leanPanePollTimer);
+    leanPanePollTimer = null;
+    if (!leanPane || leanPaneMainView !== "items" || document.hidden || projectRenaming) return;
+    leanPanePollTimer = setTimeout(() => {
+      leanPanePollTimer = null;
+      refreshLeanPaneNow({ background: true }).catch(renderLeanPaneError);
+    }, leanPaneRefreshRetryDelay());
+  }
+
+  function renderLeanPaneRefreshWarning() {
+    if (!leanPane || !leanPaneStatus || !leanPaneRefreshFailure) return;
+    let notice = leanPane.querySelector(".ol-lean-project-pane-refresh-warning");
+    if (!notice) {
+      notice = document.createElement("p");
+      notice.className = "ol-lean-project-pane-refresh-warning";
+      notice.setAttribute("role", "status");
+      notice.setAttribute("aria-live", "polite");
+      leanPane.insertBefore(notice, leanPaneStatus);
+    }
+    notice.hidden = leanPaneMainView !== "items";
+    if (notice.hidden) return;
+    const loaded = lastLeanPaneManifest && lastLeanPaneManifestProjectId === extractOverleafProjectId();
+    notice.textContent = loaded
+      ? `Refresh delayed. Showing the last loaded inventory; statuses may be out of date. Retrying in ${leanPaneRefreshRetryDelay() / 1000} seconds.`
+      : `${leanPaneRefreshFailure} Retrying in ${leanPaneRefreshRetryDelay() / 1000} seconds.`;
+    notice.title = leanPaneRefreshFailure;
+    if (!loaded) leanPaneStatus.textContent = "Project inventory is temporarily unavailable.";
+    // Cached eligibility cannot authorize a new personal approval while the
+    // pane cannot confirm current evidence. The next snapshot recreates these.
+    for (const button of leanPaneBody?.querySelectorAll(".ol-lean-human-approval-pane") || []) {
+      button.disabled = true;
+      button.title = "Refresh the inventory before changing personal approval.";
+    }
+  }
+
+  function renderLeanPaneRefreshError(error) {
+    if (!leanPane || leanPaneMainView !== "items") return;
+    leanPaneRefreshFailure = normalizeErrorMessage(error);
+    leanPaneRefreshFailures += 1;
+    renderLeanPaneRefreshWarning();
+    scheduleLeanPaneRefreshRetry();
   }
 
   async function getLeanPaneProjectFiles({ projectId, forceFetch, deferArchiveFetch = false }) {
+    if (lastLeanPaneProjectId !== projectId) leanPaneSourceCoverage = "partial";
     if (!projectId || projectId === "unknown") {
+      leanPaneSourceCoverage = "partial";
       leanPaneInventoryWarning = "";
       return latestActiveTexPath && typeof latestActiveTex === "string"
         ? [{ path: latestActiveTexPath, content: latestActiveTex }]
@@ -1990,14 +2395,17 @@
     });
     let files;
     if (needFetch && deferArchiveFetch) {
+      leanPaneSourceCoverage = "partial";
       files = fallbackLeanPaneProjectFiles(projectId);
       leanPaneInventoryWarning = "Loading the full Overleaf project inventory in the background.";
       queueLeanPaneArchiveRefresh(projectId);
     } else if (needFetch) {
       try {
         files = await loadLeanPaneArchive(projectId);
+        leanPaneSourceCoverage = "complete";
         leanPaneInventoryWarning = "";
       } catch {
+        leanPaneSourceCoverage = "partial";
         files = fallbackLeanPaneProjectFiles(projectId);
         leanPaneInventoryWarning = leanPaneArchiveUnavailableMessage(files);
       }
@@ -2035,6 +2443,7 @@
         if (extractOverleafProjectId() !== projectId) return;
         lastLeanPaneFiles = files.map((file) => ({ ...file }));
         lastLeanPaneProjectId = projectId;
+        leanPaneSourceCoverage = "complete";
         leanPaneInventoryWarning = "";
         if (leanPane && leanPaneMainView === "items") {
           refreshLeanPaneNow({ background: true }).catch(renderLeanPaneError);
@@ -2071,7 +2480,27 @@
     if (!leanPaneBody || !leanPaneStatus) return;
     manifest = githubImportPaneOverlay(manifest);
     const prevScrollTop = leanPaneBody.scrollTop;
+    const statusFocus = document.activeElement?.closest?.(".ol-lean-live-status") ? document.activeElement : null;
+    const navigationFocusKey = document.activeElement?.closest?.(".ol-lean-batch-queue-action")?.dataset.batchNavigationKey;
+    const itemHeaderFocusId = document.activeElement?.closest?.(".ol-lean-project-item-header")
+      ?.closest?.(".ol-lean-project-item")?.dataset.itemId;
+    const selection = document.getSelection?.();
+    // Defer this refresh while the author is selecting status text. The next
+    // normal poll applies it after selection clears without destroying the range.
+    const selectedElement = selection?.anchorNode?.parentElement;
+    if (!selection?.isCollapsed && selectedElement?.closest?.(".ol-lean-live-status")) return;
     const items = Array.isArray(manifest?.items) ? manifest.items : [];
+    const renderedProjectId = extractOverleafProjectId();
+    if (leanPaneBatchReportsProjectId && leanPaneBatchReportsProjectId !== renderedProjectId) {
+      leanPaneBatchReports = [];
+      leanPaneBatchReportsNextCursor = null;
+      leanPaneBatchReportDetail = null;
+      leanPaneBatchReportsOpen = false;
+      leanPaneBatchReportsLoading = false;
+      leanPaneBatchReportsLoadingProjectId = "";
+      leanPaneBatchReportError = "";
+      leanPaneBatchReportsProjectId = "";
+    }
     const tree = leanPaneView.buildLeanPaneTree(items);
     const useRelationships = leanPaneView.buildPaneUseRelationships(items);
     const fileCount = tree.files.length;
@@ -2085,7 +2514,19 @@
     leanPaneStatus.textContent = leanPaneInventoryWarning
       ? `${inventorySummary} ${leanPaneInventoryWarning}`
       : inventorySummary;
+    if (leanPaneBatchNavigationStatus?.projectId === renderedProjectId
+      && leanPaneBatchNavigationStatus.batchId === leanPaneRepairBatch?.batchId) {
+      leanPaneStatus.textContent = leanPaneBatchNavigationStatus.message;
+    }
 
+    if (manifest?.leanCheckRuntimeMessage) {
+      const runtime = document.createElement("div");
+      runtime.className = "ol-lean-project-pane-diagnostics";
+      runtime.setAttribute("role", "status");
+      runtime.textContent = manifest.leanCheckRuntimeMessage;
+      runtime.title = manifest.leanCheckRuntime?.last_failure?.message || "";
+      leanPaneBody.appendChild(runtime);
+    }
     if (Array.isArray(manifest?.diagnostics) && manifest.diagnostics.length > 0) {
       const visibleDiagnostics = manifest.diagnostics.slice(0, 4);
       const dismissKey = leanPaneErrorKey(
@@ -2107,8 +2548,11 @@
       }
     }
 
-    const repairBatchPanel = renderLeanPaneRepairBatchPanel();
+    const repairBatchPanel = renderLeanPaneRepairBatchPanel({ navigationFocusKey });
     if (repairBatchPanel) leanPaneBody.appendChild(repairBatchPanel);
+
+    const reportsPanel = renderFormalizeBatchReportHistory();
+    if (reportsPanel) leanPaneBody.appendChild(reportsPanel);
 
     const batchActions = renderLeanPaneBatchActions(items);
     if (batchActions) leanPaneBody.appendChild(batchActions);
@@ -2122,18 +2566,189 @@
       leanPaneBody.appendChild(treeElement);
     }
 
+    if (statusFocus?.isConnected) statusFocus.focus({ preventScroll: true });
+    if (navigationFocusKey) batchQueueNavigationButton(navigationFocusKey)?.focus({ preventScroll: true });
+    if (itemHeaderFocusId) leanPaneItemHeader(itemHeaderFocusId)?.focus({ preventScroll: true });
     leanPaneBody.scrollTop = prevScrollTop;
+    renderLeanPaneRefreshWarning();
+    const projectId = extractOverleafProjectId();
+    if (projectId && projectId !== "unknown" && leanPaneBatchReportsProjectId !== projectId) {
+      leanPaneBatchReportsProjectId = projectId;
+      loadFormalizeBatchReportHistory(projectId).catch(() => {});
+    }
+  }
+
+  async function loadFormalizeBatchReportHistory(projectId = extractOverleafProjectId(), { append = false } = {}) {
+    if (leanPaneBatchReportsLoading && leanPaneBatchReportsLoadingProjectId === projectId) return;
+    leanPaneBatchReportsLoading = true;
+    leanPaneBatchReportsLoadingProjectId = projectId;
+    leanPaneBatchReportError = "";
+    if (leanPane) renderLeanPaneManifest(lastLeanPaneManifest);
+    try {
+      const baseUrl = await chatCompanionBaseUrl();
+      const cursor = append && leanPaneBatchReportsNextCursor
+        ? `&before=${encodeURIComponent(leanPaneBatchReportsNextCursor)}` : "";
+      const response = await fetch(`${baseUrl}/formalize/all/reports?overleafProjectId=${encodeURIComponent(projectId)}${cursor}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || "Could not load Formalize all reports.");
+      if (projectId !== extractOverleafProjectId()) return;
+      const incoming = Array.isArray(payload.reports) ? payload.reports : [];
+      leanPaneBatchReports = append ? [...leanPaneBatchReports, ...incoming] : incoming;
+      leanPaneBatchReportsNextCursor = payload.nextCursor || null;
+      leanPaneBatchReportError = "";
+    } catch (error) {
+      if (projectId === extractOverleafProjectId()) leanPaneBatchReportError = normalizeErrorMessage(error);
+    }
+    if (leanPaneBatchReportsLoadingProjectId === projectId) {
+      leanPaneBatchReportsLoading = false;
+      leanPaneBatchReportsLoadingProjectId = "";
+      if (leanPane) renderLeanPaneManifest(lastLeanPaneManifest);
+    }
+  }
+
+  async function openFormalizeBatchReport(batchId) {
+    try {
+      const baseUrl = await chatCompanionBaseUrl();
+      const projectId = extractOverleafProjectId();
+      const response = await fetch(`${baseUrl}/formalize/all/reports/${encodeURIComponent(batchId)}?overleafProjectId=${encodeURIComponent(projectId)}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || "Could not load this report.");
+      if (projectId !== extractOverleafProjectId()) return;
+      leanPaneBatchReportDetail = payload;
+      leanPaneBatchReportError = "";
+      if (payload.state === "synthesizing") {
+        setTimeout(() => {
+          if (leanPane && leanPaneBatchReportDetail?.batch_id === batchId) openFormalizeBatchReport(batchId);
+        }, 3000);
+      } else {
+        loadFormalizeBatchReportHistory(projectId).catch(() => {});
+      }
+    } catch (error) {
+      leanPaneBatchReportError = normalizeErrorMessage(error);
+    }
+    renderLeanPaneManifest(lastLeanPaneManifest);
+  }
+
+  async function retryFormalizeBatchReport(batchId) {
+    try {
+      const baseUrl = await chatCompanionBaseUrl();
+      const response = await fetch(`${baseUrl}/formalize/all/reports/${encodeURIComponent(batchId)}/retry`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overleafProjectId: extractOverleafProjectId() })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || "Could not retry the summary.");
+      if (leanPaneRepairBatch?.reportId === batchId) {
+        leanPaneRepairBatch.report = payload;
+        leanPaneRepairBatch.reportState = payload.state;
+        startRepairBatchPolling();
+      }
+      if (leanPaneBatchReportDetail?.batch_id === batchId) leanPaneBatchReportDetail = payload;
+      leanPaneBatchReportError = "";
+      loadFormalizeBatchReportHistory().catch(() => {});
+    } catch (error) {
+      leanPaneBatchReportError = normalizeErrorMessage(error);
+    }
+    renderLeanPaneManifest(lastLeanPaneManifest);
+  }
+
+  function renderFormalizeBatchReportHistory() {
+    if (extractOverleafProjectId() === "unknown") return null;
+    const section = document.createElement("section");
+    section.className = "ol-lean-batch-report-history";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "ol-lean-batch-queue-completed-toggle";
+    toggle.setAttribute("aria-expanded", String(leanPaneBatchReportsOpen));
+    toggle.textContent = "Past Formalize all reports";
+    toggle.addEventListener("click", () => {
+      leanPaneBatchReportsOpen = !leanPaneBatchReportsOpen;
+      renderLeanPaneManifest(lastLeanPaneManifest);
+    });
+    section.appendChild(toggle);
+    if (leanPaneBatchReportsOpen) {
+      if (leanPaneBatchReportsLoading) {
+        const loading = document.createElement("p");
+        loading.setAttribute("role", "status");
+        loading.textContent = "Loading reports…";
+        section.appendChild(loading);
+      } else if (!leanPaneBatchReports.length && !leanPaneBatchReportError) {
+        const empty = document.createElement("p");
+        empty.textContent = "No past Formalize all reports yet.";
+        section.appendChild(empty);
+      }
+      const list = document.createElement("ul");
+      for (const report of leanPaneBatchReports) {
+        const item = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "ol-lean-batch-report-history-item";
+        const date = new Date(report.finished_at);
+        button.textContent = `${Number.isNaN(date.getTime()) ? "Finished batch" : date.toLocaleString()} · ${report.state === "ready" ? "Summary ready" : report.state === "synthesizing" ? "Writing summary" : "Factual report"}`;
+        button.addEventListener("click", () => { openFormalizeBatchReport(report.batch_id); });
+        item.appendChild(button);
+        list.appendChild(item);
+      }
+      section.appendChild(list);
+      if (leanPaneBatchReportsNextCursor) {
+        const more = document.createElement("button");
+        more.type = "button";
+        more.className = "ol-lean-batch-queue-disclosure";
+        more.textContent = "Load older reports";
+        more.addEventListener("click", () => { loadFormalizeBatchReportHistory(extractOverleafProjectId(), { append: true }); });
+        section.appendChild(more);
+      }
+      if (leanPaneBatchReportDetail) section.appendChild(renderFormalizeBatchReport(leanPaneBatchReportDetail));
+      if (leanPaneBatchReportError) {
+        const error = document.createElement("p");
+        error.setAttribute("role", "alert");
+        error.textContent = leanPaneBatchReportError;
+        section.appendChild(error);
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "ol-lean-secondary-button";
+        retry.textContent = "Reload reports";
+        retry.addEventListener("click", () => { loadFormalizeBatchReportHistory(); });
+        section.appendChild(retry);
+      }
+    }
+    return section;
   }
 
   function renderLeanPaneProjectIdentity(identity) {
     if (!leanPaneProjectTitle || !leanPaneProjectNamespace) return;
     const fallback = guessProjectName(lastLeanPaneFiles || []);
-    leanPaneProjectTitle.textContent = identity?.projectName || fallback;
+    leanPaneProjectTitle.textContent = identity?.exists === false ? fallback : identity?.projectName || fallback;
     leanPaneProjectNamespace.textContent = identity?.namespace || "Namespace not created yet";
   }
 
+  async function initializeOverleafNameOnOpen(projectId, activeTex) {
+    if (!projectId || projectId === "unknown" || defaultNameLoadedProjectId === projectId) return;
+    const overleafProjectTitle = readOverleafProjectTitle([{ content: activeTex }]);
+    if (!overleafProjectTitle) return;
+    defaultNameLoadedProjectId = projectId;
+    try {
+      const settings = await getSettings();
+      const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
+      const generation = displayGeneration;
+      const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/project/identity/default-name`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overleafProjectId: projectId, overleafProjectTitle })
+      }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+        timeoutMessage: "The Lea companion timed out while initializing the project name." });
+      if (!response.ok && response.status !== 404) throw companionRequestError(response, payload);
+      if (projectId === extractOverleafProjectId() && generation === displayGeneration && response.ok && payload.identity) {
+        lastProjectIdentity = payload.identity;
+        renderLeanPaneProjectIdentity(lastProjectIdentity);
+      }
+    } catch {
+      if (defaultNameLoadedProjectId === projectId) defaultNameLoadedProjectId = "";
+    }
+  }
+
   async function loadProjectIdentity({ baseUrl, projectId }) {
-    const { response, payload } = await fetchJsonWithTimeout(
+    const request = displayRequest("identity");
+    let { response, payload } = await fetchJsonWithTimeout(
       `${baseUrl}/project/identity?overleafProjectId=${encodeURIComponent(projectId)}`,
       {},
       {
@@ -2141,7 +2756,29 @@
         timeoutMessage: "The Lea companion timed out while loading the project identity."
       }
     );
-    if (!response.ok) throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+    if (!currentDisplayRequest(request)) throw Object.assign(new Error("A newer project request superseded this response."), { code: "superseded" });
+    if (!response.ok) throw companionRequestError(response, payload);
+    const overleafProjectTitle = readOverleafProjectTitle(lastLeanPaneFiles || []);
+    if (payload.identity?.exists && payload.identity.nameSource === "generated" && overleafProjectTitle) {
+      try {
+        const initialized = await fetchJsonWithTimeout(`${baseUrl}/project/identity/default-name`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ overleafProjectId: projectId, overleafProjectTitle })
+        }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+          timeoutMessage: "The Lea companion timed out while initializing the project name." });
+        if (!currentDisplayRequest(request)) throw Object.assign(new Error("A newer project request superseded this response."), { code: "superseded" });
+        if (initialized.response.ok && initialized.payload.identity) payload = initialized.payload;
+        else if (initialized.response.status === 409) throw companionRequestError(initialized.response, initialized.payload);
+      } catch (error) {
+        if (error?.code === "superseded" || error?.code === "project_renaming") throw error;
+        // Naming is best-effort on tab open; the next identity load retries.
+      }
+    }
+    if (!acceptDisplayResponse(request, payload.identity?.namespaceRevision)) {
+      throw Object.assign(new Error("A newer project request superseded this response."), { code: "superseded" });
+    }
+    if (payload.identity?.renameInProgress) throw Object.assign(new Error("Renaming project…"), { code: "project_renaming" });
     return payload.identity || null;
   }
 
@@ -2184,13 +2821,18 @@
     return payload;
   }
 
-  function guessProjectName(files = []) {
-    for (const file of files || []) {
+  function readOverleafProjectTitle(files = []) {
+    const title = String(document.title || "").replace(/\s*[-–—]\s*Overleaf\s*$/i, "").trim();
+    if (title && !/^Overleaf$/i.test(title)) return title;
+    for (const file of [{ content: latestActiveTex }, ...(files || [])]) {
       const match = String(file?.content || "").match(/\\title\s*\{([^}]*)\}/);
       if (match?.[1]?.trim()) return match[1].trim();
     }
-    const title = String(document.title || "").replace(/\s*-\s*Overleaf\s*$/i, "").trim();
-    return title || "Overleaf Project";
+    return "";
+  }
+
+  function guessProjectName(files = []) {
+    return readOverleafProjectTitle(files) || "Overleaf Project";
   }
 
   function renderProjectIdentityFeedback({ source = "lean-pane", popover = null, message = "", kind = "info" } = {}) {
@@ -2225,7 +2867,7 @@
   function buildProjectIdentityEditor({ source, popover, trigger, baseUrl, projectId, identity }) {
     closeProjectIdentityEditor({ restoreFocus: false });
 
-    const currentName = String(identity?.projectName || guessProjectName(lastLeanPaneFiles || [])).trim();
+    const currentName = String((identity?.exists !== false && identity?.projectName) || guessProjectName(lastLeanPaneFiles || [])).trim();
     const currentNamespace = String(identity?.namespace || "").trim();
     const shell = createProjectIdentityElement("div", "ol-lean-project-identity-backdrop");
     const dialog = createProjectIdentityElement("section", "ol-lean-project-identity-dialog");
@@ -2551,6 +3193,7 @@
     state.previewError = "";
     renderProjectIdentityEditor(state);
     let result;
+    if (migrate) markProjectRenaming(state.projectId, true);
     try {
       result = await saveProjectIdentity({
         baseUrl: state.baseUrl,
@@ -2562,6 +3205,7 @@
         createIfMissing: true
       });
     } catch (error) {
+      if (migrate) { displayGeneration += 1; scheduleRenameReconciliation(0); }
       if (state !== projectIdentityEditorState) return false;
       state.saving = false;
       state.previewError = normalizeErrorMessage(error);
@@ -2577,22 +3221,12 @@
       ? `Project name saved. Lean files still use namespace ${savedNamespace}.`
       : "Project name and Lean namespace saved.";
     let feedbackKind = "success";
-    if (migrate && leanPane) {
-      try {
-        // The rename endpoint migrates the files synchronously. Re-fetch the
-        // manifest before dismissing the dialog so already-rendered code uses
-        // those rewritten working files immediately.
-        if (leanPaneMainView === "blueprint") {
-          // No Lean source is visible in Blueprint, but its cached Items view
-          // would otherwise resurrect the pre-rename manifest when selected.
-          lastLeanPaneManifest = null;
-        } else {
-          await refreshLeanPaneNow({ background: true });
-        }
-      } catch (error) {
-        message += ` The Lean pane could not refresh: ${normalizeErrorMessage(error)}`;
-        feedbackKind = "error";
-      }
+    if (migrate) {
+      displayGeneration += 1;
+      const refreshed = await reconcileProjectRename();
+      if (!refreshed) message += " Project statuses are refreshing.";
+    } else {
+      scheduleStatusRefresh();
     }
     const { source, popover } = state;
     closeProjectIdentityEditor();
@@ -2671,6 +3305,20 @@
 
     if (node.type === "file") {
       row.appendChild(renderLeanPaneFileProgress(node));
+      const progress = node.progress || leanPaneView.summarizePaneProgress(node.items || []);
+      if (progress.disproved > 0) {
+        const outcomes = document.createElement("span");
+        outcomes.className = "ol-lean-project-progress-outcomes";
+        const verified = document.createElement("span");
+        verified.className = "ol-lean-project-progress-outcome-verified";
+        verified.textContent = `${progress.success} verified`;
+        verified.title = "Verified proofs and definitions";
+        const disproved = document.createElement("span");
+        disproved.className = "ol-lean-project-progress-outcome-disproved";
+        disproved.textContent = `${progress.disproved} disproved`;
+        outcomes.append(verified, " · ", disproved);
+        row.appendChild(outcomes);
+      }
     } else {
       const chip = document.createElement("span");
       chip.className = `ol-lean-project-status ol-lean-project-tree-status ol-lean-project-status-${node.status || "unknown"}`;
@@ -2728,96 +3376,163 @@
   function renderLeanPaneItem(item, useRelationships) {
     const expanded = leanPaneExpandedItemIds.has(item.id);
     const card = document.createElement("section");
-    card.className = `ol-lean-project-item ol-lean-project-item-${item.status || "unknown"}`;
+    card.className = `ol-lean-project-item ol-lean-project-item-${item.status || "unknown"}${expanded ? " is-expanded" : ""}`;
     card.dataset.itemId = item.id || "";
 
-    const headerRow = document.createElement("div");
-    headerRow.className = "ol-lean-project-item-header-row";
+    const detailId = `ol-lean-project-detail-${encodeURIComponent(item.id || `${item.kind}-${item.label}`)}`;
+    const summary = document.createElement("div");
+    summary.className = "ol-lean-project-item-summary";
     const header = document.createElement("button");
     header.type = "button";
     header.className = "ol-lean-project-item-header";
     header.setAttribute("aria-expanded", String(expanded));
+    header.setAttribute("aria-controls", detailId);
+    header.setAttribute("aria-label", `${expanded ? "Collapse" : "Expand"} details for ${item.title || item.leanDeclarationName || item.label || "item"}`);
     header.addEventListener("click", () => {
       if (leanPaneExpandedItemIds.has(item.id)) {
         leanPaneExpandedItemIds.delete(item.id);
       } else {
         leanPaneExpandedItemIds.add(item.id);
       }
-      card.replaceWith(renderLeanPaneItem(item, useRelationships));
+      const replacement = renderLeanPaneItem(item, useRelationships);
+      card.replaceWith(replacement);
+      replacement.querySelector(".ol-lean-project-item-header")?.focus({ preventScroll: true });
     });
 
+    const disclosure = document.createElement("span");
+    disclosure.className = "ol-lean-project-item-disclosure";
+    disclosure.setAttribute("aria-hidden", "true");
+    header.appendChild(disclosure);
+    const identity = document.createElement("span");
+    identity.className = "ol-lean-project-item-identity";
     const text = document.createElement("span");
     text.className = "ol-lean-project-item-title";
     renderLeanPaneTitle(text, item);
     const meta = document.createElement("span");
     meta.className = "ol-lean-project-item-meta";
-    meta.textContent = item.label;
-    const chip = document.createElement("span");
-    chip.className = `ol-lean-project-status ol-lean-project-status-${item.status || "unknown"}`;
-    chip.textContent = leanPaneView.formatPaneStatus(item.status || "unknown");
-    header.appendChild(text);
-    header.appendChild(meta);
-    header.appendChild(chip);
-    // Same amber "!" the document overlay's badge shows for a proof whose
-    // imports are currently sorry-stubbed -- the pane item and the doc badge
-    // describe the same status object and must agree.
-    if (getStubbedTheoremUses(item).length > 0) {
-      header.appendChild(createStubbedTheoremUsesMark());
+    meta.textContent = item.labelSource === "generated"
+      ? item.latexLabel || "Auto-named"
+      : item.label;
+    identity.appendChild(text);
+    identity.appendChild(meta);
+    header.appendChild(identity);
+    summary.appendChild(header);
+
+    const checks = document.createElement("span");
+    checks.className = "ol-lean-project-checks";
+    if (item.status === "disproved") {
+      const outcome = document.createElement("span");
+      outcome.className = "ol-lean-project-check-chip ol-lean-project-check-chip-disproved";
+      outcome.textContent = item.leanCheck?.status === "checked"
+        ? "Counterexample verified · Claim disproved"
+        : "Counterexample found · Claim disproved";
+      checks.appendChild(outcome);
     }
-    headerRow.appendChild(header);
-    if (
-      Object.prototype.hasOwnProperty.call(item, "approvalEligible")
-      || Boolean(item.approvalRevision)
-    ) {
-      headerRow.appendChild(createHumanApprovalButton(paneItemApprovalTarget(item), item, { pane: true }));
+    checks.appendChild(renderProjectCheckChip("Lean Check", item.leanCheck?.status || "unformalized", "lean"));
+    checks.appendChild(renderProjectCheckChip("Lea Status", leanPaneView.leaStatusLabel(item.leaStatus), "lea"));
+    summary.appendChild(checks);
+
+    const summaryActions = document.createElement("div");
+    summaryActions.className = "ol-lean-project-summary-actions";
+    const reviewing = item.status === 'needs-review' && item.review?.eligible;
+    const formalizeAction = reviewing ? { id: 'approve-result', label: 'Approve result' } : leanPaneView.paneItemFormalizeAction(item);
+    const formalizeButton = renderPaneItemPrimaryAction(item, formalizeAction);
+    formalizeButton.className += " ol-lean-project-summary-formalize";
+    const editing = leanPaneEditingItemId === item.id;
+    const waiting = leanPaneView.dependencyWait(item);
+    formalizeButton.disabled = editing || (!waiting && !leanPaneView.canFormalizePaneItem(item));
+    if (!waiting && (item.inProgress || item.status === "in-progress")) {
+      formalizeButton.textContent = "Formalizing…";
+      formalizeButton.title = "Formalization is already running";
+    } else if (editing) {
+      formalizeButton.title = "Finish editing before formalizing";
+    } else if (formalizeButton.disabled) {
+      formalizeButton.title = "This item has no formalization target";
     }
-    card.appendChild(headerRow);
-
-    const natural = document.createElement("p");
-    natural.className = "ol-lean-project-natural";
-    renderLeanPaneLatex(natural, item.naturalLanguageLatex || item.naturalLanguageRendered || "");
-    card.appendChild(natural);
-
-    if (item.githubImportPending) {
-      const importState = document.createElement("p");
-      importState.className = "ol-lean-project-import-state";
-      importState.setAttribute("role", "status");
-      importState.textContent = item.message || "Imported Lean proof is queued for checking.";
-      card.appendChild(importState);
+    summaryActions.appendChild(formalizeButton);
+    if (reviewing) summaryActions.appendChild(renderFormalizeButton(item, { id: 'reformalize', label: 'Re-formalize' }));
+    summaryActions.appendChild(renderPaneItemIconAction(item, { id: "go-to-source", label: "Go to source" }));
+    if (leanPaneView.canViewPaneItemInLeaUi(item)) {
+      summaryActions.appendChild(renderPaneItemIconAction(item, { id: "view-in-lea", label: "Open in LeaChat" }));
     }
-
-    const relationships = renderLeanPaneUseRelationships(item, useRelationships);
-    if (relationships) card.appendChild(relationships);
-
-    if (item.status === "stale") {
-      const staleNote = document.createElement("p");
-      staleNote.className = "ol-lean-project-stale-note";
-      staleNote.setAttribute("role", "status");
-      staleNote.textContent = item.message
-        || "Out of date — the LaTeX changed after this Lean artifact was generated. Re-formalize to synchronize it.";
-      card.appendChild(staleNote);
-    }
-
-    if (getStubbedTheoremUses(item).length > 0) {
-      const stubbedWarning = document.createElement("p");
-      stubbedWarning.className = "ol-lean-project-impact-note";
-      renderStubbedTheoremUsesWarning(stubbedWarning, item);
-      card.appendChild(stubbedWarning);
-    }
-
-    if (item.leanStub) {
-      card.appendChild(renderLeanCodeBlock("ol-lean-project-code", item.leanStub, "Copy stub"));
-    } else {
-      const missing = document.createElement("p");
-      missing.className = "ol-lean-project-missing";
-      missing.textContent = "No Lean stub has been generated yet.";
-      card.appendChild(missing);
+    summary.appendChild(summaryActions);
+    card.appendChild(summary);
+    if (waiting && !expanded) {
+      const explanation = document.createElement("p");
+      explanation.className = "ol-lean-project-wait-message";
+      explanation.textContent = waiting.message;
+      card.appendChild(explanation);
     }
 
-    if (expanded) {
-      card.appendChild(renderLeanPaneItemDetail(item));
-    }
+    const detailRegion = document.createElement("div");
+    detailRegion.id = detailId;
+    detailRegion.hidden = !expanded;
+    if (expanded) detailRegion.appendChild(renderLeanPaneItemDetail(item, useRelationships));
+    card.appendChild(detailRegion);
     return card;
+  }
+
+  function renderLeanPaneLiveStatus(item) {
+    return leanPaneView.renderLeaStatus(item, { document,
+      loadHistory: async (target, after) => {
+        const baseUrl = await chatCompanionBaseUrl();
+        const query = new URLSearchParams({ formalizationId: target.formalizationId });
+        if (after) query.set("after", after);
+        const response = await fetch(`${baseUrl}/lean-pane/lea-status/updates?${query}`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || payload.error || "Could not load Lea Status history.");
+        return payload;
+      },
+      pause: async (target) => {
+        if (leanPaneView.dependencyWait(target)) {
+          await runDependencyAction(target, { id: "dependency-stop" });
+          return;
+        }
+        const baseUrl = await chatCompanionBaseUrl();
+        const response = await fetch(`${baseUrl}/lean-pane/chat/interrupt`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ runId: target.leaStatus.run_id, sessionId: target.leaSessionId })
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || payload.error || "Could not pause this run.");
+        await refreshLeanPaneNow({ background: true });
+      }
+    });
+  }
+
+  function renderSharedMathematics(dependencies, key) {
+    return leanPaneView.renderSharedDependencies(dependencies, { document, key,
+      retry: async (dep, { resume = false } = {}) => {
+        const baseUrl = await chatCompanionBaseUrl();
+        const response = await fetch(`${baseUrl}/lean-pane/dependencies/retry`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(), dependencyId: dep.id, resume })
+        });
+        const body = await response.json();
+        if (!response.ok) throw companionRequestError(response, body);
+      },
+      open: async (dep) => {
+        const settings = await getSettings();
+        const link = getLeaSessionLink({ leaSessionId: dep.session_id, leaUiBaseUrl: settings.leaUiBaseUrl });
+        const url = new URL(link.url);
+        url.searchParams.set("formalization", dep.formalization_id);
+        await openLeaSession({ ...link, url: url.toString() });
+      }
+    });
+  }
+
+  function renderProjectCheckChip(label, status, kind) {
+    const chip = document.createElement("span");
+    const normalized = String(status || (kind === "lea" ? "N/A" : "unformalized"));
+    chip.className = `ol-lean-project-check-chip ol-lean-project-check-chip-${kind} ol-lean-project-check-chip-${normalized.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+    const name = document.createElement("span");
+    name.className = "ol-lean-project-check-chip-name";
+    name.textContent = `${label}:`;
+    const value = document.createElement("span");
+    value.textContent = normalized;
+    chip.appendChild(name);
+    chip.appendChild(value);
+    return chip;
   }
 
   function renderLeanPaneUseRelationships(item, useRelationships) {
@@ -2877,12 +3592,15 @@
     ].filter(Boolean).join(" ");
     element.dataset.relationshipDirection = direction;
     element.dataset.targetLabel = relationship?.label || "";
-    element.textContent = relationship?.label || "";
+    const relationshipName = relationship?.item?.labelSource === "generated"
+      ? relationship.item.title || relationship.item.latexLabel || "Auto-named theorem"
+      : relationship?.label || "";
+    element.textContent = relationshipName;
 
     if (navigable) {
       const role = direction === "uses" ? "dependency" : "dependent";
       const state = leanPaneView.formatPaneStatus(relationship.status || "unknown");
-      const accessibleLabel = `Open ${role} ${relationship.label}, currently ${state}`;
+      const accessibleLabel = `Open ${role} ${relationshipName}, currently ${state}`;
       element.setAttribute("aria-label", accessibleLabel);
       element.title = accessibleLabel;
       element.addEventListener("click", (event) => {
@@ -2902,69 +3620,308 @@
     return element;
   }
 
-  function renderLeanPaneItemDetail(item) {
+  function formatLeanPaneAccounting(item) {
+    if (!item?.accounting && !item?.stopReason && !item?.settling) return "";
+    const parts = [];
+    if (item.settling) parts.push("Time limit reached; waiting for the adapter to stop");
+    else if (item.outcomeNeedsReview) parts.push("The adapter later completed this run; review the current target status");
+    else if (item.stopReason === "timeout") parts.push("Stopped at the time limit");
+    else if (item.stopReason === "user_stop") parts.push("Stopped by user");
+    else if (item.stopReason === "global_spend_cap") parts.push("Stopped at the spend cap");
+    const accounting = item.accounting;
+    const cost = accounting?.costUsd == null ? null : Number(accounting.costUsd);
+    if (accounting?.usageDetails?.unpriced_calls || accounting?.usageDetails?.cost_basis === "unavailable") {
+      parts.push(cost > 0 ? `${formatCost(cost)} recorded; pricing incomplete` : "Pricing unavailable");
+    } else if (accounting?.status === "final" && cost != null && Number.isFinite(cost)) {
+      parts.push(`${formatCost(accounting.costUsd)} recorded`);
+    } else if (cost != null && Number.isFinite(cost) && cost > 0) {
+      parts.push(`${formatCost(accounting.costUsd)} recorded so far`);
+    } else if (["pending", "partial"].includes(accounting?.status)) {
+      parts.push("Awaiting usage");
+    } else if (accounting && (item.stopReason || item.settling
+        || (accounting.status === "unknown" && !item.inProgress))) {
+      parts.push("usage unavailable");
+    }
+    const details = accounting?.usageDetails;
+    if (details) {
+      parts.push(({ cache_aware_estimate: "Cache-aware estimate", legacy_estimate: "Legacy estimate",
+        provider_reported: "Provider reported", mixed: "Mixed calculation bases" })[details.cost_basis] || "Pricing unavailable");
+      for (const [key, label] of [["cached_input_tokens", "Cached input"], ["cache_write_tokens", "Cache writes"], ["reasoning_tokens", "Reasoning output"]]) {
+        if (details[key] != null) parts.push(`${label}: ${formatTokens(details[key])}`);
+      }
+    }
+    return parts.join(" · ");
+  }
+
+  function renderLeanPaneItemDetail(item, useRelationships) {
     const detail = document.createElement("div");
     detail.className = "ol-lean-project-detail";
+
+    const source = renderLeanPaneDetailSection("Source statement");
+    const natural = document.createElement("p");
+    natural.className = "ol-lean-project-natural";
+    renderLeanPaneLatex(natural, item.naturalLanguageLatex || item.naturalLanguageRendered || "");
+    source.appendChild(natural);
     const meta = document.createElement("p");
+    meta.className = "ol-lean-project-detail-meta";
     meta.textContent = [
       item.sourceFile,
       item.sourceStartLine ? `lines ${item.sourceStartLine}-${item.sourceEndLine || item.sourceStartLine}` : "",
       item.leanDeclarationName ? `Lean: ${item.leanDeclarationName}` : "",
       item.leanArtifactPath ? `Artifact: ${item.leanArtifactPath}` : ""
     ].filter(Boolean).join(" · ");
-    detail.appendChild(meta);
-
-    const editing = leanPaneEditingItemId === item.id;
-
-    // One row, three visual weights (leanPaneView.paneItemActions): a single
-    // status-derived primary, an icon rail for navigation, and an overflow
-    // menu for the rare alternatives. Copy lives on the code blocks instead.
-    const { primary, rail, overflow } = leanPaneView.paneItemActions(item, { editing });
-    const actions = document.createElement("div");
-    actions.className = "ol-lean-project-detail-actions";
-    if (primary) actions.appendChild(renderPaneItemPrimaryAction(item, primary));
-    const railElement = document.createElement("div");
-    railElement.className = "ol-lean-icon-rail";
-    for (const action of rail) {
-      railElement.appendChild(renderPaneItemIconAction(item, action));
+    source.appendChild(meta);
+    const relationships = renderLeanPaneUseRelationships(item, useRelationships);
+    if (relationships) source.appendChild(relationships);
+    if (item.status === "stale") {
+      const staleNote = document.createElement("p");
+      staleNote.className = "ol-lean-project-stale-note";
+      staleNote.setAttribute("role", "status");
+      staleNote.textContent = item.message
+        || "Out of date — the LaTeX changed after this Lean artifact was generated. Re-formalize to synchronize it.";
+      source.appendChild(staleNote);
     }
-    if (overflow.length > 0) {
-      railElement.appendChild(renderPaneOverflowMenu(item, overflow));
+    if (getStubbedTheoremUses(item).length > 0) {
+      // Keep the document badge's warning mark and its fuller explanation together.
+      source.appendChild(createStubbedTheoremUsesMark());
+      const stubbedWarning = document.createElement("p");
+      stubbedWarning.className = "ol-lean-project-impact-note";
+      renderStubbedTheoremUsesWarning(stubbedWarning, item);
+      source.appendChild(stubbedWarning);
     }
-    actions.appendChild(railElement);
-    detail.appendChild(actions);
+    detail.appendChild(source);
 
-    const actionError = renderLeanPaneActionError(item);
-    if (actionError) detail.appendChild(actionError);
-
-    if (item.breakage) {
-      detail.appendChild(renderLeanPaneBreakage(item));
+    const progress = renderLeanPaneDetailSection("Progress and checks");
+    progress.appendChild(renderLeanPaneLiveStatus(item));
+    if (item.leanCheck?.status === "checked" && (item.status === "disproved" || item.resultKind === "disproved")) {
+      const note = document.createElement("p");
+      note.className = "ol-lean-project-detail-meta";
+      note.textContent = "Checked counterexample—original claim disproved.";
+      progress.appendChild(note);
     }
+    if (item.lastBatchOutcome) {
+      const note = document.createElement("p");
+      note.className = "ol-lean-project-detail-meta";
+      note.textContent = `Last Formalize all: ${leanPaneView.formatRepairOutcome({ ...item.lastBatchOutcome, targetLabel: item.label || item.leanDeclarationName }, "formalize")}`;
+      progress.appendChild(note);
+    }
+    const shared = renderSharedMathematics(item.dependencies, `target:${item.id}`);
+    if (shared) progress.appendChild(shared);
+    const accountingNote = formatLeanPaneAccounting(item);
+    if (accountingNote) {
+      const note = document.createElement("p");
+      note.className = "ol-lean-project-detail-meta";
+      note.textContent = accountingNote;
+      progress.appendChild(note);
+    }
+    if (item.githubImportPending) {
+      const importState = document.createElement("p");
+      importState.className = "ol-lean-project-import-state";
+      importState.setAttribute("role", "status");
+      importState.textContent = item.message || "Imported Lean proof is queued for checking.";
+      progress.appendChild(importState);
+    }
+    if (item.breakage) progress.appendChild(renderLeanPaneBreakage(item));
     if (item.repairNeedsReview) {
       const review = document.createElement("p");
       review.className = "ol-lean-project-repair-review";
       review.textContent = "A repair for this item compiles, but its declaration header changed -- review that the statement still matches the source.";
-      detail.appendChild(review);
+      progress.appendChild(review);
     }
+    if (item.leaCheck?.report) progress.appendChild(renderLeaCheckReport(item));
+    if (item.review?.approval) {
+      const approved = document.createElement('p');
+      approved.className = 'ol-lean-review-provenance';
+      approved.textContent = reviewApprovalText(item.review.approval);
+      progress.appendChild(approved);
+    }
+    detail.appendChild(progress);
 
+    const editing = leanPaneEditingItemId === item.id;
+    const { primary, rail, overflow } = leanPaneView.paneItemActions(item, { editing });
+    const otherActions = renderLeanPaneDetailSection("Other actions");
+    const actions = document.createElement("div");
+    actions.className = "ol-lean-project-detail-actions";
+    // Formalize, Go to source and Open in LeaChat live in the compact summary.
+    // Repair and best-effort continuation remain here when they apply.
+    if (primary && !['formalize', 'approve-result'].includes(primary.id)) actions.appendChild(renderPaneItemPrimaryAction(item, primary));
+    const railElement = document.createElement("div");
+    railElement.className = "ol-lean-icon-rail";
+    for (const action of rail.filter((entry) => !["go-to-source", "view-in-lea"].includes(entry.id))) {
+      railElement.appendChild(renderPaneItemIconAction(item, action));
+    }
+    const remainingOverflow = overflow.filter((entry) => entry.id !== "formalize");
+    if (remainingOverflow.length > 0) {
+      railElement.appendChild(renderPaneOverflowMenu(item, remainingOverflow));
+    }
+    if (railElement.children.length > 0) actions.appendChild(railElement);
+    if (Object.prototype.hasOwnProperty.call(item, "approvalEligible") || item.approvalRevision) {
+      actions.appendChild(createHumanApprovalButton(paneItemApprovalTarget(item), item, { pane: true }));
+    }
+    if (actions.children.length > 0) otherActions.appendChild(actions);
+
+    const actionError = renderLeanPaneActionError(item);
+    if (actionError) otherActions.appendChild(actionError);
+    if (otherActions.children.length > 1) detail.appendChild(otherActions);
+
+    const code = renderLeanPaneDetailSection("Lean code");
+    if (item.leanStub) {
+      code.appendChild(renderLeanCodeBlock("ol-lean-project-code", item.leanStub, "Copy stub"));
+    } else if (!item.leanArtifactContent) {
+      const missing = document.createElement("p");
+      missing.className = "ol-lean-project-missing";
+      missing.textContent = "No Lean stub has been generated yet.";
+      code.appendChild(missing);
+    }
     if (editing) {
-      detail.appendChild(renderLeanPaneEditControls(item));
+      code.appendChild(renderLeanPaneEditControls(item));
     } else if (item.leanArtifactContent) {
-      detail.appendChild(
+      code.appendChild(
         renderLeanCodeBlock("ol-lean-project-artifact", item.leanArtifactContent, "Copy artifact")
       );
     } else {
       const empty = document.createElement("p");
       empty.className = "ol-lean-project-missing";
       empty.textContent = "No generated Lean artifact is available for this item.";
-      detail.appendChild(empty);
+      code.appendChild(empty);
     }
 
     if (!editing && leanPaneEditLastResult && leanPaneEditLastResult.itemId === item.id) {
       const summary = renderLeanPaneEditImpactSummary(leanPaneEditLastResult, item);
-      if (summary) detail.appendChild(summary);
+      if (summary) code.appendChild(summary);
     }
+    detail.appendChild(code);
     return detail;
+  }
+
+  function renderLeanPaneDetailSection(label) {
+    const section = document.createElement("section");
+    section.className = "ol-lean-project-detail-section";
+    const heading = document.createElement("h3");
+    heading.className = "ol-lean-project-detail-heading";
+    heading.textContent = label;
+    section.appendChild(heading);
+    return section;
+  }
+
+  function renderLeaCheckReport(item) {
+    const check = item.leaCheck || { status: "N/A", reason: "not_evaluated" };
+    const container = document.createElement("details");
+    container.className = `ol-lean-lea-check-report ol-lean-lea-check-report-${String(check.status || "N/A").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+    const heading = document.createElement("summary");
+    const reportSummary = check.report?.summary;
+    const findings = Array.isArray(check.report?.findings) ? check.report.findings : [];
+    const warningCount = Number.isFinite(check.warning_count)
+      ? check.warning_count
+      : findings.filter((finding) => finding?.severity === "warning").length;
+    const caveatCount = Number.isFinite(check.caveat_count)
+      ? check.caveat_count
+      : findings.filter((finding) => finding?.severity === "caveat").length
+        + (Array.isArray(check.report?.caveats) ? check.report.caveats.length : 0);
+    const completed = check.completed_at ? new Date(check.completed_at) : null;
+    const reportMetadata = check.report
+      ? [
+          `${warningCount} ${warningCount === 1 ? "finding" : "findings"}`,
+          `${caveatCount} ${caveatCount === 1 ? "caveat" : "caveats"}`,
+          check.current === false ? "superseded" : "current",
+          completed && !Number.isNaN(completed.valueOf()) ? completed.toLocaleString() : ""
+        ].filter(Boolean).join(" · ")
+      : "";
+    const headingSummary = reportSummary
+      ? `Previous Lea Check report — ${check.status}: ${reportSummary}`
+      : `Previous Lea Check report — ${check.status}`;
+    heading.textContent = reportMetadata ? `${headingSummary} · ${reportMetadata}` : headingSummary;
+    container.appendChild(heading);
+
+    const body = document.createElement("div");
+    body.className = "ol-lean-lea-check-report-body";
+    if (check.report) {
+      const metadata = document.createElement("p");
+      metadata.className = "ol-lean-lea-check-report-metadata";
+      metadata.textContent = `Scope: ${String(check.report.scope || "statement_and_proof").replaceAll("_", " ")} · Confidence: ${check.report.confidence || "medium"} · Revision: ${check.current === false ? "superseded" : "current"}`;
+      body.appendChild(metadata);
+
+      const comparison = document.createElement("p");
+      comparison.textContent = `Statement: ${String(check.report.statement_match || "uncertain").replaceAll("_", " ")} · Approach: ${String(check.report.approach_match || "insufficient_evidence").replaceAll("_", " ")}`;
+      body.appendChild(comparison);
+
+      const matches = Array.isArray(check.report.matches) ? check.report.matches : [];
+      if (matches.length) {
+        body.appendChild(renderLeaCheckList("What matched", matches.map((match) => (
+          typeof match === "string" ? match : match?.summary || "Corresponding source and Lean steps were identified."
+        ))));
+      }
+      for (const finding of findings) {
+        const section = document.createElement("section");
+        section.className = `ol-lean-lea-check-finding ol-lean-lea-check-finding-${finding.severity || "info"}`;
+        const title = document.createElement("strong");
+        title.textContent = finding.title || "Finding";
+        const detailText = document.createElement("p");
+        detailText.textContent = finding.detail || "";
+        section.appendChild(title);
+        section.appendChild(detailText);
+        for (const evidence of Array.isArray(finding.evidence) ? finding.evidence : []) {
+          const quote = document.createElement("blockquote");
+          const location = [
+            evidence.side,
+            evidence.path,
+            evidence.start_line ? `line ${evidence.start_line}${evidence.end_line && evidence.end_line !== evidence.start_line ? `–${evidence.end_line}` : ""}` : ""
+          ].filter(Boolean).join(" · ");
+          quote.textContent = `${location}${evidence.excerpt ? ` — ${evidence.excerpt}` : ""}`;
+          section.appendChild(quote);
+        }
+        body.appendChild(section);
+      }
+      if (Array.isArray(check.report.caveats) && check.report.caveats.length) {
+        body.appendChild(renderLeaCheckList("Caveats", check.report.caveats));
+      }
+      if (Array.isArray(check.report.remaining_obligations) && check.report.remaining_obligations.length) {
+        body.appendChild(renderLeaCheckList("Remaining obligations", check.report.remaining_obligations));
+      }
+      if (Array.isArray(check.report.limitations) && check.report.limitations.length) {
+        body.appendChild(renderLeaCheckList("Checker limitations", check.report.limitations));
+      }
+      if (check.report.recommended_next_action) {
+        body.appendChild(renderLeaCheckList("Recommended next action", [check.report.recommended_next_action]));
+      }
+      const revision = check.report.evaluated_revision || {};
+      const revisionValues = [
+        revision.source_hash ? `Source: ${revision.source_hash}` : "",
+        revision.artifact_commit ? `Artifact commit: ${revision.artifact_commit}` : "",
+        revision.artifact_content_hash ? `Artifact content: ${revision.artifact_content_hash}` : "",
+        revision.dependency_hash ? `Dependencies: ${revision.dependency_hash}` : ""
+      ].filter(Boolean);
+      if (revisionValues.length) body.appendChild(renderLeaCheckList("Evaluated revisions", revisionValues));
+    } else {
+      const empty = document.createElement("p");
+      empty.textContent = check.status === "in-progress"
+        ? "Lea is comparing the current Lean artifact with the associated LaTeX proof."
+        : check.reason === "superseded"
+          ? "The previous report belongs to an older source or Lean revision."
+          : check.reason === "no_artifact"
+            ? "There is no Lean artifact to assess yet."
+            : check.error || "No current semantic assessment is available.";
+      body.appendChild(empty);
+    }
+
+    container.appendChild(body);
+    return container;
+  }
+
+  function renderLeaCheckList(titleText, values) {
+    const section = document.createElement("section");
+    section.className = "ol-lean-lea-check-list";
+    const title = document.createElement("strong");
+    title.textContent = titleText;
+    const list = document.createElement("ul");
+    for (const value of values) {
+      const item = document.createElement("li");
+      item.textContent = String(value);
+      list.appendChild(item);
+    }
+    section.appendChild(title);
+    section.appendChild(list);
+    return section;
   }
 
   function leanPaneErrorKey(...parts) {
@@ -3027,6 +3984,12 @@
     return String(error?.code || "") === "unresolved_uses";
   }
 
+  function isMissingApiKeyError(error) {
+    const code = String(error?.code || "");
+    if (/^missing_[a-z0-9_-]+_key$/i.test(code)) return true;
+    return /(?:api key|credential).*(?:required|must be set|missing)/i.test(normalizeErrorMessage(error));
+  }
+
   function actionFailureMessage(error) {
     const message = typeof error?.message === "string"
       ? error.message
@@ -3062,6 +4025,7 @@
     );
     if (dismissedLeanPaneErrorKeys.has(dismissKey)) return null;
     const maxSpend = error.code === MAX_SPEND_ERROR_CODE;
+    const missingApiKey = isMissingApiKeyError(error);
     const dependencyBlocked = isUnresolvedUsesError(error);
     const alert = document.createElement("div");
     alert.className = "ol-lean-project-action-error";
@@ -3072,27 +4036,31 @@
     const title = document.createElement("strong");
     title.textContent = maxSpend
       ? "Cost cap reached"
-      : dependencyBlocked
-        ? "Dependency must be formalized first"
-        : error.operation === "stub"
-          ? "Could not create Lean stub"
-          : "Could not start formalization";
+      : missingApiKey
+        ? "API key required"
+        : dependencyBlocked
+          ? "Dependency must be formalized first"
+          : error.operation === "stub"
+            ? "Could not create Lean stub"
+            : "Could not start formalization";
     const message = document.createElement("p");
     message.textContent = maxSpend ? MAX_SPEND_PANE_MESSAGE : actionFailureMessage(error);
     copy.appendChild(title);
     copy.appendChild(message);
     alert.appendChild(copy);
 
-    if (maxSpend) {
+    if (maxSpend || missingApiKey) {
       const settings = document.createElement("button");
       settings.type = "button";
       settings.className = "ol-lean-secondary-button ol-lean-project-action-error-settings";
-      settings.textContent = "Open settings";
+      settings.textContent = missingApiKey ? "Add API key" : "Open settings";
       settings.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        showSettingsPopover();
-        activePopover?.querySelector("[data-role='max-spend']")?.focus({ preventScroll: true });
+        showSettingsPopover({ focusMissingCredential: missingApiKey });
+        if (maxSpend) {
+          activePopover?.querySelector("[data-role='max-spend']")?.focus({ preventScroll: true });
+        }
       });
       alert.appendChild(settings);
     }
@@ -3116,7 +4084,7 @@
       const target = leanPaneView.paneItemToEditTarget(item, projectId);
       requestRepair({
         overleafProjectId: projectId,
-        items: [{ targetKind: target.targetKind, targetLabel: target.targetLabel }]
+        items: [target]
       });
     });
     return button;
@@ -3190,6 +4158,7 @@
         if (!response.ok) throw new Error(payload?.message || `Companion returned HTTP ${response.status}.`);
         leanPaneRepairBatch = payload;
         leanPaneExpandedBatchQueueId = "";
+        leanPaneExpandedBatchAttentionId = "";
         leanPaneExpandedBatchCompletedId = "";
         startRepairBatchPolling({ immediate: true });
       }
@@ -3209,6 +4178,7 @@
       leanPaneRepairBatchTimer = 0;
       const batchId = leanPaneRepairBatch?.batchId;
       if (!batchId) return;
+      const projectId = leanPaneRepairBatch.overleafProjectId;
       // (delay above: instant when a push event announced a change, slow
       // reconciliation while the stream is up, fast poll when it's down)
       try {
@@ -3219,13 +4189,20 @@
           body: JSON.stringify({ batchId })
         });
         const payload = await response.json().catch(() => ({}));
-        if (response.ok) leanPaneRepairBatch = payload;
+        if (response.ok && leanPaneRepairBatch?.batchId === batchId) {
+          leanPaneRepairBatch = { ...payload, overleafProjectId: projectId };
+          if (payload.operation === "formalize" && payload.report
+            && payload.report.state !== "synthesizing") {
+            loadFormalizeBatchReportHistory().catch(() => {});
+          }
+        }
       } catch {
         // transient; keep the last snapshot and try again
       }
       renderLeanPaneManifest(lastLeanPaneManifest);
       scheduleLeanPaneRefresh();
-      if (leanPaneRepairBatch && !leanPaneRepairBatch.done && !leanPaneRepairBatch.pausedOn) {
+      if (leanPaneRepairBatch && ((!leanPaneRepairBatch.done && !leanPaneRepairBatch.pausedOn)
+        || ["saving", "synthesizing"].includes(leanPaneRepairBatch.reportState))) {
         startRepairBatchPolling();
       }
     }, delayMs);
@@ -3242,7 +4219,7 @@
         body: JSON.stringify({ batchId })
       });
       const payload = await response.json().catch(() => ({}));
-      if (response.ok) leanPaneRepairBatch = payload;
+      if (response.ok) leanPaneRepairBatch = { ...payload, overleafProjectId: leanPaneRepairBatch?.overleafProjectId };
       startRepairBatchPolling({ immediate: true });
     } catch (error) {
       leanPaneRepairError = { itemKey: "batch", message: normalizeErrorMessage(error) };
@@ -3264,7 +4241,7 @@
         body: JSON.stringify({ batchId })
       });
       const payload = await response.json().catch(() => ({}));
-      if (response.ok) leanPaneRepairBatch = payload;
+      if (response.ok) leanPaneRepairBatch = { ...payload, overleafProjectId: leanPaneRepairBatch?.overleafProjectId };
       startRepairBatchPolling({ immediate: true });
     } catch (error) {
       leanPaneRepairError = { itemKey: "batch", message: normalizeErrorMessage(error) };
@@ -3281,7 +4258,8 @@
     if (leanPaneRepairBatch) return null;
     const stubbable = leanPaneView.stubbableItems(items);
     const formalizable = leanPaneView.formalizableItems(items);
-    if (stubbable.length === 0 && formalizable.length === 0) return null;
+    const awaiting = items.filter(item => item.status === 'needs-review').length;
+    if (stubbable.length === 0 && formalizable.length === 0 && awaiting === 0) return null;
     const row = document.createElement("div");
     row.className = "ol-lean-project-batch-actions";
     if (stubbable.length > 0) {
@@ -3302,13 +4280,18 @@
       formalizeAll.addEventListener("click", () => { formalizeAllItems(); });
       row.appendChild(formalizeAll);
     }
+    if (awaiting) {
+      const note = document.createElement('span');
+      note.textContent = `${awaiting} ${awaiting === 1 ? 'result awaits' : 'results await'} approval.`;
+      row.appendChild(note);
+    }
     return row;
   }
 
   // Live batch progress at the top of the pane. The companion already returns
   // dependency-ordered entries, so the client can render a real queue (active
   // ordinal, next items, exact outcomes) without duplicating orchestration.
-  function renderLeanPaneRepairBatchPanel() {
+  function renderLeanPaneRepairBatchPanel({ navigationFocusKey } = {}) {
     const batch = leanPaneRepairBatch;
     if (!batch || !Array.isArray(batch.items) || batch.items.length === 0) return null;
     const operation = batch.operation || "repair";
@@ -3323,11 +4306,11 @@
       ? ["stubbed"]
       : operation === "formalize"
         ? ["formalized", "disproved"]
-        : ["repaired", "needs_review"]);
-    const attentionStates = new Set(["failed", "skipped", "canceled", "needs_review", "disproved"]);
+        : ["repaired"]);
+    const attentionStates = new Set(["failed", "incomplete", "skipped", "canceled", "needs_review", "disproved"]);
     const completedEntries = batch.items.filter((entry) => completedStates.has(entry.state));
     const attentionEntries = batch.items.filter((entry) => attentionStates.has(entry.state));
-    const reportedActiveEntry = batch.items.find((entry) => entry.state === "running") || null;
+    const reportedActiveEntry = batch.items.find((entry) => ["running", "waiting"].includes(entry.state)) || null;
     // The launch response can land after the batch loop is marked running but
     // just before its first entry flips pending → running. Show that first
     // dispatch as current instead of briefly rendering an idle-looking queue.
@@ -3337,9 +4320,25 @@
         : null
     );
     const queuedEntries = batch.items.filter((entry) => entry.state === "pending" && entry !== activeEntry);
+    // A focused row can move into a collapsed outcome group while polling.
+    // Reveal that group so restoring focus still has a visible destination.
+    if (navigationFocusKey && operation === "formalize") {
+      const focusedEntry = batch.items.find((entry) => ["lean-pane", "lea-chat"].some((action) => (
+        navigationFocusKey === JSON.stringify([batch.overleafProjectId || lastLeanPaneManifestProjectId,
+          batch.batchId, entry.targetKind || "theorem", entry.targetLabel || "", action])
+      )));
+      if (focusedEntry && completedEntries.includes(focusedEntry)) leanPaneExpandedBatchCompletedId = batch.batchId;
+      if (focusedEntry && queuedEntries.indexOf(focusedEntry) >= 3) leanPaneExpandedBatchQueueId = batch.batchId;
+      if (focusedEntry && attentionEntries.indexOf(focusedEntry) >= 5) leanPaneExpandedBatchAttentionId = batch.batchId;
+    }
     const activeIndex = activeEntry ? batch.items.indexOf(activeEntry) : -1;
     const total = batch.items.length;
     const completedCount = batch.items.filter((entry) => successfulStates.has(entry.state)).length;
+    const processedCount = batch.items.filter((entry) => !["pending", "running", "waiting"].includes(entry.state)).length;
+    const verifiedCount = batch.items.filter((entry) => entry.state === "formalized").length;
+    const disprovedCount = batch.items.filter((entry) => entry.state === "disproved").length;
+    const incompleteCount = batch.items.filter((entry) => entry.state === "incomplete").length;
+    const reviewCount = batch.items.filter((entry) => entry.state === "needs_review").length;
     const failedCount = batch.items.filter((entry) => entry.state === "failed").length;
     const skippedCount = batch.items.filter((entry) => entry.state === "skipped").length;
     const canceledCount = batch.items.filter((entry) => entry.state === "canceled").length;
@@ -3386,6 +4385,7 @@
       canceledCount,
       total
     });
+    if (operation === "formalize") count.textContent = `${verifiedCount} verified · ${disprovedCount} disproved · ${incompleteCount} incomplete · ${failedCount} failed · ${skippedCount} skipped${reviewCount ? ` · ${reviewCount} need review` : ""}${canceledCount ? ` · ${canceledCount} stopped` : ""}`;
     header.appendChild(count);
     panel.appendChild(header);
 
@@ -3402,7 +4402,8 @@
     }));
     progress.setAttribute("aria-valuemin", "0");
     progress.setAttribute("aria-valuemax", String(total));
-    progress.setAttribute("aria-valuenow", String(completedCount));
+    progress.setAttribute("aria-valuenow", String(processedCount));
+    if (operation === "formalize") progress.setAttribute("aria-label", `Formalize all: ${processedCount} of ${total} processed. ${count.textContent}`);
     for (const entry of batch.items) {
       const segment = document.createElement("span");
       const stateClass = entry === activeEntry
@@ -3413,7 +4414,7 @@
             ? "skipped"
             : entry.state === "canceled"
               ? "canceled"
-              : entry.state === "disproved" || entry.state === "needs_review"
+              : entry.state === "disproved" || entry.state === "needs_review" || entry.state === "incomplete"
                 ? "attention"
                 : successfulStates.has(entry.state)
                   ? "success"
@@ -3424,6 +4425,8 @@
       progress.appendChild(segment);
     }
     panel.appendChild(progress);
+    const shared = renderSharedMathematics(batch.dependencies, `batch:${batch.batchId}`);
+    if (shared) panel.appendChild(shared);
 
     if (batch.pausedOn) {
       const callout = document.createElement("div");
@@ -3453,7 +4456,7 @@
       const currentRow = renderBatchQueueEntry(activeEntry, activeIndex, {
         marker: "●",
         stateClass: "running",
-        detail: formatBatchQueueActiveDetail(activeEntry, runningVerb)
+        detail: activeEntry.state === "waiting" ? "Waiting for shared mathematics" : formatBatchQueueActiveDetail(activeEntry, runningVerb)
       });
       current.appendChild(currentRow);
       panel.appendChild(current);
@@ -3504,7 +4507,10 @@
       attention.appendChild(attentionHeading);
       const list = document.createElement("ul");
       list.className = "ol-lean-batch-queue-list";
-      for (const entry of attentionEntries) {
+      list.id = `ol-lean-batch-attention-${batch.batchId}`;
+      const attentionExpanded = leanPaneExpandedBatchAttentionId === batch.batchId;
+      const visibleAttention = attentionExpanded ? attentionEntries : attentionEntries.slice(0, 5);
+      for (const entry of visibleAttention) {
         list.appendChild(renderBatchQueueEntry(entry, batch.items.indexOf(entry), {
           marker: entry.state === "disproved" ? "◇" : "!",
           stateClass: entry.state,
@@ -3512,6 +4518,33 @@
         }));
       }
       attention.appendChild(list);
+      if (attentionEntries.length > 5) {
+        const hiddenEntries = attentionEntries.slice(5);
+        const hiddenCount = hiddenEntries.length;
+        const allUnformalized = hiddenEntries.every((entry) => (
+          operation === "formalize" && entry.state === "skipped" && entry.reason === "max_spend"
+        ));
+        const description = allUnformalized
+          ? `unformalized statement${hiddenCount === 1 ? "" : "s"}`
+          : `item${hiddenCount === 1 ? "" : "s"} needing attention`;
+        const collapseDescription = allUnformalized
+          ? "unformalized statements"
+          : "items needing attention";
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "ol-lean-batch-queue-disclosure ol-lean-batch-queue-attention-toggle";
+        toggle.setAttribute("aria-expanded", String(attentionExpanded));
+        toggle.setAttribute("aria-controls", list.id);
+        toggle.textContent = attentionExpanded
+          ? `Show fewer ${collapseDescription}`
+          : `+${hiddenCount} more ${description}`;
+        toggle.addEventListener("click", () => {
+          leanPaneExpandedBatchAttentionId = attentionExpanded ? "" : batch.batchId;
+          renderLeanPaneManifest(lastLeanPaneManifest);
+          document.body.querySelector(".ol-lean-batch-queue-attention-toggle")?.focus({ preventScroll: true });
+        });
+        attention.appendChild(toggle);
+      }
       panel.appendChild(attention);
     }
 
@@ -3542,6 +4575,56 @@
         completed.appendChild(list);
       }
       panel.appendChild(completed);
+    }
+
+    if (operation === "formalize" && batch.done) {
+      if (batch.report) {
+        panel.appendChild(renderFormalizeBatchReport(batch.report));
+      } else {
+        const report = document.createElement("section");
+        report.className = "ol-lean-batch-report";
+        const heading = document.createElement("h3");
+        heading.textContent = "Formalize all report";
+        report.appendChild(heading);
+        const summary = document.createElement("p");
+        const verified = batch.items.filter((entry) => entry.state === "formalized").length;
+        const disproved = batch.items.filter((entry) => entry.state === "disproved").length;
+        const failed = batch.items.filter((entry) => entry.state === "failed").length;
+        const skipped = batch.items.filter((entry) => entry.state === "skipped" && entry.reason !== "existing_proof").length;
+        const alreadyVerified = batch.items.filter((entry) => entry.state === "skipped" && entry.reason === "existing_proof").length;
+        summary.textContent = `${verified} verified · ${disproved} disproved · ${failed} failed · ${skipped} skipped · ${alreadyVerified} already verified · ${canceledCount} stopped.`;
+        report.appendChild(summary);
+        const status = document.createElement("p");
+        status.setAttribute("role", "status");
+        status.textContent = batch.reportState === "save_failed"
+          ? `Could not save this report. ${batch.reportError || ""}`
+          : "Saving report…";
+        report.appendChild(status);
+        if (batch.reportState === "save_failed") {
+          const retry = document.createElement("button");
+          retry.type = "button";
+          retry.className = "ol-lean-secondary-button";
+          retry.textContent = "Retry saving report";
+          retry.addEventListener("click", async () => {
+            try {
+              const baseUrl = await chatCompanionBaseUrl();
+              const response = await fetch(`${baseUrl}/formalize/all/reports/save`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(), batchId: batch.batchId })
+              });
+              const payload = await response.json().catch(() => ({}));
+              if (!response.ok) throw new Error(payload.message || "Could not save the report.");
+              leanPaneRepairBatch = { ...payload, overleafProjectId: batch.overleafProjectId };
+              startRepairBatchPolling();
+            } catch (error) {
+              leanPaneRepairError = { itemKey: "batch", message: normalizeErrorMessage(error) };
+            }
+            renderLeanPaneManifest(lastLeanPaneManifest);
+          });
+          report.appendChild(retry);
+        }
+        panel.appendChild(report);
+      }
     }
 
     if (leanPaneRepairError && leanPaneRepairError.itemKey === "batch") {
@@ -3585,6 +4668,7 @@
       dismiss.addEventListener("click", () => {
         leanPaneRepairBatch = null;
         leanPaneExpandedBatchQueueId = "";
+        leanPaneExpandedBatchAttentionId = "";
         leanPaneExpandedBatchCompletedId = "";
         renderLeanPaneManifest(lastLeanPaneManifest);
       });
@@ -3592,6 +4676,89 @@
     }
     if (controls.children.length > 0) panel.appendChild(controls);
     return panel;
+  }
+
+  function renderFormalizeBatchReport(report) {
+    const facts = report?.facts || {};
+    const section = document.createElement("section");
+    section.className = "ol-lean-batch-report";
+    const title = document.createElement("h3");
+    title.textContent = "Formalize all report";
+    section.appendChild(title);
+    const summary = document.createElement("p");
+    summary.className = "ol-lean-batch-report-facts";
+    summary.textContent = facts.summary || "Batch results are available below.";
+    section.appendChild(summary);
+    if (facts.dependencyCounts && facts.dependencies?.length) {
+      const sharedSummary = document.createElement("p");
+      const counts = facts.dependencyCounts;
+      sharedSummary.textContent = `Shared mathematics: ${counts.newlyProved || 0} newly proved · ${counts.reused || 0} reused · ${counts.blocked || 0} blocked${counts.unknownOrigin ? ` · ${counts.unknownOrigin} with unknown origin` : ""}.`;
+      section.appendChild(sharedSummary);
+      const shared = leanPaneView.renderSharedDependencies(facts.dependencies.map((dep) => ({
+        ...dep, ready: dep.state === "ready", module_name: dep.module, declaration_name: dep.declaration,
+        targetLabels: dep.targets, specification: { name: dep.title, statement: dep.statement,
+          sources: dep.sources, citation: dep.citation }
+      })), { document, key: `report:${report.batch_id}` });
+      if (shared) section.appendChild(shared);
+    }
+    if (report.state === "ready" && report.narrative) {
+      const narrative = document.createElement("p");
+      narrative.className = "ol-lean-batch-report-narrative";
+      narrative.textContent = report.narrative;
+      section.appendChild(narrative);
+    } else {
+      const status = document.createElement("p");
+      status.setAttribute("role", "status");
+      status.textContent = report.state === "synthesizing"
+        ? "Writing summary…"
+        : "Lea could not write the summary. The factual results are saved; check provider access or API credits and retry.";
+      section.appendChild(status);
+      if (report.state === "narrative_unavailable") {
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "ol-lean-secondary-button";
+        retry.textContent = "Retry Lea summary";
+        retry.addEventListener("click", () => { retryFormalizeBatchReport(report.batch_id); });
+        section.appendChild(retry);
+      }
+    }
+    if (Array.isArray(facts.items) && facts.items.length) {
+      const details = document.createElement("details");
+      const disclosure = document.createElement("summary");
+      disclosure.textContent = `Item outcomes (${facts.items.length})`;
+      details.appendChild(disclosure);
+      const list = document.createElement("ul");
+      for (const item of facts.items) {
+        const row = document.createElement("li");
+        const paneItem = (lastLeanPaneManifest?.items || []).find((candidate) => (
+          candidate.label === item.targetLabel
+          && (item.targetKind !== "definition" || candidate.leanKind === "def")
+        ));
+        if (paneItem) {
+          const link = document.createElement("button");
+          link.type = "button";
+          link.className = "ol-lean-batch-report-item-link";
+          link.textContent = item.targetLabel;
+          link.setAttribute("aria-label", `Show ${item.targetLabel} in Lean pane`);
+          link.addEventListener("click", () => { revealLeanPaneItem(paneItem); });
+          row.appendChild(link);
+        } else {
+          const label = document.createElement("strong");
+          label.textContent = item.targetLabel;
+          row.appendChild(label);
+        }
+        const incomplete = item.reportingIncomplete ? " · no final Lea Status assessment" : "";
+        const confidence = item.leaStatus?.confidence
+          ? ` · Lea confidence: ${item.leaStatus.confidence} (self-reported)${item.leaStatus.scope ? ` · ${{ source_only: "Source assessment", partial_artifact: "Partial artifact", statement_and_proof: "Statement and proof" }[item.leaStatus.scope] || item.leaStatus.scope}` : ""}` : "";
+        const detail = document.createElement("span");
+        detail.textContent = ` (${item.targetKind || "item"}): ${item.state}${item.reason ? ` · ${item.reason === "dependency_wait" ? "waiting for a supporting result" : item.reason.replaceAll("_", " ")}` : ""}${confidence}${incomplete}`;
+        row.appendChild(detail);
+        list.appendChild(row);
+      }
+      details.appendChild(list);
+      section.appendChild(details);
+    }
+    return section;
   }
 
   function renderBatchQueueEntry(entry, index, { marker, stateClass, detail }) {
@@ -3612,8 +4779,115 @@
     description.className = "ol-lean-batch-queue-item-detail";
     description.textContent = detail;
     copy.appendChild(description);
+    if (leanPaneRepairBatch?.operation === "formalize") {
+      copy.appendChild(renderBatchQueueNavigation(entry));
+    }
     row.appendChild(copy);
     return row;
+  }
+
+  function findBatchQueuePaneItem(identity) {
+    if (identity.projectId !== extractOverleafProjectId()
+      || identity.projectId !== lastLeanPaneManifestProjectId) return null;
+    const matches = (lastLeanPaneManifest?.items || []).filter((item) => (
+      (!item.overleafProjectId || item.overleafProjectId === identity.projectId)
+      && item.label === identity.targetLabel
+      && (item.targetKind || (item.leanKind === "def" ? "definition" : "theorem")) === identity.targetKind
+    ));
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function batchQueueNavigationButton(key) {
+    return [...(leanPaneBody?.querySelectorAll(".ol-lean-batch-queue-action") || [])]
+      .find((button) => button.dataset.batchNavigationKey === key);
+  }
+
+  function leanPaneItemHeader(itemId) {
+    return [...(leanPaneBody?.querySelectorAll(".ol-lean-project-item") || [])]
+      .find((card) => card.dataset.itemId === itemId)?.querySelector(".ol-lean-project-item-header");
+  }
+
+  function updateBatchQueueNavigationButton(button, identity, action, key) {
+    if (!button) return;
+    const item = findBatchQueuePaneItem(identity);
+    const unavailable = !item ? "This item is unavailable or ambiguous in the Lean pane."
+      : action === "lea-chat" && !(item.leaSessionId || item.leaSessionUrl)
+        ? "No LeaChat session is available yet." : "";
+    const busy = leanPaneBatchNavigationBusy.has(key);
+    button.disabled = Boolean(unavailable);
+    // Keep an opening action focusable through polling redraws. The handler
+    // guards the busy key, so aria-disabled also prevents duplicate opens.
+    button.setAttribute("aria-disabled", String(button.disabled || busy));
+    button.setAttribute("aria-busy", String(busy));
+    button.title = unavailable || (busy ? "Opening…" : button.getAttribute("aria-label"));
+  }
+
+  function setBatchQueueNavigationStatus(identity, message) {
+    if (identity.projectId !== extractOverleafProjectId()
+      || identity.batchId !== leanPaneRepairBatch?.batchId) return;
+    leanPaneBatchNavigationStatus = { ...identity, message };
+    if (leanPaneStatus) {
+      leanPaneStatus.setAttribute("role", "status");
+      leanPaneStatus.setAttribute("aria-live", "polite");
+      leanPaneStatus.textContent = message;
+    }
+  }
+
+  function renderBatchQueueNavigation(entry) {
+    const identity = {
+      projectId: leanPaneRepairBatch.overleafProjectId || lastLeanPaneManifestProjectId,
+      batchId: leanPaneRepairBatch.batchId,
+      targetKind: entry.targetKind || "theorem",
+      targetLabel: entry.targetLabel || ""
+    };
+    const actions = document.createElement("span");
+    actions.className = "ol-lean-batch-queue-actions";
+    for (const [action, label, accessibleLabel] of [
+      ["lean-pane", "Show in Lean pane", `Show ${identity.targetLabel} in Lean pane`],
+      ["lea-chat", "Open in LeaChat", `Open ${identity.targetLabel} in LeaChat`]
+    ]) {
+      const key = JSON.stringify([identity.projectId, identity.batchId, identity.targetKind, identity.targetLabel, action]);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ol-lean-secondary-button ol-lean-batch-queue-action";
+      button.dataset.batchNavigationKey = key;
+      button.dataset.batchNavigationAction = action;
+      button.setAttribute("aria-label", accessibleLabel);
+      button.textContent = label;
+      updateBatchQueueNavigationButton(button, identity, action, key);
+      button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (button.disabled || leanPaneBatchNavigationBusy.has(key)
+          || identity.batchId !== leanPaneRepairBatch?.batchId) return;
+        const item = findBatchQueuePaneItem(identity);
+        if (!item) {
+          setBatchQueueNavigationStatus(identity, `Could not find ${identity.targetLabel} uniquely in the Lean pane.`);
+          updateBatchQueueNavigationButton(button, identity, action, key);
+          return;
+        }
+        leanPaneBatchNavigationBusy.add(key);
+        updateBatchQueueNavigationButton(button, identity, action, key);
+        try {
+          if (action === "lean-pane") {
+            revealLeanPaneItem(item);
+            leanPaneItemHeader(item.id)?.focus({ preventScroll: true });
+            setBatchQueueNavigationStatus(identity, `Opened ${identity.targetLabel} in the Lean pane.`);
+          } else {
+            setBatchQueueNavigationStatus(identity, "Opening Lea session…");
+            await openLeaUiForPaneItem(item, { requireSession: true });
+            setBatchQueueNavigationStatus(identity, `Opened ${identity.targetLabel} in LeaChat.`);
+          }
+        } catch (error) {
+          setBatchQueueNavigationStatus(identity, normalizeErrorMessage(error));
+        } finally {
+          leanPaneBatchNavigationBusy.delete(key);
+          updateBatchQueueNavigationButton(batchQueueNavigationButton(key), identity, action, key);
+        }
+      });
+      actions.appendChild(button);
+    }
+    return actions;
   }
 
   function formatBatchQueueActiveDetail(entry, runningVerb) {
@@ -3688,6 +4962,28 @@
     } catch {
       // Best-effort only -- see doc comment above.
     }
+  }
+
+  function watchManualCheckRuntime(sessionId, line) {
+    let stopped = false;
+    let timer;
+    let request;
+    async function poll() {
+      clearTimeout(timer);
+      if (stopped || document.hidden || !line.isConnected || !sessionId) return;
+      request = new AbortController();
+      try {
+        const baseUrl = await chatCompanionBaseUrl();
+        const response = await fetch(`${baseUrl}/lean-pane/check-runtime/${encodeURIComponent(sessionId)}`, { signal: request.signal });
+        const payload = await response.json();
+        if (!stopped) line.textContent = payload.message || "Checking with Lean…";
+      } catch { if (!stopped) line.textContent = "Lean check runtime unavailable"; }
+      if (!stopped && !document.hidden) timer = setTimeout(poll, 5000);
+    }
+    const visibility = () => { clearTimeout(timer); request?.abort(); if (!document.hidden) poll(); };
+    document.addEventListener("visibilitychange", visibility);
+    poll();
+    return () => { stopped = true; clearTimeout(timer); request?.abort(); document.removeEventListener("visibilitychange", visibility); };
   }
 
   function closeLeanPaneEdit() {
@@ -3790,6 +5086,11 @@
       textarea.disabled = true;
       saveButton.textContent = "Saving…";
       errorLine.hidden = true;
+      const runtimeLine = document.createElement("p");
+      runtimeLine.setAttribute("role", "status");
+      runtimeLine.textContent = "Checking with Lean…";
+      container.appendChild(runtimeLine);
+      const stopRuntime = watchManualCheckRuntime(item.leaSessionId, runtimeLine);
       try {
         const projectId = itemsProjectId(lastLeanPaneManifest?.items || []);
         const target = leanPaneView.paneItemToEditTarget(item, projectId);
@@ -3818,6 +5119,9 @@
         textarea.disabled = false;
         saveButton.textContent = "Save";
         renderLeanPaneEditErrorLine(errorLine);
+      } finally {
+        stopRuntime();
+        runtimeLine.remove();
       }
     });
 
@@ -3853,10 +5157,16 @@
       result.dependentsImpact || [],
       lastLeanPaneManifest?.items || []
     );
-    if (dependents.length === 0) return null;
+    if (dependents.length === 0 && !result.ownResult?.executionMessage) return null;
 
     const container = document.createElement("div");
     container.className = "ol-lean-project-impact-note";
+    if (result.ownResult?.executionMessage) {
+      const execution = document.createElement("p");
+      execution.textContent = result.ownResult.executionMessage;
+      container.appendChild(execution);
+    }
+    if (dependents.length === 0) return container;
     const heading = document.createElement("p");
     const stillBroken = leanPaneView.stillBrokenDependents(dependents);
     const stillBrokenSet = new Set(stillBroken);
@@ -4036,6 +5346,7 @@
       // Text anchors let pageBridge locate the block even when byte offsets have
       // drifted (edits) or the file path can't be matched exactly.
       leanLabel: item.label || item.leanDeclarationName || "",
+      labelSource: item.labelSource || "explicit",
       latexLabel: item.latexLabel || ""
     }, "*");
   }
@@ -4043,20 +5354,32 @@
   // Item 12: start a formalization run for this item, reusing the same /formalize
   // path the in-document badge uses, then refresh so the pane reflects in-progress
   // (polling, from item 4, takes over until it settles).
-  function renderFormalizeButton(item) {
+  function renderFormalizeButton(item, action = { id: "formalize" }) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "ol-lean-secondary-button ol-lean-item-primary-action ol-lean-formalize-button";
-    const idleLabel = item.status === "missing-stub" ? "Formalize" : "Re-formalize";
+    const bestEffort = action.id === "best-effort";
+    const idleLabel = action.label || (item.leanCheck?.status === "paused"
+      ? "Resume"
+      : item.status === "missing-stub" ? "Formalize" : "Re-formalize");
     button.textContent = idleLabel;
+    if (idleLabel === "Re-formalize" || idleLabel === "Regenerate definition") {
+      button.title = REFORMALIZE_HELP_TEXT;
+      button.setAttribute("aria-description", REFORMALIZE_HELP_TEXT);
+    }
     button.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
       clearLeanPaneActionError(item);
       button.disabled = true;
-      button.textContent = "Starting…";
+      button.textContent = item.status === "paused" || item.leanCheck?.status === "paused" ? "Resuming…" : "Starting…";
       try {
-        await formalize(leanPaneView.paneItemToFormalizeTarget(item));
+        await formalize({
+          ...leanPaneView.paneItemToFormalizeTarget(item),
+          resume: item.status === "paused" || item.leanCheck?.status === "paused",
+          resumeRunId: item.leaStatus?.run_id || item.apiRunId || null,
+          bestEffort
+        });
         clearLeanPaneActionError(item);
         await refreshLeanPaneNow({ background: true });
       } catch (error) {
@@ -4064,7 +5387,8 @@
         // declared upstream theorem has not been formalized yet). Keep the
         // action consistent with the manifest state rather than implying an
         // initial formalization effort occurred.
-        rememberLeanPaneActionError(item, error, "formalize");
+        rememberLeanPaneActionError(item, error, action.id);
+        leanPaneExpandedItemIds.add(item.id);
         renderLeanPaneManifest(lastLeanPaneManifest);
       }
     });
@@ -4085,16 +5409,80 @@
   };
 
   function renderPaneItemPrimaryAction(item, action) {
-    return action.id === "repair" ? renderRepairButton(item) : renderFormalizeButton(item);
+    if (action.id === 'approve-result') {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'ol-lean-primary-button ol-lean-item-primary-action';
+      button.textContent = action.label;
+      button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        showResultReview(leanPaneView.paneItemToChatTarget(item, extractOverleafProjectId()), button);
+      });
+      return button;
+    }
+    if (action.id.startsWith("dependency-")) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ol-lean-secondary-button ol-lean-item-primary-action";
+      button.textContent = action.label;
+      button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        button.disabled = true;
+        try { await runDependencyAction(item, action); }
+        catch (error) { rememberLeanPaneActionError(item, error, action.id); renderLeanPaneManifest(lastLeanPaneManifest); }
+        finally { button.disabled = false; }
+      });
+      return button;
+    }
+    return action.id === "repair" ? renderRepairButton(item) : renderFormalizeButton(item, action);
+  }
+
+  async function runDependencyAction(item, action) {
+    if (action.id === "dependency-view") {
+      showLeanPane({ deferRefresh: true });
+      await ensureLeanPaneView();
+      if (leanPaneMainView !== "items") await setLeanPaneMainView("items");
+      if (!lastLeanPaneManifest) await refreshLeanPaneNow({});
+      const target = (lastLeanPaneManifest?.items || []).find(entry => entry.id === item.id
+        || entry.label === (item.label || item.targetLabel));
+      if (!target) throw new Error("Refresh the project inventory to locate this supporting result.");
+      revealLeanPaneItem(target);
+      const card = [...leanPaneBody.querySelectorAll(".ol-lean-project-item")].find(element => element.dataset.itemId === target.id);
+      const shared = card?.querySelector(".ol-lean-shared-results");
+      if (!shared) throw new Error("Supporting-result details are unavailable. Refresh status to reconnect.");
+      for (const detail of shared.querySelectorAll("details")) detail.open = true;
+      shared.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+      const focus = shared.querySelector("summary");
+      focus?.focus?.();
+      return;
+    }
+    const baseUrl = await chatCompanionBaseUrl();
+    const response = await fetch(`${baseUrl}/lean-pane/dependencies/wait`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(),
+        runId: item.apiRunId || item.leaStatus?.run_id,
+        action: action.id === "dependency-stop" ? "stop" : action.id === "dependency-arm" ? "continue" : "refresh" })
+    });
+    const body = await response.json();
+    if (!response.ok) throw companionRequestError(response, body);
+    await refreshLeanPaneNow({ background: true });
   }
 
   function renderPaneItemIconAction(item, action) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "ol-lean-icon-action";
+    button.className = action.id === "view-in-lea"
+      ? "ol-lean-secondary-button ol-lean-open-chat" : "ol-lean-icon-action";
     button.title = action.label;
     button.setAttribute("aria-label", action.label);
     button.innerHTML = PANE_ICON_SVG[action.id] || "";
+    if (action.id === "view-in-lea") {
+      const label = document.createElement("span");
+      label.textContent = action.label;
+      button.appendChild(label);
+    }
     button.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -4145,6 +5533,10 @@
       entry.className = "ol-lean-overflow-item";
       entry.setAttribute("role", "menuitem");
       entry.textContent = action.label;
+      if (action.label === "Re-formalize") {
+        entry.title = REFORMALIZE_HELP_TEXT;
+        entry.setAttribute("aria-description", REFORMALIZE_HELP_TEXT);
+      }
       entry.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -4181,19 +5573,29 @@
   // Formalize/stub reuse the same companion paths as the primary button and
   // the in-document popover.
   async function runPaneOverflowAction(item, action) {
+    if (action.id === 'withdraw-approval') {
+      await withdrawResultApproval(leanPaneView.paneItemToChatTarget(item, extractOverleafProjectId()), item.review.approval);
+      return;
+    }
+    if (action.id.startsWith("dependency-")) return runDependencyAction(item, action);
     if (action.id === "edit") {
       openLeanPaneEdit(item);
       return;
     }
-    if (action.id !== "formalize" && action.id !== "stub") return;
+    if (!["formalize", "reformalize", "best-effort", "stub"].includes(action.id)) return;
     clearLeanPaneActionError(item);
     if (leanPaneStatus) {
       leanPaneStatus.textContent = action.id === "stub"
         ? "Creating Lean stub..."
-        : "Starting formalization...";
+        : action.id !== "reformalize" && (item.status === "paused" || item.leanCheck?.status === "paused") ? "Resuming…" : "Starting formalization...";
     }
     try {
-      const target = leanPaneView.paneItemToFormalizeTarget(item);
+      const target = {
+        ...leanPaneView.paneItemToFormalizeTarget(item),
+        resume: action.id !== "reformalize" && (item.status === "paused" || item.leanCheck?.status === "paused"),
+        resumeRunId: item.leaStatus?.run_id || item.apiRunId || null,
+        bestEffort: action.id === "best-effort"
+      };
       await (action.id === "stub" ? stubTheorem(target) : formalize(target));
       clearLeanPaneActionError(item);
       await refreshLeanPaneNow({ background: true });
@@ -4246,7 +5648,13 @@
   // chat-session lookup (read-only: it never creates a session); when no
   // session has been recorded yet, fall back to the Lea UI itself, matching
   // the popover's base-link fallback.
-  async function openLeaUiForPaneItem(item) {
+  async function openLeaUiForPaneItem(item, { requireSession = false } = {}) {
+    if (item.leaSessionUrl || item.leaSessionId) {
+      const settings = await getSettings();
+      const link = getLeaSessionLink({ ...item, leaUiBaseUrl: settings.leaUiBaseUrl });
+      await openLeaSession(link);
+      return { sessionOpened: true };
+    }
     const baseUrl = await chatCompanionBaseUrl();
     const target = leanPaneView.paneItemToChatTarget(item, itemsProjectId(lastLeanPaneManifest?.items || []));
     const response = await fetch(`${baseUrl}/lean-pane/chat/session`, {
@@ -4259,6 +5667,9 @@
     if (sessionUrl) {
       await openLeaSession({ url: sessionUrl, baseUrl: sessionUrl });
       return { sessionOpened: true };
+    }
+    if (requireSession) {
+      throw new Error(payload?.message || "No LeaChat session is available yet.");
     }
     const settings = await getSettings();
     const uiBaseUrl = String(settings.leaUiBaseUrl || DEFAULT_LEA_UI_BASE_URL).replace(/\/+$/, "");
@@ -4369,8 +5780,10 @@
       const mirrorResult = await syncTexMirrorNow({ force: true });
       leanPaneChatTarget = {
         ...leanPaneChatTarget,
+        overleafProjectTitle: readOverleafProjectTitle(lastLeanPaneFiles || []),
         ...(await buildFormalizationSourceContext(leanPaneChatTarget, {
-          verifyMirror: mirrorResult?.disabled !== true
+          verifyMirror: mirrorResult?.disabled !== true,
+          mirrorSnapshot: mirrorResult
         }))
       };
       const baseUrl = await chatCompanionBaseUrl();
@@ -4399,8 +5812,9 @@
     }
   }
 
-  function startChatPolling(delayMs = (pushConnected ? LEAN_PANE_CHAT_POLL_RECONCILE_MS : LEAN_PANE_POLL_DELAY_MS)) {
+  function startChatPolling(delayMs = 5000) {
     clearTimeout(leanPaneChatPollTimer);
+    if (document.hidden || !leanPaneChatPanel) return;
     leanPaneChatPollTimer = setTimeout(() => {
       // pollChatSession handles its own transient errors; the catch is a
       // last-resort guard against an unexpected synchronous throw.
@@ -4409,7 +5823,7 @@
   }
 
   async function pollChatSession() {
-    if (!leanPaneChatSessionId) return;
+    if (!leanPaneChatSessionId || !leanPaneChatPanel || document.hidden) return;
     const token = leanPaneChatToken;
     let payload = null;
     try {
@@ -4445,6 +5859,7 @@
         leanPaneChatSending = false;
         // A finished chat run may have changed the item's artifact/status.
         if (wasRunning) refreshLeanPaneNow({ background: true }).catch(() => {});
+        if (payload.leanCheckRuntimePolling) startChatPolling();
       }
     } else {
       // Adapter reachable but reporting unavailable mid-run: surface it and
@@ -4513,6 +5928,20 @@
     closeButton.addEventListener("click", closeLeanPaneChat);
     header.appendChild(closeButton);
     panel.appendChild(header);
+    const accountingNote = formatLeanPaneAccounting(item);
+    if (accountingNote) {
+      const note = document.createElement("p");
+      note.className = "ol-lean-chat-source";
+      note.textContent = accountingNote;
+      panel.appendChild(note);
+    }
+    if (leanPaneChatResponse?.leanCheckRuntimeMessage) {
+      const runtime = document.createElement("div");
+      runtime.className = "ol-lean-chat-source";
+      runtime.setAttribute("role", "status");
+      runtime.textContent = leanPaneChatResponse.leanCheckRuntimeMessage;
+      panel.appendChild(runtime);
+    }
 
     if (item.sourceFile) {
       const source = document.createElement("p");
@@ -4544,6 +5973,17 @@
       if (leanPaneChatSending) transcript.appendChild(chatNotice("Lea is working…"));
       // Self-repair: the last completed run's downstream impact (companion
       // Phase 1 post-run cascade) -- broken dependents + one repair action.
+      for (const diagnostic of leanPaneChatResponse?.leanCheckDiagnostics || []) {
+        const row = document.createElement("details");
+        row.className = "ol-lean-chat-source";
+        const summary = document.createElement("summary");
+        summary.textContent = `${diagnostic.executionMessage || diagnostic.title || diagnostic.message}${diagnostic.context?.path ? ` · ${diagnostic.context.path}` : ""}`;
+        row.appendChild(summary);
+        const body = document.createElement("pre");
+        body.textContent = diagnostic.detail || JSON.stringify(diagnostic.context?.execution || diagnostic.context?.failure || {}, null, 2);
+        row.appendChild(body);
+        transcript.appendChild(row);
+      }
       const impactNotice = renderChatRunImpactNotice(leanPaneChatResponse?.lastRunImpact);
       if (impactNotice) transcript.appendChild(impactNotice);
     }
@@ -4729,6 +6169,9 @@
   }
 
   function renderLeanPaneError(error) {
+    if (error?.leanPaneRefreshHandled) return;
+    if (error?.code === "superseded") return;
+    if (error?.code === "project_renaming") { markProjectRenaming(); return; }
     if (!leanPaneBody || !leanPaneStatus) return;
     leanPaneStatus.textContent = "Could not load Lean pane.";
     leanPaneBody.replaceChildren();
@@ -4768,7 +6211,12 @@
 
     const key = targetKey(target);
     popover.dataset.targetKey = key;
-    popover.querySelector("strong").textContent = target.targetLabel;
+    const nameElement = popover.querySelector("strong");
+    nameElement.textContent = targetDisplayName(target);
+    if (target.labelSource === "generated") {
+      popover.querySelector(".ol-lean-popover-meta")
+        .replaceChildren(document.createTextNode("Source: "), nameElement);
+    }
     const actions = popover.querySelector("[data-role='theorem-actions']");
     const status = popover.querySelector(".ol-lean-popover-status");
     const leanStatement = popover.querySelector(".ol-lean-popover-lean");
@@ -4781,6 +6229,10 @@
     renderTargetActions(actions, target, currentStatus, status, leanStatement, actionStatus, statusInfo);
     if (currentStatus === "in_progress") {
       status.textContent = inProgressMessage(latestStatuses[key], target);
+    } else if (currentStatus === 'needs_review') {
+      status.textContent = statusInfo.review?.reason || 'Lean check passed. Your approval is needed to confirm this result against the LaTeX.';
+    } else if (statusInfo.review?.approval) {
+      status.textContent = reviewApprovalText(statusInfo.review.approval);
     } else if (isExtensionContextInvalidated()) {
       status.textContent = "Extension was reloaded. Refresh this Overleaf tab.";
     }
@@ -4834,17 +6286,26 @@
       return;
     }
     const disabled = currentStatus === "in_progress" || isExtensionContextInvalidated();
-    const actionSpecs = actionSpecsForStatus(actionStatus, target);
+    const actionSpecs = actionSpecsForStatus(actionStatus, target, statusInfo);
     for (const spec of actionSpecs) {
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = spec.label;
+      if (spec.label === "Re-formalize" || spec.label === "Regenerate definition") {
+        button.title = REFORMALIZE_HELP_TEXT;
+        button.setAttribute("aria-description", REFORMALIZE_HELP_TEXT);
+      }
       button.dataset.role = spec.role;
       if (spec.primary) {
         button.dataset.primary = "true";
       }
       button.disabled = disabled;
+      if (spec.disabled) button.disabled = true;
       button.addEventListener("click", async () => {
+        if (spec.review) {
+          showResultReview(target, button);
+          return;
+        }
         for (const actionButton of actions.querySelectorAll("button")) {
           actionButton.disabled = true;
         }
@@ -4860,7 +6321,7 @@
         } catch (error) {
           renderPopoverActionError(status, error);
           const latestStatus = latestStatuses[targetKey(target)] || { status: currentStatus };
-          renderTargetActions(actions, target, latestStatus.status || currentStatus, status, leanStatement, getActionStatus(latestStatus));
+          renderTargetActions(actions, target, latestStatus.status || currentStatus, status, leanStatement, getActionStatus(latestStatus), latestStatus);
         }
       });
       actions.appendChild(button);
@@ -4875,7 +6336,8 @@
       const leaUiLink = leaSession || getLeaUiBaseLink(statusInfo);
       const sessionButton = document.createElement("button");
       sessionButton.type = "button";
-      sessionButton.textContent = "View in Lea UI";
+      sessionButton.textContent = statusInfo?.recoveryState === "review"
+        ? "Review and resume in Lea" : "View in Lea UI";
       sessionButton.dataset.role = "open-lea-session";
       sessionButton.disabled = isExtensionContextInvalidated();
       sessionButton.addEventListener("click", async (event) => {
@@ -4917,6 +6379,201 @@
     actions.appendChild(closeButton);
   }
 
+  function reviewApprovalText(approval) {
+    const outcome = { proved: 'formalized', defined: 'defined', disproved: 'counterexample found' }[approval.outcome] || approval.outcome;
+    return `Approved by user · ${outcome} · ${new Date(approval.created_at).toLocaleString()}`;
+  }
+
+  async function resultReviewRequest(route, target, decision) {
+    const baseUrl = await chatCompanionBaseUrl();
+    const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/lean-pane/review/${route}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target: { ...target, overleafProjectId: target.overleafProjectId || extractOverleafProjectId(),
+        naturalLanguageLatex: target.naturalLanguageLatex || target.targetText || '' }, ...(decision ? { decision } : {}) })
+    }, { timeoutMs: 65000, timeoutMessage: 'Result approval timed out. Retry without starting another formalization.' });
+    if (!response.ok || payload.ok === false) {
+      if (response.status === 404) {
+        payload.message = 'Result approval requires the updated Lea companion and adapter. Update and restart them, then retry.';
+      }
+      const error = companionRequestError(response, payload);
+      error.status = response.status;
+      throw error;
+    }
+    return payload;
+  }
+
+  async function refreshResultReviewSurfaces() {
+    await refreshStatusesNow();
+    if (leanPane) await refreshLeanPaneNow({ background: true });
+  }
+
+  async function withdrawResultApproval(target, approval) {
+    const result = await resultReviewRequest('decision', target, {
+      action: 'withdraw', approval_id: approval.id,
+      idempotency_key: `withdraw:${approval.id}`
+    });
+    await refreshResultReviewSurfaces();
+    return { ...result, status: 'needs_review' };
+  }
+
+  function showResultReview(target, trigger) {
+    const existing = document.querySelector('.ol-lean-review-dialog');
+    if (existing) return;
+    const triggerItemId = trigger?.closest('.ol-lean-project-item')?.dataset.itemId;
+    const dialog = document.createElement('dialog');
+    dialog.className = 'ol-lean-review-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', 'ol-lean-review-title');
+    const title = document.createElement('h2');
+    title.id = 'ol-lean-review-title';
+    title.textContent = 'Approve result';
+    const explanation = document.createElement('p');
+    explanation.textContent = 'Confirm how this checked result relates to the current LaTeX. Approval records your judgment without modifying or rerunning the proof.';
+    const evidence = document.createElement('div');
+    evidence.className = 'ol-lean-review-evidence';
+    const choices = document.createElement('fieldset');
+    const legend = document.createElement('legend');
+    legend.textContent = 'What does the checked artifact establish?';
+    choices.appendChild(legend);
+    const status = document.createElement('p');
+    status.className = 'ol-lean-review-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    const actions = document.createElement('div');
+    actions.className = 'ol-lean-review-actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'ol-lean-secondary-button';
+    cancel.textContent = 'Cancel';
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'ol-lean-secondary-button';
+    retry.textContent = 'Reload result';
+    retry.hidden = true;
+    const submit = document.createElement('button');
+    submit.type = 'button';
+    submit.className = 'ol-lean-primary-button';
+    submit.textContent = 'Choose an outcome';
+    submit.disabled = true;
+    actions.append(cancel, retry, submit);
+    dialog.append(title, explanation, evidence, choices, status, actions);
+    let context = null;
+    let selected = '';
+    let busy = false;
+    let closed = false;
+    let submission = null;
+    const close = () => {
+      closed = true;
+      dialog.close?.();
+      dialog.remove();
+      if (trigger?.isConnected !== false) trigger?.focus?.();
+      else {
+        const item = triggerItemId && [...document.querySelectorAll('.ol-lean-project-item')].find(item => item.dataset.itemId === triggerItemId);
+        const replacement = item?.querySelector('.ol-lean-project-summary-formalize')
+          || activePopover?.querySelector('[data-primary="true"]')
+          || [...document.querySelectorAll('.ol-lean-status')].find(badge => badge.dataset.targetKey === targetKey(target))
+          || document.querySelector('.ol-lean-pane-trigger');
+        replacement?.focus?.();
+      }
+    };
+    cancel.addEventListener('click', close);
+    dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
+    dialog.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    });
+    dialog.addEventListener('click', event => event.stopPropagation());
+    const update = () => {
+      submit.textContent = busy ? 'Saving approval…' : { proved: 'Approve as formalized', defined: 'Approve as defined', disproved: 'Approve as counterexample' }[selected] || 'Choose an outcome';
+      submit.disabled = busy || !context?.review?.eligible || !selected;
+      for (const input of choices.querySelectorAll('input')) input.disabled = busy;
+    };
+    const block = (label, content) => {
+      if (!content) return;
+      const heading = document.createElement('h3');
+      heading.textContent = label;
+      const pre = document.createElement('pre');
+      pre.textContent = content;
+      evidence.append(heading, pre);
+    };
+    const load = async (changed = false) => {
+      context = null;
+      submit.disabled = true;
+      retry.hidden = true;
+      status.setAttribute('role', 'status');
+      status.textContent = changed ? 'The reviewed inputs changed. Loading the current result; review it again before approving.' : 'Loading current LaTeX and checked artifact…';
+      try {
+        const loaded = await resultReviewRequest('context', target);
+        if (closed) return;
+        context = loaded;
+        evidence.replaceChildren();
+        const source = context.source_snapshot || {};
+        block('Current LaTeX statement', source.statement);
+        block('Associated proof', source.proof);
+        block('Source context', source.context);
+        block('Checked declaration', context.review.candidate_declaration);
+        for (const artifact of context.artifacts || []) block(artifact.path, artifact.content);
+        choices.replaceChildren(legend);
+        selected = '';
+        submission = null;
+        for (const [outcome, label] of [['proved', 'Proof of the stated claim'], ['disproved', 'Counterexample to the stated claim'], ['defined', 'Definition']]) {
+          if (!context.review.allowed_outcomes.includes(outcome)) continue;
+          if (outcome === 'defined') {
+            selected = outcome;
+            const definition = document.createElement('p');
+            definition.textContent = label;
+            choices.appendChild(definition);
+          } else {
+            const option = document.createElement('label');
+            const radio = document.createElement('input');
+            radio.type = 'radio';
+            radio.name = 'ol-lean-review-outcome';
+            radio.value = outcome;
+            radio.addEventListener('change', () => { selected = outcome; submission = null; update(); });
+            option.append(radio, document.createTextNode(label));
+            choices.appendChild(option);
+          }
+        }
+        const reason = context.review.reason && context.review.reason.trim().toUpperCase() !== 'NEEDS_REVIEW'
+          ? context.review.reason : 'Lean check passed. Your approval is needed to confirm this result against the LaTeX.';
+        status.textContent = (changed ? 'The reviewed inputs changed. Review the current evidence and choose again. ' : '') + reason;
+        update();
+      } catch (error) {
+        if (closed) return;
+        status.setAttribute('role', 'alert');
+        status.textContent = normalizeErrorMessage(error);
+        retry.hidden = false;
+      }
+    };
+    retry.addEventListener('click', () => load());
+    submit.addEventListener('click', async () => {
+      if (submit.disabled || busy || !context) return;
+      submission ||= { action: 'approve', outcome: selected, revision_token: context.review.revision_token,
+        idempotency_key: globalThis.crypto?.randomUUID?.() || `review:${Date.now()}:${Math.random()}` };
+      busy = true;
+      update();
+      try {
+        await resultReviewRequest('decision', target, submission);
+        await refreshResultReviewSurfaces();
+        if (!closed) close();
+      } catch (error) {
+        if (closed) return;
+        if (error.status === 409) await load(true);
+        else {
+          status.setAttribute('role', 'alert');
+          status.textContent = normalizeErrorMessage(error);
+        }
+      } finally { busy = false; if (!closed) update(); }
+    });
+    document.body.appendChild(dialog);
+    dialog.showModal?.();
+    cancel.focus?.();
+    load();
+  }
+
   function renderPopoverActionStatus(status, message) {
     status.classList.remove("ol-lean-popover-status-error");
     status.setAttribute("role", "status");
@@ -4926,6 +6583,7 @@
 
   function renderPopoverActionError(status, error) {
     const dependencyBlocked = isUnresolvedUsesError(error);
+    const missingApiKey = isMissingApiKeyError(error);
     status.classList.add("ol-lean-popover-status-error");
     status.setAttribute("role", "alert");
     status.setAttribute("aria-live", "assertive");
@@ -4933,13 +6591,27 @@
     status.replaceChildren();
 
     const title = document.createElement("strong");
-    title.textContent = dependencyBlocked
-      ? "Formalization blocked"
-      : "Action failed";
+    title.textContent = missingApiKey
+      ? "API key required"
+      : dependencyBlocked
+        ? "Formalization blocked"
+        : "Action failed";
     const message = document.createElement("span");
     message.textContent = actionFailureMessage(error);
     status.appendChild(title);
     status.appendChild(message);
+    if (missingApiKey) {
+      const settings = document.createElement("button");
+      settings.type = "button";
+      settings.className = "ol-lean-secondary-button ol-lean-popover-error-settings";
+      settings.textContent = "Add API key";
+      settings.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        showSettingsPopover({ focusMissingCredential: true });
+      });
+      status.appendChild(settings);
+    }
   }
 
   async function showTargetInLeanPane(target) {
@@ -5011,8 +6683,39 @@
     }, 1800);
   }
 
-  function actionSpecsForStatus(status, target) {
+  function actionSpecsForStatus(status, target, statusInfo = {}) {
     const definition = isDefinitionTarget(target);
+    if (status === 'needs_review') {
+      return [{ role: 'approve-result', label: 'Approve result', primary: true, review: true,
+        disabled: statusInfo.review?.eligible === false },
+      { role: 'theorem-reformalize-action', label: definition ? 'Regenerate definition' : 'Re-formalize',
+        pendingText: 'Starting Lea...', run: formalize }];
+    }
+    if (statusInfo.review?.approval) {
+      return [{ role: 'theorem-action', label: definition ? 'Regenerate definition' : 'Re-formalize',
+        primary: true, pendingText: 'Starting Lea...', run: formalize },
+      { role: 'withdraw-result-approval', label: 'Withdraw approval', pendingText: 'Withdrawing approval…',
+        run: current => withdrawResultApproval(current, statusInfo.review.approval) }];
+    }
+    const wait = statusInfo.dependencyWait;
+    if (wait) {
+      const action = wait.state === "stopped" ? { id: "dependency-arm", label: "Continue when ready" }
+        : wait.state === "unavailable" || wait.continuationBlocked ? { id: "dependency-refresh", label: "Refresh status" }
+          : { id: "dependency-view", label: "View supporting result" };
+      return [{ role: "theorem-action", label: action.label, primary: true, pendingText: "Checking…",
+        run: current => runDependencyAction({ ...current, ...statusInfo }, action) },
+      ...(wait.autoResume ? [{ role: "theorem-stop-wait-action", label: "Stop waiting", pendingText: "Stopping…",
+        run: current => runDependencyAction({ ...current, ...statusInfo }, { id: "dependency-stop" }) }] : [])];
+    }
+    if (status === "paused") {
+      const specs = statusInfo.recoveryState === "review" ? [] : [{
+        role: "theorem-action", label: "Resume", primary: true, pendingText: "Resuming…",
+        run: (current) => formalize({ ...current, resume: true,
+          resumeRunId: statusInfo.leaStatus?.run_id || statusInfo.apiRunId || null })
+      }];
+      return [...specs, { role: "theorem-reformalize-action", label: "Re-formalize",
+        primary: specs.length === 0, pendingText: "Starting Lea...", run: formalize }];
+    }
     if (status === "unformalized") {
       const specs = [{
         role: "target-action",
@@ -5068,36 +6771,29 @@
     }];
   }
 
-  function showSettingsPopover() {
+  function showSettingsPopover({ focusMissingCredential = false } = {}) {
     closePopover();
 
     const popover = document.createElement("div");
     popover.className = "ol-lean-popover ol-lean-settings-popover";
+    popover.setAttribute("role", "dialog");
+    popover.setAttribute("aria-label", "Lea settings");
+    popover.setAttribute("aria-modal", "false");
     popover.innerHTML = `
       <div class="ol-lean-popover-arrow ol-lean-popover-arrow-bottom" aria-hidden="true"></div>
       <div class="ol-lean-popover-header">
         <div class="ol-lean-popover-kicker">
           <span class="ol-lean-popover-mark" aria-hidden="true">L</span>
-          <span>Extension Settings</span>
+          <span>Lea settings <small>Overleaf extension</small></span>
         </div>
-        <button type="button" class="ol-lean-icon-button" data-role="close" aria-label="Close Lea popover">x</button>
+        <button type="button" class="ol-lean-icon-button" data-role="close" aria-label="Close Lea popover"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg></button>
       </div>
       <div class="ol-lean-popover-body">
-        <section class="ol-lean-project-identity-panel" data-role="project-identity">
-          <div class="ol-lean-provider-title">Project</div>
-          <div class="ol-lean-provider-row">
-            <div class="ol-lean-provider-row-head">
-              <span data-role="project-name">Overleaf Project</span>
-              <strong data-role="project-exists">Not created</strong>
-            </div>
-            <p class="ol-lean-provider-note" data-role="project-namespace">Lean namespace: --</p>
-            <p class="ol-lean-provider-note" data-role="project-binding">Overleaf binding: --</p>
-            <p class="ol-lean-provider-note ol-lean-project-message" data-role="project-message"></p>
-            <div class="ol-lean-provider-key-controls">
-              <button type="button" class="ol-lean-provider-key-button" data-role="edit-project-name">Edit name</button>
-            </div>
-          </div>
-        </section>
+        <details class="ol-lean-settings-group" data-group="usage" open>
+          <summary class="ol-lean-settings-group-summary">
+            <span><strong>Usage &amp; budget</strong><small>Spend, limits, and this project</small></span>
+          </summary>
+          <div class="ol-lean-settings-group-content">
         <section class="ol-lean-usage-panel" aria-live="polite">
           <div class="ol-lean-usage-row" data-usage="project">
             <div class="ol-lean-usage-row-head">
@@ -5105,8 +6801,8 @@
               <strong data-field="cost">--</strong>
             </div>
             <div class="ol-lean-usage-metrics">
-              <span><small>In</small><strong data-field="input">--</strong></span>
-              <span><small>Out</small><strong data-field="output">--</strong></span>
+              <span><small>Input tokens</small><strong data-field="input">--</strong></span>
+              <span><small>Output tokens</small><strong data-field="output">--</strong></span>
             </div>
           </div>
           <div class="ol-lean-usage-separator"></div>
@@ -5116,24 +6812,79 @@
               <strong data-field="cost">--</strong>
             </div>
             <div class="ol-lean-usage-metrics">
-              <span><small>In</small><strong data-field="input">--</strong></span>
-              <span><small>Out</small><strong data-field="output">--</strong></span>
+              <span><small>Input tokens</small><strong data-field="input">--</strong></span>
+              <span><small>Output tokens</small><strong data-field="output">--</strong></span>
             </div>
           </div>
           <p class="ol-lean-usage-cap" data-role="cost-cap-summary" hidden></p>
+          <p class="ol-lean-provider-note" data-role="usage-status" role="status" hidden></p>
         </section>
+        <label class="ol-lean-settings-budget-field">
+          <span>Maximum spend <small>All projects · USD · blank for no cap</small></span>
+          <input type="number" min="0" step="0.01" data-role="max-spend" placeholder="No cap">
+        </label>
+        <section class="ol-lean-project-identity-panel" data-role="project-identity">
+          <div class="ol-lean-provider-title">Project identity</div>
+          <div class="ol-lean-provider-row">
+            <div class="ol-lean-provider-row-head">
+              <span data-role="project-name">Overleaf Project</span>
+              <strong data-role="project-exists">Loading…</strong>
+            </div>
+            <p class="ol-lean-provider-note" data-role="project-namespace">Lean namespace: --</p>
+            <p class="ol-lean-provider-note" data-role="project-binding">Overleaf binding: --</p>
+            <p class="ol-lean-provider-note ol-lean-project-message" data-role="project-message"></p>
+            <div class="ol-lean-provider-key-controls">
+              <button type="button" class="ol-lean-provider-key-button" data-role="edit-project-name">Edit name</button>
+            </div>
+          </div>
+        </section>
+          </div>
+        </details>
+        <details class="ol-lean-settings-group" data-group="formalization">
+          <summary class="ol-lean-settings-group-summary">
+            <span><strong>Formalization</strong><small>Model and run behavior</small></span>
+          </summary>
+          <div class="ol-lean-settings-group-content">
+        <section class="ol-lean-settings-panel">
+          <div class="ol-lean-model-field">
+            <span>Model</span>
+            <div data-role="model"></div>
+          </div>
+          <p class="lea-model-requirement-note" data-role="model-catalog-status"></p>
+          <div class="lea-model-requirements" data-role="model-requirements" aria-live="polite"></div>
+          <label>
+            <span>Max turns</span>
+            <input type="number" min="1" max="200" data-role="max-turns">
+          </label>
+          <label class="ol-lean-checkbox-field">
+            <input type="checkbox" data-role="tex-mirror">
+            <span>Mirror Overleaf LaTeX sources into the project</span>
+          </label>
+          <label class="ol-lean-checkbox-field">
+            <input type="checkbox" data-role="source-pause">
+            <span>Pause formalization when Lea needs author input</span>
+          </label>
+          <p class="ol-lean-provider-note">Lea Status findings remain visible when this is off. Formalize all never pauses for source issues.</p>
+        </section>
+          </div>
+        </details>
+        <details class="ol-lean-settings-group" data-group="access">
+          <summary class="ol-lean-settings-group-summary">
+            <span><strong>Access &amp; sharing</strong><small>Model keys and GitHub</small></span>
+          </summary>
+          <div class="ol-lean-settings-group-content">
         <section class="ol-lean-provider-panel" data-role="provider-keys">
-          <div class="ol-lean-provider-title">Model families</div>
-          <p class="ol-lean-provider-note">Keys are saved to the root .env by the companion, not to Chrome or settings.json.</p>
+          <div class="ol-lean-provider-title">Model API keys</div>
+          <p class="ol-lean-provider-note">Keys are saved locally by Lea in the root .env file, never in Chrome.</p>
           ${Object.entries(MODEL_FAMILY_LABELS).map(([family, label]) => `
             <div class="ol-lean-provider-row" data-family="${family}">
               <div class="ol-lean-provider-row-head">
                 <span>${label}</span>
-                <strong data-role="provider-status">Missing</strong>
+                <strong data-role="provider-status">Loading…</strong>
               </div>
               <div class="ol-lean-provider-key-controls">
                 <button type="button" class="ol-lean-provider-key-button" data-role="provider-key-toggle" data-family="${family}">Add key</button>
-                <input type="password" autocomplete="off" spellcheck="false" data-role="provider-key-input" data-family="${family}" placeholder="${label} API key" hidden>
+                <input type="password" autocomplete="off" spellcheck="false" data-role="provider-key-input" data-family="${family}" aria-label="${label} API key" placeholder="${label} API key" hidden>
               </div>
             </div>
           `).join("")}
@@ -5147,7 +6898,7 @@
                 <strong>Repository access</strong>
                 <span data-role="github-token-description">Add a token to push Lean projects to GitHub.</span>
               </div>
-              <strong class="ol-lean-github-token-status" data-role="github-token-status" aria-live="polite">Not set</strong>
+              <strong class="ol-lean-github-token-status" data-role="github-token-status" aria-live="polite">Loading…</strong>
             </div>
             <p class="ol-lean-github-token-storage-note">
               <svg class="ol-lean-github-token-lock" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
@@ -5176,29 +6927,14 @@
             </div>
           </div>
         </section>
-        <section class="ol-lean-settings-panel">
-          <div class="ol-lean-model-field">
-            <span>Model</span>
-            <div data-role="model"></div>
           </div>
-          <p class="lea-model-requirement-note" data-role="model-catalog-status"></p>
-          <div class="lea-model-requirements" data-role="model-requirements" aria-live="polite"></div>
-          <label>
-            <span>Max turns</span>
-            <input type="number" min="1" max="200" data-role="max-turns">
-          </label>
-          <label>
-            <span>Cost cap (USD)</span>
-            <input type="number" min="0" step="0.01" data-role="max-spend" placeholder="None">
-          </label>
-          <label class="ol-lean-checkbox-field">
-            <input type="checkbox" data-role="tex-mirror">
-            <span>Mirror Overleaf LaTeX sources into the project</span>
-          </label>
-          <button type="button" class="ol-lean-save-button" data-role="save-settings" disabled>Save changes</button>
-        </section>
+        </details>
       </div>
-      <p class="ol-lean-popover-status" role="status"></p>
+      <div class="ol-lean-settings-footer">
+        <p class="ol-lean-popover-status" role="status"></p>
+        <button type="button" class="ol-lean-provider-key-button" data-role="retry-settings" hidden>Retry loading</button>
+        <button type="button" class="ol-lean-save-button" data-role="save-settings" disabled>Save changes</button>
+      </div>
     `;
 
     const resizer = document.createElement("button");
@@ -5220,6 +6956,7 @@
     const maxTurnsInput = popover.querySelector("[data-role='max-turns']");
     const maxSpendInput = popover.querySelector("[data-role='max-spend']");
     const texMirrorInput = popover.querySelector("[data-role='tex-mirror']");
+    const sourcePauseInput = popover.querySelector("[data-role='source-pause']");
     const saveButton = popover.querySelector("[data-role='save-settings']");
 
     closeButton.addEventListener("click", closePopover);
@@ -5230,6 +6967,7 @@
     maxTurnsInput.addEventListener("input", markSettingsDirty);
     maxSpendInput.addEventListener("input", markSettingsDirty);
     texMirrorInput.addEventListener("change", markSettingsDirty);
+    sourcePauseInput.addEventListener("change", markSettingsDirty);
     for (const button of popover.querySelectorAll("[data-role='provider-key-toggle']")) {
       button.addEventListener("click", () => {
         const input = popover.querySelector(`[data-role='provider-key-input'][data-family='${button.dataset.family}']`);
@@ -5335,6 +7073,9 @@
       }
     });
     saveButton.addEventListener("click", async () => {
+      if (popover.dataset.settingsState !== "ready") return;
+      popover.dataset.settingsState = "saving";
+      setSettingsControlsDisabled(popover, true);
       saveButton.disabled = true;
       status.textContent = "Saving Lea settings...";
       try {
@@ -5343,16 +7084,20 @@
         popover.dataset.savedMaxTurns = String(settings.leaMaxTurns);
         popover.dataset.savedMaxSpend = settings.leaMaxSpendUsd == null ? "" : String(settings.leaMaxSpendUsd);
         popover.dataset.savedTexMirror = String(settings.leaTexMirrorEnabled !== false);
+        popover.dataset.savedSourcePause = String(settings.leaPauseOnSourceIssue === true);
         popover.leaApiKeys = settings.leaApiKeys || popover.leaApiKeys || {};
         renderProviderKeys(popover, settings.leaProviderKeys || {});
         clearProviderKeyInputs(popover);
         clearDynamicApiKeyInputs(popover);
         renderPopoverModelRequirements(popover, settings.leaModelRequirements || null);
-        markSettingsDirty();
+        updateApiKeyNudge(settings);
         scheduleTexMirrorSync();
         status.textContent = "Settings saved.";
       } catch (error) {
         status.textContent = error instanceof Error ? error.message : String(error);
+      } finally {
+        popover.dataset.settingsState = "ready";
+        setSettingsControlsDisabled(popover, false);
         markSettingsDirty();
       }
     });
@@ -5361,21 +7106,60 @@
     document.body.appendChild(popover);
     activePopover = popover;
     positionSettingsPopover(popover);
-    loadPopoverSettings(popover).catch((error) => {
-      status.textContent = error instanceof Error ? error.message : String(error);
-    });
+    if (!focusMissingCredential) {
+      popover.querySelector("[data-group='usage'] > summary")?.focus({ preventScroll: true });
+    }
+    const retryButton = popover.querySelector("[data-role='retry-settings']");
+    async function loadSettings() {
+      popover.dataset.settingsState = "loading";
+      popover.setAttribute("aria-busy", "true");
+      setSettingsControlsDisabled(popover, true);
+      retryButton.hidden = true;
+      status.textContent = "Loading Lea settings…";
+      try {
+        await loadPopoverSettings(popover);
+        if (!popover.isConnected) return;
+        popover.dataset.settingsState = "ready";
+        setSettingsControlsDisabled(popover, false);
+        markSettingsDirty();
+        status.textContent = "";
+        if (focusMissingCredential) focusFirstMissingCredential(popover);
+      } catch (error) {
+        popover.dataset.settingsState = "unavailable";
+        setSettingsControlsDisabled(popover, true);
+        status.textContent = `Could not load Lea settings. ${error instanceof Error ? error.message : String(error)} Showing saved values; retry loading before editing.`;
+        retryButton.hidden = false;
+      } finally {
+        popover.setAttribute("aria-busy", "false");
+      }
+    }
+    retryButton.addEventListener("click", loadSettings);
+    void loadSettings();
     loadUsage(popover).catch((error) => {
-      status.textContent = error instanceof Error ? error.message : String(error);
+      showUsageError(popover, error);
     });
     scheduleUsageRefresh(popover);
 
     function markSettingsDirty() {
+      if (popover.dataset.settingsState !== "ready") {
+        saveButton.disabled = true;
+        return;
+      }
       const dirty = modelSelect.value !== popover.dataset.savedModel ||
         String(Number.parseInt(maxTurnsInput.value, 10) || DEFAULT_LEA_MAX_TURNS) !== popover.dataset.savedMaxTurns ||
         normalizeMaxSpendInput(maxSpendInput.value) !== (popover.dataset.savedMaxSpend || "") ||
         String(texMirrorInput.checked) !== (popover.dataset.savedTexMirror || "true") ||
+        String(sourcePauseInput.checked) !== (popover.dataset.savedSourcePause || "false") ||
         hasProviderKeyInput(popover);
       saveButton.disabled = !dirty;
+    }
+  }
+
+  function setSettingsControlsDisabled(popover, disabled) {
+    for (const control of popover.querySelectorAll("input, button")) {
+      if (["close", "retry-settings"].includes(control.dataset.role) ||
+          control.classList.contains("ol-lean-settings-popover-resizer")) continue;
+      control.disabled = disabled;
     }
   }
 
@@ -5419,7 +7203,7 @@
     const currentStatus = getDisplayStatus(statusInfo);
     const actionStatus = getActionStatus(statusInfo);
     const chip = popover.querySelector(".ol-lean-status-chip");
-    const detail = popover.querySelector(".ol-lean-popover-detail");
+    const detail = popover.querySelector(".ol-lean-popover-detail") || popover.querySelector('.ol-lean-popover-status');
     const actions = popover.querySelector("[data-role='theorem-actions']");
     const leanStatement = popover.querySelector(".ol-lean-popover-lean");
     const stubbedWarning = popover.querySelector(".ol-lean-popover-warning");
@@ -5438,6 +7222,10 @@
     if (detail) {
       if (isExtensionContextInvalidated()) {
         detail.textContent = "Extension was reloaded. Refresh this Overleaf tab.";
+      } else if (statusInfo.review?.approval) {
+        detail.textContent = reviewApprovalText(statusInfo.review.approval);
+      } else if (currentStatus === 'needs_review') {
+        detail.textContent = 'Lean check passed. Your approval is needed to confirm this result against the LaTeX.';
       } else if (statusInfo.message) {
         detail.textContent = statusInfo.message;
       } else if (statusInfo.relativePath) {
@@ -5452,8 +7240,13 @@
     renderTargetWarning(stubbedWarning, target, statusInfo);
   }
 
-  async function buildFormalizationSourceContext(target, { verifyMirror = true } = {}) {
-    const sourceFile = normalizeDocPath(target?.sourceFile || latestActiveTexPath);
+  async function buildFormalizationSourceContext(target, { verifyMirror = true, mirrorSnapshot = null } = {}) {
+    const manifestTarget = (lastLeanPaneManifest?.items || []).find((item) => (
+      item.label === target?.targetLabel
+      && (!target?.sourceFile || normalizeDocPath(item.sourceFile) === normalizeDocPath(target.sourceFile))
+    ));
+    const enrichedTarget = manifestTarget ? { ...manifestTarget, ...target } : target;
+    const sourceFile = normalizeDocPath(enrichedTarget?.sourceFile || latestActiveTexPath);
     const candidates = [
       ...(Array.isArray(lastMirrorFiles) ? lastMirrorFiles : []),
       ...(Array.isArray(lastLeanPaneFiles) ? lastLeanPaneFiles : [])
@@ -5464,22 +7257,54 @@
       ? { path: sourceFile, content: latestActiveTex }
       : candidates.find((file) => normalizeDocPath(file?.path) === sourceFile);
     const content = typeof source?.content === "string" ? source.content : "";
-    const sourceStartLine = Math.max(1, Number(target?.sourceStartLine) || 1);
-    const sourceEndLine = Math.max(sourceStartLine, Number(target?.sourceEndLine) || sourceStartLine);
-    const lines = content.split(/\r?\n/);
-    const excerptStartLine = Math.max(1, sourceStartLine - TARGET_CONTEXT_RADIUS_LINES);
-    const excerptEndLine = Math.min(lines.length, sourceEndLine + TARGET_CONTEXT_RADIUS_LINES);
-    let sourceExcerpt = content
-      ? lines.slice(excerptStartLine - 1, excerptEndLine).join("\n")
-      : "";
-    if (sourceExcerpt.length > TARGET_CONTEXT_MAX_CHARS) {
-      sourceExcerpt = `${sourceExcerpt.slice(0, TARGET_CONTEXT_MAX_CHARS)}\n[excerpt truncated]`;
-    }
+    const sourceStartLine = Math.max(1, Number(enrichedTarget?.sourceStartLine) || 1);
+    const sourceEndLine = Math.max(sourceStartLine, Number(enrichedTarget?.sourceEndLine) || sourceStartLine);
     const uniqueFiles = new Map();
     for (const file of candidates) {
       const normalized = normalizeDocPath(file?.path);
       if (normalized && !uniqueFiles.has(normalized)) uniqueFiles.set(normalized, String(file?.content ?? ""));
     }
+    if (sourceFile && content) uniqueFiles.set(sourceFile, content);
+    let currentTarget = enrichedTarget;
+    try {
+      const proofSource = await import(chrome.runtime.getURL("proofSourceCore.mjs"));
+      currentTarget = proofSource.associateProofSourcesCore({
+        targets: [{
+          ...enrichedTarget,
+          sourceFile,
+          sourceStartOffset: Number(target?.from ?? enrichedTarget?.sourceStartOffset ?? 0),
+          sourceEndOffset: Number(target?.to ?? enrichedTarget?.sourceEndOffset ?? 0)
+        }],
+        files: [...uniqueFiles].map(([path, fileContent]) => ({ path, content: fileContent }))
+      })[0] || enrichedTarget;
+    } catch {
+      // The manifest's association is still a safe fallback; missing proof
+      // evidence will pause rather than trigger a guessed strategy.
+    }
+    const proofAssociation = currentTarget?.proofAssociation || { status: "missing", method: "none" };
+    const sourceProof = String(currentTarget?.sourceProof || "").replace(/\r\n?/g, "\n");
+    const proofHash = sourceProof ? await sha256(sourceProof) : "";
+    const { buildSourceBundleCore, sourceHashInputs } = await import(chrome.runtime.getURL("sourceIdentityCore.mjs"));
+    const sourceBundleCore = buildSourceBundleCore({ ...currentTarget, ...enrichedTarget,
+      sourceFile, sourceStartLine, sourceEndLine, sourceProof, proofAssociation }, {
+      proofHash,
+      files: [...uniqueFiles].map(([path, fileContent]) => ({ path, content: fileContent })),
+      mirror: verifyMirror && mirrorSnapshot?.mirrorRevision ? {
+        revision: String(mirrorSnapshot.mirrorRevision),
+        mirroredFileCount: Object.keys(mirrorSnapshot.mirroredFiles || {}).length,
+        verified: true
+      } : null
+    });
+    const excerpt = sourceBundleCore.relevantSource[0];
+    const sourceExcerpt = excerpt?.content || "";
+    const excerptStartLine = excerpt?.startLine || null;
+    const excerptEndLine = excerpt?.endLine || null;
+    const { evidence, identity } = sourceHashInputs(sourceBundleCore);
+    const sourceBundle = {
+      ...sourceBundleCore,
+      bundleHash: await sha256(JSON.stringify(evidence)),
+      sourceIdentityHash: await sha256(JSON.stringify(identity))
+    };
     return {
       sourceFile,
       sourceStartLine,
@@ -5491,15 +7316,49 @@
       sourceExcerptStartLine: sourceExcerpt ? excerptStartLine : null,
       sourceExcerptEndLine: sourceExcerpt ? excerptEndLine : null,
       sourceCorpusFileCount: uniqueFiles.size,
-      sourceCorpusChars: [...uniqueFiles.values()].reduce((total, text) => total + text.length, 0)
+      sourceCorpusChars: [...uniqueFiles.values()].reduce((total, text) => total + text.length, 0),
+      sourceBundle
     };
+  }
+
+  async function currentResumeTarget(target) {
+    const { parseTargets } = await import(chrome.runtime.getURL("targetParserCore.mjs"));
+    const path = normalizeDocPath(target.sourceFile || latestActiveTexPath);
+    const file = [...(lastMirrorFiles || []), ...(lastLeanPaneFiles || [])]
+      .find((candidate) => normalizeDocPath(candidate.path) === path);
+    const content = path === normalizeDocPath(latestActiveTexPath) ? latestActiveTex : file?.content;
+    let parsed = parseTargets(content || "", { sourcePath: path });
+    if (parsed.some((candidate) => candidate.labelSource === "generated"
+      || candidate.targetUses.some((use) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(use)))) {
+      const settings = await getSettings();
+      const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
+      const response = await fetch(`${baseUrl}/targets/resolve`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(), sourceFile: path,
+          source: content, files: lastLeanPaneFiles || [] })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw companionRequestError(response, payload);
+      parsed = payload.targets || [];
+    }
+    const matches = parsed.filter((candidate) =>
+      candidate.targetKind === target.targetKind && (candidate.targetLabel === target.targetLabel
+        || (target.labelSource === "generated" && candidate.labelSource === "generated"
+          && target.latexLabel && candidate.latexLabel === target.latexLabel)));
+    if (matches.length !== 1) throw new Error("The paused target cannot be identified in the current source. Refresh the pane before resuming.");
+    const current = matches[0];
+    return { ...target, ...current, targetLabel: target.targetLabel, sourceFile: path,
+      sourceStartLine: String(content).slice(0, current.from).split("\n").length,
+      sourceEndLine: String(content).slice(0, current.to).split("\n").length };
   }
 
   async function formalize(target) {
     // A run must never begin against a mirror that failed to accept the live buffer.
     const mirrorResult = await syncTexMirrorNow({ force: true });
+    if (target.resume === true) target = await currentResumeTarget(target);
     const sourceContext = await buildFormalizationSourceContext(target, {
-      verifyMirror: mirrorResult?.disabled !== true
+      verifyMirror: mirrorResult?.disabled !== true,
+      mirrorSnapshot: mirrorResult
     });
     const settings = await getSettings();
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
@@ -5510,13 +7369,19 @@
         overleafProjectId: extractOverleafProjectId(),
         targetKind: target.targetKind,
         targetLabel: target.targetLabel,
+        labelSource: target.labelSource || "explicit",
+        latexLabel: target.latexLabel || "",
         targetText: target.targetText,
         targetUses: target.targetUses || [],
         targetContext: target.targetContext || "",
         syntax: target.syntax || "comment",
         projectName: lastProjectIdentity?.projectName || guessProjectName(lastLeanPaneFiles || []),
+        overleafProjectTitle: readOverleafProjectTitle(lastLeanPaneFiles || []),
         projectNamespace: lastProjectIdentity?.namespace || "",
         sourceHash: await sha256(normalizeTargetText(target.targetText)),
+        resume: target.resume === true,
+        resumeRunId: target.resumeRunId || null,
+        bestEffort: target.bestEffort === true,
         ...sourceContext
       })
     });
@@ -5533,7 +7398,8 @@
     // depend on local notation/definitions in the surrounding document.
     const mirrorResult = await syncTexMirrorNow({ force: true });
     const sourceContext = await buildFormalizationSourceContext(target, {
-      verifyMirror: mirrorResult?.disabled !== true
+      verifyMirror: mirrorResult?.disabled !== true,
+      mirrorSnapshot: mirrorResult
     });
     const settings = await getSettings();
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
@@ -5544,11 +7410,14 @@
         overleafProjectId: extractOverleafProjectId(),
         targetKind: target.targetKind,
         targetLabel: target.targetLabel,
+        labelSource: target.labelSource || "explicit",
+        latexLabel: target.latexLabel || "",
         targetText: target.targetText,
         targetUses: target.targetUses || [],
         targetContext: target.targetContext || "",
         syntax: target.syntax || "comment",
         projectName: lastProjectIdentity?.projectName || guessProjectName(lastLeanPaneFiles || []),
+        overleafProjectTitle: readOverleafProjectTitle(lastLeanPaneFiles || []),
         projectNamespace: lastProjectIdentity?.namespace || "",
         sourceHash: await sha256(normalizeTargetText(target.targetText)),
         ...sourceContext
@@ -5564,23 +7433,27 @@
 
   // Build the full per-item payload /stub and /formalize expect (the same shape
   // the single-item formalize() sends), for every item a batch will run over.
-  async function buildBatchTargetPayloads(items, { verifyMirror = true } = {}) {
+  async function buildBatchTargetPayloads(items, { verifyMirror = true, mirrorSnapshot = null } = {}) {
     const overleafProjectId = extractOverleafProjectId();
     const projectName = lastProjectIdentity?.projectName || guessProjectName(lastLeanPaneFiles || []);
     const projectNamespace = lastProjectIdentity?.namespace || "";
     return Promise.all(items.map(async (item) => {
-      const target = leanPaneView.paneItemToFormalizeTarget(item);
-      const sourceContext = await buildFormalizationSourceContext(target, { verifyMirror });
+      let target = leanPaneView.paneItemToFormalizeTarget(item);
+      if (item.status === "paused" || item.leanCheck?.status === "paused") target = await currentResumeTarget(target);
+      const sourceContext = await buildFormalizationSourceContext(target, { verifyMirror, mirrorSnapshot });
       return {
         overleafProjectId,
         targetKind: target.targetKind,
         targetLabel: target.targetLabel,
+        labelSource: target.labelSource || "explicit",
+        latexLabel: target.latexLabel || "",
         targetText: target.targetText,
         targetUses: target.targetUses || [],
         targetContext: target.targetContext || "",
         syntax: target.syntax || "comment",
         projectName,
         projectNamespace,
+        overleafProjectTitle: readOverleafProjectTitle(lastLeanPaneFiles || []),
         sourceHash: await sha256(normalizeTargetText(target.targetText)),
         ...sourceContext
       };
@@ -5595,11 +7468,13 @@
   async function runTargetBatch({ endpoint, items, errorKey }) {
     leanPaneRepairError = null;
     if (items.length === 0) return;
+    const projectId = extractOverleafProjectId();
     try {
       const mirrorResult = await syncTexMirrorNow({ force: true });
       const baseUrl = await chatCompanionBaseUrl();
       const payloads = await buildBatchTargetPayloads(items, {
-        verifyMirror: mirrorResult?.disabled !== true
+        verifyMirror: mirrorResult?.disabled !== true,
+        mirrorSnapshot: mirrorResult
       });
       const response = await fetch(`${baseUrl}${endpoint}`, {
         method: "POST",
@@ -5608,8 +7483,11 @@
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.message || `Companion returned HTTP ${response.status}.`);
-      leanPaneRepairBatch = payload;
+      if (projectId !== extractOverleafProjectId()) return;
+      leanPaneRepairBatch = { ...payload, overleafProjectId: projectId };
+      leanPaneBatchNavigationStatus = null;
       leanPaneExpandedBatchQueueId = "";
+      leanPaneExpandedBatchAttentionId = "";
       leanPaneExpandedBatchCompletedId = "";
       startRepairBatchPolling({ immediate: true });
     } catch (error) {
@@ -5638,6 +7516,7 @@
   }
 
   function scheduleStatusRefresh(delayMs = STATUS_REFRESH_DEBOUNCE_MS) {
+    if (projectRenaming) { scheduleRenameReconciliation(); return; }
     clearTimeout(statusRefreshTimer);
     statusRefreshTimer = setTimeout(() => {
       refreshStatusesNow().catch((error) => {
@@ -5647,37 +7526,60 @@
   }
 
   async function refreshStatusesNow() {
+    if (document.hidden) return false;
+    const request = displayRequest("statuses");
+    try { return await refreshStatusesSnapshot(request); }
+    catch (error) {
+      if (!currentDisplayRequest(request)) return false;
+      throw error;
+    }
+  }
+
+  async function refreshStatusesSnapshot(request) {
     if (latestTargets.length === 0) {
       postStatuses({});
-      return;
+      return true;
     }
+
+    await resolveVisibleTargets();
 
     const settings = await getSettings();
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
+    const targets = await Promise.all(latestTargets.map(async (target) => {
+      const sourceContext = await buildFormalizationSourceContext(target, { verifyMirror: false });
+      return {
+        targetKind: target.targetKind,
+        targetLabel: target.targetLabel,
+        targetText: target.targetText,
+        targetUses: target.targetUses || [],
+        targetContext: target.targetContext || "",
+        sourceIdentityHash: sourceContext.sourceBundle?.sourceIdentityHash || ""
+      };
+    }));
     const response = await fetch(`${baseUrl}/statuses`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         overleafProjectId: extractOverleafProjectId(),
-        targets: latestTargets.map((target) => ({
-          targetKind: target.targetKind,
-          targetLabel: target.targetLabel,
-          targetText: target.targetText,
-          targetUses: target.targetUses || [],
-          targetContext: target.targetContext || ""
-        }))
+        targets
       })
     });
 
     const payload = await response.json().catch(() => ({}));
+    if (!currentDisplayRequest(request)) return false;
     if (!response.ok) {
-      throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+      const error = companionRequestError(response, payload);
+      if (error.code === "project_renaming") { markProjectRenaming(); return false; }
+      throw error;
     }
+    if (!acceptDisplayResponse(request, payload.namespaceRevision)) return false;
     const statuses = withFallbackStatuses(payload.statuses || {});
     await reconcileHumanApprovals(latestTargets.map((target) => ({
       target,
       statusInfo: statuses[targetKey(target)]
     })));
+    // Storage reconciliation can also outlive a rename.
+    if (request.generation !== displayGeneration || request.projectId !== extractOverleafProjectId()) return false;
     postStatuses(statuses);
     if (activePopover?.dataset.targetKey) {
       const target = latestTargets.find((item) => targetKey(item) === activePopover.dataset.targetKey);
@@ -5687,6 +7589,72 @@
       status.status === "in_progress" && !status.githubImportPending
     ))) {
       scheduleStatusRefresh(pushConnected ? STATUS_REFRESH_RECONCILE_MS : STATUS_REFRESH_IN_PROGRESS_MS);
+    } else {
+      // The bus has no replay. Even settled proofs reconcile occasionally so a
+      // rename whose start AND finish events were missed is discovered by revision.
+      scheduleStatusRefresh(STATUS_REFRESH_RECONCILE_MS);
+    }
+    return true;
+  }
+
+  async function resolveVisibleTargets() {
+    if (!latestTargets.some((target) => target.labelSource === "generated"
+      || (target.targetUses || []).some((use) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(use)))) return;
+    const projectId = extractOverleafProjectId();
+    const sourceFile = normalizeDocPath(latestActiveTexPath);
+    if (!sourceFile) throw new Error("Waiting for Overleaf to identify the active .tex file.");
+    const source = latestActiveTex;
+    const revision = `${projectId}\0${sourceFile}\0${source}`;
+    if (resolvedTargetsRevision === revision) return;
+    if (resolvingTargets?.revision === revision) return resolvingTargets.promise;
+    const promise = (async () => {
+      const settings = await getSettings();
+      const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
+      const hasLatexUse = latestTargets.some((target) =>
+        (target.targetUses || []).some((use) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(use)));
+      let files = [];
+      if (hasLatexUse) {
+        await ensureLeanPaneView();
+        files = await getLeanPaneProjectFiles({ projectId, forceFetch: false });
+      }
+      const response = await fetch(`${baseUrl}/targets/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overleafProjectId: projectId, sourceFile, source, files })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+      if (source !== latestActiveTex || sourceFile !== normalizeDocPath(latestActiveTexPath)) return;
+      const mapping = new Map();
+      for (const target of latestTargets) {
+        const resolved = (payload.targets || []).find((item) => (
+          item.from === target.from && item.to === target.to && item.targetKind === target.targetKind
+        ));
+        if (resolved) {
+          target.targetLabel = resolved.targetLabel;
+          target.targetUses = resolved.targetUses || target.targetUses;
+          mapping.set(`${target.from}:${target.to}:${target.targetKind}`, {
+            targetLabel: resolved.targetLabel,
+            targetUses: resolved.targetUses || target.targetUses
+          });
+        }
+      }
+      if (latestTargets.some((target) => target.labelSource === "generated"
+        && !mapping.has(`${target.from}:${target.to}:${target.targetKind}`))) {
+        throw new Error("The companion could not resolve every generated Lea target.");
+      }
+      const unresolvedUses = latestTargets.flatMap((target) =>
+        (target.targetUses || []).filter((use) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(use)));
+      if (unresolvedUses.length) {
+        throw new Error(`Could not resolve LaTeX dependency label: ${unresolvedUses.join(", ")}.`);
+      }
+      resolvedTargetsMap = mapping;
+      resolvedTargetsRevision = revision;
+      renderStatusBadges();
+    })();
+    resolvingTargets = { revision, promise };
+    try { await promise; } finally {
+      if (resolvingTargets?.promise === promise) resolvingTargets = null;
     }
   }
 
@@ -5706,7 +7674,7 @@
   // actually formalizes — never from merely opening or editing an Overleaf tab. So a
   // `force` sync (the formalize flush) ACTIVATES mirroring for this project; background
   // syncs stay completely inert (no zip fetch, no /mirror-tex, no project) until then.
-  async function syncTexMirrorNow({ force }) {
+  async function syncTexMirrorNow({ force, freshArchive = false }) {
     clearTimeout(texMirrorSyncTimer);
     texMirrorSyncTimer = null;
 
@@ -5734,7 +7702,14 @@
     }
 
     const settings = await loadCompanionSettings();
-    if (settings.leaTexMirrorEnabled === false) return { disabled: true };
+    if (settings.leaTexMirrorEnabled === false) {
+      if (freshArchive) {
+        lastLeanPaneFiles = await collectProjectTexFiles(projectId);
+        lastLeanPaneProjectId = projectId;
+        leanPaneSourceCoverage = "complete";
+      }
+      return { disabled: true };
+    }
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
 
     texMirrorSyncPromise = (async () => {
@@ -5762,12 +7737,17 @@
           body: JSON.stringify({
             overleafProjectId: projectId,
             mode: "upsert",
+            overleafProjectTitle: readOverleafProjectTitle(lastMirrorFiles || []),
             files: [{ path: activeRel, content: latestActiveTex }]
           })
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+        }
+        if (projectId === extractOverleafProjectId() && payload.identity) {
+          lastProjectIdentity = payload.identity;
+          renderLeanPaneProjectIdentity(lastProjectIdentity);
         }
         lastMirrorFiles = lastMirrorFiles.map((file) =>
           file.path === activeRel ? { ...file, content: latestActiveTex } : file
@@ -5781,7 +7761,7 @@
       // pre-formalize sync with a healthy cache POSTs the cached set — the
       // adapter is authoritative and no-ops cheaply on identical content, so
       // divergence self-heals without a zip per formalize.
-      const needFetch = !cacheUsable || !activeKnown ||
+      const needFetch = freshArchive || !cacheUsable || !activeKnown ||
         Date.now() - lastTexMirrorFullSyncAt > TEX_MIRROR_FULL_SYNC_INTERVAL_MS;
       const files = needFetch
         ? await collectProjectTexFiles(projectId)
@@ -5795,11 +7775,15 @@
       const response = await fetch(`${baseUrl}/mirror-tex`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ overleafProjectId: projectId, files })
+        body: JSON.stringify({ overleafProjectId: projectId, files, overleafProjectTitle: readOverleafProjectTitle(files) })
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+      }
+      if (projectId === extractOverleafProjectId() && payload.identity) {
+        lastProjectIdentity = payload.identity;
+        renderLeanPaneProjectIdentity(lastProjectIdentity);
       }
       lastMirrorFiles = files;
       lastMirrorProjectId = projectId;
@@ -5855,6 +7839,8 @@
   }
 
   function postStatusError(error) {
+    if (error?.code === "superseded") return;
+    if (error?.code === "project_renaming") { markProjectRenaming(); return; }
     const message = normalizeErrorMessage(error);
     const statuses = {};
     for (const target of latestTargets) {
@@ -5987,7 +7973,7 @@
       approved ? "ol-lean-human-approval-approved" : ""
     ].filter(Boolean).join(" ");
     button.textContent = "✓";
-    button.disabled = busy || !approved && !statusInfo?.approvalEligible;
+    button.disabled = (pane && Boolean(leanPaneRefreshFailure)) || busy || !approved && !statusInfo?.approvalEligible;
     button.setAttribute("aria-pressed", String(approved));
     button.setAttribute(
       "aria-label",
@@ -6005,6 +7991,7 @@
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (pane && leanPaneRefreshFailure) return;
       toggleHumanApproval(target, statusInfo).catch(() => {});
     });
     return button;
@@ -6063,6 +8050,7 @@
       const status = getDisplayStatus(statusInfo);
       const badge = document.createElement("button");
       badge.className = `ol-lean-status ol-lean-status-${status}`;
+      badge.dataset.targetKey = targetKey(target);
       badge.type = "button";
       badge.appendChild(document.createTextNode(formatStatus(status, statusInfo)));
       if (hasStubbedTheoremUses(statusInfo)) {
@@ -6080,11 +8068,16 @@
       }
       const stubbedUsesLabel = hasStubbedTheoremUses(statusInfo) ? " warning: proof uses sorry-stubbed support" : "";
       const statusLabel = `${formatStatus(status, statusInfo)}${turnProgress.label ? ` ${turnProgress.label}` : ""}${stubbedUsesLabel}`;
-      badge.title = statusInfo.sourceFreshness === "stale"
+      badge.title = status === "needs_review"
+        ? statusInfo.message || `The requested ${targetDisplayName(target)} needs review.`
+        : statusInfo.sourceFreshness === "stale"
         ? statusInfo.sourceFreshnessMessage
           || "The LaTeX source changed after this Lean artifact was generated. Re-formalize to synchronize it."
-        : statusInfo.message || `Lean status for ${target.targetLabel}: ${statusLabel}`;
-      badge.setAttribute("aria-label", `Open Lea popover for ${target.targetLabel}. Status: ${statusLabel}.`);
+        : statusInfo.message || `Lean status for ${targetDisplayName(target)}: ${statusLabel}`;
+      if (status === "needs_review" && statusInfo.leanCheckPassed === true) {
+        badge.title += " Lean check passed for the current file.";
+      }
+      badge.setAttribute("aria-label", `Open Lea popover for ${targetDisplayName(target)}. Status: ${statusLabel}.`);
       badge.style.left = `${Math.min(coords.left + 8, window.innerWidth - 140)}px`;
       badge.style.top = `${coords.top}px`;
       badge.addEventListener("click", (event) => {
@@ -6114,7 +8107,11 @@
       case "unformalized":
         return "unformalized";
       case "in_progress":
-        return "in progress";
+        return statusInfo?.recoveryState === "recovering" ? "Recovering saved progress"
+          : statusInfo?.connectionState === "adapter_unavailable" ? "Waiting to restart"
+            : "in progress";
+      case "paused":
+        return statusInfo?.recoveryState === "review" ? "Interrupted — review" : "paused";
       case "formalized":
         return "formalized";
       case "stale":
@@ -6123,6 +8120,8 @@
         return "defined";
       case "disproved":
         return "Counterexample found";
+      case "needs_review":
+        return "Needs review";
       case "sorry_stub":
         return "sorry stub";
       case "failed":
@@ -6239,6 +8238,8 @@
         return definition ? "Regenerate definition" : "Re-formalize";
       case "unknown":
         return "Check status";
+      case "needs_review":
+        return 'Approve result';
       case "sorry_stub":
       case "unformalized":
       default:
@@ -6247,6 +8248,8 @@
   }
 
   function getActionStatus(statusInfo) {
+    if (statusInfo?.status === "needs_review") return "needs_review";
+    if (statusInfo?.status === "paused") return "paused";
     if (statusInfo?.sourceFreshness === "stale") {
       return "stale";
     }
@@ -6257,6 +8260,7 @@
   }
 
   function getDisplayStatus(statusInfo) {
+    if (statusInfo?.status === "needs_review") return "needs_review";
     return statusInfo?.sourceFreshness === "stale"
       ? "stale"
       : statusInfo?.status || "unknown";
@@ -6340,26 +8344,33 @@
       leaModel: DEFAULT_LEA_MODEL,
       leaMaxTurns: DEFAULT_LEA_MAX_TURNS,
       leaMaxSpendUsd: null,
-      leaTexMirrorEnabled: DEFAULT_LEA_TEX_MIRROR_ENABLED
+      leaTexMirrorEnabled: DEFAULT_LEA_TEX_MIRROR_ENABLED,
+      leaPauseOnSourceIssue: false
     });
   }
 
-  async function loadCompanionSettings() {
+  async function loadCompanionSettings({ includeCatalog = true, requireLive = false } = {}) {
     const stored = await getSettings();
     const baseUrl = String(stored.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
     try {
-      const response = await fetch(`${baseUrl}/settings`);
-      const payload = await response.json().catch(() => ({}));
+      const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/settings`, {}, {
+        timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+        timeoutMessage: "The companion settings request timed out."
+      });
       if (!response.ok) {
         throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
       }
       let catalogPayload = {};
-      try {
-        const catalogResponse = await fetch(`${baseUrl}/settings/models`);
-        catalogPayload = await catalogResponse.json().catch(() => ({}));
-        if (!catalogResponse.ok) catalogPayload = {};
-      } catch {
-        catalogPayload = {};
+      if (includeCatalog) {
+        try {
+          const result = await fetchJsonWithTimeout(`${baseUrl}/settings/models`, {}, {
+            timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+            timeoutMessage: "The model catalog request timed out."
+          });
+          if (result.response.ok) catalogPayload = result.payload;
+        } catch {
+          catalogPayload = {};
+        }
       }
       const settings = {
         companionUrl: baseUrl,
@@ -6368,9 +8379,10 @@
         leaUiBaseUrl: payload.leaUiBaseUrl || stored.leaUiBaseUrl || DEFAULT_LEA_UI_BASE_URL,
         leaModel: payload.leaModel || stored.leaModel || DEFAULT_LEA_MODEL,
         leaMaxTurns: payload.leaMaxTurns || stored.leaMaxTurns || DEFAULT_LEA_MAX_TURNS,
-        leaMaxSpendUsd: payload.leaMaxSpendUsd ?? stored.leaMaxSpendUsd ?? null,
+        leaMaxSpendUsd: Object.hasOwn(payload, "leaMaxSpendUsd") ? payload.leaMaxSpendUsd : stored.leaMaxSpendUsd ?? null,
         leaCurrentSpendUsd: payload.leaCurrentSpendUsd ?? 0,
         leaTexMirrorEnabled: payload.leaTexMirrorEnabled ?? stored.leaTexMirrorEnabled ?? DEFAULT_LEA_TEX_MIRROR_ENABLED,
+        leaPauseOnSourceIssue: payload.leaPauseOnSourceIssue === true,
         leaModelOptions: payload.leaModelOptions || DEFAULT_MODEL_OPTIONS,
         leaModelCatalog: Array.isArray(catalogPayload.models) && catalogPayload.models.length > 0
           ? catalogPayload.models
@@ -6381,6 +8393,7 @@
         leaModelRequirements: payload.leaModelRequirements || null,
         githubTokenConfigured: Boolean(payload.githubTokenConfigured)
       };
+      updateApiKeyNudge(settings);
       await chrome.storage.sync.set({
         companionUrl: settings.companionUrl,
         leaRepoPath: settings.leaRepoPath,
@@ -6389,10 +8402,12 @@
         leaModel: settings.leaModel,
         leaMaxTurns: settings.leaMaxTurns,
         leaMaxSpendUsd: settings.leaMaxSpendUsd,
-        leaTexMirrorEnabled: settings.leaTexMirrorEnabled
+        leaTexMirrorEnabled: settings.leaTexMirrorEnabled,
+        leaPauseOnSourceIssue: settings.leaPauseOnSourceIssue
       });
       return settings;
-    } catch {
+    } catch (error) {
+      if (requireLive) throw error;
       return {
         ...stored,
         companionUrl: baseUrl,
@@ -6401,21 +8416,24 @@
         leaModelCatalogDegraded: true,
         leaProviderKeys: {},
         leaApiKeys: {},
-        leaModelRequirements: null
+        leaModelRequirements: null,
+        settingsLoadError: error instanceof Error ? error.message : String(error)
       };
     }
   }
 
   async function loadPopoverSettings(popover) {
-    const settings = await loadCompanionSettings();
+    const settings = await loadCompanionSettings({ includeCatalog: false });
+    if (!popover.isConnected) return;
     const modelSelect = popover.querySelector("[data-role='model']");
     const maxTurnsInput = popover.querySelector("[data-role='max-turns']");
     const maxSpendInput = popover.querySelector("[data-role='max-spend']");
     const texMirrorInput = popover.querySelector("[data-role='tex-mirror']");
+    const sourcePauseInput = popover.querySelector("[data-role='source-pause']");
     popover.dataset.modelOptions = JSON.stringify(settings.leaModelOptions || DEFAULT_MODEL_OPTIONS);
     popover.leaModelCatalog = settings.leaModelCatalog || settings.leaModelOptions || DEFAULT_MODEL_OPTIONS;
     popover.leaApiKeys = settings.leaApiKeys || {};
-    renderProviderKeys(popover, settings.leaProviderKeys || {});
+    if (!settings.settingsLoadError) renderProviderKeys(popover, settings.leaProviderKeys || {});
     renderModelOptions(
       modelSelect,
       popover.leaModelCatalog,
@@ -6432,19 +8450,57 @@
     maxTurnsInput.value = String(settings.leaMaxTurns || DEFAULT_LEA_MAX_TURNS);
     maxSpendInput.value = settings.leaMaxSpendUsd == null ? "" : String(settings.leaMaxSpendUsd);
     texMirrorInput.checked = settings.leaTexMirrorEnabled !== false;
-    renderGithubTokenStatus(popover, Boolean(settings.githubTokenConfigured));
+    sourcePauseInput.checked = settings.leaPauseOnSourceIssue === true;
+    if (!settings.settingsLoadError) renderGithubTokenStatus(popover, Boolean(settings.githubTokenConfigured));
     popover.dataset.savedModel = modelSelect.value;
     popover.dataset.savedMaxTurns = String(Number.parseInt(maxTurnsInput.value, 10) || DEFAULT_LEA_MAX_TURNS);
     popover.dataset.savedMaxSpend = settings.leaMaxSpendUsd == null ? "" : String(settings.leaMaxSpendUsd);
     popover.dataset.savedTexMirror = String(texMirrorInput.checked);
+    popover.dataset.savedSourcePause = String(sourcePauseInput.checked);
     popover.querySelector("[data-role='save-settings']").disabled = true;
+    if (settings.settingsLoadError) {
+      for (const indicator of popover.querySelectorAll("[data-role='provider-status'], [data-role='github-token-status'], [data-role='project-exists']")) {
+        indicator.textContent = "Unavailable";
+      }
+      throw new Error(settings.settingsLoadError);
+    }
+    void loadPopoverModelCatalog(popover, settings);
+    void loadPopoverProjectIdentity(popover, settings);
+  }
+
+  async function loadPopoverProjectIdentity(popover, settings) {
     try {
       const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
       lastProjectIdentity = await loadProjectIdentity({ baseUrl, projectId: extractOverleafProjectId() });
+      if (!popover.isConnected) return;
       renderProjectSettingsSection(popover, lastProjectIdentity);
       renderLeanPaneProjectIdentity(lastProjectIdentity);
     } catch {
       renderProjectSettingsSection(popover, null);
+      const exists = popover.querySelector("[data-role='project-exists']");
+      if (exists) exists.textContent = "Unavailable";
+    }
+  }
+
+  async function loadPopoverModelCatalog(popover, settings) {
+    const status = popover.querySelector("[data-role='model-catalog-status']");
+    if (status) status.textContent = "Loading model catalog…";
+    try {
+      const { response, payload } = await fetchJsonWithTimeout(`${settings.companionUrl}/settings/models`, {}, {
+        timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+        timeoutMessage: "The model catalog request timed out."
+      });
+      if (!response.ok || !Array.isArray(payload.models) || !payload.models.length) throw new Error("Catalog unavailable");
+      if (!popover.isConnected) return;
+      popover.leaModelCatalog = payload.models;
+      const modelSelect = popover.querySelector("[data-role='model']");
+      renderModelOptions(modelSelect, payload.models, settings.leaModelOptions || DEFAULT_MODEL_OPTIONS, modelSelect.value);
+      if (status) status.textContent = payload.degraded
+        ? "Adapter catalog unavailable — using the offline fallback."
+        : `${payload.models.length.toLocaleString()} models available; search by ID or provider.`;
+      if (popover.dataset.settingsState !== "ready") setSettingsControlsDisabled(popover, true);
+    } catch {
+      if (status) status.textContent = "Adapter catalog unavailable — using the offline fallback.";
     }
   }
 
@@ -6454,7 +8510,7 @@
     const namespace = popover.querySelector("[data-role='project-namespace']");
     const binding = popover.querySelector("[data-role='project-binding']");
     const fallback = guessProjectName(lastLeanPaneFiles || []);
-    if (projectName) projectName.textContent = identity?.projectName || fallback;
+    if (projectName) projectName.textContent = identity?.exists === false ? fallback : identity?.projectName || fallback;
     if (exists) exists.textContent = identity?.exists ? "Created" : "Not created";
     if (namespace) namespace.textContent = `Lean namespace: ${identity?.namespace || "--"}`;
     if (binding) binding.textContent = `Overleaf binding: ${identity?.slug || extractOverleafProjectId() || "--"}`;
@@ -6541,7 +8597,9 @@
         ? "google"
         : env === "ANTHROPIC_API_KEY" || env === "ANTHROPIC_AUTH_TOKEN"
           ? "anthropic"
-          : "";
+          : env === "PORTKEY_API_KEY"
+            ? "portkey"
+            : "";
     return family ? popover.querySelector(`[data-role='provider-key-input'][data-family='${family}']`) : null;
   }
 
@@ -6609,6 +8667,31 @@
     updatePopoverRequirementSummary(popover);
   }
 
+  function focusFirstMissingCredential(popover) {
+    const container = popover.querySelector("[data-role='model-requirements']");
+    const required = Array.isArray(container?.leaRequirements?.required_keys)
+      ? container.leaRequirements.required_keys
+      : [];
+    const missing = required.find((requirement) => !popoverRequirementConfigured(popover, requirement));
+    let input = missing ? staticProviderInputForEnv(popover, missing.env) : null;
+    if (!input && missing) {
+      input = [...popover.querySelectorAll("[data-role='model-requirements'] input[data-env]")]
+        .find((candidate) => candidate.dataset.env === missing.env) || null;
+    }
+    if (input) {
+      const group = input.closest?.(".ol-lean-settings-group");
+      if (group) group.open = true;
+      input.hidden = false;
+      input.scrollIntoView?.({ block: "center", behavior: "smooth" });
+      input.focus({ preventScroll: true });
+      return;
+    }
+    const firstAddKey = [...popover.querySelectorAll("[data-role='provider-key-toggle']")]
+      .find((button) => button.textContent === "Add key");
+    if (firstAddKey) popover.querySelector("[data-group='access']").open = true;
+    firstAddKey?.focus({ preventScroll: true });
+  }
+
   function collectProviderApiKeyPatch(popover) {
     const patch = {};
     for (const input of popover.querySelectorAll("[data-role='provider-key-input']")) {
@@ -6646,13 +8729,14 @@
   }
 
   async function savePopoverSettings(popover) {
-    const current = await loadCompanionSettings();
+    const current = await loadCompanionSettings({ includeCatalog: false, requireLive: true });
     const baseUrl = String(current.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
     const leaModel = popover.querySelector("[data-role='model']").value || DEFAULT_LEA_MODEL;
     const leaMaxTurns = Number.parseInt(popover.querySelector("[data-role='max-turns']").value, 10) || DEFAULT_LEA_MAX_TURNS;
     const leaMaxSpendUsd = parseMaxSpendInput(popover.querySelector("[data-role='max-spend']").value);
     const leaTexMirrorEnabled = popover.querySelector("[data-role='tex-mirror']").checked;
-    const response = await fetch(`${baseUrl}/settings/lea`, {
+    const leaPauseOnSourceIssue = popover.querySelector("[data-role='source-pause']").checked;
+    const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/settings/lea`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -6662,11 +8746,12 @@
         leaMaxTurns,
         leaMaxSpendUsd,
         leaTexMirrorEnabled,
+        leaPauseOnSourceIssue,
         leaProviderApiKeys: collectProviderApiKeyPatch(popover),
         leaApiKeys: collectDynamicApiKeyPatch(popover)
       })
-    });
-    const payload = await response.json().catch(() => ({}));
+    }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+      timeoutMessage: "Saving settings timed out. Your edits are still here; reload settings to confirm whether they were saved." });
     if (!response.ok) {
       throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
     }
@@ -6679,7 +8764,8 @@
       leaMaxTurns: payload.leaMaxTurns,
       leaMaxSpendUsd: payload.leaMaxSpendUsd,
       leaTheoremTranslationMaxRetries: payload.leaTheoremTranslationMaxRetries,
-      leaTexMirrorEnabled: payload.leaTexMirrorEnabled
+      leaTexMirrorEnabled: payload.leaTexMirrorEnabled,
+      leaPauseOnSourceIssue: payload.leaPauseOnSourceIssue
     });
     return payload;
   }
@@ -6688,14 +8774,25 @@
     if (!popover?.isConnected) return;
     const settings = await getSettings();
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
-    const response = await fetch(`${baseUrl}/usage?overleafProjectId=${encodeURIComponent(extractOverleafProjectId())}`);
-    const payload = await response.json().catch(() => ({}));
+    const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/usage?overleafProjectId=${encodeURIComponent(extractOverleafProjectId())}`, {}, {
+      timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+      timeoutMessage: "Usage could not load because the companion request timed out."
+    });
     if (!response.ok) {
       throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
     }
     renderUsage(popover, "project", payload.project);
     renderUsage(popover, "allTime", payload.allTime);
     renderCostCapSummary(popover, payload);
+    const usageStatus = popover.querySelector("[data-role='usage-status']");
+    if (usageStatus) usageStatus.hidden = true;
+  }
+
+  function showUsageError(popover, error) {
+    const status = popover.querySelector("[data-role='usage-status']");
+    if (!status) return;
+    status.textContent = `Usage unavailable. ${error instanceof Error ? error.message : String(error)}`;
+    status.hidden = false;
   }
 
   function scheduleUsageRefresh(popover) {
@@ -6707,8 +8804,7 @@
       try {
         await loadUsage(popover);
       } catch (error) {
-        const status = popover.querySelector(".ol-lean-popover-status");
-        if (status) status.textContent = error instanceof Error ? error.message : String(error);
+        showUsageError(popover, error);
       }
       scheduleUsageRefresh(popover);
       // 5s, not 1s (AUDIT M4): each refresh fans out to the adapter's
@@ -6719,7 +8815,16 @@
   function renderUsage(popover, key, usage) {
     const row = popover.querySelector(`[data-usage='${key}']`);
     if (!row) return;
-    row.querySelector("[data-field='cost']").textContent = formatCost(usage?.costUsd || 0);
+    const cost = Number(usage?.costUsd || 0);
+    row.querySelector("[data-field='cost']").textContent = usage?.usageDetails?.unpriced_calls || usage?.usageDetails?.cost_basis === "unavailable"
+      ? cost > 0 ? `${formatCost(cost)} recorded; pricing incomplete` : "Pricing unavailable"
+      : !usage || usage.accountingUnavailable
+      ? "Usage unavailable"
+      : usage?.incompleteUsageRuns
+      ? cost > 0 ? `${formatCost(cost)} recorded so far` : "Awaiting usage"
+      : usage?.unconfirmedUsageRuns
+        ? cost > 0 ? formatCost(cost) : "Usage unavailable"
+        : formatCost(cost);
     row.querySelector("[data-field='input']").textContent = formatTokens(usage?.inputTokens || 0);
     row.querySelector("[data-field='output']").textContent = formatTokens(usage?.outputTokens || 0);
   }
@@ -6802,6 +8907,12 @@
     return `${target?.targetKind || "theorem"}:${target?.targetLabel || ""}`;
   }
 
+  function targetDisplayName(target) {
+    return target?.labelSource === "generated"
+      ? target?.displayTitle || target?.latexLabel || "this statement"
+      : target?.targetLabel || "this statement";
+  }
+
   function isDefinitionTarget(target) {
     return target?.targetKind === "definition";
   }
@@ -6832,6 +8943,48 @@
   async function startEventsClient() {
     try {
       const module = await import(chrome.runtime.getURL("eventsClient.mjs"));
+      const sourceModule = await import(chrome.runtime.getURL("sourceRefreshClient.mjs"));
+      const sourceClientId = crypto.randomUUID();
+      const refreshSource = sourceModule.createSourceRefreshResponder({
+        documentId: extractOverleafProjectId,
+        readSource: async (request) => {
+          await ensureLeanPaneView();
+          const buffer = latestActiveTex;
+          const activePath = latestActiveTexPath;
+          const mirror = await syncTexMirrorNow({ force: true, freshArchive: true });
+          const files = mirror?.disabled === true ? lastLeanPaneFiles : lastMirrorFiles;
+          if (!Array.isArray(files) || !files.length) throw new Error("The current Overleaf source archive is unavailable.");
+          lastLeanPaneFiles = files.map((file) => ({ ...file }));
+          lastLeanPaneProjectId = request.overleafProjectId;
+          const baseUrl = await chatCompanionBaseUrl();
+          const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/lean-pane/manifest`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ overleafProjectId: request.overleafProjectId, activePath: latestActiveTexPath, files, sourceCoverage: "complete" })
+          }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS });
+          if (!response.ok) throw new Error(payload.message || "The current document could not be parsed.");
+          const item = sourceModule.selectSourceTarget(payload.items, request);
+          const target = { ...item, ...leanPaneView.paneItemToChatTarget(item, request.overleafProjectId),
+            targetText: item.naturalLanguageLatex, targetContext: item.targetContext || "",
+            sourceFile: item.sourceFile, sourceStartLine: item.sourceStartLine,
+            sourceEndLine: item.sourceEndLine, sourceStartOffset: item.sourceStartOffset, sourceEndOffset: item.sourceEndOffset };
+          const context = await buildFormalizationSourceContext(target, {
+            verifyMirror: mirror?.disabled !== true, mirrorSnapshot: mirror
+          });
+          if (latestActiveTex !== buffer || latestActiveTexPath !== activePath || extractOverleafProjectId() !== request.overleafProjectId) {
+            throw new Error("The editor changed during source refresh. Send again to use the latest revision.");
+          }
+          return { ...context, mirroredFiles: mirror?.mirroredFiles || null };
+        },
+        respond: async (payload) => {
+          const baseUrl = await chatCompanionBaseUrl();
+          const response = await fetch(`${baseUrl}/source-context/respond`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...payload, clientId: sourceClientId })
+          });
+          if (!response.ok) throw new Error("Source refresh response was not accepted.");
+        }
+      });
+      sourceRefreshHandler = refreshSource;
       // The companion URL comes from settings (async); cache it for the
       // client's synchronous url() and refresh the cache on every reconnect
       // attempt so a settings change is picked up without a page reload.
@@ -6849,7 +9002,7 @@
           refreshUrlCache();
           const projectId = extractOverleafProjectId();
           const query = projectId && projectId !== "unknown"
-            ? `?projectId=${encodeURIComponent(projectId)}`
+            ? `?projectId=${encodeURIComponent(projectId)}&clientId=${encodeURIComponent(sourceClientId)}`
             : "";
           return `${companionUrlCache}/events${query}`;
         },
@@ -6857,10 +9010,18 @@
         onConnectionChange: (connected) => {
           pushConnected = connected;
           if (connected) {
+            if (projectRenaming) scheduleRenameReconciliation(0);
+            // Reconcile pending refreshes too: the event bus has no replay.
+            chatCompanionBaseUrl().then(async (baseUrl) => {
+              const response = await fetch(`${baseUrl}/source-context/pending?projectId=${encodeURIComponent(extractOverleafProjectId())}`);
+              const payload = await response.json();
+              await Promise.all((payload.requests || []).map(refreshSource));
+            }).catch(() => {});
             // Reconcile once on (re)connect: anything that changed while the
             // stream was down is picked up now instead of on the slow poll.
             scheduleStatusRefresh();
-            if (leanPane) scheduleLeanPaneRefresh();
+            if (leanPaneMainView === "blueprint" && leanPane) renderLeanPaneBlueprint({ background: true }).catch(renderLeanPaneError);
+            else if (leanPane) scheduleLeanPaneRefresh();
           }
         },
         // Bind EventSource + timers to the content-script scope: the module's
@@ -6879,6 +9040,26 @@
   }
 
   function handlePushEvent(type, data) {
+    if (type === "project-identity-changed") {
+      if (data?.overleafProjectId !== extractOverleafProjectId()) return;
+      if (data.phase === "started") markProjectRenaming(data.overleafProjectId, true);
+      else if (data.phase === "finished") {
+        displayGeneration += 1;
+        if (data.namespaceChanged || projectRenaming) {
+          markProjectRenaming(data.overleafProjectId);
+          scheduleRenameReconciliation(0);
+        } else {
+          scheduleStatusRefresh();
+          if (leanPane) scheduleLeanPaneRefresh();
+        }
+      }
+      return;
+    }
+
+    if (type === "source-refresh-requested") {
+      sourceRefreshHandler?.(data).catch(() => {});
+      return;
+    }
     if (type === "jobs-changed") {
       scheduleStatusRefresh();
       if (leanPane) scheduleLeanPaneRefresh();

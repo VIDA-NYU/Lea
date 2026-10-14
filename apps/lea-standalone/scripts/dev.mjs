@@ -107,7 +107,7 @@ try {
   if (withOverleaf) await ensurePortAvailable(31245, "Overleaf companion");
   start("adapter", "./.venv/bin/python", ["run_api.py"], { cwd: path.join(root, "adapter") });
 
-  await waitFor("http://127.0.0.1:8001/api/health", "UI adapter API");
+  await waitFor("http://127.0.0.1:8001/api/ready", "UI adapter API");
   console.log("[dev] UI adapter API ready at http://127.0.0.1:8001");
 
   if (!adapterOnly) start("web", resolveHoisted(".bin", "vite"), ["--host", "0.0.0.0", "--strictPort"]);

@@ -1,0 +1,35 @@
+{
+  "floating_toolchain_run": {
+    "script_tests": 6,
+    "companion_passed": 647,
+    "companion_failed": 8,
+    "failure_names": [
+      "startup recovery reattaches to the exact adapter run without creating another",
+      "single formalization coordinates L once, resumes A, and B reuses L",
+      "batch formalization coordinates L once, resumes A, and B reuses L",
+      "verified dependency retry resumes all current consumers after restart, once each",
+      "blocked waits do not starve later verified consumers",
+      "stopping during readiness checks prevents observation and explicit Continue re-arms a canceled batch target",
+      "formalize on the /api backend tags the theorem formalized when the run succeeds (regression)",
+      "formalize lifecycle publishes jobs-changed push events (PLAN 3.1)"
+    ],
+    "cause": "Temporary projects selected floating stable; compiler version resolution stalled their diagnostic checks.",
+    "isolated_pinned_case_passed": true,
+    "full_pinned_run_passed": true
+  },
+  "after_fixture_pinning": {
+    "companion_failed": 1,
+    "failure_names": [
+      "theorem retry retains renamed partial work after turn_cap in a batch"
+    ],
+    "cause": "finishedAt is assigned before awaiting log IO and assigning terminal status; the test observed in_progress.",
+    "correction": "Wait for completion plus a terminal status; keep expected outcome and partial-proof preservation assertions."
+  },
+  "ci_prerequisite_finding": "The application job ran real-compiler-dependent suites without preparing Lean; it now uses the shared preparation step and pinned toolchain export.",
+  "final_javascript_run": {
+    "passed": 746,
+    "failed": 0,
+    "global_toolchain_override": false
+  },
+  "application_runtime_changed": false
+}

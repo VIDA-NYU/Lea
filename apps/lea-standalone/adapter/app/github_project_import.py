@@ -72,6 +72,9 @@ class TaggedTarget:
     display_title: str
     statement: str | None = None
     source_hash: str | None = None
+    # Frozen Overleaf evidence for the semantic Lea Check. Standalone imports and
+    # older clients omit it; those imports retain compiler-check-only behavior.
+    source_bundle: dict | None = None
 
 
 @dataclass(frozen=True)

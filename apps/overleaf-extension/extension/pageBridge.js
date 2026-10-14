@@ -1,4 +1,5 @@
 import { parseTargetDocument } from "./targetParserCore.mjs";
+import { installLeaTagsEditorBridge } from "./leaTagsEditorBridge.mjs";
 
 (function () {
   let activeView = null;
@@ -25,7 +26,7 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
     function buildDecorations(view) {
       const builder = [];
       const source = view.state.doc.toString();
-      const documentResult = parseTargetDocument(source);
+      const documentResult = parseTargetDocument(source, { sourcePath: getActiveDocPath() });
       for (const target of [...documentResult.targets, ...documentResult.diagnostics]) {
         builder.push(targetMark.range(target.from, target.to));
       }
@@ -94,6 +95,8 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
     }
   });
 
+  installLeaTagsEditorBridge({ window, getView: () => activeView, openDocByPath, getActiveDocPath });
+
   // Item 11: jump the editor to a source block. Same-file navigation may fall back
   // to byte offsets, but cross-file navigation only trusts marker/label anchors
   // until Overleaf confirms the target file is active.
@@ -113,9 +116,10 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
       return;
     }
 
-    // A different, known file: open it through Overleaf's IDE API (which also scrolls
-    // to the line natively), then wait for that doc to become active and select the
-    // block precisely.
+    // A different, known file: open it through Overleaf's IDE API when available,
+    // or through the current editor-tab/file-tree UI. Modern Overleaf no longer
+    // exposes `window._ide`, so the DOM path is the normal route there. Then wait
+    // for that doc to become active and select the block precisely.
     if (openDocByPath(message?.sourceFile, message)) {
       waitForActiveDoc(message?.sourceFile, message, NAVIGATE_POLL_ATTEMPTS);
       return;
@@ -134,8 +138,17 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
   function waitForActiveDoc(targetPath, message, attempts) {
     const activePath = getActiveDocPath();
     const source = activeView ? activeView.state.doc.toString() : "";
-    const ready = (activePath && sameDocPath(activePath, targetPath)) ||
-      findAnchorIndex(source, message) >= 0;
+    const anchorIndex = findAnchorIndex(source, message);
+    const hasAnchor = Boolean(
+      (message?.labelSource !== "generated" && String(message?.leanLabel || "").trim())
+      || String(message?.latexLabel || "").trim()
+    );
+    // A selected editor tab can update just before CodeMirror hands the bridge its
+    // new view. When an anchor is available, require it as proof that `activeView`
+    // belongs to the selected target file before applying that file's offsets.
+    const ready = activePath && sameDocPath(activePath, targetPath)
+      ? (!hasAnchor || anchorIndex >= 0)
+      : anchorIndex >= 0;
 
     if (ready) {
       const ok = selectTargetInActiveView(message, { allowOffsets: true });
@@ -146,6 +159,10 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
       postNavigateResult(false, "open_timeout", targetPath);
       return;
     }
+    // Opening a nested path through the file tree may require expanding one folder
+    // per render. Retrying also handles the short interval before a newly selected
+    // editor tab is mounted.
+    openDocByPath(targetPath, message);
     window.setTimeout(() => waitForActiveDoc(targetPath, message, attempts - 1), NAVIGATE_POLL_INTERVAL_MS);
   }
 
@@ -188,7 +205,7 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
   function findAnchorIndex(source, message) {
     const text = String(source || "");
     const leanLabel = String(message?.leanLabel || "").trim();
-    if (leanLabel) {
+    if (leanLabel && message?.labelSource !== "generated") {
       const markerRe = new RegExp(
         `%[ \\t]*lea:[^\\n]*\\blabel[ \\t]*=[ \\t]*\\{?${escapeRegExp(leanLabel)}\\b`,
         "i"
@@ -217,18 +234,22 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
     return String(value || "").replace(/\\/g, "/").replace(/^\/+/, "").trim();
   }
 
-  // Open a project file by path through Overleaf's IDE API. Tries the known method
-  // shapes defensively (the private API has shifted across Overleaf versions) and
-  // passes `gotoLine` so Overleaf scrolls to the block natively even before the
-  // anchor-select runs. Returns true if a real open call was made.
+  // Open a project file by path. Older Overleaf builds expose a private IDE API;
+  // current builds do not, so fall back to the rendered editor tabs/file tree.
+  // Returns true if an open/expand action was made.
   function openDocByPath(targetPath, message) {
+    const wanted = normalizeDocPath(targetPath);
+    if (!wanted) return false;
+    if (openDocWithIde(wanted, message)) return true;
+    return openDocFromUi(wanted);
+  }
+
+  function openDocWithIde(wanted, message) {
     try {
       const ide = window._ide;
       const ft = ide && ide.fileTreeManager;
       const em = ide && ide.editorManager;
       if (!ft || !em) return false;
-      const wanted = normalizeDocPath(targetPath);
-      if (!wanted) return false;
 
       const entity = resolveEntityByPath(ft, wanted);
       if (!entity) return false;
@@ -236,15 +257,123 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
       const line = Number(message?.line);
       const options = Number.isFinite(line) && line > 0 ? { gotoLine: line } : {};
       const id = entity._id || entity.id;
-      let called = false;
-      if (id && typeof em.openDocId === "function") called = tryOpenDoc(() => em.openDocId(id, options)) || called;
-      if (id && typeof em.openDoc === "function") called = tryOpenDoc(() => em.openDoc(id, options)) || called;
-      if (typeof em.openDoc === "function") called = tryOpenDoc(() => em.openDoc(entity, options)) || called;
-      if (typeof em.openEntity === "function") called = tryOpenDoc(() => em.openEntity(entity, options)) || called;
-      return called;
+      if (id && typeof em.openDocId === "function" && tryOpenDoc(() => em.openDocId(id, options))) return true;
+      if (typeof em.openDoc === "function" && tryOpenDoc(() => em.openDoc(entity, options))) return true;
+      if (id && typeof em.openDoc === "function" && tryOpenDoc(() => em.openDoc(id, options))) return true;
+      return typeof em.openEntity === "function" && tryOpenDoc(() => em.openEntity(entity, options));
     } catch {
       return false;
     }
+  }
+
+  function openDocFromUi(wanted) {
+    const doc = window.document;
+    if (!doc || typeof doc.querySelectorAll !== "function") return false;
+
+    // Prefer an already-open editor tab. Its visible path is complete even for
+    // nested files, and selecting it does not depend on the file-tree panel being
+    // open or on ancestor folders being expanded.
+    const tabs = queryAll(doc, '.editor-file-tab[role="tab"], [role="tab"][data-tab-id]');
+    let matchingTab = tabs.find((tab) => sameDocPath(editorTabPath(tab), wanted));
+    if (!matchingTab) {
+      const basename = wanted.split("/").pop() || "";
+      const basenameTabs = tabs.filter((tab) => editorTabPath(tab).split("/").pop() === basename);
+      if (basenameTabs.length === 1) matchingTab = basenameTabs[0];
+    }
+    if (matchingTab && clickElement(matchingTab)) return true;
+
+    const treeItems = queryAll(doc, '[data-testid="file-tree-list-root"] [role="treeitem"], .file-tree [role="treeitem"]');
+    const docItems = treeItems.filter(isDocumentTreeItem);
+    const exactItem = docItems.find((item) => sameDocPath(fileTreeItemPath(item), wanted));
+    if (exactItem && clickElement(treeItemClickTarget(exactItem))) return true;
+
+    // Some Overleaf builds expose only the basename on root-level tree items.
+    // Use that only when it is unique, so duplicate filenames in different
+    // directories can never open the wrong source.
+    const basename = wanted.split("/").pop() || "";
+    const basenameMatches = docItems.filter((item) => normalizeUiPath(treeItemName(item)) === basename);
+    if (basenameMatches.length === 1 && clickElement(treeItemClickTarget(basenameMatches[0]))) return true;
+
+    // A nested target may not be rendered until each ancestor folder is expanded.
+    // Expand the shallowest matching collapsed ancestor; waitForActiveDoc retries
+    // after React renders its children.
+    const folderItems = treeItems
+      .filter((item) => !isDocumentTreeItem(item))
+      .map((item) => ({ item, path: fileTreeItemPath(item) }))
+      .filter(({ path }) => path && wanted.startsWith(`${path}/`))
+      .sort((a, b) => a.path.split("/").length - b.path.split("/").length);
+    const collapsedFolder = folderItems.find(({ item }) => item.getAttribute?.("aria-expanded") !== "true");
+    if (collapsedFolder && clickElement(treeItemClickTarget(collapsedFolder.item))) return true;
+
+    // If another sidebar pane is selected, expose the file tree and retry on the
+    // next poll. This is intentionally last so an open editor tab remains enough.
+    const fileTreeTabs = queryAll(doc, '#ide-rail-tabs-tab-file-tree');
+    const fileTreeTab = fileTreeTabs[0];
+    if (fileTreeTab && fileTreeTab.getAttribute?.("aria-selected") !== "true") {
+      return clickElement(fileTreeTab);
+    }
+    return false;
+  }
+
+  function queryAll(root, selector) {
+    try {
+      return Array.from(root.querySelectorAll(selector) || []);
+    } catch {
+      return [];
+    }
+  }
+
+  function clickElement(element) {
+    try {
+      if (!element || typeof element.click !== "function") return false;
+      element.click();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function editorTabPath(tab) {
+    const pathNode = typeof tab?.querySelector === "function" ? tab.querySelector(".editor-file-tab-path") : null;
+    return normalizeUiPath(pathNode?.textContent || tab?.getAttribute?.("aria-label") || "");
+  }
+
+  function treeItemClickTarget(item) {
+    if (typeof item?.querySelector !== "function") return item;
+    return item.querySelector(".entity-name") || item.querySelector(".entity") || item;
+  }
+
+  function isDocumentTreeItem(item) {
+    if (typeof item?.querySelector === "function") {
+      const entity = item.querySelector('[data-file-type="doc"]');
+      if (entity) return true;
+      const folder = item.querySelector('[data-file-type="folder"]');
+      if (folder) return false;
+    }
+    return /\.tex$/i.test(treeItemName(item));
+  }
+
+  function treeItemName(item) {
+    return String(item?.getAttribute?.("aria-label") || "").trim();
+  }
+
+  function fileTreeItemPath(item) {
+    const parts = [];
+    let current = item;
+    while (current) {
+      if (current.getAttribute?.("role") === "treeitem") {
+        const name = normalizeUiPath(treeItemName(current));
+        if (name) parts.unshift(name);
+      }
+      current = current.parentElement || null;
+    }
+    return normalizeDocPath(parts.join("/"));
+  }
+
+  function normalizeUiPath(value) {
+    // Overleaf prefixes editor-tab paths with a left-to-right mark and may add
+    // other invisible directionality controls around filenames.
+    return normalizeDocPath(String(value || "").replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/gi, ""));
   }
 
   function tryOpenDoc(open) {
@@ -364,21 +493,27 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
     try {
       const ide = window._ide;
       const ft = ide && ide.fileTreeManager;
-      const docId = ide && ide.editorManager &&
-        (ide.editorManager.getCurrentDocId ? ide.editorManager.getCurrentDocId() : ide.editorManager.openDocId);
-      if (!docId || !ft) return "";
-      const entity = ft.findEntityById ? ft.findEntityById(docId) : null;
-      if (!entity) return "";
-      if (ft.getEntityPath) return ft.getEntityPath(entity) || "";
-      return entity.path || "";
+      const em = ide && ide.editorManager;
+      const docId = typeof em?.getCurrentDocId === "function" ? em.getCurrentDocId() : null;
+      if (docId && ft) {
+        const entity = ft.findEntityById ? ft.findEntityById(docId) : null;
+        if (entity) {
+          const path = ft.getEntityPath ? ft.getEntityPath(entity) : entity.path;
+          if (path) return path;
+        }
+      }
     } catch {
-      return "";
+      // Fall through to the current Overleaf UI below.
     }
+    const doc = window.document;
+    if (!doc || typeof doc.querySelectorAll !== "function") return "";
+    const selectedTabs = queryAll(doc, '.editor-file-tab[role="tab"][aria-selected="true"], [role="tab"][data-tab-id][aria-selected="true"]');
+    return selectedTabs.length > 0 ? editorTabPath(selectedTabs[0]) : "";
   }
 
   function publishTargets(view) {
     const source = view.state.doc.toString();
-    const documentResult = parseTargetDocument(source);
+    const documentResult = parseTargetDocument(source, { sourcePath: getActiveDocPath() });
     window.postMessage({
       type: "OL_LEAN_TARGETS_VISIBLE",
       activeTex: source,
@@ -389,7 +524,7 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
   }
 
   function findTargetAtPosition(source, position) {
-    const documentResult = parseTargetDocument(source);
+    const documentResult = parseTargetDocument(source, { sourcePath: getActiveDocPath() });
     return [...documentResult.targets, ...documentResult.diagnostics]
       .find((target) => target.from <= position && position <= target.to);
   }
@@ -407,6 +542,8 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
     return {
       targetKind: target.targetKind,
       targetLabel: target.targetLabel,
+      labelSource: target.labelSource,
+      displayTitle: target.displayTitle,
       targetText: target.targetText,
       targetUses: target.targetUses,
       targetContext: target.targetContext,

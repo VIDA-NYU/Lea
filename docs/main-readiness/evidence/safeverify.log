@@ -1,0 +1,4 @@
+00:47:51 - LiteLLM:WARNING: get_model_cost_map.py:271 - LiteLLM: Failed to fetch remote model cost map from https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json: [Errno 8] nodename nor servname provided, or not known. Falling back to local backup.
+✔ [2/2] Built Lea.Readiness.Helper (261ms)
+Build completed successfully (2 jobs).
+[{"scenario": "Targeted", "status": "ok", "evidence": true}, {"scenario": "Namespaced", "status": "ok", "evidence": true}, {"scenario": "Sorry", "status": "rejected", "evidence": true}]

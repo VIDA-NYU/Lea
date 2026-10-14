@@ -1,0 +1,7 @@
+{
+  "PROVED": "proved",
+  "NEEDS_REVIEW": "needs_review",
+  "NOT PROVED": "needs_review",
+  "NEEDS_REVIEW: this is not PROVED": "needs_review",
+  "The original theorem was not disproved. PROVED": "needs_review"
+}

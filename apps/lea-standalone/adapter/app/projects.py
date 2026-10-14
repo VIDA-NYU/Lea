@@ -20,6 +20,7 @@ import shutil
 from pathlib import Path
 
 from . import diagnostics
+from . import project_coordination
 from . import store
 from .artifacts import scrub_lean_source
 from .gitstore import GitStore
@@ -113,14 +114,55 @@ def namespace_preview(
     }
 
 
-def unique_namespace_for_project_name(name: str) -> str:
+def unique_namespace_for_project_name(name: str, *, conn=None, proofs_root: Path | None = None) -> str:
     base = namespace_from_project_name(name)
-    if store.get_project_by_namespace(base) is None:
-        return base
-    n = 2
-    while store.get_project_by_namespace(f"{base}{n}") is not None:
-        n += 1
-    return f"{base}{n}"
+
+    def available(candidate):
+        if conn is not None:
+            taken = any(row[0].casefold() == candidate.casefold()
+                        for row in conn.execute("select namespace from projects"))
+        else:
+            taken = store.get_project_by_namespace(candidate) is not None
+        return not taken and (proofs_root is None or not (proofs_root / Path(candidate.replace('.', '/'))).exists())
+
+    candidate, n = base, 2
+    while not available(candidate):
+        candidate, n = f"{base}{n}", n + 1
+    return candidate
+
+
+def _unique_default_name(conn, title: str, *, exclude_project_id: str | None = None) -> str:
+    taken = {row["title"].strip().casefold() for row in conn.execute(
+        "select id, title from projects") if row["id"] != exclude_project_id}
+    candidate, n = title, 2
+    while candidate.casefold() in taken:
+        candidate, n = f"{title} ({n})", n + 1
+    return candidate
+
+
+def _adopt_overleaf_name(conn, project: dict, title: str, proofs_root: Path | None) -> dict:
+    title = str(title or "").strip()
+    if not title or project["name_source"] != "generated":
+        return project
+    title = _unique_default_name(conn, title, exclude_project_id=project["id"])
+    if proofs_root is not None:
+        refresh_project_title_docs(project, proofs_root, title)
+    conn.execute("update projects set title = ?, name_source = 'overleaf', updated_at = ? where id = ?",
+                 (title, store.utc_now(), project["id"]))
+    return store._normalize_project(store.row_to_dict(
+        conn.execute("select * from projects where id = ?", (project["id"],)).fetchone()))
+
+
+def adopt_overleaf_project_name(slug: str, proofs_root: Path | None, title: str) -> dict:
+    """Initialize an existing generated name once; never create on a tab open."""
+    existing = store.get_project_by_slug(slug)
+    if existing is None:
+        raise ProjectIdentityError("project_missing", "No Lea project exists for this document yet.", status=404)
+    with project_coordination.mutation(existing["id"]), store.write() as conn:
+        row = conn.execute("select * from projects where id = ?", (existing["id"],)).fetchone()
+        if row is None:
+            raise ProjectIdentityError("project_missing", "Project no longer exists.", status=404)
+        return _adopt_overleaf_name(conn, store._normalize_project(store.row_to_dict(row)), title, proofs_root)
 
 
 def project_repo_dir(project: dict, proofs_root: Path) -> Path:
@@ -130,16 +172,23 @@ def project_repo_dir(project: dict, proofs_root: Path) -> Path:
 
 
 def project_identity(project: dict, *, overleaf_project_id: str | None = None) -> dict:
-    sessions = store.list_project_sessions(project["id"])
+    # This describes history existence, not whether a proof is currently valid.
+    with store.connect() as conn:
+        recorded = conn.execute("""select exists(select 1 from timeline t
+            join sessions s on s.id=t.session_id where s.project_id=?
+            and t.kind='code' and lower(t.path) not like '%scratch%')""",
+            (project['id'],)).fetchone()[0]
     return {
+        **project_coordination.snapshot(project["id"]),
         "projectId": project["id"],
         "overleafProjectId": overleaf_project_id or project["slug"],
         "slug": project["slug"],
         "projectName": project["title"],
+        "nameSource": project["name_source"],
         "namespace": project["namespace"],
         "namespaceEditable": True,
         "repoPath": project.get("repo_path"),
-        "hasRecordedProofs": any(int(session.get("code_step_count") or 0) > 0 for session in sessions),
+        "hasRecordedProofs": bool(recorded),
         "exists": True,
     }
 
@@ -217,7 +266,7 @@ def _lean_inventory(repo: Path, limit: int = 100) -> str:
     files = [
         p.relative_to(repo).as_posix()
         for p in sorted(repo.rglob("*.lean"))
-        if ".git" not in p.parts and ".lake" not in p.parts
+        if not any(part in {".git", ".lake", ".lea", "build", "node_modules", "candidate"} for part in p.parts)
     ]
     if not files:
         return ""
@@ -306,6 +355,7 @@ def compose_context_message(project: dict, repo: Path) -> dict | None:
                 "and say so in your reply."
             )
 
+    from . import project_library
     content = (
         f"{CONTEXT_MARKER}\n"
         f"You are working in project **{project.get('title', namespace)}** "
@@ -342,7 +392,8 @@ def compose_context_message(project: dict, repo: Path) -> dict | None:
         f"```\n"
         f"The `uses` lines are the edges that chain the proof — point them at the keys of "
         f"sibling nodes you build on, and reuse nodes already proved.\n\n"
-        f"## Project files\n{inventory}{overleaf_section}{_lean_inventory(repo)}"
+        f"## Project files\n{inventory}{overleaf_section}"
+        + project_library.context(project, repo)
     )
     return {"role": "user", "content": content}
 
@@ -451,16 +502,18 @@ def provision_project(
 
     Row first, then disk; if the repo build fails the row is rolled back so a failed
     provision leaves nothing behind."""
-    slug = unique_slug(title)
-    namespace = store.project_namespace_for_slug(slug)
-    repo_path = store.repo_path_for_namespace(namespace)
-    project = store.create_project(
-        slug,
-        title=title.strip() or slug,
-        description=(description or None),
-        namespace=namespace,
-        repo_path=repo_path,
-    )
+    with store.write() as conn:
+        base, slug, n = slugify(title), slugify(title), 2
+        while conn.execute("select 1 from projects where slug = ?", (slug,)).fetchone():
+            slug, n = f"{base[:79-len(str(n))]}-{n}", n + 1
+        namespace = store.project_namespace_for_slug(slug)
+        taken = {row[0].casefold() for row in conn.execute("select namespace from projects")}
+        if namespace.casefold() in taken or (proofs_root / Path(namespace.replace('.', '/'))).exists():
+            namespace = unique_namespace_for_project_name(title, conn=conn, proofs_root=proofs_root)
+        project = store.create_project(
+            slug, title=title.strip() or slug, description=(description or None),
+            namespace=namespace, repo_path=store.repo_path_for_namespace(namespace), conn=conn,
+        )
     try:
         _provision_repo(project, proofs_root, overwrite=True)
     except Exception:
@@ -475,6 +528,9 @@ def ensure_project(
     proofs_root: Path | None,
     title: str | None = None,
     namespace: str | None = None,
+    *,
+    overleaf_project_title: str | None = None,
+    name_source: str | None = None,
 ) -> dict:
     """Get-or-create a project by slug (the Overleaf path) AND ensure its on-disk repo is
     provisioned with the seeded ``.lea/*.md`` docs — the idempotent, slug-keyed analogue
@@ -487,19 +543,30 @@ def ensure_project(
     provisioning is best-effort — the index row is the source of truth and is always
     returned; a missing ``proofs_root`` (lea_root unconfigured) just skips the disk half."""
     existing = store.get_project_by_slug(slug)
-    if existing:
-        project = existing
-    else:
-        project_title = (title or slug).strip() or slug
-        ns = normalize_namespace(namespace, project_title) if namespace else unique_namespace_for_project_name(project_title)
-        if store.get_project_by_namespace(ns) is not None:
-            ns = unique_namespace_for_project_name(project_title)
-        project = store.create_project(
-            slug,
-            title=project_title,
-            namespace=ns,
-            repo_path=store.repo_path_for_namespace(ns),
-        )
+    with project_coordination.mutation(existing["id"] if existing else None), store.write() as conn:
+        row = conn.execute("select * from projects where slug = ?", (slug,)).fetchone()
+        if row:
+            project = store._normalize_project(store.row_to_dict(row))
+            if overleaf_project_title is not None:
+                project = _adopt_overleaf_name(conn, project, overleaf_project_title, proofs_root)
+        else:
+            if overleaf_project_title is not None:
+                source_title = overleaf_project_title.strip()
+                project_title = _unique_default_name(conn, source_title or "Overleaf Project")
+                source = "overleaf" if source_title else "generated"
+                # The supplied namespace can be a stale URL-derived fallback.
+                namespace = None
+            else:
+                project_title = (title or slug).strip() or slug
+                defaults = {slug, store.project_namespace_for_slug(slug)[4:], "Overleaf Project"}
+                source = "generated" if project_title in defaults else "custom"
+            ns = normalize_namespace(namespace, project_title) if namespace else None
+            if ns is None or any(r[0].casefold() == ns.casefold() for r in conn.execute("select namespace from projects")):
+                ns = unique_namespace_for_project_name(project_title, conn=conn, proofs_root=proofs_root)
+            project = store.create_project(
+                slug, title=project_title, namespace=ns,
+                repo_path=store.repo_path_for_namespace(ns), name_source=name_source or source, conn=conn,
+            )
     if proofs_root is not None:
         try:
             _provision_repo(project, proofs_root, overwrite=False)
@@ -556,7 +623,7 @@ def refresh_project_title_docs(project: dict, proofs_root: Path, title: str) -> 
     if not new_title or old_title == new_title:
         return None
     repo = project_repo_dir(project, proofs_root)
-    changed = False
+    changed_paths: list[str] = []
     for name in EDITABLE_DOCS:
         path = repo / ".lea" / name
         try:
@@ -572,10 +639,10 @@ def refresh_project_title_docs(project: dict, proofs_root: Path, title: str) -> 
         updated = _rewrite_project_doc_title(original, old_title, new_title)
         if updated != original:
             path.write_text(updated)
-            changed = True
-    if not changed:
+            changed_paths.append(path.relative_to(repo).as_posix())
+    if not changed_paths:
         return None
-    return GitStore(proofs_root).commit_all(repo, f"rename project title: {old_title} -> {new_title}")
+    return GitStore(proofs_root).commit_all(repo, f"rename project title: {old_title} -> {new_title}", paths=changed_paths)
 
 
 def _project_has_active_runs(project_id: str) -> bool:
@@ -590,6 +657,54 @@ def _project_has_active_runs(project_id: str) -> bool:
     return store.project_has_active_run(project_id) or store.project_has_active_import(project_id)
 
 
+def record_namespace_migration_check(
+    project_id: str,
+    path: str,
+    content: str,
+    *,
+    old_namespace: str,
+    new_namespace: str,
+    commit_sha: str | None,
+    result=None,
+) -> dict | None:
+    """Append the migrated snapshot without changing the original run's history.
+
+    The parent snapshot and exact namespace replacement let the read model
+    preserve an existing certification; a passing check alone cannot create one.
+    Files without a timeline have no conversation to attribute the migration to.
+    """
+    steps = store.code_steps_for_project_path(project_id, path)
+    if not steps:
+        return None
+    previous = steps[0]
+    step = store.add_code_step(
+        previous["session_id"], None, path,
+        content=content,
+        author="environment",
+        summary=f"Rename project namespace: {old_namespace} -> {new_namespace}",
+        check_status=getattr(result, "status", None),
+        check_detail=getattr(result, "detail", None),
+        artifact_kind=previous.get("artifact_kind"),
+        formalization_id=previous.get("formalization_id"),
+        provenance={"namespace_migration": {
+            "old_namespace": old_namespace,
+            "new_namespace": new_namespace,
+            "from_step_id": previous["id"],
+            "commit_sha": commit_sha,
+        }},
+    )
+
+    if result is not None:
+        from .proof_evidence import record_check
+        from lea.events import CheckResult
+        if isinstance(result, CheckResult):
+            accepted, checked = record_check(previous['session_id'], path, result.path, result,
+                formalization_id=previous.get('formalization_id'))
+            if checked:
+                return checked
+    return step
+
+
 def migrate_project_namespace(
     project: dict,
     proofs_root: Path,
@@ -599,119 +714,149 @@ def migrate_project_namespace(
     expected_namespace: str | None = None,
     check_fn=None,
 ) -> dict:
-    old_namespace = project["namespace"]
-    new_namespace = normalize_namespace(namespace, title)
-    if expected_namespace and expected_namespace != old_namespace:
-        raise ProjectIdentityError("namespace_conflict", "Project namespace changed; refresh and try again.", status=409)
-    owner = store.get_project_by_namespace(new_namespace)
-    if owner and owner.get("id") != project["id"]:
-        raise ProjectIdentityError("namespace_taken", "Another project already uses that namespace.", status=409)
-    if _project_has_active_runs(project["id"]):
-        raise ProjectIdentityError("project_busy", "A run is active in this project. Stop or wait for it before renaming.", status=409)
+    from lea.check_evidence import mutation as environment_mutation
+    with project_coordination.read(project["id"]):
+        pass  # Reject an already active namespace migration before waiting for I/O.
+    with environment_mutation(proofs_root), project_coordination.migration(project["id"]):
+        project = store.get_project(project["id"])
+        if project is None:
+            raise ProjectIdentityError("project_missing", "Project no longer exists.", status=404)
+        old_namespace = project["namespace"]
+        new_namespace = normalize_namespace(namespace, title)
+        if expected_namespace and expected_namespace != old_namespace:
+            raise ProjectIdentityError("namespace_conflict", "Project namespace changed; refresh and try again.", status=409)
+        owner = store.get_project_by_namespace(new_namespace)
+        if owner and owner.get("id") != project["id"]:
+            raise ProjectIdentityError("namespace_taken", "Another project already uses that namespace.", status=409)
+        if _project_has_active_runs(project["id"]):
+            raise ProjectIdentityError("project_busy", "A run is active in this project. Stop or wait for it before renaming.", status=409)
 
-    old_repo = project_repo_dir(project, proofs_root)
-    new_repo_path = store.repo_path_for_namespace(new_namespace)
-    new_repo = proofs_root / Path(new_namespace.replace(".", "/"))
-    if not old_repo.exists():
-        _provision_repo(project, proofs_root, overwrite=False)
-    if new_repo != old_repo and new_repo.exists():
-        raise ProjectIdentityError("namespace_path_exists", "The target namespace path already exists.", status=409)
+        old_repo = project_repo_dir(project, proofs_root)
+        new_repo_path = store.repo_path_for_namespace(new_namespace)
+        new_repo = proofs_root / Path(new_namespace.replace(".", "/"))
+        if not old_repo.exists():
+            _provision_repo(project, proofs_root, overwrite=False)
+        if new_repo != old_repo and new_repo.exists():
+            raise ProjectIdentityError("namespace_path_exists", "The target namespace path already exists.", status=409)
 
-    changed_files: list[Path] = []
-    # F1: files this rename could NOT rewrite. A skipped `.lean` keeps the OLD
-    # namespace while everything around it moves to the new one — so its `import`s
-    # and fully-qualified references break, and the rename reports success. The
-    # caller surfaces these; silently continuing was the bug.
-    skipped_files: list[dict] = []
-    for path in sorted(old_repo.rglob("*")):
-        if not path.is_file() or ".git" in path.parts:
-            continue
-        if path.suffix not in {".lean", ".md"}:
-            continue
-        try:
-            original = path.read_text()
-        except (UnicodeDecodeError, OSError) as exc:
-            skipped_files.append({
-                "path": path.relative_to(old_repo).as_posix(),
-                "reason": f"{type(exc).__name__}: {exc}",
-            })
-            continue
-        updated = _rewrite_namespace_text(original, old_namespace, new_namespace)
-        updated = _rewrite_project_doc_title(updated, project.get("title", ""), title)
-        if updated != original:
-            path.write_text(updated)
-            changed_files.append(path)
-
-    if new_repo != old_repo:
-        new_repo.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(old_repo), str(new_repo))
-        repo = new_repo
-    else:
-        repo = old_repo
-
-    commit_sha = GitStore(proofs_root).commit_all(
-        repo,
-        f"rename project namespace: {old_namespace} -> {new_namespace}",
-    )
-    updated_project = store.update_project_identity(
-        project["id"],
-        title=title,
-        namespace=new_namespace,
-        repo_path=new_repo_path,
-    )
-    rebased_artifact_modules = store.rebase_project_artifact_modules(
-        project["id"],
-        old_namespace=old_namespace,
-        new_namespace=new_namespace,
-    )
-
-    failed_files = []
-    checked_files = 0
-    if check_fn is not None:
-        for lean_path in sorted(repo.rglob("*.lean")):
-            checked_files += 1
-            result = check_fn(str(lean_path))
-            if getattr(result, "status", None) != "ok":
-                failed_files.append({
-                    "path": lean_path.relative_to(repo).as_posix(),
-                    "message": getattr(result, "detail", "") or "Lean check failed.",
+        changed_files: list[Path] = []
+        # F1: files this rename could NOT rewrite. A skipped `.lean` keeps the OLD
+        # namespace while everything around it moves to the new one — so its `import`s
+        # and fully-qualified references break, and the rename reports success. The
+        # caller surfaces these; silently continuing was the bug.
+        skipped_files: list[dict] = []
+        for path in sorted(old_repo.rglob("*")):
+            if not path.is_file() or ".git" in path.parts:
+                continue
+            if path.suffix not in {".lean", ".md"}:
+                continue
+            try:
+                original = path.read_text()
+            except (UnicodeDecodeError, OSError) as exc:
+                skipped_files.append({
+                    "path": path.relative_to(old_repo).as_posix(),
+                    "reason": f"{type(exc).__name__}: {exc}",
                 })
+                continue
+            updated = _rewrite_namespace_text(original, old_namespace, new_namespace)
+            updated = _rewrite_project_doc_title(updated, project.get("title", ""), title)
+            if updated != original:
+                path.write_text(updated)
+                changed_files.append(path)
 
-    return {
-        "project": updated_project,
-        "migration": {
-            "oldNamespace": old_namespace,
-            "newNamespace": new_namespace,
-            "commitSha": commit_sha,
-            "rebasedArtifactModules": rebased_artifact_modules,
-            "checkedFiles": checked_files,
-            "failedFiles": failed_files,
-            # F1: files the rewrite could not open, so they still carry the OLD
-            # namespace. Distinct from `failedFiles` (rewritten, then failed to
-            # compile) — these were never touched at all.
-            "skippedFiles": skipped_files,
-        },
-        "warnings": [
-            diagnostics.resolve(
-                "degraded", "asset.read_failed",
-                f"{item['path']} could not be read ({item['reason']}), so it still uses "
-                f"the old namespace '{old_namespace}'.",
-                source="project-rename",
-                context={"path": item["path"], "project_id": project["id"]},
+        if new_repo != old_repo:
+            new_repo.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(old_repo), str(new_repo))
+            repo = new_repo
+        else:
+            repo = old_repo
+
+        commit_sha = GitStore(proofs_root).commit_all(
+            repo,
+            f"rename project namespace: {old_namespace} -> {new_namespace}",
+        )
+        updated_project = store.update_project_identity(
+            project["id"],
+            title=title,
+            namespace=new_namespace,
+            repo_path=new_repo_path,
+        )
+        rebased_artifact_modules = store.rebase_project_artifact_modules(
+            project["id"],
+            old_namespace=old_namespace,
+            new_namespace=new_namespace,
+        )
+
+        failed_files = []
+        checked_files = 0
+        for lean_path in sorted(repo.rglob("*.lean")):
+            if ".git" in lean_path.relative_to(repo).parts:
+                continue
+            relative_path = lean_path.relative_to(repo).as_posix()
+            try:
+                content = lean_path.read_text()
+            except (UnicodeDecodeError, OSError):
+                continue  # already reported in skippedFiles above
+            result = None
+            if check_fn is not None:
+                checked_files += 1
+                result = check_fn(str(lean_path))
+                if getattr(result, "status", None) != "ok":
+                    failed_files.append({
+                        "path": relative_path,
+                        "message": getattr(result, "detail", "") or "Lean check failed.",
+                    })
+            record_namespace_migration_check(
+                project["id"], relative_path, content,
+                old_namespace=old_namespace,
+                new_namespace=new_namespace,
+                commit_sha=commit_sha,
+                result=result,
             )
-            for item in skipped_files
-        ],
-    }
+
+        return {
+            "project": updated_project,
+            "migration": {
+                "oldNamespace": old_namespace,
+                "newNamespace": new_namespace,
+                "commitSha": commit_sha,
+                "rebasedArtifactModules": rebased_artifact_modules,
+                "checkedFiles": checked_files,
+                "failedFiles": failed_files,
+                # F1: files the rewrite could not open, so they still carry the OLD
+                # namespace. Distinct from `failedFiles` (rewritten, then failed to
+                # compile) — these were never touched at all.
+                "skippedFiles": skipped_files,
+            },
+            "warnings": [
+                diagnostics.resolve(
+                    "degraded", "asset.read_failed",
+                    f"{item['path']} could not be read ({item['reason']}), so it still uses "
+                    f"the old namespace '{old_namespace}'.",
+                    source="project-rename",
+                    context={"path": item["path"], "project_id": project["id"]},
+                )
+                for item in skipped_files
+            ],
+        }
 
 
 def delete_project(project_id: str, proofs_root: Path) -> bool:
-    """Delete a project's on-disk repo (rm -rf) and cascade its DB rows (D31).
-    Returns False if the project doesn't exist. The disk delete is best-effort —
-    a missing dir is fine; the index cascade is the source of truth for existence."""
-    project = store.get_project(project_id)
-    if project is None:
+    """Delete only an idle project, excluding admission and I/O until completion."""
+    if store.get_project(project_id) is None:
         return False
-    repo = project_repo_dir(project, proofs_root)
-    if repo.exists():
-        shutil.rmtree(repo, ignore_errors=True)
-    return store.delete_project_cascade(project_id)
+    with project_coordination.deletion(project_id):
+        project = store.get_project(project_id)
+        if project is None:
+            return False
+        if store.project_has_active_run(project_id) or store.project_has_active_import(project_id):
+            from fastapi import HTTPException
+            raise HTTPException(409, detail={"error": "project_busy",
+                                             "message": "Wait for active project work before deleting."})
+        repo = project_repo_dir(project, proofs_root)
+        if repo.exists():
+            shutil.rmtree(repo)
+        deleted = store.delete_project_cascade(project_id)
+        if deleted:
+            project_coordination.mark_deleted(project_id)
+        return deleted

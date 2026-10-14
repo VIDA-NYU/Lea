@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { render, parseFrontmatter, excerpt } from "./lib/markdown.mjs";
 import { layout, makeCtx, escapeHtml, escapeAttr, formatDate } from "./lib/templates.mjs";
 import { homePage } from "./lib/pages/home.mjs";
+import { WORDMARK_PATH, WORDMARK_VIEWBOX } from "./lib/wordmark.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 
@@ -74,14 +75,17 @@ fs.mkdirSync(OUT, { recursive: true });
 
 copyDir(path.join(ROOT, "assets"), path.join(OUT, "assets"));
 
-// Favicon: the wordmark, drawn to survive being 16px tall.
+// Favicon: the wordmark, drawn to survive being 16px tall. It carries the
+// outlined glyphs rather than live text — a favicon cannot load the webfont,
+// and the ramp is skipped here because it turns to mud at this size.
 write(
   "assets/img/favicon.svg",
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
   <rect width="40" height="40" rx="9" fill="#191814"/>
-  <text x="20" y="21" text-anchor="middle" dominant-baseline="central"
-        font-family="Helvetica,Arial,sans-serif" font-size="19" font-weight="700"
-        letter-spacing="-0.8" fill="#fbfaf7">Lea</text>
+  <svg x="6" y="13.6" width="28" height="12.4" viewBox="${WORDMARK_VIEWBOX}"
+       preserveAspectRatio="xMidYMid meet">
+    <path fill="#fbfaf7" d="${WORDMARK_PATH}"/>
+  </svg>
 </svg>
 `,
 );
@@ -93,25 +97,30 @@ write(".nojekyll", "");
 
 write("index.html", layout(ctx, { path: "/", main: homePage(ctx) }));
 
-/* ----------------------------------------------------------- install guide */
+/* --------------------------------------------------------------- guides */
 
-{
-  const { data, body } = readMarkdown(path.join(ROOT, "content", "install.md"));
+const guides = [
+  { slug: "install", title: "Install Lea" },
+  { slug: "overleaf", title: "Overleaf extension usage guide" },
+];
+
+for (const guide of guides) {
+  const { data, body } = readMarkdown(path.join(ROOT, "content", `${guide.slug}.md`));
   const { html, headings } = render(body, { base: ctx.base });
   const main = `<div class="wrap guide">
   ${tocHtml(headings)}
   <article class="guide-body prose">
-    <h1>${escapeHtml(data.title || "Install")}</h1>
+    <h1>${escapeHtml(data.title || guide.title)}</h1>
     <p class="lead">${escapeHtml(data.description || "")}</p>
     <hr>
     ${html}
   </article>
 </div>`;
   write(
-    "install/index.html",
+    `${guide.slug}/index.html`,
     layout(ctx, {
-      path: "/install/",
-      title: data.title,
+      path: `/${guide.slug}/`,
+      title: data.title || guide.title,
       description: data.description,
       main,
     }),
@@ -199,11 +208,6 @@ for (const [index, post] of posts.entries()) {
   const main = `<div class="wrap page-narrow">
   <header class="section-head">
     <p class="kicker">Blog</p>
-    <h1>Notes from building Lea</h1>
-    <p>
-      Design decisions, things that broke, and what we learned about putting a Lean agent in
-      front of mathematicians. <a href="${ctx.url("/feed.xml")}">Subscribe by Atom</a>.
-    </p>
   </header>
   <ul class="post-list">
 ${items}
@@ -255,7 +259,7 @@ write(
   "sitemap.xml",
   `<?xml version="1.0" encoding="utf-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${["/", "/install/", "/blog/"]
+${["/", ...guides.map((guide) => `/${guide.slug}/`), "/blog/"]
   .concat(posts.map((post) => post.href))
   .map((href) => `  <url><loc>${ctx.absolute(href)}</loc></url>`)
   .join("\n")}
@@ -310,6 +314,7 @@ Design commitments:
 ## Pages
 - Home: ${ctx.absolute("/")}
 - Install guide: ${ctx.absolute("/install/")}
+- Overleaf extension usage guide: ${ctx.absolute("/overleaf/")}
 - Blog: ${ctx.absolute("/blog/")}
 - Source: ${ctx.site.links.github}
 - Community: ${ctx.site.links.discord}

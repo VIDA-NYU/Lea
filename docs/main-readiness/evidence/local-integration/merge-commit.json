@@ -1,0 +1,13 @@
+{
+  "merge_commit": "043f6d46a9a148cfa4adfcff06d0241a6b444f9e",
+  "parents": [
+    "5517d7760b5bba74f6fbb6872cd75654458b8438",
+    "8fc9a74bb7de07b655105e46fe661eb3473482b2"
+  ],
+  "tree": "201a75e4fdee57f121f8fc8a5daaff69eca5f1dc",
+  "exact_tree_preserved": true,
+  "main_is_ancestor": true,
+  "other_refs_unchanged": true,
+  "branch": "LeaCheckAddition",
+  "working_tree_clean": true
+}

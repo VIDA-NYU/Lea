@@ -4,25 +4,27 @@ name: Publish website
 # Enable once under Settings → Pages → Source → GitHub Actions.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "public/**"
-      - ".github/workflows/site.yml"
+  # Deployment is a separate release action, including after a main merge.
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
-# Let a newer push cancel an in-flight build, but never a running deployment.
+# Never cancel an approved deployment in progress.
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
+  validation:
+    uses: ./.github/workflows/application-ci.yml
+    permissions:
+      contents: read
+
   build:
+    permissions:
+      contents: read
+      pages: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,7 +55,11 @@ jobs:
           path: public/dist
 
   deploy:
-    needs: build
+    needs: [build, validation]
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     runs-on: ubuntu-latest
     environment:
       name: github-pages

@@ -1,0 +1,14 @@
+{
+  "real_agent_revision": {
+    "real_compiler_check_hashes": [
+      "c39af18d2283f6ca7d67b29dc1e5f1695c922195ca3040bae3505a5fd96ebe75"
+    ],
+    "stored_hash": "5b498dd738a30d7b0a0fc461a20db09cd199b45a60e7d8b2335725900c4daa6b",
+    "stored_code_is_bad": true,
+    "stored_check_status": "ok",
+    "run_status": "proved",
+    "formalization_status": "proved",
+    "actual_final_check": "error",
+    "actual_final_detail": "Error: Lean exited with code 1.\n/var/folders/7v/bwwzmh557fq01rdzwhsyys2h0000gn/T/lea-audit-agent-c81w16n9/workspace/proofs/309b5627-88a7-43f2-9412-80a27e8bce25/Target.lean:1:35: error: Tactic `assumption` failed\n\n\u22a2 False"
+  }
+}

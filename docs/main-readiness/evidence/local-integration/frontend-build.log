@@ -1,0 +1,102 @@
+
+> lea-interface@0.0.1 build
+> vite build
+
+vite v6.4.4 building for production...
+transforming...
+✓ 5244 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                             0.82 kB │ gzip:     0.46 kB
+dist/assets/webWorkerExtensionHostIframe-gIqsUtfW.html      4.02 kB │ gzip:     1.62 kB
+dist/assets/KaTeX_Size3-Regular-CTq5MqoE.woff               4.42 kB
+dist/assets/dark_modern-Ce6bt2vs.json                       4.55 kB │ gzip:     1.14 kB
+dist/assets/KaTeX_Size4-Regular-Dl5lxZxV.woff2              4.93 kB
+dist/assets/KaTeX_Size2-Regular-Dy4dx90m.woff2              5.21 kB
+dist/assets/light_modern-CqFs6KiQ.json                      5.30 kB │ gzip:     1.30 kB
+dist/assets/KaTeX_Size1-Regular-mCD8mA8B.woff2              5.47 kB
+dist/assets/lean4-CJfLrWgR.json                             5.84 kB │ gzip:     1.41 kB
+dist/assets/KaTeX_Size4-Regular-BF-4gkZK.woff               5.98 kB
+dist/assets/dark_vs-Dl7OJvYM.json                           6.11 kB │ gzip:     1.58 kB
+dist/assets/KaTeX_Size2-Regular-oD1tc_U0.woff               6.19 kB
+dist/assets/KaTeX_Size1-Regular-C195tn64.woff               6.50 kB
+dist/assets/KaTeX_Caligraphic-Regular-Di6jR-x-.woff2        6.91 kB
+dist/assets/KaTeX_Caligraphic-Bold-Dq_IR9rO.woff2           6.91 kB
+dist/assets/light_vs-DwwM7VRG.json                          7.01 kB │ gzip:     1.82 kB
+dist/assets/hc_black-lC_SmiRj.json                          7.04 kB │ gzip:     1.74 kB
+dist/assets/KaTeX_Size3-Regular-DgpXs0kz.ttf                7.59 kB
+dist/assets/KaTeX_Caligraphic-Regular-CTRA-rTL.woff         7.66 kB
+dist/assets/KaTeX_Caligraphic-Bold-BEiXGLvX.woff            7.72 kB
+dist/assets/hc_light-BDvlmg8q.json                          8.63 kB │ gzip:     1.78 kB
+dist/assets/KaTeX_Script-Regular-D3wIWfF6.woff2             9.64 kB
+dist/assets/KaTeX_SansSerif-Regular-DDBCnlJ7.woff2         10.34 kB
+dist/assets/KaTeX_Size4-Regular-DWFBv043.ttf               10.36 kB
+dist/assets/KaTeX_Script-Regular-D5yQViql.woff             10.59 kB
+dist/assets/KaTeX_Fraktur-Regular-CTYiF6lA.woff2           11.32 kB
+dist/assets/KaTeX_Fraktur-Bold-CL6g_b3V.woff2              11.35 kB
+dist/assets/KaTeX_Size2-Regular-B7gKUWhC.ttf               11.51 kB
+dist/assets/KaTeX_SansSerif-Italic-C3H0VqGB.woff2          12.03 kB
+dist/assets/KaTeX_SansSerif-Bold-D1sUS0GD.woff2            12.22 kB
+dist/assets/KaTeX_Size1-Regular-Dbsnue_I.ttf               12.23 kB
+dist/assets/KaTeX_SansSerif-Regular-CS6fqUqJ.woff          12.32 kB
+dist/assets/KaTeX_Caligraphic-Regular-wX97UBjC.ttf         12.34 kB
+dist/assets/KaTeX_Caligraphic-Bold-ATXxdsX0.ttf            12.37 kB
+dist/assets/KaTeX_Fraktur-Regular-Dxdc4cR9.woff            13.21 kB
+dist/assets/KaTeX_Fraktur-Bold-BsDP51OF.woff               13.30 kB
+dist/assets/KaTeX_Typewriter-Regular-CO6r4hn1.woff2        13.57 kB
+dist/assets/KaTeX_SansSerif-Italic-DN2j7dab.woff           14.11 kB
+dist/assets/KaTeX_SansSerif-Bold-DbIhKOiC.woff             14.41 kB
+dist/assets/KaTeX_Typewriter-Regular-C0xS9mPB.woff         16.03 kB
+dist/assets/KaTeX_Math-BoldItalic-CZnvNsCZ.woff2           16.40 kB
+dist/assets/KaTeX_Math-Italic-t53AETM-.woff2               16.44 kB
+dist/assets/KaTeX_Script-Regular-C5JkGWo-.ttf              16.65 kB
+dist/assets/KaTeX_Main-BoldItalic-DxDJ3AOS.woff2           16.78 kB
+dist/assets/KaTeX_Main-Italic-NWA7e6Wa.woff2               16.99 kB
+dist/assets/KaTeX_Math-BoldItalic-iY-2wyZ7.woff            18.67 kB
+dist/assets/KaTeX_Math-Italic-DA0__PXp.woff                18.75 kB
+dist/assets/KaTeX_Main-BoldItalic-SpSLRI95.woff            19.41 kB
+dist/assets/KaTeX_SansSerif-Regular-BNo7hRIc.ttf           19.44 kB
+dist/assets/KaTeX_Fraktur-Regular-CB_wures.ttf             19.57 kB
+dist/assets/KaTeX_Fraktur-Bold-BdnERNNW.ttf                19.58 kB
+dist/assets/KaTeX_Main-Italic-BMLOBm91.woff                19.68 kB
+dist/assets/KaTeX_SansSerif-Italic-YYjJ1zSn.ttf            22.36 kB
+dist/assets/KaTeX_SansSerif-Bold-CFMepnvq.ttf              24.50 kB
+dist/assets/KaTeX_Main-Bold-Cx986IdX.woff2                 25.32 kB
+dist/assets/cobalt2-CKS12fXC.json                          25.88 kB │ gzip:     4.63 kB
+dist/assets/KaTeX_Main-Regular-B22Nviop.woff2              26.27 kB
+dist/assets/KaTeX_Typewriter-Regular-D3Ib7_Hf.ttf          27.56 kB
+dist/assets/KaTeX_AMS-Regular-BQhdFMY1.woff2               28.08 kB
+dist/assets/KaTeX_Main-Bold-Jm3AIy58.woff                  29.91 kB
+dist/assets/KaTeX_Main-Regular-Dr94JaBh.woff               30.77 kB
+dist/assets/KaTeX_Math-BoldItalic-B3XSjfu4.ttf             31.20 kB
+dist/assets/KaTeX_Math-Italic-flOr_0UB.ttf                 31.31 kB
+dist/assets/KaTeX_Main-BoldItalic-DzxPMmG6.ttf             32.97 kB
+dist/assets/KaTeX_AMS-Regular-DMm9YOAa.woff                33.52 kB
+dist/assets/KaTeX_Main-Italic-3WenGoN9.ttf                 33.58 kB
+dist/assets/NotoColorEmoji-Subset-CA2l4IMG.ttf             39.53 kB
+dist/assets/KaTeX_Main-Bold-waoOVXN0.ttf                   51.34 kB
+dist/assets/KaTeX_Main-Regular-ypZvNtVU.ttf                53.58 kB
+dist/assets/KaTeX_AMS-Regular-DRggAlZN.ttf                 63.63 kB
+dist/assets/lean4-markdown-Y8qb5FeH.json                   99.04 kB │ gzip:     6.27 kB
+dist/assets/editor.worker-DgfNMU0z.js                     303.91 kB
+dist/assets/worker-BIVWtv_8.js                            452.17 kB
+dist/assets/onig-Du5pRr7Y.wasm                            466.61 kB │ gzip:   149.10 kB
+dist/assets/extensionHost.worker-DFZjTTQI.js            1,407.42 kB
+dist/assets/JuliaMono-Regular-DZU_3trF.ttf              3,163.14 kB
+dist/assets/index-SkVpd2mR.css                            208.71 kB │ gzip:    37.81 kB
+dist/assets/index-BAMY2Nnw.js                               1.82 kB │ gzip:     0.79 kB
+dist/assets/lean-BZvkOJ9d.js                                5.78 kB │ gzip:     1.92 kB
+dist/assets/vitesse-light-CVO1_9PV.js                      13.62 kB │ gzip:     3.06 kB
+dist/assets/index-VKLT1MtA.js                              26.10 kB │ gzip:     6.33 kB
+dist/assets/engine-javascript-DBd1bXLz.js                  60.73 kB │ gzip:    21.16 kB
+dist/assets/core-D76WRF_s.js                              116.07 kB │ gzip:    36.62 kB
+dist/assets/iconv-lite-umd-ChbmZ6yY.js                    295.16 kB │ gzip:   162.58 kB
+dist/assets/index-D2YXDMzy.js                             335.73 kB │ gzip:   120.23 kB
+dist/assets/index-BGtmmVMD.js                           1,185.88 kB │ gzip:   344.29 kB
+dist/assets/index-CGexUjB0.js                           8,294.51 kB │ gzip: 2,182.37 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 21.13s

@@ -34,6 +34,8 @@ import json
 import logging
 import re
 import time
+from fastapi import HTTPException
+from datetime import datetime, timezone
 from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Queue
@@ -47,12 +49,18 @@ from lea.interface import (
     CheckResult,
     Compacted,
     Diagnostic,
+    DependencyReadinessRequested,
+    DependencyReadinessAck,
     Error,
     FileChanged,
     Finished,
     SubagentFinished,
     SubagentProgress,
     SubagentStarted,
+    LeaStatusUpdateRequested,
+    LeaStatusUpdateAck,
+    ProjectLibraryRequested,
+    ProjectLibraryAck,
     ToolApprovalRequested,
     ToolCalled,
     ToolResulted,
@@ -65,17 +73,17 @@ from lea.interface import (
 )
 
 from .artifacts import classify_lean_artifact, declaration_present, extract_declaration_name
+from .target_completion import checked_target, target_declaration
 from .config import LeaConfig, configured_provider_keys, load_config
 from .diagnostics import analyze_exception, resolve as resolve_diagnostic
 from .gitstore import GitStore, GitStoreError
-from . import collation, formalizations as formalization_service, projects, roles_catalog, runbroker, runregistry, skills_catalog, store, subagent_overrides, uploads
+from . import collation, formalizations as formalization_service, projects, roles_catalog, runbroker, runregistry, skills_catalog, store, subagent_overrides, uploads, recovery, runtime
+from .public_errors import redact
+from lea.usage import merge_details, legacy_details
+from . import project_coordination
 
 logger = logging.getLogger("lea-interface.bridge")
 _FORMALIZATION_CONTEXT_MARKER = "<!-- lea:formalization-context -->"
-_CREDENTIAL_LIKE = re.compile(
-    r"(?:sk-(?:ant-)?[A-Za-z0-9_./+\-=]{8,}|AIza[A-Za-z0-9_-]{20,}|"
-    r"github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,})"
-)
 
 
 def _redact(text: str) -> str:
@@ -91,7 +99,7 @@ def _redact(text: str) -> str:
                 text = text.replace(secret, "[redacted]")
     except Exception:  # noqa: BLE001 — redaction is best-effort on an error path
         pass
-    return _CREDENTIAL_LIKE.sub("[redacted]", text)[:2000]
+    return redact(text)
 
 
 def _public_error_detail(exc: Exception) -> str:
@@ -111,9 +119,12 @@ def _public_error_detail(exc: Exception) -> str:
 _stop_events: dict[str, Event] = {}
 
 
-def request_stop(run_id: str) -> None:
-    """Flag a run for a clean cooperative stop (the interrupt endpoint calls this)."""
-    _stop_events.setdefault(run_id, Event()).set()
+def request_stop(run_id: str, *, reason: str = "user_stop", source: str = "user") -> dict | None:
+    """Persist the first stop cause before signalling a cooperative stop."""
+    run = store.record_stop_request(run_id, reason, source)
+    if run and run["status"] in {"pending", "running"}:
+        _stop_events.setdefault(run_id, Event()).set()
+    return run
 
 
 # D2: live sub-agent children, mapping the child's SESSION id -> its prover `result_id`,
@@ -145,6 +156,7 @@ def request_subagent_stop(child_session_id: str) -> bool:
 _run_queue: "Queue[str]" = Queue()
 _worker_guard = Lock()
 _worker_thread: Thread | None = None
+_DISPATCH_STOP = object()
 
 
 def _resolve_task(run: dict[str, Any]) -> str | None:
@@ -173,10 +185,18 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
     `_DISPATCHED` (a driver thread is running it), or `_DEFER` (not admissible *yet*).
     """
     run = store.get_run(run_id)
+    if not runtime.accepting_work():
+        return _DEFER
     if not run or run["status"] != "pending":
         if run:
             publish_terminal_from_row(run_id)
             runbroker.drop(run_id)
+        return _SETTLED
+    if run.get("deadline_at") and datetime.fromisoformat(run["deadline_at"]) <= datetime.now(timezone.utc):
+        store.record_stop_request(run_id, "timeout", "adapter")
+        store.fail_pending_run(run_id, "Time limit reached before the run started.")
+        publish_terminal_from_row(run_id)
+        runbroker.drop(run_id)
         return _SETTLED
 
     task = _resolve_task(run)
@@ -187,25 +207,33 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
         runbroker.drop(run_id)
         return _SETTLED
 
-    admission = runregistry.registry.try_admit(run_id, run["session_id"])
+    session = store.get_session(run["session_id"])
+    project_id = (session or {}).get("project_id") or run.get("project_id")
+    try:
+        admission = runregistry.registry.try_admit(run_id, run["session_id"], project_id=project_id)
+    except HTTPException as exc:
+        return _DEFER if exc.status_code == 409 else _SETTLED
     if admission.outcome == runregistry.ADMITTED:
         superseded.pop(run_id, None)
-        broker = runbroker.get(run_id) or runbroker.create(run_id)
-        # Run creation snapshots the selected model. Reload every other
-        # live setting at admission time, but never let a later settings
-        # or environment change switch a queued run to another model.
-        config = load_config()
-        if run.get("model"):
-            config = replace(config, model=run["model"])
-        context = RunnerContext(
-            session_id=run["session_id"],
-            run_id=run_id,
-            task=task,
-            config=config,
-            events=broker,
-            autonomous=bool(run.get("autonomous")),
-        )
+        # Creation snapshots the model and turn allowance. A queued or
+        # recovered run must consume its original allowance, even if the UI
+        # settings change before dispatch.
         try:
+            broker = runbroker.get(run_id) or runbroker.create(run_id)
+            config = load_config()
+            config = replace(config, model=run.get("model") or config.model,
+                             max_turns=run.get("max_turns"))
+            context = RunnerContext(
+                session_id=run["session_id"],
+                run_id=run_id,
+                task=task,
+                config=config,
+                events=broker,
+                autonomous=bool(run.get("autonomous")),
+                approval_mode=str(run.get("approval_mode") or "stepwise"),
+                purpose=str(run.get("purpose") or "general"),
+                allow_source_pause=bool(run.get("allow_source_pause")),
+            )
             Thread(target=run_lea, args=(context,), daemon=True,
                    name=f"lea-run-{run_id[:8]}").start()
         except BaseException:
@@ -227,7 +255,7 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
         # 100 ms poll for as long as the incumbent took to wind down.
         if superseded.get(run_id) != admission.incumbent_run_id:
             superseded[run_id] = admission.incumbent_run_id
-            request_stop(admission.incumbent_run_id)
+            request_stop(admission.incumbent_run_id, reason="superseded", source="adapter")
     return _DEFER
 
 
@@ -261,6 +289,9 @@ def _worker_loop() -> None:
             arrived = _run_queue.get(timeout=_DISPATCH_RETRY_SECONDS if deferred else None)
         except Empty:
             arrived = None
+
+        if arrived is _DISPATCH_STOP:
+            return
 
         # Deferred first: they have been waiting longest.
         batch, deferred = deferred, []
@@ -312,6 +343,7 @@ def publish_terminal_from_row(run_id: str) -> None:
     live, which prevents an interrupted queued run from hanging.
     """
     run = store.get_run(run_id)
+    _stop_events.pop(run_id, None)
     broker = runbroker.get(run_id)
     if not run or broker is None:
         return
@@ -320,6 +352,10 @@ def publish_terminal_from_row(run_id: str) -> None:
         payload["result_kind"] = run["result_kind"]
     if run.get("result_detail"):
         payload["result_detail"] = run["result_detail"]
+    for key in ("stop_reason", "stop_requested_reason", "recoverable", "attempt_id",
+                "recovery_state", "recovery_reason", "checkpoint_at", "input_tokens",
+                "output_tokens", "cost_usd", "usage_details", "usage_status", "usage_revision", "usage_updated_at"):
+        payload[key] = run.get(key)
     broker.put({"type": "done", "payload": payload})
 
 
@@ -443,9 +479,14 @@ class RunnerContext:
     # A rejoinable RunBroker in the live endpoint; a plain Queue in unit tests. Both
     # expose `.put({"type","payload"})`, which is all `emit()` needs.
     events: "runbroker.RunBroker | Queue[dict[str, Any]]"
-    # Autonomous (D19): no approval gate + the non-interactive `default` prompt
-    # variant, so the run formalizes with zero human interaction (Overleaf path).
+    # Autonomous (D19): no approval gate. `purpose` selects either the general
+    # autoformalizer or the source-faithful Overleaf translation prompt.
     autonomous: bool = False
+    purpose: str = "general"
+    allow_source_pause: bool = False
+    # Snapshotted independently: Overleaf-linked chats stay conversational while
+    # skipping per-tool approvals. Autonomous execution always skips them too.
+    approval_mode: str = "stepwise"
 
 
 def emit(events: "runbroker.RunBroker | Queue[dict[str, Any]]",
@@ -566,7 +607,12 @@ class _DeltaStream:
 _FINISH_STATUS = {
     "assistant": "answered",
     "max_turns": "max_turns",
+    "max_cost": "max_turns",
     "interrupted": "cancelled",
+    "source_obstruction": "cancelled",
+    "status_reporting_failed": "cancelled",
+    "dependency_wait": "cancelled",
+    "stalled": "cancelled",
 }
 
 _COMPLETED_RESULTS = {"proved", "disproved", "needs_review"}
@@ -576,21 +622,9 @@ _COMPLETED_RESULTS = {"proved", "disproved", "needs_review"}
 # persisted run *status* stays "cancelled" — the status vocabulary is unchanged.
 _MAX_SPEND_DETAIL = "Max spend limit reached; the run was stopped at a turn boundary."
 
-# Usage is persisted only when a run finishes. While several admitted runs are
-# live, their in-flight cost would otherwise be invisible to each other's global
-# cap checks. This process-local overlay makes the check persisted-global plus
-# every active run's observed ``UsageUpdated`` total.
-_live_spend_lock = Lock()
-_live_run_costs: dict[str, float] = {}
-
-
-# Persisted spend changes only when a run *finishes* (`update_run` writes its
-# cost_usd), but the cap is re-checked on every `UsageUpdated` and every turn — so the
-# unmemoized read meant several DB aggregates per second per active run, against the
-# same single-writer SQLite the runs are writing to (AUDIT-2026-07-24 P2). A short TTL
-# removes that without weakening the cap: the term that moves continuously *within* a
-# run is the in-memory `_live_run_costs` overlay, which is always exact, and the
-# staleness this admits is bounded by one other run finishing inside the window.
+# Cumulative run usage is checkpointed in SQLite at each UsageUpdated, including
+# active runs. The cap reads that same ledger; summing an active-run overlay would
+# count its cost twice.
 _PERSISTED_SPEND_TTL_SECONDS = 2.0
 _persisted_spend_lock = Lock()
 # (database path, monotonic_at, usd). The path is part of the key because the total is
@@ -608,14 +642,10 @@ def _persisted_spend_usd() -> float:
     path, now = db.DB_PATH, time.monotonic()
     with _persisted_spend_lock:
         cached = _persisted_spend_cache
-        if (
-            cached is not None
-            and cached[0] == path
-            and now - cached[1] < _PERSISTED_SPEND_TTL_SECONDS
-        ):
+        if (cached is not None and cached[0] == path
+                and now - cached[1] < _PERSISTED_SPEND_TTL_SECONDS):
             return cached[2]
-    value = store.total_spend_usd()
-    with _persisted_spend_lock:
+        value = store.total_spend_usd()
         _persisted_spend_cache = (path, now, value)
     return value
 
@@ -626,6 +656,18 @@ def reset_persisted_spend_cache() -> None:
     global _persisted_spend_cache
     with _persisted_spend_lock:
         _persisted_spend_cache = None
+
+
+def _advance_spend_cache(delta: float) -> None:
+    """Reflect a committed usage checkpoint without an aggregate read per event."""
+    global _persisted_spend_cache
+    from . import db
+    with _persisted_spend_lock:
+        cached = _persisted_spend_cache
+        if cached and cached[0] == db.DB_PATH and time.monotonic() - cached[1] < _PERSISTED_SPEND_TTL_SECONDS:
+            _persisted_spend_cache = (cached[0], cached[1], cached[2] + delta)
+        else:
+            _persisted_spend_cache = None
 
 
 def _finished_status(ev: Finished) -> str:
@@ -640,6 +682,8 @@ def _completed_artifact_result(ev: Finished, artifact_kind: str) -> tuple[str, s
         return _finished_status(ev), None
     if ev.result_kind == "disproved":
         return "disproved", "disproved"
+    if ev.result_kind == "needs_review":
+        return "needs_review", "needs_review"
     if artifact_kind == "definition":
         return "proved", "defined"
     result_kind = ev.result_kind if ev.result_kind in _COMPLETED_RESULTS else "proved"
@@ -672,7 +716,7 @@ def _read_after(path: str) -> str | None:
     ever set), and the divergence path declines to diff rather than reporting the
     whole file as deleted by the human."""
     try:
-        return Path(path).read_text()
+        return Path(path).read_bytes().decode('utf-8')
     except (OSError, UnicodeDecodeError):
         logger.debug("Could not read after-state of %s", path, exc_info=True)
         return None
@@ -863,6 +907,8 @@ def _record_run_artifacts(
     *,
     focus_formalization_id: str | None = None,
     source_hash: str | None = None,
+    completion_verified: bool = True,
+    review_candidate_path: str | None = None,
 ) -> None:
     """Write the structured artifact index rows for this run's checked files
     (PLAN-system-hardening 4.1). Only files whose latest step verdict is ok
@@ -889,14 +935,17 @@ def _record_run_artifacts(
             focused_declaration = (
                 focused.get("declaration_name") if focused else None
             )
-            if focused_declaration and not declaration_present(
-                code, focused_declaration
+            named_target = target_declaration(code, focused_declaration, focused.get("kind") or "theorem") if focused else None
+            review_candidate = rel == review_candidate_path
+            if focus_formalization_id and (
+                (not completion_verified and not review_candidate) or not focused_declaration
+                or (not named_target and not review_candidate)
             ):
                 store.link_formalization_file(
                     focus_formalization_id, rel, "support"
                 )
                 continue
-            declaration = focused_declaration or extract_declaration_name(code)
+            declaration = focused_declaration if named_target else extract_declaration_name(code)
             if not declaration:
                 continue
             formalization = focused
@@ -960,8 +1009,8 @@ class _UsageByTurn:
     def __init__(self) -> None:
         self._rows: dict[int, dict[str, Any]] = {}
 
-    def add(self, turn: int, input_tokens: int, output_tokens: int, cost: float) -> None:
-        if not (input_tokens or output_tokens or cost):
+    def add(self, turn: int, input_tokens: int, output_tokens: int, cost: float, usage_details=None) -> None:
+        if not (input_tokens or output_tokens or cost or usage_details):
             return
         row = self._rows.get(turn)
         if row is None:
@@ -978,6 +1027,7 @@ class _UsageByTurn:
         row["input_tokens"] += input_tokens or 0
         row["output_tokens"] += output_tokens or 0
         row["cost_usd"] += cost or 0.0
+        row["usage_details"] = merge_details(row.get("usage_details"), usage_details or legacy_details())
         row["event_count"] += 1
 
     def rows(self) -> list[dict[str, Any]]:
@@ -1088,7 +1138,10 @@ def _start_subagent(
         role=ev.subagent_type,
         spawned_at_turn=turn,
     )
-    child_run = store.create_run(child["id"], cfg.model, None, cfg.max_turns, project_id=project_id)
+    child_run = store.create_run(
+        child["id"], cfg.model, None, cfg.max_turns,
+        project_id=project_id, approval_mode="none",
+    )
     store.update_run(child_run["id"], "running")
     # Record the delegated task as the child's first message NOW, not when it finishes.
     # The child's transcript only replays on SubagentFinished, so until then its session
@@ -1116,7 +1169,8 @@ def _subagent_progress_payload(child_id: str, result_id: str, inner) -> dict | N
     if isinstance(inner, ToolCalled):
         return {**base, "kind": "tool", "tool": inner.name}
     if isinstance(inner, CheckResult):
-        return {**base, "kind": "check", "status": inner.status}
+        from lea.check_evidence import public_execution
+        return {**base, "kind": "check", "status": inner.status, "execution": public_execution(inner.execution)}
     if isinstance(inner, Finished):
         return {**base, "kind": "finished", "reason": inner.reason}
     return None
@@ -1178,8 +1232,9 @@ def _forward_to_child_broker(broker, inner, started: dict) -> None:
         _flush_child_narration(broker, started)
         emit(broker, "status", {"status": "tool_call", "message": f"Running {inner.name}", "turn": None})
     elif isinstance(inner, CheckResult):
+        from lea.check_evidence import public_execution
         emit(broker, "status", {"status": "lean_check", "check_status": inner.status,
-                                "check_detail": inner.detail})
+                                "check_detail": inner.detail, "execution": public_execution(inner.execution)})
 
 
 def _subagent_error(ev: SubagentFinished) -> str | None:
@@ -1284,7 +1339,7 @@ def _populate_subagent(
         if not cand.is_absolute():
             cand = repo / cand
         try:
-            content = cand.read_text()
+            content = cand.read_bytes().decode('utf-8')
         except OSError:
             content = None
         if content is not None:
@@ -1294,6 +1349,11 @@ def _populate_subagent(
                 check_status=ev.check_status, check_detail=ev.check_detail,
                 artifact_kind=_classify(content) if ev.check_status == "ok" else None,
             )
+            if ev.check_status in {'ok', 'error'}:
+                from .proof_evidence import record_check
+                record_check(child_id, cand.name, cand,
+                    CheckResult(str(cand), ev.check_status, ev.check_detail, ev.execution, ev.content),
+                    run_id=child_run_id)
 
 
 def _finalize_started_subagent(
@@ -1508,6 +1568,13 @@ def _try_promote(
         formalization_id=formalization_id,
         provenance={"promoted_from": winner.result_id},
     )
+    from .proof_evidence import record_check
+    accepted, checked = record_check(session_id, rel, canonical, verdict, run_id=run_id,
+                                    formalization_id=formalization_id)
+    if not accepted or not checked or not checked.get('check_current'):
+        _restore_file(canonical, previous)
+        return None
+    step = checked
     emit(events, "code_step", step)
     emit(events, "status", {
         "status": "promoted",
@@ -1541,7 +1608,85 @@ def _run_is_terminal(run_id: str) -> bool:
     return bool(run) and run["status"] not in {"pending", "running"}
 
 
+def _skill_resolution_task(run: dict | None, fallback: str) -> str:
+    """A checkpoint continuation retains the original skill selection."""
+    seen = set()
+    while run and run.get("resume_checkpoint_id") and run.get("resumes_run_id"):
+        if run["id"] in seen:
+            raise ValueError("Invalid checkpoint continuation lineage")
+        seen.add(run["id"])
+        run = store.get_run(run["resumes_run_id"])
+    return (_resolve_task(run) if run else None) or fallback
+
+
+def _project_library_config(cfg, project, run):
+    if not project:
+        return cfg
+    from .db import connect
+    with connect() as conn:
+        paths = [row[0] for row in conn.execute("select path from project_dependencies where owner_run_id=?", (run["id"],))]
+    names = ["search_project_library", "request_project_dependency"]
+    return replace(cfg, project_library=True, project_context={"reserved_paths": paths},
+                   extra_tools=list(dict.fromkeys([*cfg.extra_tools, *names])),
+                   tools=list(dict.fromkeys([*cfg.tools, *names])) if cfg.tools is not None else None)
+
+
+def validate_continuation_runtime(old: dict, config: LeaConfig, checkpoint_id: int,
+                                  source: dict | None, allow_source_pause: bool) -> None:
+    """Check the same executable inputs as the driver before admitting a run.
+
+    No model or external tool is invoked. The driver checks again at dispatch,
+    since configuration may change while the run waits for capacity.
+    """
+    from lea.errors import LeaError
+    session = store.get_session(old["session_id"])
+    if not session:
+        raise ValueError("The saved formalization session is unavailable. Use Re-formalize.")
+    project = store.get_project(session["project_id"]) if session.get("project_id") else None
+    lea_root = config.lea_root or (Path(__file__).resolve().parents[2] / "prover")
+    repo = projects.repo_for_session(session, Path(lea_root) / "workspace" / "proofs", project)
+    paths, tempdir = skills_catalog.materialize_run_skills(
+        project["id"] if project else None, old["session_id"], _skill_resolution_task(old, _resolve_task(old) or ""))
+    try:
+        cfg = replace(config, model=old["model"], prompt_variant="overleaf_faithful",
+                      status_reporting=True, narrate_tool_steps=False,
+                      allow_source_pause=allow_source_pause,
+                      extra_tools=list(dict.fromkeys([*config.extra_tools, "update_lea_status"])),
+                      tools=(list(dict.fromkeys([*config.tools, "update_lea_status"])) if config.tools is not None else None))
+        if old.get("purpose") == "project_dependency":
+            cfg = replace(config, model=old["model"], prompt_variant="default")
+        cfg = _project_library_config(cfg, project, old)
+        if paths:
+            cfg = replace(cfg, skills=paths, skills_root=tempdir)
+        specs = store.mcp_server_specs(project["id"] if project else None, old["session_id"])
+        if specs:
+            cfg = replace(cfg, mcp_servers=specs)
+        http_tools = store.custom_tool_specs(project["id"] if project else None)
+        if http_tools:
+            cfg = replace(cfg, http_tools=http_tools)
+        roles_tempdir, skipped_roles = roles_catalog.materialize_roles()
+        if skipped_roles:
+            raise ValueError("Saved agent roles cannot be loaded. Restore the roles or use Re-formalize.")
+        if roles_tempdir:
+            cfg = replace(cfg, agent_dirs=[roles_tempdir])
+        candidate = {**old, "resumes_run_id": old["id"], "resume_checkpoint_id": checkpoint_id,
+                     "focus_source_hash": source["sourceIdentityHash"] if source else old.get("focus_source_hash")}
+        recovery.prepare_continuation(candidate, cfg, repo, {"source_bundle": source} if source else {}, "Continue")
+    except (LeaError, OSError) as exc:
+        raise ValueError("Saved agent configuration could not be loaded. Restore its tools and skills or use Re-formalize.") from exc
+    finally:
+        skills_catalog.cleanup(tempdir)
+
+
 def run_lea(context: RunnerContext) -> None:
+    # Keep the worker lease through all final bookkeeping, including SSE.
+    try:
+        _run_lea(context)
+    finally:
+        runregistry.registry.release(context.run_id)
+
+
+def _run_lea(context: RunnerContext) -> None:
     """Run one Lea activation, streaming normalized SSE events onto the queue.
 
     Always terminates the stream with a `done` event (the SSE endpoint breaks on
@@ -1557,7 +1702,14 @@ def run_lea(context: RunnerContext) -> None:
         # `default` autoformalizer so the run never pauses to present a plan and
         # wait for confirmation. LeaConfig is frozen, so build a copy. The gate is
         # disabled separately below.
-        cfg = replace(cfg, prompt_variant="default")
+        cfg = replace(
+            cfg,
+            prompt_variant=(
+                "overleaf_faithful"
+                if context.purpose == "overleaf_solver"
+                else "default"
+            ),
+        )
     else:
         # Interactive coordinator (item 24): make `spawn_subagent` available so the
         # model can delegate parallel exploration to child sub-agents. The tool is
@@ -1569,6 +1721,7 @@ def run_lea(context: RunnerContext) -> None:
         cfg, subagent_override_error = _with_subagents(cfg)
     session_id = context.session_id
     run_id = context.run_id
+    execution_started = time.monotonic()
 
     # Admission (which run may start, and whether there's room) already happened in
     # the dispatcher before this thread was spawned. run_lea no longer acquires a
@@ -1604,6 +1757,10 @@ def run_lea(context: RunnerContext) -> None:
     last_write_path: str | None = None
     checked_artifact_kind = "unknown"
     usage = _UsageByTurn()
+    observed_details = None
+    observed_input = observed_output = 0
+    observed_cost = 0.0
+    usage_revision = 0
     # Finished sub-agents (item 24), in the order they completed — surfaced as child
     # sessions and kept for the collation pass (item 25) on the coordinator's Finished.
     subagent_results: list[SubagentFinished] = []
@@ -1625,8 +1782,11 @@ def run_lea(context: RunnerContext) -> None:
     final_status = "failed"
     final_result_kind: str | None = None
     final_result_detail: str | None = None
+    final_stop_reason: str | None = None
+    final_recoverable = False
     focus_formalization_id: str | None = None
     focus_source_hash: str | None = None
+    attempt_id: str | None = None
 
     # Mid-run spend enforcement (PLAN-system-hardening 0.1): the cap used to be
     # checked only at POST /api/runs, so one run could overshoot it by its entire
@@ -1635,9 +1795,6 @@ def run_lea(context: RunnerContext) -> None:
     # overshoot but a run can no longer run away.
     max_spend_usd = cfg.max_spend_usd
     spend_capped = False
-    with _live_spend_lock:
-        _live_run_costs[run_id] = 0.0
-
     def check_spend_cap() -> None:
         nonlocal spend_capped
         if spend_capped or max_spend_usd is None:
@@ -1651,9 +1808,10 @@ def run_lea(context: RunnerContext) -> None:
         except Exception:
             logger.exception("Could not read persisted spend; skipping this cap check")
             return
-        with _live_spend_lock:
-            live = sum(_live_run_costs.values())
-        if persisted + live >= float(max_spend_usd):
+        if persisted >= float(max_spend_usd):
+            accepted = store.record_stop_request(run_id, "global_spend_cap", "adapter")
+            if accepted and accepted.get("stop_requested_reason") != "global_spend_cap":
+                return
             spend_capped = True
             stop_event.set()
             emit(events, "status", {
@@ -1727,7 +1885,7 @@ def run_lea(context: RunnerContext) -> None:
         # a loose session can use skills too — before, `project is None` meant no skills at
         # all and there was no way to opt one in.
         skill_paths, skills_tempdir = skills_catalog.materialize_run_skills(
-            project["id"] if project else None, session_id, context.task
+            project["id"] if project else None, session_id, _skill_resolution_task(run_row, context.task)
         )
         if skill_paths:
             # H7: the materialized tree is also a READ root, so a multi-file skill's
@@ -1786,9 +1944,34 @@ def run_lea(context: RunnerContext) -> None:
             final_status = (current or {}).get("status") or "cancelled"
             final_result_kind = (current or {}).get("result_kind")
             final_result_detail = (current or {}).get("result_detail")
+            final_stop_reason = (current or {}).get("stop_reason")
+            final_recoverable = bool((current or {}).get("recoverable"))
             logger.info("Run %s was finalized before it started (%s); not running it",
                         run_id, final_status)
             return
+        attempt_id = recovery.start_attempt(run_id)
+        from . import overleaf_source
+        try:
+            overleaf_source.validate_run(run_id, proofs_root)
+        except ValueError as exc:
+            final_result_detail = str(exc)
+            if run_row.get("recovery_count"):
+                recovery.pause_for_mismatch(run_id, final_result_detail)
+                final_status, final_result_kind, final_recoverable = "cancelled", "interrupted", True
+            else:
+                final_status, final_result_kind, final_stop_reason = "failed", "failed", "source_changed"
+                store.update_run(run_id, "failed", result_kind="failed", result_detail=final_result_detail,
+                                 stop_reason=final_stop_reason, recoverable=False,
+                                 input_tokens=0, output_tokens=0, cost_usd=0, usage_status="final")
+            emit(events, "run_error", {"message": final_result_detail})
+            diagnose(events, session_id, run_id, "step_error", "overleaf.source_changed", final_result_detail)
+            return
+        if run_row and run_row.get("recovery_count"):
+            observed_details = run_row.get("usage_details")
+            observed_input = int(run_row.get("input_tokens") or 0)
+            observed_output = int(run_row.get("output_tokens") or 0)
+            observed_cost = float(run_row.get("cost_usd") or 0)
+            usage_revision = int(run_row.get("usage_revision") or 0)
         if subagent_override_error:
             # F2: reported AFTER the claim — a diagnostic needs a live run row to hang
             # off, and a run cancelled before it started has nothing to report against.
@@ -1799,7 +1982,10 @@ def run_lea(context: RunnerContext) -> None:
         # continues with full context — the prover is stateless, so the adapter
         # feeds it the faithful transcript (tool_call/tool_result parts intact) of
         # the last Finished run, then the new user turn. A cold first run gets [].
-        prior = store.latest_transcript_for_session(session_id, exclude_run_id=run_id) or []
+        prior = (
+            recovery.load_safe_conversation(run_row["resumes_run_id"])
+            if run_row and run_row.get("resumes_run_id") and not run_row.get("resume_checkpoint_id") else None
+        ) or store.latest_transcript_for_session(session_id, exclude_run_id=run_id) or []
         # Diff-on-divergence (D12): if the human edited the proof outside a run since
         # the agent last acted, prepend their diff (+ notes) to the task so the agent
         # works from the current canvas, not its stale memory.
@@ -1813,7 +1999,7 @@ def run_lea(context: RunnerContext) -> None:
         # may not be the run that actually ran last — a crash mid-turn stores none and
         # vanishes from the replay. Say so rather than presenting a history with a
         # silent hole in it. Prepended last so it is the first thing the model reads.
-        gap = _transcript_gap_context(session_id, run_id)
+        gap = None if run_row and run_row.get("resumes_run_id") else _transcript_gap_context(session_id, run_id)
         if gap:
             task_content = f"{gap}\n\n{task_content}"
         # Project context (D25): prepend ONE composed message (instructions + memory +
@@ -1835,11 +2021,92 @@ def run_lea(context: RunnerContext) -> None:
         # Drive the generator manually (not `for`): the per-tool gate (D19) is a
         # two-way exchange — the prover yields ToolApprovalRequested and we feed the
         # human's decision back via gen.send(). A plain for-loop can't send.
-        # Autonomous (D19): gate=None → no tool ever pauses for human approval, so
-        # the run is fully unattended. Interactive UI runs keep the per-tool gate.
-        gen = run_events(cfg, messages, namespace=namespace, session_id=session_id,
-                         working_dir=str(repo), should_stop=stop_event.is_set,
-                         gate=(None if context.autonomous else _make_gate(session_id)))
+        # Approval policy is separate from prompt/subagent selection: linked
+        # Overleaf chats can use the collaborator prompt with gate=None.
+        from . import lea_status, lea_status_store
+        reporting_started = time.monotonic()
+        reporting_last_accepted = None
+        reporting_context = lea_status_store.context(run_id)
+        if reporting_context:
+            cfg = replace(cfg, status_reporting=True, status_context=lea_status.seed(run_id),
+                          allow_source_pause=context.allow_source_pause,
+                          narrate_tool_steps=False,
+                          prompt_variant=(
+                              "interactive_overleaf" if context.purpose == "overleaf_continuation" and (not context.autonomous or run_row.get("source_context_ref"))
+                              else "overleaf_continuation" if context.purpose == "overleaf_continuation" else "overleaf_faithful"),
+                          extra_tools=list(dict.fromkeys([*cfg.extra_tools, "update_lea_status"])),
+                          tools=(list(dict.fromkeys([*cfg.tools, "update_lea_status"])) if cfg.tools is not None else None))
+        cfg = _project_library_config(cfg, project, run_row)
+        budget = json.loads(run_row.get("automation_budget_json") or "{}")
+        if budget.get("max_cost_usd") is not None:
+            cfg = replace(cfg, max_cost_usd=max(0, budget["max_cost_usd"] - budget.get("cost_used", 0)))
+        current_run = store.get_run(run_id)
+        manifest_provider = lambda: recovery.manifest(run=current_run, config=cfg, repo=repo)
+        resume_state = None
+        if run_row and run_row.get("recovery_state") == "recovering":
+            saved = recovery.load_checkpoint(run_id)
+            if not saved or not recovery.compatible_crash_manifest(saved[1], manifest_provider(), saved[0]):
+                reason = "Saved source, files, dependencies, or tool configuration changed before recovery."
+                recovery.pause_for_mismatch(run_id, reason)
+                final_status = "cancelled"
+                final_result_kind = "interrupted"
+                final_result_detail = reason
+                final_recoverable = True
+                return
+            resume_state = saved[0]
+            emit(events, "status", {"status": "recovering", "message": "Recovering saved progress"})
+        elif run_row and run_row.get("resume_checkpoint_id"):
+            resume_state, changed = recovery.prepare_continuation(
+                run_row, cfg, repo, lea_status.seed(run_id), task_content)
+            current_turn = int(resume_state.get("turn", 0))
+            emit(events, "status", {"status": "resuming", "message": "Continuing saved agent state",
+                                     "turn": current_turn, "max_turns": cfg.max_turns,
+                                     "resumes_run_id": run_row["resumes_run_id"]})
+        if resume_state is not None:
+            current_turn = int(resume_state.get("turn", 0))
+            proof = resume_state.get("proof_state", {})
+            if focus_formalization_id and proof.get("latest_check_passed") is True and not proof.get("unchecked_write"):
+                # Restore matching durable evidence for both ordinary continuation
+                # and automatic recovery of that continuation. Changed source or
+                # dependencies already cleared this verification state above.
+                checked_path = _relativize(proof.get("latest_check_path") or "", repo)
+                for step in store.current_code_steps_for_formalization(focus_formalization_id, session_id=session_id):
+                    path = step.get("path")
+                    if path != checked_path or step.get("check_status") != "ok":
+                        continue
+                    try:
+                        if (repo / path).read_bytes().decode('utf-8') != step.get("code"):
+                            continue
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    step_id_by_path[path] = step["id"]
+                    checked_artifact_kind = step.get("artifact_kind") or _classify(step.get("code") or "")
+                    produced_clean = True
+        recorder = recovery.Recorder(run_id, attempt_id, manifest_provider)
+        if resume_state is not None:
+            # Persist the rebased seed before the next paid request or tool, so
+            # subsequent automatic recovery uses this segment's own state.
+            recorder("checkpoint", resume_state)
+        def should_stop_run() -> bool:
+            current = store.get_run_status(run_id)
+            if current is None:
+                return True
+            if current and current.get("deadline_at") and datetime.fromisoformat(current["deadline_at"]) <= datetime.now(timezone.utc):
+                request_stop(run_id, reason="timeout", source="adapter")
+            return stop_event.is_set()
+
+        import inspect
+        event_options = {
+            "namespace": namespace, "session_id": session_id, "working_dir": str(repo),
+            "should_stop": should_stop_run,
+            "gate": None if context.autonomous or context.approval_mode == "none" else _make_gate(session_id),
+        }
+        signature = inspect.signature(run_events)
+        if "resume_state" in signature.parameters or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values()
+        ):
+            event_options.update(resume_state=resume_state, checkpoint_callback=recorder)
+        gen = run_events(cfg, messages, **event_options)
         to_send = None
         while True:
             try:
@@ -1854,6 +2121,86 @@ def run_lea(context: RunnerContext) -> None:
             # rule then cannot be forgotten when a new event type is added.
             if not isinstance(ev, AssistantTextDelta):
                 deltas.flush()
+
+            if isinstance(ev, DependencyReadinessRequested):
+                from .project_dependencies import readiness
+                result = readiness(run_id, ev.path)
+                to_send = DependencyReadinessAck(**result)
+                continue
+
+            if isinstance(ev, ProjectLibraryRequested):
+                from .project_dependencies import tool_request
+                try:
+                    result = tool_request(run_id, ev.invocation_key, ev.tool, ev.arguments)
+                    to_send = ProjectLibraryAck(result=result)
+                    if result.get("dependency"):
+                        emit(events, "project_dependency", result)
+                except (ValueError, OSError, TypeError, KeyError) as exc:
+                    to_send = ProjectLibraryAck(error=str(exc))
+                continue
+            if isinstance(ev, LeaStatusUpdateRequested):
+                from lea.status_reporting import attention
+                try:
+                    if ev.payload.get("scope") != "source_only" and focus_formalization_id:
+                        retired = store.unlink_missing_formalization_support(
+                            focus_formalization_id, repo
+                        )
+                        if retired:
+                            logger.info("lea_status.retired_missing_support run=%s paths=%s", run_id, retired)
+                    # Capture shell/custom-tool changes only for files already bound to this target.
+                    from .artifact_snapshots import _snapshot
+                    captured = _snapshot(focus_formalization_id, run_id=run_id) if ev.payload.get("scope") != "source_only" else None
+                    canonical = {f["path"]: f for f in store.current_code_steps_for_formalization(focus_formalization_id)}
+                    for file in captured[1] if captured else []:
+                        winner = canonical.get(file["path"])
+                        if file.get("role") != "dependency" and winner and str(winner["id"]) != str(file["id"]):
+                            # Preserve this run's immutable revision if another session
+                            # has superseded it. Do not reattribute those bytes here.
+                            continue
+                        path = (repo / file["path"]).resolve()
+                        if not path.is_relative_to(repo.resolve()):
+                            raise ValueError("Artifact lies outside this run workspace")
+                        if not path.is_file():
+                            raise ValueError("An assessed artifact is missing from this run workspace; restore it before reporting")
+                        if path.is_file():
+                            after = path.read_bytes().decode('utf-8')
+                            if after != file.get("code"):
+                                step = store.add_code_step(session_id, run_id, file["path"], content=after,
+                                    author="agent", turn=current_turn, formalization_id=file.get("formalization_id") or focus_formalization_id)
+                                step_id_by_path[file["path"]] = step["id"]
+                                emit(events, "code_step", step)
+                    # Retry the same host invocation once: persistence may have committed
+                    # even if returning the acknowledgment failed. append() deduplicates it.
+                    for attempt in range(2):
+                        try:
+                            update, public = lea_status.publish(run_id, ev.invocation_key, ev.payload)
+                            break
+                        except (ValueError, TypeError):
+                            raise
+                        except Exception:
+                            if attempt:
+                                raise
+                    accepted_at = time.monotonic()
+                    logger.info("lea_status.accepted run=%s sequence=%s first=%s gap_seconds=%.3f kind=%s",
+                                run_id, update["sequence"], reporting_last_accepted is None,
+                                accepted_at - (reporting_last_accepted or reporting_started), update["kind"])
+                    reporting_last_accepted = accepted_at
+                    to_send = LeaStatusUpdateAck(True, update["id"], update["sequence"], update["assessment"],
+                        stop_reason="source_obstruction" if context.allow_source_pause
+                        and attention(update["assessment"]) == "needs_author_input" else None)
+                    try:
+                        emit(events, "lea_status_updated", public)
+                    except Exception:
+                        logger.exception("Status saved but live delivery failed for %s", run_id)
+                except (ValueError, TypeError) as exc:
+                    logger.warning("lea_status.rejected run=%s error=%s", run_id, _redact(str(exc)))
+                    to_send = LeaStatusUpdateAck(False, error=str(exc))
+                except Exception as exc:
+                    material = any(f.get("severity") in {"warning", "blocking"} for f in ev.payload.get("finding_updates", []))
+                    to_send = LeaStatusUpdateAck(False, error=f"Could not save Lea Status: {_public_error_detail(exc)}",
+                        stop_reason="status_reporting_failed" if material else None)
+                    diagnose(events, session_id, run_id, "step_error", "status.publish_failed", str(exc), turn=current_turn)
+                continue
 
             if isinstance(ev, ToolApprovalRequested):
                 to_send = _await_decision(run_id, session_id, ev, events, stop_event)
@@ -1885,12 +2232,10 @@ def run_lea(context: RunnerContext) -> None:
                 formalization_id = _attributable_formalization(
                     rel, focus_formalization_id
                 )
-                # The file on disk *is* the after-state — the prover has already
-                # written it. Reading it here is what makes the stored content and
-                # the streamed snapshot the same bytes by construction, rather than
-                # two derivations of it that can disagree (the old path committed to
-                # git, then asked git what it had committed).
-                after = _read_after(ev.path)
+                # Built-in writers carry their exact snapshot. Legacy producers
+                # can supply only a path; rereading it preserves history without
+                # attributing any later check to those bytes.
+                after = ev.content if ev.content is not None else _read_after(ev.path)
                 step = store.add_code_step(
                     session_id, run_id, rel, content=(after or ""),
                     author="agent", turn=current_turn, summary=last_intent,
@@ -1916,61 +2261,49 @@ def run_lea(context: RunnerContext) -> None:
                 formalization_id = _attributable_formalization(
                     rel, focus_formalization_id
                 )
-                step_id = step_id_by_path.get(rel)
-                if step_id is None:
-                    # A file this run never wrote through write_file/edit_file — a
-                    # bash-written file, or one checked before its first write. It
-                    # has no step from this run to back-fill, so the verdict had
-                    # nowhere to go and was dropped. Record the check against the
-                    # file's current content instead: a verdict with no step is a
-                    # result the user never sees.
-                    after = _read_after(ev.path)
-                    step = store.add_code_step(
-                        session_id, run_id, rel, content=(after or ""),
-                        author="agent", turn=current_turn, summary=last_intent,
-                        check_status=ev.status, check_detail=ev.detail,
-                        artifact_kind=(_classify(after) if (ev.status == "ok" and after is not None) else None),
-                        content_lost=after is None,
-                        formalization_id=formalization_id,
-                    )
-                    if formalization_id:
-                        store.link_formalization_file(
-                            formalization_id, rel, "generated"
-                        )
-                    step_id_by_path[rel] = step["id"]
-                    if after is None:
-                        diagnose(events, session_id, run_id, "step_error", "code.content_lost",
-                                 f"lean_check ran on {rel}, but the file could not be read back to store it.",
-                                 turn=current_turn, path=rel, step_id=step["id"])
-                    if ev.status == "ok":
-                        checked_artifact_kind = step.get("artifact_kind")
-                        if "scratch" not in rel.lower():
-                            produced_clean = True
-                    emit(events, "code_step", step)
-                else:
-                    artifact_kind = None
-                    if ev.status == "ok":
-                        current_step = store.latest_code_step_for_path(session_id, rel)
-                        if current_step and current_step["id"] == step_id:
-                            artifact_kind = _classify(current_step["code"])
-                    updated = store.set_code_step_check(step_id, ev.status, ev.detail, artifact_kind=artifact_kind)
-                    if updated:
-                        if ev.status == "ok":
-                            checked_artifact_kind = updated.get("artifact_kind") or _classify(updated["code"])
-                            if "scratch" not in rel.lower():
-                                produced_clean = True
-                        emit(events, "code_step", updated)
+                from .proof_evidence import record_check
+                accepted, updated = record_check(session_id, rel, Path(ev.path), ev,
+                    run_id=run_id, formalization_id=formalization_id)
+                current = store.latest_code_step_for_path(session_id, rel)
+                after = _read_after(ev.path)
+                if after is not None and (not current or current['code'] != after):
+                    current = store.add_code_step(session_id, run_id, rel, content=after,
+                        author='agent', turn=current_turn, summary=last_intent,
+                        formalization_id=formalization_id)
+                    emit(events, 'code_step', current)
+                if current:
+                    step_id_by_path[rel] = current['id']
+                if updated:
+                    emit(events, 'code_step', updated)
+                if accepted and updated and updated.get('check_current') and ev.status == 'ok':
+                    checked_artifact_kind = updated.get('artifact_kind')
+                    produced_clean = 'scratch' not in rel.lower()
+                if not accepted:
+                    diagnose(events, session_id, run_id, 'step_error', 'proof.check_stale',
+                        'This check does not certify the current proof inputs. Check the current revision again.',
+                        turn=current_turn, path=rel)
+                from lea.check_evidence import public_execution
                 emit(events, "status", {
                     "status": "lean_check", "message": f"lean_check: {ev.status}",
                     "turn": current_turn, "check_status": ev.status, "check_detail": ev.detail,
+                    "execution": public_execution(ev.execution),
                 })
+                if project and ev.status == "ok" and accepted:
+                    from .project_dependencies import publish_owned
+                    published = publish_owned(run_id, rel)
+                    if published:
+                        emit(events, "project_dependency", {"outcome": "published", "dependency": published})
 
             elif isinstance(ev, UsageUpdated):
-                usage.add(current_turn, ev.input_tokens, ev.output_tokens, ev.cost)
-                with _live_spend_lock:
-                    _live_run_costs[run_id] = (
-                        _live_run_costs.get(run_id, 0.0) + float(ev.cost or 0.0)
-                    )
+                usage.add(current_turn, ev.input_tokens, ev.output_tokens, ev.cost, ev.usage_details)
+                observed_input += ev.input_tokens or 0
+                observed_output += ev.output_tokens or 0
+                observed_cost += float(ev.cost or 0.0)
+                observed_details = merge_details(observed_details, ev.usage_details or legacy_details())
+                usage_revision += 1
+                if store.checkpoint_run_usage(run_id, observed_input, observed_output,
+                                              observed_cost, usage_revision, observed_details):
+                    _advance_spend_cache(float(ev.cost or 0.0))
                 check_spend_cap()
 
             elif isinstance(ev, Compacted):
@@ -2104,6 +2437,21 @@ def run_lea(context: RunnerContext) -> None:
                         if child_broker is not None:
                             emit(child_broker, "diagnostic", _row)
                         continue
+                    if isinstance(ev.event, TurnStarted):
+                        started["usage_turn"] = ev.event.turn
+                    if isinstance(ev.event, UsageUpdated):
+                        inner = ev.event
+                        child_usage = started.setdefault("usage", _UsageByTurn())
+                        child_usage.add(started.get("usage_turn", 0), inner.input_tokens, inner.output_tokens, inner.cost, inner.usage_details)
+                        started["input_tokens"] = started.get("input_tokens", 0) + inner.input_tokens
+                        started["output_tokens"] = started.get("output_tokens", 0) + inner.output_tokens
+                        started["cost_usd"] = started.get("cost_usd", 0) + inner.cost
+                        started["usage_details"] = merge_details(started.get("usage_details"), inner.usage_details or legacy_details())
+                        started["usage_revision"] = started.get("usage_revision", 0) + 1
+                        if store.checkpoint_run_usage(started["run_id"], started["input_tokens"], started["output_tokens"],
+                                started["cost_usd"], started["usage_revision"], started["usage_details"]):
+                            _advance_spend_cache(inner.cost)
+                        check_spend_cap()
                     # (a) the coordinator's spawn box (a compact live line per child)
                     payload = _subagent_progress_payload(started["child_id"], ev.result_id, ev.event)
                     if payload:
@@ -2126,6 +2474,9 @@ def run_lea(context: RunnerContext) -> None:
                 started = subagent_children.pop(ev.result_id, None)
                 if started:
                     _child_session_to_result.pop(started["child_id"], None)  # D2: child done
+                    if started.get("usage"):
+                        store.replace_run_usage_breakdown(started["run_id"], started["usage"].rows())
+                        store.update_run(started["run_id"], "running", usage_status="final")
                     _finalize_started_subagent(
                         started["child_id"], started["run_id"], ev,
                         turn=current_turn, repo=repo,
@@ -2137,8 +2488,9 @@ def run_lea(context: RunnerContext) -> None:
                     child_broker = runbroker.get(started["run_id"])
                     if child_broker is not None:
                         _flush_child_narration(child_broker, started)
-                        emit(child_broker, "done",
-                             {"status": "error" if ev.check_status == "error" else "proved"})
+                        child_step = store.latest_code_step_for_path(started['child_id'], Path(ev.candidate_path).name) if ev.candidate_path else None
+                        child_current = bool(child_step and child_step.get('check_current') and child_step.get('check_status') == 'ok')
+                        emit(child_broker, "done", {"status": 'proved' if child_current else 'needs_review'})
                     runbroker.drop(started["run_id"])
                     child_id, child_title = started["child_id"], started["title"]
                 else:
@@ -2205,60 +2557,167 @@ def run_lea(context: RunnerContext) -> None:
                          turn=current_turn, source="prover")
 
             elif isinstance(ev, Finished):
-                flush_narration()
-                # Deterministic collation (item 25): if the coordinator delegated but
-                # produced no clean proof of its own, promote the best compiling child
-                # candidate as the session's proof (re-verified at the canonical path).
-                # Runs BEFORE the artifact-result classification so the promoted verdict
-                # settles the session's outcome. Never clobbers a clean coordinator proof.
-                if not produced_clean and subagent_results:
-                    promoted = _promote_winner(
-                        subagent_results, session_id=session_id, run_id=run_id,
-                        repo=repo, namespace=namespace,
-                        formalization_id=focus_formalization_id,
-                        turn=current_turn, events=events,
+                from lea.check_evidence import mutation as environment_mutation
+                with environment_mutation(repo):
+                    flush_narration()
+                    # Deterministic collation (item 25): if the coordinator delegated but
+                    # produced no clean proof of its own, promote the best compiling child
+                    # candidate as the session's proof (re-verified at the canonical path).
+                    # Runs BEFORE the artifact-result classification so the promoted verdict
+                    # settles the session's outcome. Never clobbers a clean coordinator proof.
+                    if not produced_clean and subagent_results:
+                        promoted = _promote_winner(
+                            subagent_results, session_id=session_id, run_id=run_id,
+                            repo=repo, namespace=namespace,
+                            formalization_id=focus_formalization_id,
+                            turn=current_turn, events=events,
+                        )
+                        if promoted:
+                            checked_artifact_kind = promoted.get("artifact_kind") or checked_artifact_kind
+                            step_id_by_path[promoted["path"]] = promoted["id"]
+                            produced_clean = True
+                    final_text = _final_text_for_result(ev)
+                    persist_assistant(final_text)
+                    current_checks = [store.latest_code_step_for_path(session_id, path) for path in step_id_by_path]
+                    produced_clean = any(step and step.get('check_current') and step.get('check_status') == 'ok'
+                        and 'scratch' not in step['path'].lower() for step in current_checks)
+                    final_status, result_kind = _completed_artifact_result(ev, checked_artifact_kind)
+                    final_result_kind = result_kind
+                    final_result_detail = None if result_kind == "defined" else ev.result_detail
+                    if ev.reason == 'completed' and result_kind in {'proved', 'defined', 'disproved'} and not produced_clean:
+                        final_status = final_result_kind = 'needs_review'
+                        final_result_detail = 'The current proof inputs have no fresh passing Lean check.'
+                    if focus_formalization_id and ev.reason == "completed" and result_kind != "disproved":
+                        # A successful file check is evidence only for the declaration it
+                        # contains. The run must have checked the current target snapshot.
+                        checked_steps = []
+                        for path, step_id in step_id_by_path.items():
+                            step = store.latest_code_step_for_path(session_id, path)
+                            if not step or step.get("id") != step_id:
+                                continue
+                            try:
+                                if (repo / path).read_bytes().decode('utf-8') != step.get("code"):
+                                    continue
+                            except (OSError, UnicodeDecodeError):
+                                continue
+                            checked_steps.append(step)
+                        match, reason = checked_target(focused_formalization or {}, checked_steps)
+                        successful_result = ev.result_kind == "proved" or (
+                            focused_formalization.get("kind") == "definition" and ev.result_kind == "defined"
+                        )
+                        if ev.result_kind == "needs_review" or not successful_result or match is None:
+                            final_status = final_result_kind = "needs_review"
+                            final_result_detail = ev.result_detail or reason or "Lea requested review of this target."
+                        else:
+                            final_status = "proved"
+                            final_result_kind = "defined" if focused_formalization.get("kind") == "definition" else "proved"
+                    if context.purpose == "project_dependency" and ev.reason == "completed":
+                        from . import project_dependencies
+                        dependency_id = (store.get_run(run_id) or {}).get("dependency_id")
+                        dependency = project_dependencies.get(dependency_id, reconcile=False)
+                        if dependency and final_result_kind in {"proved", "defined"}:
+                            published = project_dependencies.publish_owned(run_id, dependency["path"], final=True)
+                            if published:
+                                emit(events, "project_dependency", {"outcome": "published", "dependency": published})
+                                dependency = published
+                        if not dependency or not dependency.get("ready"):
+                            final_status = final_result_kind = "needs_review"
+                            final_result_detail = "The canonical dependency has not passed its pinned statement and verification checks."
+                    if spend_capped and ev.reason != "completed":
+                        # Our own cap-triggered stop, not a user cancel: label it. A
+                        # run that completed anyway (finished the proof in the same
+                        # turn the cap tripped) keeps its real result.
+                        final_result_kind = "max_spend"
+                        final_result_detail = _MAX_SPEND_DETAIL
+                    stop_reason = None
+                    recoverable = False
+                    if spend_capped and ev.reason != "completed":
+                        stop_reason = "global_spend_cap"
+                        recoverable = True
+                    elif ev.reason == "max_cost":
+                        stop_reason = "cost_cap"
+                        recoverable = True
+                    elif ev.reason == "max_turns":
+                        stop_reason = "turn_cap"
+                        recoverable = True
+                    elif ev.reason in {"source_obstruction", "status_reporting_failed", "dependency_wait", "stalled"}:
+                        stop_reason = ev.reason
+                        recoverable = True
+                    elif ev.reason == "interrupted":
+                        stop_reason = (store.get_run(run_id) or {}).get("stop_requested_reason") or "user_stop"
+                        recoverable = True
+                        if stop_reason == "timeout":
+                            final_result_detail = "Time limit reached; the run stopped at a turn boundary."
+                    if ev.reason in {"stalled", "dependency_wait"}:
+                        final_result_detail = ev.text
+                    final_stop_reason = stop_reason
+                    final_recoverable = recoverable
+                    if final_result_detail:
+                        final_result_detail = _redact(final_result_detail)
+                    store.update_run(
+                        run_id, final_status, final_text=final_text,
+                        input_tokens=ev.usage.input_tokens, output_tokens=ev.usage.output_tokens,
+                        cost_usd=ev.cost,
+                        usage_status="final", usage_details=ev.usage.usage_details,
+                        result_kind=final_result_kind, result_detail=final_result_detail,
+                        stop_reason=stop_reason, recoverable=recoverable,
                     )
-                    if promoted:
-                        checked_artifact_kind = promoted.get("artifact_kind") or checked_artifact_kind
-                        step_id_by_path[promoted["path"]] = promoted["id"]
-                        produced_clean = True
-                final_text = _final_text_for_result(ev)
-                persist_assistant(final_text)
-                final_status, result_kind = _completed_artifact_result(ev, checked_artifact_kind)
-                final_result_kind = result_kind
-                final_result_detail = None if result_kind == "defined" else ev.result_detail
-                if spend_capped and ev.reason != "completed":
-                    # Our own cap-triggered stop, not a user cancel: label it. A
-                    # run that completed anyway (finished the proof in the same
-                    # turn the cap tripped) keeps its real result.
-                    final_result_kind = "max_spend"
-                    final_result_detail = _MAX_SPEND_DETAIL
-                store.update_run(
-                    run_id, final_status, final_text=final_text,
-                    input_tokens=ev.usage.input_tokens, output_tokens=ev.usage.output_tokens,
-                    cost_usd=ev.cost,
-                    result_kind=final_result_kind, result_detail=final_result_detail,
-                )
-                # Everything past this point is BOOKKEEPING: the run's outcome is
-                # already durable above. Each piece is guarded on its own so one
-                # failure neither loses the others nor escapes to the handler below,
-                # which used to rewrite a proved run to 'failed' over a locked DB or an
-                # unserializable transcript (AUDIT-2026-07-24 C6).
-                _best_effort("usage breakdown", run_id,
-                             lambda: store.replace_run_usage_breakdown(run_id, usage.rows()))
-                # Persist the faithful conversation for the next activation to replay
-                # (multi-turn, D16). Only here, on Finished — an errored run stores none.
-                _best_effort("transcript", run_id,
-                             lambda: store.set_run_transcript(run_id, ev.transcript.get("messages", [])))
-                # Structured artifact index (4.1): record which declarations this
-                # run's checked files hold, keyed to the run's own FileChanged set.
-                _best_effort("artifact index", run_id,
-                             lambda: _record_run_artifacts(
-                                 session_id, run_id, project, namespace,
-                                 dict(step_id_by_path),
-                                 focus_formalization_id=focus_formalization_id,
-                                 source_hash=focus_source_hash))
+                    reset_persisted_spend_cache()
+                    if reporting_context:
+                        def record_reporting_completion():
+                            latest_status = lea_status_store.latest(run_id)
+                            if not latest_status or latest_status["kind"] != "final":
+                                logger.info("lea_status.incomplete run=%s reason=%s missing_initial=%s", run_id, ev.reason, not latest_status)
+                                if ev.reason == "completed":
+                                    diagnose(events, session_id, run_id, "step_error", "status.reporting_incomplete",
+                                             "The run completed without a final Lea Status update; the last published assessment is retained.", turn=current_turn)
+                        _best_effort("status completion", run_id, record_reporting_completion)
+                    # Everything past this point is BOOKKEEPING: the run's outcome is
+                    # already durable above. Each piece is guarded on its own so one
+                    # failure neither loses the others nor escapes to the handler below,
+                    # which used to rewrite a proved run to 'failed' over a locked DB or an
+                    # unserializable transcript (AUDIT-2026-07-24 C6).
+                    _best_effort("usage breakdown", run_id,
+                                 lambda: store.replace_run_usage_breakdown(run_id, usage.rows()))
+                    # Persist the faithful conversation for the next activation to replay
+                    # (multi-turn, D16). Only here, on Finished — an errored run stores none.
+                    _best_effort("transcript", run_id,
+                                 lambda: store.set_run_transcript(run_id, ev.transcript.get("messages", [])))
+                    # Structured artifact index (4.1): record which declarations this
+                    # run's checked files hold, keyed to the run's own FileChanged set.
+                    review_candidate_path = None
+                    if focus_formalization_id and ev.reason == "completed" and final_result_kind == "needs_review":
+                        # Preserve a technically checked target independently of the
+                        # classifier's human-review outcome. Different-name results
+                        # require the prover's explicit final artifact association.
+                        candidate_path = _relativize(ev.candidate_path, repo) if ev.candidate_path else None
+                        target_step, _ = checked_target(focused_formalization or {}, [s for s in current_checks if s])
+                        if candidate_path is None and target_step:
+                            candidate_path = target_step["path"]
+                        candidate = next((s for s in current_checks if s and s["path"] == candidate_path), None)
+                        if candidate and candidate.get("check_current") and candidate.get("check_status") == "ok" and "scratch" not in candidate_path.lower():
+                            try:
+                                if (repo / candidate_path).read_bytes().decode("utf-8") == candidate.get("code"):
+                                    review_candidate_path = candidate_path
+                            except (OSError, UnicodeDecodeError):
+                                pass
+                    _best_effort("artifact index", run_id,
+                                 lambda: _record_run_artifacts(
+                                     session_id, run_id, project, namespace,
+                                     dict(step_id_by_path),
+                                     focus_formalization_id=focus_formalization_id,
+                                     completion_verified=final_result_kind in {"proved", "defined"},
+                                     review_candidate_path=review_candidate_path,
+                                     source_hash=focus_source_hash))
 
+    except recovery.CheckpointWriteError as exc:
+        logger.exception("Run %s paused because its checkpoint could not be saved", run_id)
+        reason = _public_error_detail(exc)
+        recovery.pause_for_mismatch(run_id, reason)
+        final_status = "cancelled"
+        final_result_kind = "interrupted"
+        final_result_detail = reason
+        final_recoverable = True
     except Exception as exc:  # noqa: BLE001 — surface any failure as an error event, never hang the stream
         logger.exception("Lea run %s failed", run_id)
         flush_narration()
@@ -2325,10 +2784,16 @@ def run_lea(context: RunnerContext) -> None:
                 )
             except Exception:
                 logger.exception("Failed to mark run %s failed", run_id)
+            store.mark_run_usage_unknown(run_id)
             final_status = "failed"
             final_result_kind = "failed"
             final_result_detail = error_detail
     finally:
+        if attempt_id:
+            try:
+                recovery.finish_attempt(run_id, attempt_id, final_status)
+            except Exception:
+                logger.exception("Could not finish attempt %s", attempt_id)
         # Publish any trailing streamed text before the terminal `done` (P1) — a run
         # that ends mid-batch must not drop its last words.
         deltas.flush()
@@ -2352,17 +2817,37 @@ def run_lea(context: RunnerContext) -> None:
         subagent_children.clear()
         _stop_events.pop(run_id, None)
         _pending_approvals.pop(run_id, None)
-        with _live_spend_lock:
-            _live_run_costs.pop(run_id, None)
-        # Release the admission slot (paired with the dispatcher's try_admit). Idempotent,
-        # so a run that reaches here unadmitted — e.g. a direct unit-test call to
-        # run_lea, which never goes through the endpoint — is a harmless no-op.
-        runregistry.registry.release(run_id)
+        try:
+            from .project_dependencies import settle_run
+            settle_run(run_id)
+            from .db import write
+            settled_run = store.get_run(run_id) or {}
+            budget = json.loads(settled_run.get("automation_budget_json") or "{}")
+            if budget:
+                budget["cost_used"] = budget.get("cost_used", 0) + float(settled_run.get("cost_usd") or 0)
+                budget["remaining_seconds"] = max(0, budget.get("remaining_seconds", 900) - (time.monotonic() - execution_started))
+                budget["settled_run_id"] = run_id
+                with write() as conn:
+                    conn.execute("update runs set automation_budget_json=? where id=?", (json.dumps(budget), run_id))
+        except Exception:
+            logger.exception("Could not reconcile shared dependencies for %s", run_id)
         done_payload = {"status": final_status}
+        settled_run = store.get_run(run_id) or {}
+        done_payload["waiting_dependencies"] = json.loads(settled_run.get("waiting_dependencies_json") or "[]")
+        done_payload["dependency_id"] = settled_run.get("dependency_id")
         if final_result_kind:
             done_payload["result_kind"] = final_result_kind
         if final_result_detail:
+            final_result_detail = _redact(final_result_detail)
             done_payload["result_detail"] = final_result_detail
+        if final_stop_reason:
+            done_payload["stop_reason"] = final_stop_reason
+        done_payload["recoverable"] = final_recoverable
+        settled = store.get_run_status(run_id) or {}
+        for key in ("stop_requested_reason", "attempt_id", "recovery_state", "recovery_reason",
+                    "checkpoint_at", "input_tokens", "output_tokens", "cost_usd",
+                    "usage_status", "usage_revision", "usage_updated_at"):
+            done_payload[key] = settled.get(key)
         emit(events, "done", done_payload)
         # The run has ended: retire its broker. Subscribers already draining hold
         # their own reference and exit on `done`; a late observer gets a synthesized
