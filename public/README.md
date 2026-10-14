@@ -1,13 +1,13 @@
 # `public/` — the Lea website
 
-Everything public-facing lives here: the marketing site, the install guide and the
+Everything public-facing lives here: the marketing site, the install and usage guides, and the
 blog. It is a static site with **no dependencies** — `node build.mjs` is the whole
 toolchain, so there is nothing to `npm install` before editing it.
 
 ```sh
 npm run site:dev      # build + serve at http://localhost:4321 (rebuilds on save)
 npm run site:build    # write public/dist for deployment
-npm run site:test     # unit tests for the Markdown renderer
+npm run site:test     # Markdown renderer and guide build tests
 ```
 
 Or, from inside `public/`: `node serve.mjs --watch`, `node build.mjs`,
@@ -22,6 +22,7 @@ public/
   serve.mjs            preview server
   content/
     install.md         the install guide
+    overleaf.md        the Overleaf extension usage guide
     blog/*.md          one file per blog post
   lib/
     markdown.mjs       Markdown → HTML (no dependencies)
@@ -59,9 +60,10 @@ Your first paragraph.
 Posts are sorted by `date`, newest first. Nothing else needs updating — the index,
 the Atom feed, `sitemap.xml`, `api/posts.json` and `llms.txt` are all generated.
 
-## Editing the install guide
+## Editing the guides
 
-`content/install.md` is one long Markdown document. Every `##` and `###` heading
+`content/install.md` and `content/overleaf.md` render at `/install/` and `/overleaf/`.
+Each is a Markdown document. Every `##` and `###` heading
 automatically becomes an entry in the sidebar table of contents, and its anchor is
 the slugified heading text — so renaming a heading changes its link.
 
@@ -130,8 +132,9 @@ changes.
 
 ## Deploying
 
-`.github/workflows/site.yml` builds and publishes to GitHub Pages on every push to
-`main` that touches `public/`.
+`.github/workflows/site.yml` builds and publishes to GitHub Pages when the
+**Publish website** workflow is run manually from GitHub Actions. Select `main`
+after merging the website changes. A push to `main` alone does not deploy the site.
 
 **One-time setup:** a repository admin must turn Pages on under **Settings → Pages →
 Source → GitHub Actions**. Until then the workflow fails at `configure-pages` with

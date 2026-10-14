@@ -97,25 +97,30 @@ write(".nojekyll", "");
 
 write("index.html", layout(ctx, { path: "/", main: homePage(ctx) }));
 
-/* ----------------------------------------------------------- install guide */
+/* --------------------------------------------------------------- guides */
 
-{
-  const { data, body } = readMarkdown(path.join(ROOT, "content", "install.md"));
+const guides = [
+  { slug: "install", title: "Install Lea" },
+  { slug: "overleaf", title: "Overleaf extension usage guide" },
+];
+
+for (const guide of guides) {
+  const { data, body } = readMarkdown(path.join(ROOT, "content", `${guide.slug}.md`));
   const { html, headings } = render(body, { base: ctx.base });
   const main = `<div class="wrap guide">
   ${tocHtml(headings)}
   <article class="guide-body prose">
-    <h1>${escapeHtml(data.title || "Install")}</h1>
+    <h1>${escapeHtml(data.title || guide.title)}</h1>
     <p class="lead">${escapeHtml(data.description || "")}</p>
     <hr>
     ${html}
   </article>
 </div>`;
   write(
-    "install/index.html",
+    `${guide.slug}/index.html`,
     layout(ctx, {
-      path: "/install/",
-      title: data.title,
+      path: `/${guide.slug}/`,
+      title: data.title || guide.title,
       description: data.description,
       main,
     }),
@@ -254,7 +259,7 @@ write(
   "sitemap.xml",
   `<?xml version="1.0" encoding="utf-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${["/", "/install/", "/blog/"]
+${["/", ...guides.map((guide) => `/${guide.slug}/`), "/blog/"]
   .concat(posts.map((post) => post.href))
   .map((href) => `  <url><loc>${ctx.absolute(href)}</loc></url>`)
   .join("\n")}
@@ -309,6 +314,7 @@ Design commitments:
 ## Pages
 - Home: ${ctx.absolute("/")}
 - Install guide: ${ctx.absolute("/install/")}
+- Overleaf extension usage guide: ${ctx.absolute("/overleaf/")}
 - Blog: ${ctx.absolute("/blog/")}
 - Source: ${ctx.site.links.github}
 - Community: ${ctx.site.links.discord}
