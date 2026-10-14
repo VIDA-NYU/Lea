@@ -2651,6 +2651,243 @@ test("Formalize all renders an accessible, collapsible queue with active turn pr
   assert.match(queue.text, /Hide 3 completed/);
 });
 
+function queuePaneItem(label, overrides = {}) {
+  return {
+    id: `theorem:${label}:0`, kind: "theorem", label, targetKind: "theorem",
+    status: "missing-stub", sourceFile: "main.tex", sourceStartLine: 1, sourceEndLine: 4,
+    naturalLanguageLatex: `Statement of ${label}.`, leanKind: "theorem",
+    leanDeclarationName: label, formalizable: true, ...overrides
+  };
+}
+
+async function startNavigationQueue(items, entries, options = {}) {
+  const batch = {
+    ok: true, batchId: "navigation-batch", operation: "formalize", done: false,
+    running: true, pausedOn: null, items: entries
+  };
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/unknown",
+    manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
+    targetBatch: batch, repairStatus: batch, ...options
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.leanPane().querySelector(".ol-lean-formalize-all-button").click();
+  await flushPromises();
+  return harness;
+}
+
+function queueNavigationButton(harness, label, action, kind = "theorem") {
+  return harness.leanPane().querySelectorAll(".ol-lean-batch-queue-action").find((button) => {
+    const key = JSON.parse(button.dataset.batchNavigationKey);
+    return key[2] === kind && key[3] === label && key[4] === action;
+  });
+}
+
+test("Formalize all keeps both navigation buttons across all queue sections and polling", async () => {
+  const entries = [
+    ["current", "running"], ["next1", "pending"], ["next2", "pending"],
+    ["next3", "pending"], ["next4", "pending"], ["completed", "formalized"],
+    ["failed", "failed"], ["incomplete", "incomplete"], ["review", "needs_review"],
+    ["disproved", "disproved"], ["skipped", "skipped"], ["canceled", "canceled"]
+  ].map(([targetLabel, state]) => ({ targetKind: "theorem", targetLabel, state }));
+  const harness = await startNavigationQueue(entries.map((entry) => queuePaneItem(entry.targetLabel)), entries);
+  const checkButtons = (count) => {
+    const rows = harness.leanPane().querySelectorAll(".ol-lean-batch-queue-item");
+    assert.equal(rows.length, count);
+    for (const row of rows) {
+      const label = row.querySelector("strong").textContent;
+      const buttons = row.querySelectorAll(".ol-lean-batch-queue-action");
+      assert.deepEqual(buttons.map((button) => button.textContent), ["Show in Lean pane", "Open in LeaChat"]);
+      assert.equal(buttons[0].attributes["aria-label"], `Show ${label} in Lean pane`);
+      assert.equal(buttons[1].attributes["aria-label"], `Open ${label} in LeaChat`);
+    }
+  };
+  checkButtons(9);
+  harness.clickButtonText("+1 more queued");
+  harness.clickButtonText("+1 more item needing attention");
+  harness.clickButtonText("Show 1 completed");
+  checkButtons(12);
+  const progress = harness.batchQueue().progress;
+  await harness.runTimersAt(0);
+  checkButtons(12);
+  assert.deepEqual(harness.batchQueue().progress, progress);
+  assert.equal(harness.hasButtonText("Stop"), true);
+});
+
+for (const targetKind of ["theorem", "definition"]) {
+  test(`queue Lean navigation expands and focuses the exact ${targetKind} before an artifact exists`, async () => {
+    const items = [
+      queuePaneItem("same", { sourceFile: "chapters/proofs.tex", leanDeclarationName: "renamed_theorem" }),
+      queuePaneItem("same", { id: "definition:same:1", kind: "definition", targetKind: "definition",
+        leanKind: "def", sourceFile: "chapters/nested/definitions.tex" })
+    ];
+    const harness = await startNavigationQueue(items, [{ targetKind, targetLabel: "same", state: "pending" }]);
+    const progress = harness.batchQueue().progress;
+    const before = harness.fetchCalls.length;
+    queueNavigationButton(harness, "same", "lean-pane", targetKind).click();
+    await flushPromises();
+    const item = items[targetKind === "definition" ? 1 : 0];
+    assert.equal(harness.focusedPaneItemId(), item.id);
+    assert.equal(harness.firstFocusedPaneItemScrolled(), true);
+    assert.equal(harness.countSelector(".ol-lean-project-detail"), 1);
+    assert.ok(harness.paneTreeRowTexts().some((text) => text.includes("chapters/")));
+    assert.ok(harness.paneTreeRowTexts().some((text) => text.includes(path.basename(item.sourceFile))));
+    assert.equal(harness.document.activeElement.closest(".ol-lean-project-item").dataset.itemId, item.id);
+    await harness.runTimersAt(0);
+    assert.equal(harness.document.activeElement.closest(".ol-lean-project-item").dataset.itemId, item.id);
+    assert.deepEqual(harness.batchQueue().progress, progress);
+    assert.ok(!harness.fetchCalls.slice(before).some((call) => /\/(formalize|stub|lean-pane\/chat\/send)$/.test(call.url)));
+  });
+}
+
+test("queued items open their saved LeaChat session and enable new sessions after refresh", async () => {
+  let items = [queuePaneItem("saved", { leaSessionId: "prior-session" }), queuePaneItem("new")];
+  const manifest = () => ({ ok: true, rootFile: "main.tex", items, diagnostics: [] });
+  const harness = await startNavigationQueue(items, items.map((item) => ({
+    targetKind: "theorem", targetLabel: item.label, state: "pending"
+  })), { manifest });
+  const before = harness.fetchCalls.length;
+  const saved = queueNavigationButton(harness, "saved", "lea-chat");
+  assert.equal(saved.disabled, false);
+  saved.click();
+  await flushPromises();
+  let opened = harness.runtimeMessages.filter((message) => message.type === "OPEN_LEA_SESSION");
+  assert.equal(new URL(opened[0].url).searchParams.get("session"), "prior-session");
+  assert.equal(harness.fetchCalls.length, before, "opening a saved session performs no companion request");
+  const pending = queueNavigationButton(harness, "new", "lea-chat");
+  assert.equal(pending.disabled, true);
+  assert.equal(pending.title, "No LeaChat session is available yet.");
+  pending.click();
+  assert.equal(harness.runtimeMessages.filter((message) => message.type === "OPEN_LEA_SESSION").length, 1);
+  items = [items[0], { ...items[1], leaSessionUrl: "http://localhost:5173/?session=new-session&formalization=form-1" }];
+  harness.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  const ready = queueNavigationButton(harness, "new", "lea-chat");
+  assert.equal(ready.disabled, false);
+  ready.click();
+  await flushPromises();
+  opened = harness.runtimeMessages.filter((message) => message.type === "OPEN_LEA_SESSION");
+  assert.equal(opened[1].url, items[1].leaSessionUrl);
+  assert.ok(!harness.fetchCalls.slice(before).some((call) => /\/(formalize|stub|lean-pane\/chat\/(send|session))$/.test(call.url)));
+});
+
+test("queue navigation resolves refreshed manifest items rather than captured item objects", async () => {
+  let item = queuePaneItem("moving", { leaSessionId: "old-session" });
+  const harness = await startNavigationQueue([item], [{ targetKind: "theorem", targetLabel: "moving", state: "running" }], {
+    manifest: () => ({ ok: true, items: [item], diagnostics: [] })
+  });
+  const originalLeanButton = queueNavigationButton(harness, "moving", "lean-pane");
+  const originalChatButton = queueNavigationButton(harness, "moving", "lea-chat");
+  item = { ...item, id: "theorem:moving:7", sourceFile: "nested/moved.tex", leaSessionId: "new-session" };
+  harness.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  originalLeanButton.click();
+  originalChatButton.click();
+  await flushPromises();
+  assert.equal(harness.focusedPaneItemId(), item.id);
+  const opened = harness.runtimeMessages.find((message) => message.type === "OPEN_LEA_SESSION");
+  assert.equal(new URL(opened.url).searchParams.get("session"), "new-session");
+});
+
+for (const situation of ["missing", "ambiguous", "other-project"]) {
+  test(`queue navigation stays disabled for a ${situation} manifest target`, async () => {
+    const unrelated = queuePaneItem("unrelated");
+    const item = queuePaneItem("target", { leaSessionId: "saved-session" });
+    const items = situation === "missing" ? [unrelated]
+      : situation === "ambiguous" ? [item, { ...item, id: "theorem:target:1", sourceFile: "other.tex" }]
+        : [unrelated, { ...item, overleafProjectId: "other-project" }];
+    const harness = await startNavigationQueue(items, [{ targetKind: "theorem", targetLabel: "target", state: "pending" }]);
+    for (const action of ["lean-pane", "lea-chat"]) {
+      const button = queueNavigationButton(harness, "target", action);
+      assert.equal(button.disabled, true);
+      button.click();
+    }
+    assert.equal(harness.focusedPaneItemId(), "");
+    assert.ok(!harness.runtimeMessages.some((message) => message.type === "OPEN_LEA_SESSION"));
+  });
+}
+
+test("queue opening stays busy and preserves keyboard focus across polling, including tab failures", async () => {
+  let finishOpen;
+  const harness = await startNavigationQueue([queuePaneItem("saved", { leaSessionId: "session-1" })], [
+    { targetKind: "theorem", targetLabel: "saved", state: "running" }
+  ], { runtimeSendMessage(message, callback) {
+    if (message.type === "OPEN_LEA_SESSION") finishOpen = callback;
+    else callback?.({ ok: true });
+  } });
+  const button = queueNavigationButton(harness, "saved", "lea-chat");
+  button.focus();
+  button.click();
+  await flushPromises();
+  assert.equal(button.attributes["aria-busy"], "true");
+  await harness.runTimersAt(0);
+  const replacement = queueNavigationButton(harness, "saved", "lea-chat");
+  assert.notEqual(replacement, button);
+  assert.equal(harness.document.activeElement, replacement);
+  assert.equal(replacement.attributes["aria-disabled"], "true");
+  replacement.click();
+  await flushPromises();
+  assert.equal(harness.runtimeMessages.filter((message) => message.type === "OPEN_LEA_SESSION").length, 1);
+  finishOpen({ ok: false, message: "Could not open Lea session tab." });
+  await flushPromises();
+  assert.equal(replacement.attributes["aria-busy"], "false");
+  assert.equal(replacement.attributes["aria-disabled"], "false");
+  assert.match(harness.bodyText(), /Could not open Lea session tab/);
+  const status = harness.leanPane().querySelector(".ol-lean-project-pane-status");
+  assert.equal(status.attributes.role, "status");
+  assert.equal(status.attributes["aria-live"], "polite");
+  harness.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  assert.match(harness.bodyText(), /Could not open Lea session tab/);
+});
+
+test("queue session navigation never falls back to the Lea homepage when a session disappears", async () => {
+  let item = queuePaneItem("saved", { leaSessionId: "session-1" });
+  const harness = await startNavigationQueue([item], [{ targetKind: "theorem", targetLabel: "saved", state: "pending" }], {
+    manifest: () => ({ ok: true, items: [item], diagnostics: [] }),
+    fetchOverride: async (url) => url.endsWith("/lean-pane/chat/session")
+      ? { ok: true, json: async () => ({ ok: true, status: "no-session", leaSessionUrl: null }) } : undefined
+  });
+  const oldButton = queueNavigationButton(harness, "saved", "lea-chat");
+  item = { ...item, leaSessionId: undefined };
+  harness.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  oldButton.click();
+  await flushPromises();
+  assert.match(harness.bodyText(), /No LeaChat session is available yet/);
+  assert.ok(!harness.runtimeMessages.some((message) => message.type === "OPEN_LEA_SESSION"));
+  assert.ok(harness.fetchCalls.some((call) => call.url.endsWith("/lean-pane/chat/session")));
+});
+
+for (const outcome of ["formalized", "failed"]) {
+  test(`queue focus follows a running row into its ${outcome} outcome group`, async () => {
+    const entries = Array.from({ length: 6 }, (_, index) => ({
+      targetKind: "theorem", targetLabel: `failed${index}`, state: "failed"
+    }));
+    entries.push({ targetKind: "theorem", targetLabel: "current", state: "running" });
+    const harness = await startNavigationQueue(entries.map((entry) => queuePaneItem(entry.targetLabel)), entries);
+    queueNavigationButton(harness, "current", "lean-pane").focus();
+    entries.at(-1).state = outcome;
+    await harness.runTimersAt(0);
+    const replacement = queueNavigationButton(harness, "current", "lean-pane");
+    assert.ok(replacement, "the focused outcome remains visible");
+    assert.equal(harness.document.activeElement, replacement);
+    assert.equal(harness.batchQueue().completedCount, outcome === "formalized" ? 1 : 0);
+    assert.equal(harness.batchQueue().attentionItemCount, outcome === "failed" ? 7 : 5);
+  });
+}
+
+for (const operation of ["stub", "repair"]) {
+  test(`${operation} all queue rows do not gain Formalize all navigation controls`, async () => {
+    const batch = { ok: true, batchId: "other-batch", operation, done: false, running: true,
+      items: [{ targetKind: "theorem", targetLabel: "target", state: "running" }] };
+    const harness = await startNavigationQueue([queuePaneItem("target")], batch.items, { targetBatch: batch, repairStatus: batch });
+    assert.equal(harness.countSelector(".ol-lean-batch-queue-action"), 0);
+  });
+}
+
 test("Formalize all limits cost-cap failures to five statements until expanded", async () => {
   const items = Array.from({ length: 9 }, (_unused, index) => ({
     id: `theorem:cap_t${index + 1}:${index}`,
@@ -3532,6 +3769,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
           : `chrome-extension://test/${file}`,
         sendMessage(message, callback) {
           runtimeMessages.push(message);
+          if (options.runtimeSendMessage) return options.runtimeSendMessage(message, callback);
           callback?.({ ok: true });
         },
         lastError: null
@@ -4029,6 +4267,8 @@ class FakeDocument {
     this.body = new FakeElement("body");
     this.documentElement = new FakeElement("html");
     this.head = new FakeElement("head");
+    for (const element of [this.body, this.documentElement, this.head]) element.ownerDocument = this;
+    this.activeElement = this.body;
     this._listeners = new Map();
   }
 
@@ -4051,7 +4291,9 @@ class FakeDocument {
   }
 
   createElement(tagName) {
-    return new FakeElement(tagName);
+    const element = new FakeElement(tagName);
+    element.ownerDocument = this;
+    return element;
   }
 
   querySelector(selector) { return this.body.querySelector(selector); }
@@ -4117,7 +4359,14 @@ class FakeElement {
     this.scrollIntoViewOptions = null;
   }
 
-  focus() { this.focused = true; }
+  get ownerDocument() { return this._ownerDocument || this.parentNode?.ownerDocument; }
+
+  set ownerDocument(value) { this._ownerDocument = value; }
+
+  focus() {
+    this.focused = true;
+    if (this.ownerDocument) this.ownerDocument.activeElement = this;
+  }
 
   blur() {}
 
@@ -4383,6 +4632,8 @@ class FakeElement {
       this.dataset[toDatasetKey(name.slice(5))] = String(value);
     }
   }
+
+  getAttribute(name) { return this.attributes[name] ?? null; }
 
   getBoundingClientRect() {
     return { left: 0, top: 0, right: 120, bottom: 32, width: 120, height: 32 };

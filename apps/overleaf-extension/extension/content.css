@@ -2283,6 +2283,37 @@ button.ol-lean-project-relationship-chip {
   font-size: 11px;
 }
 
+.ol-lean-batch-queue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.ol-lean-batch-queue-actions .ol-lean-batch-queue-action {
+  min-width: 0;
+  min-height: 28px;
+  max-width: 100%;
+  padding: 3px 7px;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.ol-lean-batch-queue-action:focus-visible {
+  outline: 2px solid var(--ol-accent);
+  outline-offset: 2px;
+}
+
+.ol-lean-batch-queue-action[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.ol-lean-batch-queue-action[aria-busy="true"] {
+  cursor: progress;
+}
+
 .ol-lean-batch-queue-item-running .ol-lean-batch-queue-marker {
   color: var(--ol-accent);
   animation: ol-lean-batch-active-pulse 1.1s ease-in-out infinite;

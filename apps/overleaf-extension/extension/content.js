@@ -322,6 +322,8 @@
   let leanPaneExpandedBatchQueueId = "";
   let leanPaneExpandedBatchAttentionId = "";
   let leanPaneExpandedBatchCompletedId = "";
+  const leanPaneBatchNavigationBusy = new Set();
+  let leanPaneBatchNavigationStatus = null;
   let leanPaneBatchReports = [];
   let leanPaneBatchReportsProjectId = "";
   let leanPaneBatchReportsOpen = false;
@@ -2476,6 +2478,9 @@
     manifest = githubImportPaneOverlay(manifest);
     const prevScrollTop = leanPaneBody.scrollTop;
     const statusFocus = document.activeElement?.closest?.(".ol-lean-live-status") ? document.activeElement : null;
+    const navigationFocusKey = document.activeElement?.closest?.(".ol-lean-batch-queue-action")?.dataset.batchNavigationKey;
+    const itemHeaderFocusId = document.activeElement?.closest?.(".ol-lean-project-item-header")
+      ?.closest?.(".ol-lean-project-item")?.dataset.itemId;
     const selection = document.getSelection?.();
     // Defer this refresh while the author is selecting status text. The next
     // normal poll applies it after selection clears without destroying the range.
@@ -2506,6 +2511,10 @@
     leanPaneStatus.textContent = leanPaneInventoryWarning
       ? `${inventorySummary} ${leanPaneInventoryWarning}`
       : inventorySummary;
+    if (leanPaneBatchNavigationStatus?.projectId === renderedProjectId
+      && leanPaneBatchNavigationStatus.batchId === leanPaneRepairBatch?.batchId) {
+      leanPaneStatus.textContent = leanPaneBatchNavigationStatus.message;
+    }
 
     if (manifest?.leanCheckRuntimeMessage) {
       const runtime = document.createElement("div");
@@ -2536,7 +2545,7 @@
       }
     }
 
-    const repairBatchPanel = renderLeanPaneRepairBatchPanel();
+    const repairBatchPanel = renderLeanPaneRepairBatchPanel({ navigationFocusKey });
     if (repairBatchPanel) leanPaneBody.appendChild(repairBatchPanel);
 
     const reportsPanel = renderFormalizeBatchReportHistory();
@@ -2555,6 +2564,8 @@
     }
 
     if (statusFocus?.isConnected) statusFocus.focus({ preventScroll: true });
+    if (navigationFocusKey) batchQueueNavigationButton(navigationFocusKey)?.focus({ preventScroll: true });
+    if (itemHeaderFocusId) leanPaneItemHeader(itemHeaderFocusId)?.focus({ preventScroll: true });
     leanPaneBody.scrollTop = prevScrollTop;
     renderLeanPaneRefreshWarning();
     const projectId = extractOverleafProjectId();
@@ -4118,6 +4129,7 @@
       leanPaneRepairBatchTimer = 0;
       const batchId = leanPaneRepairBatch?.batchId;
       if (!batchId) return;
+      const projectId = leanPaneRepairBatch.overleafProjectId;
       // (delay above: instant when a push event announced a change, slow
       // reconciliation while the stream is up, fast poll when it's down)
       try {
@@ -4128,8 +4140,8 @@
           body: JSON.stringify({ batchId })
         });
         const payload = await response.json().catch(() => ({}));
-        if (response.ok) {
-          leanPaneRepairBatch = payload;
+        if (response.ok && leanPaneRepairBatch?.batchId === batchId) {
+          leanPaneRepairBatch = { ...payload, overleafProjectId: projectId };
           if (payload.operation === "formalize" && payload.report
             && payload.report.state !== "synthesizing") {
             loadFormalizeBatchReportHistory().catch(() => {});
@@ -4158,7 +4170,7 @@
         body: JSON.stringify({ batchId })
       });
       const payload = await response.json().catch(() => ({}));
-      if (response.ok) leanPaneRepairBatch = payload;
+      if (response.ok) leanPaneRepairBatch = { ...payload, overleafProjectId: leanPaneRepairBatch?.overleafProjectId };
       startRepairBatchPolling({ immediate: true });
     } catch (error) {
       leanPaneRepairError = { itemKey: "batch", message: normalizeErrorMessage(error) };
@@ -4180,7 +4192,7 @@
         body: JSON.stringify({ batchId })
       });
       const payload = await response.json().catch(() => ({}));
-      if (response.ok) leanPaneRepairBatch = payload;
+      if (response.ok) leanPaneRepairBatch = { ...payload, overleafProjectId: leanPaneRepairBatch?.overleafProjectId };
       startRepairBatchPolling({ immediate: true });
     } catch (error) {
       leanPaneRepairError = { itemKey: "batch", message: normalizeErrorMessage(error) };
@@ -4230,7 +4242,7 @@
   // Live batch progress at the top of the pane. The companion already returns
   // dependency-ordered entries, so the client can render a real queue (active
   // ordinal, next items, exact outcomes) without duplicating orchestration.
-  function renderLeanPaneRepairBatchPanel() {
+  function renderLeanPaneRepairBatchPanel({ navigationFocusKey } = {}) {
     const batch = leanPaneRepairBatch;
     if (!batch || !Array.isArray(batch.items) || batch.items.length === 0) return null;
     const operation = batch.operation || "repair";
@@ -4259,6 +4271,17 @@
         : null
     );
     const queuedEntries = batch.items.filter((entry) => entry.state === "pending" && entry !== activeEntry);
+    // A focused row can move into a collapsed outcome group while polling.
+    // Reveal that group so restoring focus still has a visible destination.
+    if (navigationFocusKey && operation === "formalize") {
+      const focusedEntry = batch.items.find((entry) => ["lean-pane", "lea-chat"].some((action) => (
+        navigationFocusKey === JSON.stringify([batch.overleafProjectId || lastLeanPaneManifestProjectId,
+          batch.batchId, entry.targetKind || "theorem", entry.targetLabel || "", action])
+      )));
+      if (focusedEntry && completedEntries.includes(focusedEntry)) leanPaneExpandedBatchCompletedId = batch.batchId;
+      if (focusedEntry && queuedEntries.indexOf(focusedEntry) >= 3) leanPaneExpandedBatchQueueId = batch.batchId;
+      if (focusedEntry && attentionEntries.indexOf(focusedEntry) >= 5) leanPaneExpandedBatchAttentionId = batch.batchId;
+    }
     const activeIndex = activeEntry ? batch.items.indexOf(activeEntry) : -1;
     const total = batch.items.length;
     const completedCount = batch.items.filter((entry) => successfulStates.has(entry.state)).length;
@@ -4542,7 +4565,7 @@
               });
               const payload = await response.json().catch(() => ({}));
               if (!response.ok) throw new Error(payload.message || "Could not save the report.");
-              leanPaneRepairBatch = payload;
+              leanPaneRepairBatch = { ...payload, overleafProjectId: batch.overleafProjectId };
               startRepairBatchPolling();
             } catch (error) {
               leanPaneRepairError = { itemKey: "batch", message: normalizeErrorMessage(error) };
@@ -4707,8 +4730,115 @@
     description.className = "ol-lean-batch-queue-item-detail";
     description.textContent = detail;
     copy.appendChild(description);
+    if (leanPaneRepairBatch?.operation === "formalize") {
+      copy.appendChild(renderBatchQueueNavigation(entry));
+    }
     row.appendChild(copy);
     return row;
+  }
+
+  function findBatchQueuePaneItem(identity) {
+    if (identity.projectId !== extractOverleafProjectId()
+      || identity.projectId !== lastLeanPaneManifestProjectId) return null;
+    const matches = (lastLeanPaneManifest?.items || []).filter((item) => (
+      (!item.overleafProjectId || item.overleafProjectId === identity.projectId)
+      && item.label === identity.targetLabel
+      && (item.targetKind || (item.leanKind === "def" ? "definition" : "theorem")) === identity.targetKind
+    ));
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function batchQueueNavigationButton(key) {
+    return [...(leanPaneBody?.querySelectorAll(".ol-lean-batch-queue-action") || [])]
+      .find((button) => button.dataset.batchNavigationKey === key);
+  }
+
+  function leanPaneItemHeader(itemId) {
+    return [...(leanPaneBody?.querySelectorAll(".ol-lean-project-item") || [])]
+      .find((card) => card.dataset.itemId === itemId)?.querySelector(".ol-lean-project-item-header");
+  }
+
+  function updateBatchQueueNavigationButton(button, identity, action, key) {
+    if (!button) return;
+    const item = findBatchQueuePaneItem(identity);
+    const unavailable = !item ? "This item is unavailable or ambiguous in the Lean pane."
+      : action === "lea-chat" && !(item.leaSessionId || item.leaSessionUrl)
+        ? "No LeaChat session is available yet." : "";
+    const busy = leanPaneBatchNavigationBusy.has(key);
+    button.disabled = Boolean(unavailable);
+    // Keep an opening action focusable through polling redraws. The handler
+    // guards the busy key, so aria-disabled also prevents duplicate opens.
+    button.setAttribute("aria-disabled", String(button.disabled || busy));
+    button.setAttribute("aria-busy", String(busy));
+    button.title = unavailable || (busy ? "Opening…" : button.getAttribute("aria-label"));
+  }
+
+  function setBatchQueueNavigationStatus(identity, message) {
+    if (identity.projectId !== extractOverleafProjectId()
+      || identity.batchId !== leanPaneRepairBatch?.batchId) return;
+    leanPaneBatchNavigationStatus = { ...identity, message };
+    if (leanPaneStatus) {
+      leanPaneStatus.setAttribute("role", "status");
+      leanPaneStatus.setAttribute("aria-live", "polite");
+      leanPaneStatus.textContent = message;
+    }
+  }
+
+  function renderBatchQueueNavigation(entry) {
+    const identity = {
+      projectId: leanPaneRepairBatch.overleafProjectId || lastLeanPaneManifestProjectId,
+      batchId: leanPaneRepairBatch.batchId,
+      targetKind: entry.targetKind || "theorem",
+      targetLabel: entry.targetLabel || ""
+    };
+    const actions = document.createElement("span");
+    actions.className = "ol-lean-batch-queue-actions";
+    for (const [action, label, accessibleLabel] of [
+      ["lean-pane", "Show in Lean pane", `Show ${identity.targetLabel} in Lean pane`],
+      ["lea-chat", "Open in LeaChat", `Open ${identity.targetLabel} in LeaChat`]
+    ]) {
+      const key = JSON.stringify([identity.projectId, identity.batchId, identity.targetKind, identity.targetLabel, action]);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ol-lean-secondary-button ol-lean-batch-queue-action";
+      button.dataset.batchNavigationKey = key;
+      button.dataset.batchNavigationAction = action;
+      button.setAttribute("aria-label", accessibleLabel);
+      button.textContent = label;
+      updateBatchQueueNavigationButton(button, identity, action, key);
+      button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (button.disabled || leanPaneBatchNavigationBusy.has(key)
+          || identity.batchId !== leanPaneRepairBatch?.batchId) return;
+        const item = findBatchQueuePaneItem(identity);
+        if (!item) {
+          setBatchQueueNavigationStatus(identity, `Could not find ${identity.targetLabel} uniquely in the Lean pane.`);
+          updateBatchQueueNavigationButton(button, identity, action, key);
+          return;
+        }
+        leanPaneBatchNavigationBusy.add(key);
+        updateBatchQueueNavigationButton(button, identity, action, key);
+        try {
+          if (action === "lean-pane") {
+            revealLeanPaneItem(item);
+            leanPaneItemHeader(item.id)?.focus({ preventScroll: true });
+            setBatchQueueNavigationStatus(identity, `Opened ${identity.targetLabel} in the Lean pane.`);
+          } else {
+            setBatchQueueNavigationStatus(identity, "Opening Lea session…");
+            await openLeaUiForPaneItem(item, { requireSession: true });
+            setBatchQueueNavigationStatus(identity, `Opened ${identity.targetLabel} in LeaChat.`);
+          }
+        } catch (error) {
+          setBatchQueueNavigationStatus(identity, normalizeErrorMessage(error));
+        } finally {
+          leanPaneBatchNavigationBusy.delete(key);
+          updateBatchQueueNavigationButton(batchQueueNavigationButton(key), identity, action, key);
+        }
+      });
+      actions.appendChild(button);
+    }
+    return actions;
   }
 
   function formatBatchQueueActiveDetail(entry, runningVerb) {
@@ -5469,7 +5599,7 @@
   // chat-session lookup (read-only: it never creates a session); when no
   // session has been recorded yet, fall back to the Lea UI itself, matching
   // the popover's base-link fallback.
-  async function openLeaUiForPaneItem(item) {
+  async function openLeaUiForPaneItem(item, { requireSession = false } = {}) {
     if (item.leaSessionUrl || item.leaSessionId) {
       const settings = await getSettings();
       const link = getLeaSessionLink({ ...item, leaUiBaseUrl: settings.leaUiBaseUrl });
@@ -5488,6 +5618,9 @@
     if (sessionUrl) {
       await openLeaSession({ url: sessionUrl, baseUrl: sessionUrl });
       return { sessionOpened: true };
+    }
+    if (requireSession) {
+      throw new Error(payload?.message || "No LeaChat session is available yet.");
     }
     const settings = await getSettings();
     const uiBaseUrl = String(settings.leaUiBaseUrl || DEFAULT_LEA_UI_BASE_URL).replace(/\/+$/, "");
@@ -7282,6 +7415,7 @@
   async function runTargetBatch({ endpoint, items, errorKey }) {
     leanPaneRepairError = null;
     if (items.length === 0) return;
+    const projectId = extractOverleafProjectId();
     try {
       const mirrorResult = await syncTexMirrorNow({ force: true });
       const baseUrl = await chatCompanionBaseUrl();
@@ -7296,7 +7430,9 @@
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.message || `Companion returned HTTP ${response.status}.`);
-      leanPaneRepairBatch = payload;
+      if (projectId !== extractOverleafProjectId()) return;
+      leanPaneRepairBatch = { ...payload, overleafProjectId: projectId };
+      leanPaneBatchNavigationStatus = null;
       leanPaneExpandedBatchQueueId = "";
       leanPaneExpandedBatchAttentionId = "";
       leanPaneExpandedBatchCompletedId = "";
