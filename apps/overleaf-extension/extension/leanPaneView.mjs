@@ -797,6 +797,9 @@ export function paneItemActions(item, { editing = false } = {}) {
   if (canViewPaneItemInLeaUi(item)) rail.push({ id: "view-in-lea", label: "Open in LeaChat" });
 
   const overflow = [];
+  if (item?.reformalization?.has_drafts && item.reformalization.state !== 'settled') {
+    overflow.push({ id: 'approve-result', label: item.reformalization.state === 'review' ? 'Review draft' : 'View retained draft' });
+  }
   if (item?.review?.approval) overflow.push({ id: 'withdraw-approval', label: 'Withdraw approval' });
   if (wait && !editing) {
     if (primary?.id !== "dependency-view") overflow.push({ id: "dependency-view", label: "View supporting result" });

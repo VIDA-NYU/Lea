@@ -16,7 +16,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, PlainTextResponse
 from pydantic import BaseModel, StrictBool
 
 from ..config import load_config, permission_tier
@@ -69,6 +69,8 @@ class NewFormalizationRequest(BaseModel):
 
 class RunRequest(BaseModel):
     message: str
+    artifact_operation: str | None = None
+    source_update_evidence: dict | None = None
     idempotency_key: str | None = None
     timeout_seconds: int | None = None
     session_id: str | None = None
@@ -204,7 +206,7 @@ async def _passive_done(run_id: str):
 
 
 @router.post("/api/runs")
-@project_coordination.guarded(_admission_project, write=True, admission=True)
+@project_coordination.guarded(_admission_project, write=True, admission=True, environment_write=False)
 def create_run(request: RunRequest) -> dict:
     message = request.message.strip()
     if not message:
@@ -221,7 +223,8 @@ def create_run(request: RunRequest) -> dict:
                     (request.session_id and request.session_id != prior["session"]["id"])):
                 raise HTTPException(status_code=409, detail="Idempotency key belongs to a different request")
             return _creation_response(prior)
-    if request.source_context_ref:
+    # A queued retry deliberately resolves prepared source only when it starts.
+    if request.source_context_ref and request.artifact_operation != "reformalize":
         if not request.focus_formalization_id or request.new_formalization or request.source_bundle:
             raise HTTPException(422, detail="Prepared source requires one selected formalization.")
         try:
@@ -281,6 +284,25 @@ def create_run(request: RunRequest) -> dict:
                 "message": "Wait for the active GitHub import before starting a Lea run.",
             },
         )
+
+    from .. import reformalizations
+    if request.artifact_operation:
+        if request.artifact_operation != "reformalize" or not project_id:
+            raise HTTPException(422, "Unsupported artifact operation or missing project")
+        op = reformalizations.enqueue(request.model_dump(), project_id)
+        reformalizations.dispatch(project_id)
+        return reformalizations.response(reformalizations.get(op["id"]))
+    reformalizations.assert_writer(project_id)
+    existing_focus = request.focus_formalization_id
+    if not existing_focus and request.new_formalization and request.new_formalization.origin_key and project_id:
+        with connect() as conn:
+            found = conn.execute('select id from formalizations where project_id=? and origin=? and origin_key=?',
+                (project_id, request.new_formalization.origin, request.new_formalization.origin_key)).fetchone()
+        existing_focus = found['id'] if found else None
+    if not reformalizations.actor() and str(request.purpose or '').strip().lower() == 'overleaf_solver' and existing_focus:
+        if store.list_formalization_files(existing_focus):
+            raise HTTPException(409, detail={'error': 'reformalization_required',
+                'message': 'Update the companion to use the isolated reformalization operation for this existing work.'})
 
     autonomous = request.autonomous or (permission_tier() == "none")
     purpose = str(request.purpose or "general").strip().lower()
@@ -372,8 +394,53 @@ def create_run(request: RunRequest) -> dict:
                 config.lea_root / "workspace" / "proofs",
             )
     if bundle.get("created", True):
+        if reformalizations.actor():
+            if purpose == 'project_dependency':
+                reformalizations.attach_dependency_worker(reformalizations.actor(), run)
+            else:
+                if not reformalizations.attach_run(reformalizations.actor(), run["id"]):
+                    store.update_run(run['id'], 'cancelled', result_kind='interrupted', input_tokens=0, output_tokens=0, cost_usd=0, usage_status='final')
+                    raise HTTPException(409, 'This reformalization was cancelled before solver dispatch')
         bridge.enqueue_run(run["id"])
     return _creation_response(bundle)
+
+
+@router.get("/api/reformalizations/{operation_id}")
+def get_reformalization(operation_id: str):
+    from .. import reformalizations
+    op = reformalizations.get(operation_id)
+    if not op:
+        raise HTTPException(404, "Reformalization not found")
+    reformalizations.wake(operation_id)
+    op = reformalizations.get(operation_id)
+    return {**reformalizations.response(op), "drafts": reformalizations.drafts(operation_id)}
+
+
+@router.post("/api/reformalizations/{operation_id}/cancel")
+def cancel_reformalization(operation_id: str):
+    from .. import reformalizations
+    return reformalizations.cancel(operation_id)
+
+
+@router.get('/api/reformalizations/{operation_id}/versions')
+def reformalization_versions(operation_id: str):
+    from ..reformalizations import versions
+    return {'versions': versions(operation_id)}
+
+
+@router.get('/api/reformalizations/{operation_id}/versions/{blob_id}')
+def reformalization_version(operation_id: str, blob_id: str, compare_to: str | None = None):
+    from ..reformalizations import versions
+    allowed = {item['blob_id'] for item in versions(operation_id)}
+    if blob_id not in allowed or (compare_to and compare_to not in allowed):
+        raise HTTPException(404, 'Version not found in this reformalization')
+    content = store.blob_content(blob_id) or ''
+    if compare_to:
+        import difflib
+        content = ''.join(difflib.unified_diff(content.splitlines(keepends=True),
+            (store.blob_content(compare_to) or '').splitlines(keepends=True),
+            fromfile='retained baseline', tofile='attempt draft'))
+    return PlainTextResponse(content)
 
 
 def _creation_response(bundle: dict) -> dict:
@@ -429,6 +496,10 @@ def resume_run(run_id: str, request: ResumeRequest) -> dict:
     old = store.get_run(run_id)
     if not old:
         raise HTTPException(status_code=404, detail="Run not found")
+    from .. import reformalizations
+    staged = reformalizations.for_run(run_id)
+    if staged:
+        return reformalizations.queue_continuation(staged, old, request.model_dump(), recovery_review=True)
     if old["status"] != "cancelled" or old.get("recovery_state") != "review":
         raise HTTPException(status_code=409, detail="Run is not awaiting recovery review")
     if old.get("deadline_at") and datetime.fromisoformat(old["deadline_at"]) <= datetime.now(timezone.utc):
@@ -496,6 +567,10 @@ def continue_run(run_id: str, request: ContinueRequest) -> dict:
     old = store.get_run(run_id)
     if not old:
         raise HTTPException(status_code=404, detail="Run not found")
+    from .. import reformalizations
+    staged = reformalizations.for_run(run_id)
+    if staged:
+        return reformalizations.queue_continuation(staged, old, request.model_dump())
     if request.dependency_resume:
         return _continue_dependency(old, request, request_hash)
     if old.get("stop_reason") == "dependency_wait":

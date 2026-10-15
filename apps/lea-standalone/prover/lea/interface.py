@@ -133,7 +133,7 @@ def rebuild(path: str) -> CheckResult:
     )
 
 
-def _verify_impl(path: str) -> VerifyResult:
+def _verify_impl(path: str, declaration: str | None = None) -> VerifyResult:
     """Audit a finished proof with SafeVerify (kernel replay + axiom whitelist).
 
     No agent run. Derives the target from the proof's own main theorem, so it
@@ -154,12 +154,37 @@ def _verify_impl(path: str) -> VerifyResult:
     if not p.exists():
         return VerifyResult("error", f"File not found: {path}")
     code = p.read_bytes().decode('utf-8')
+    if declaration:
+        from .check_evidence import lake_root, file_hash, file_version
+        from .result_selection import inspect_file, select
+        try:
+            report = inspect_file(p)
+            chosen = select(report, declaration)
+            root = lake_root(p)
+            if not root or report.get('inspection') != 'compiled_module':
+                return VerifyResult('error', 'Selected replay requires an actual built Lake module.')
+            relative = p.resolve().relative_to(root / 'proofs').with_suffix('.olean')
+            olean = root / '.lake/build/lib/lean' / relative
+            before_hash = file_hash(olean)
+            sv_root = root / '.sv_scratch'
+            sv_root.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=sv_root) as temp:
+                ok, detail = safeverify.verify_selected_module(olean, chosen['full_name'], root, Path(temp))
+            if file_hash(olean) != before_hash or p.read_bytes().decode('utf-8') != code:
+                return VerifyResult('error', 'Selected replay inputs changed during verification.')
+            record = {'path': str(olean), 'sha256': before_hash,
+                      'version': file_version(olean), 'kind': 'compiled'}
+            return VerifyResult('ok' if ok else 'rejected', None if ok else detail,
+                {'selected_module': record, 'selected_result': chosen})
+        except (ValueError, OSError) as exc:
+            return VerifyResult('error', str(exc))
 
     signature = safeverify.theorem_signature(code)
     if not signature:
         return VerifyResult("error", "Could not find a theorem/lemma to verify in the proof.")
 
-    workspace = safeverify.WORKSPACE
+    from .check_evidence import lake_root
+    workspace = lake_root(p) or safeverify.WORKSPACE
     # Per-call scratch dir (H2). The old code keyed target/submission by file
     # *stem* in one shared `.sv_scratch`, so two concurrent runs on `Div6.lean`
     # verified A's submission against B's target and the `finally` unlink deleted
@@ -204,7 +229,7 @@ def _verify_impl(path: str) -> VerifyResult:
             return VerifyResult("error", f"{type(exc).__name__}: {exc}")
 
 
-def verify(path: str) -> VerifyResult:
+def verify(path: str, *, declaration: str | None = None) -> VerifyResult:
     from .check_evidence import lake_root, prepared_environment, environment_hash, freshness, PROTOCOL_VERSION
     from .check_runtime import CheckBudget, CheckFailure
     if not safeverify.is_available():
@@ -224,7 +249,15 @@ def verify(path: str) -> VerifyResult:
                     'path': str(binary), 'sha256': file_hash(binary), 'version': file_version(binary), 'kind': 'verifier'}}}
             budget.execution.update(evidence_version=PROTOCOL_VERSION, environment=environment,
                                     environment_sha256=environment_hash(environment))
-            result = _verify_impl(str(p))
+            result = _verify_impl(str(p), declaration) if declaration else _verify_impl(str(p))
+            if declaration:
+                budget.execution['selected_declaration'] = declaration
+                selected = result.execution or {}
+                if selected.get('selected_module'):
+                    environment = {**environment, 'files': {**environment['files'],
+                        'audit:selected-module': selected['selected_module']}}
+                    budget.execution.update(environment=environment, environment_sha256=environment_hash(environment),
+                        selected_result=selected.get('selected_result'))
             if not freshness(budget.execution, p)[0]:
                 return VerifyResult('error', 'Proof inputs changed during kernel verification.', budget.finish(), content)
             return VerifyResult(result.status, result.detail, budget.finish(), content)

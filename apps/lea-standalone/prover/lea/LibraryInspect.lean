@@ -53,15 +53,27 @@ private def inspect (ci : ConstantInfo) : MetaM Json := do
         constructors := constructors.push (toJson #[toJson name.toString, exprJson ctor.levelParams ctor.type])
       pure (toJson constructors)
     | _ => pure Json.null
-  let typ ← ppExpr ci.type
+  let typ ← withOptions (fun opts => (opts.setBool `pp.fullNames true).setBool `pp.universes true)
+    (ppExpr ci.type)
   let axioms ← collectAxioms ci.name
+  let ranges ← findDeclarationRanges? ci.name
+  let range := match ranges with
+    | none => Json.null
+    | some r => Json.mkObj [
+      ("start_line", toJson r.range.pos.line), ("start_column", toJson r.range.pos.column),
+      ("end_line", toJson r.range.endPos.line), ("end_column", toJson r.range.endPos.column)]
+  let dependencies := ci.type.getUsedConstants ++ (match ci.value? with
+    | none => #[]
+    | some value => value.getUsedConstants)
   return Json.mkObj [
     ("full_name", toJson ci.name.toString),
     ("user_name", toJson (privateToUserName ci.name).toString),
     ("visibility", toJson (if isPrivateName ci.name then "private" else "public")),
     ("kind", toJson kind), ("type", toJson typ.pretty),
+    ("level_params", toJson (ci.levelParams.map Name.toString)),
     ("type_expr", exprJson ci.levelParams ci.type), ("body_expr", body),
-    ("axioms", toJson (axioms.map Name.toString))]
+    ("axioms", toJson (axioms.map Name.toString)),
+    ("dependencies", toJson (dependencies.map Name.toString)), ("range", range)]
 
 end LeaLibraryInspector
 
@@ -81,3 +93,15 @@ elab "#lea_inspect_decl " declName:str : command => do
   | some ci =>
     let result ← liftTermElabM <| LeaLibraryInspector.inspect ci
     logInfo m!"LEA_LIBRARY_JSON:{result.compress}"
+
+/- Source-local inspection also works for private names. The line cutoff excludes
+   the inspector itself when its commands are appended to a submitted source. -/
+elab "#lea_inspect_source " lastLine:num : command => do
+  let env ← getEnv
+  let mut results : Array Json := #[]
+  for (name, ci) in env.constants.toList do
+    if (env.getModuleIdxFor? name).isNone then
+      if let some ranges ← findDeclarationRanges? name then
+        if ranges.range.pos.line ≤ lastLine.getNat then
+          results := results.push (← liftTermElabM <| LeaLibraryInspector.inspect ci)
+  logInfo m!"LEA_LIBRARY_JSON:{(toJson results).compress}"

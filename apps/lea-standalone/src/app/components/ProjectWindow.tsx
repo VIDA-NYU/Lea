@@ -36,7 +36,7 @@ export function ProjectWindow({
   project: ProjectDetail;
   onBack: () => void;
   onStartProof: (message: string) => Promise<void> | void;
-  onStartFormalization: (formalization: Formalization, message?: string) => Promise<void> | void;
+  onStartFormalization: (formalization: Formalization, message?: string, reformalize?: boolean) => Promise<void> | void;
   onOpenSession: (sessionId: string) => void;
 }) {
   const [tab, setTab] = useState<Tab>('overview');
@@ -207,7 +207,7 @@ function FormalizationsTab({
   projectId: string;
   refreshSignal: number;
   onOpenSession: (sessionId: string) => void;
-  onStartFormalization: (formalization: Formalization) => Promise<void> | void;
+  onStartFormalization: (formalization: Formalization, message?: string, reformalize?: boolean) => Promise<void> | void;
 }) {
   const [items, setItems] = useState<Formalization[]>([]);
   const [summary, setSummary] = useState<Record<string, number>>({});
@@ -297,6 +297,10 @@ function FormalizationsTab({
               >
                 New conversation
               </button>
+              {item.primary_path && <button className="pw-form-continue" type="button"
+                onClick={() => onStartFormalization(item, `Reformalize ${item.declaration_name || item.display_title} from the current source. Preserve existing work.`, true)}>
+                Re-formalize
+              </button>}
             </li>
           );
         })}

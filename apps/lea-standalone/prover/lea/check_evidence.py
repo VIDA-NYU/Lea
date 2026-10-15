@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from . import execution as command_executor
 import threading
 
 from .check_runtime import CheckBudget, CheckFailure, stop_process
@@ -173,7 +174,7 @@ def mutation(path, *, budget=None):
 def _command(args, root, budget, content=None):
     proc = None
     try:
-        proc = subprocess.Popen(args, cwd=root, stdin=subprocess.PIPE if content is not None else None,
+        proc = command_executor.popen(args, cwd=root, stdin=subprocess.PIPE if content is not None else None,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8',
             errors='replace', start_new_session=True)
         first = True

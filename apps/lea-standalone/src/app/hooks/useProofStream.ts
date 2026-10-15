@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import {
   getSession,
+  awaitReformalization,
   type ChatMessage,
   type CodeStep,
   type Diagnostic,
@@ -263,6 +264,11 @@ export function useProofStream() {
       const detail = await fetchDetail(sessionId);
       if (!owned()) return null;
       applyDetail(detail);
+      for (const queued of detail.queued_reformalizations || []) {
+        void awaitReformalization({ reformalization_id: queued.id }, undefined, owned)
+          .then(run => { if (owned() && run.run_id) attachStream(run.run_id, sessionId); })
+          .catch(error => { if (owned()) useProofSession.getState().setError(error instanceof Error ? error.message : String(error)); });
+      }
       return detail;
     } catch (error) {
       if (!owned()) return null;
@@ -425,6 +431,10 @@ export function useProofStream() {
 
     listen('code_step', (event) => {
       const payload = JSON.parse((event as MessageEvent).data) as CodeStep;
+      if (payload.artifact_scope === 'attempt') {
+        useProofSession.getState().bumpFormalizationRefresh();
+        return;
+      }
       if (typeof payload.seq === 'number') lastSeqRef.current = Math.max(lastSeqRef.current, payload.seq);
       const current = useProofSession.getState().codeSteps;
       if (current.some((s) => s.id === payload.id)) {

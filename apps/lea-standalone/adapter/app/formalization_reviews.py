@@ -1,7 +1,8 @@
 """Human correspondence decisions over immutable, currently checked inputs.
 
-Nothing here runs Lean or a provider, changes proof files, or edits run outcomes.
-The read model and mutation both use the same candidate/evidence rules.
+Canonical decisions use the same candidate/evidence rules without changing run
+outcomes. Attempt review rechecks its retained draft and queues host application;
+approval never starts another provider run.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from . import db, store, project_coordination
 from .config import load_config
 from .artifacts import contains_sorry_marker, scan_lean_declarations, scrub_lean_source
 from .read_projections import decode_evidence, read_projection
-from .target_completion import checked_target
+from .target_completion import checked_target, compiler_result
 
 REVIEW_MESSAGE = 'Lean check passed. Your approval is needed to confirm this result against the LaTeX.'
 
@@ -80,10 +81,13 @@ def project(form, steps, primary, artifact, completion, active=None, *, requeste
     candidate = selected[0]
     code = candidate.get('code') or ''
     declarations = scan_lean_declarations(code)
-    if contains_sorry_marker(code):
+    compiled = compiler_result(candidate, (artifact or {}).get('declaration_name') or form.get('declaration_name'), form.get('kind') or 'theorem')
+    if compiled is False:
+        return blocked('failing', 'The selected result has no passing compiler trust evidence.')
+    if compiled is None and contains_sorry_marker(code):
         return blocked('failing', 'The candidate still contains sorry or admit.')
     # Compile evidence alone is not permission to accept proof shortcuts.
-    if re.search(r'\b(?:axiom|native_decide|unsafe|partial)\b', scrub_lean_source(code)):
+    if compiled is None and re.search(r'\b(?:axiom|native_decide|unsafe|partial)\b', scrub_lean_source(code)):
         return blocked('failing', 'The candidate contains a prohibited proof declaration or tactic.')
     if any(s.get('check_status') == 'error' and s.get('check_current') for s in steps):
         return blocked('failing', 'The current artifact failed its Lean check.')
@@ -153,7 +157,7 @@ def project(form, steps, primary, artifact, completion, active=None, *, requeste
 
 @read_projection
 def context(fid, source_context_ref=None):
-    from . import formalizations, overleaf_source
+    from . import formalizations, overleaf_source, reformalizations
     form = formalizations.get(fid)
     if not form:
         _error('Formalization not found.', 404)
@@ -164,6 +168,10 @@ def context(fid, source_context_ref=None):
                 source = overleaf_source.resolve(conn, source_context_ref, fid, bind_source=False)
             except ValueError as exc:
                 _error(str(exc))
+    from . import reformalization_review
+    attempt = reformalization_review.latest(fid)
+    if attempt and attempt['state'] != 'settled' and reformalizations.drafts(attempt['id']):
+        return reformalization_review.context(attempt, form, source)
     steps = store.current_code_steps_for_formalization(fid)
     # Include all full immutable artifacts, never the capped target-status preview.
     if not steps and form.get('completion_run_id'):
@@ -189,6 +197,15 @@ def context(fid, source_context_ref=None):
 
 def decide(fid, request):
     from . import formalizations, overleaf_source
+    if (request.get('revision_token') or '').startswith('reformalization:'):
+        from .reformalization_review import decide as decide_draft
+        return decide_draft(fid, request)
+    if request.get('approval_id'):
+        with db.connect() as conn:
+            prior = conn.execute('select revision_token from formalization_review_events where id=?', (request['approval_id'],)).fetchone()
+        if prior and prior[0].startswith('reformalization:'):
+            from .reformalization_review import decide as decide_draft
+            return decide_draft(fid, request)
     raw = store.get_formalization(fid)
     if not raw:
         _error('Formalization not found.', 404)

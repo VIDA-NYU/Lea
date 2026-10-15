@@ -987,8 +987,8 @@ def create_run_bundle(
         if source_bundle is not None:
             from .lea_status_store import admit
             admit(conn, run_id, focus_formalization_id, session_id, project_id, purpose, source_bundle)
-        conn.execute("update runs set dependency_id=?,automation_budget_json=? where id=?",
-                     (dependency_id, json.dumps(automation_budget) if automation_budget else None, run_id))
+        conn.execute("update runs set dependency_id=?,automation_budget_json=?,initiating_run_id=? where id=?",
+                     (dependency_id, json.dumps(automation_budget) if automation_budget else None, initiating_run_id, run_id))
         message_cursor = conn.execute(
             """
             insert into timeline (

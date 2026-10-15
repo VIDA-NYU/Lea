@@ -1004,6 +1004,7 @@ def project_target_status_by_slug(slug: str, declarations: str = "", formalizati
             "validity_status": validity,
             "validity_reason": validity_reason,
             "review": (formalization or {}).get('review'),
+            'reformalization': (formalization or {}).get('reformalization'),
             "certification": (formalization or {}).get('certification'),
             "completion_run_id": (formalization or {}).get("completion_run_id"),
             "declaration_kind": declared.kind if declared else (formalization or {}).get("declaration_kind"),

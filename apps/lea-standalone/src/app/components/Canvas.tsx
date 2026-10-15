@@ -5,6 +5,7 @@ import {
   type SafeVerifyStatus,
 } from '../lib/api';
 import { LiveEditor } from './LiveEditor';
+import { ReformalizationDraft } from './ReformalizationDraft';
 import { diffForStep } from '../lib/codeDiff';
 import { ensureHighlighter, highlightToLines, isHighlighterReady } from '../lib/leanHighlight.mjs';
 import { deriveCodeStepProofStatus } from '../lib/proofDisplay.mjs';
@@ -60,6 +61,7 @@ export function Canvas({
   const rawSteps = useProofSession((s) => s.codeSteps);
   const allCodeSteps = useMemo(() => sortCodeSteps(rawSteps), [rawSteps]);
   const scope = useProofSession((s) => s.formalizationScope);
+  const formalizations = useProofSession(s => s.formalizations);
   const revisionMode = useProofSession((s) => s.canvasRevisionMode);
   const setRevisionMode = useProofSession((s) => s.setCanvasRevisionMode);
   const currentSnapshot = useProofSession((s) => s.currentFormalizationSnapshot);
@@ -342,6 +344,7 @@ export function Canvas({
         </div>
       )}
 
+      <ReformalizationDraft formalization={formalizations.find(item => item.id === scope)} refresh={refreshToken} />
       {mode === 'live' && sessionId ? (
         <LiveEditor
           sessionId={sessionId}

@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 import subprocess
+from . import execution as command_executor
 import threading
 import time
 
@@ -21,6 +22,8 @@ _log = logging.getLogger("lea.lean_checks")
 def check_file(path: Path, lake_root: str | None, *, use_lsp=True, allow_cold=True,
                budget: CheckBudget | None = None) -> CheckOutcome:
     from . import diagnostics, lsp_daemon
+    if command_executor.current():
+        use_lsp = False  # Never reuse a server started outside the execution boundary.
     budget = budget or CheckBudget(should_stop=current_should_stop())
     caller_stop = budget.should_stop
     runtime_root = lake_root or str(path.parent)
@@ -83,7 +86,7 @@ def check_file(path: Path, lake_root: str | None, *, use_lsp=True, allow_cold=Tr
                         try:
                             evidence["backend"] = "cold"
                             evidence["attempts"] += 1
-                            proc = subprocess.Popen(cmd, cwd=lake_root or str(path.parent),
+                            proc = command_executor.popen(cmd, cwd=lake_root or str(path.parent),
                                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                                     text=True, encoding="utf-8", errors="replace",
                                                     start_new_session=True)

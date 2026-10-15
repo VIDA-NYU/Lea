@@ -191,6 +191,7 @@ export interface Formalization {
   completion_run_id?: string | null;
   declaration_kind?: string | null;
   check_current?: boolean;
+  reformalization?: { id: string; state: string; has_drafts: boolean; detail?: string; repair_needed?: string[] } | null;
   review?: {
     eligible: boolean;
     reason: string;
@@ -580,6 +581,10 @@ export interface ChatMessage {
 
 export interface CodeStep {
   id: string;
+  artifact_scope?: 'attempt' | 'canonical';
+  blob_id?: string | null;
+  baseline_blob_id?: string;
+  selected_result?: { declaration: string; kind: string; axioms: string[] };
   session_id: string;
   run_id?: string | null;
   formalization_id?: string | null;
@@ -769,6 +774,7 @@ export interface Diagnostic {
 }
 
 export interface SessionDetail extends SessionSummary {
+  queued_reformalizations?: Array<{ id: string }>;
   lean_check_runtime?: LeanCheckRuntime;
   messages: ChatMessage[];
   code_steps: CodeStep[];

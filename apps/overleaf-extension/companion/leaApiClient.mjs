@@ -447,6 +447,7 @@ export async function startApiRun({
   focusFormalizationId = null,
   focusSourceHash = null,
   newFormalization = null,
+  artifactOperation = null,
   purpose = "general",
   sourceBundle = null,
   allowSourcePause = false,
@@ -476,6 +477,7 @@ export async function startApiRun({
     if (!sourceBundle?.bundleHash) return { ok: false, status: 422, error: "Current LaTeX source context is required. Refresh the Overleaf pane before continuing." };
   }
   const body = { message, autonomous, purpose, allow_source_pause: allowSourcePause === true };
+  if (artifactOperation) body.artifact_operation = artifactOperation;
   if (idempotencyKey) body.idempotency_key = idempotencyKey;
   if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) body.timeout_seconds = Math.ceil(timeoutSeconds);
   if (sourceBundle) { body.source_bundle = sourceBundle; body.lea_status_version = 1; }
@@ -531,6 +533,12 @@ export function interruptApiRun({ fetchImpl, baseUrl, apiKey, runId, reason = "u
     headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
     body: JSON.stringify({ reason, source }),
     signal,
+  });
+}
+
+export function cancelReformalization({ fetchImpl, baseUrl, apiKey, operationId }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/reformalizations/${encodeURIComponent(operationId)}/cancel`, {
+    method: "POST", headers: buildHeaders(apiKey),
   });
 }
 
@@ -823,6 +831,9 @@ export async function runApiProofJob({
   focusFormalizationId = null,
   focusSourceHash = null,
   newFormalization = null,
+  artifactOperation = null,
+  existingReformalizationId = null,
+  onOperationQueued = null,
   purpose = "general",
   sourceBundle = null,
   allowSourcePause = false,
@@ -837,7 +848,9 @@ export async function runApiProofJob({
     if (appendLog && logPath) await appendLog(logPath, line);
   };
 
-  const start = startResponse || (existingRunId ? { ok: true, body: { run_id: existingRunId, session_id: sessionId } } : await startApiRun({
+  let start = startResponse || (existingReformalizationId && !existingRunId
+    ? await fetchJson(fetchImpl, `${baseUrl}/api/reformalizations/${encodeURIComponent(existingReformalizationId)}`, { headers: buildHeaders(apiKey) })
+    : existingRunId ? { ok: true, body: { run_id: existingRunId, session_id: sessionId } } : await startApiRun({
     fetchImpl,
     baseUrl,
     apiKey,
@@ -853,6 +866,7 @@ export async function runApiProofJob({
     focusFormalizationId,
     focusSourceHash,
     newFormalization,
+    artifactOperation,
     purpose,
     sourceBundle,
     allowSourcePause,
@@ -860,6 +874,19 @@ export async function runApiProofJob({
     timeoutSeconds: timeoutMs / 1000,
   }));
   if (!start.ok) return { ok: false, timedOut: false, error: start.error };
+
+  if (start.body?.reformalization_id && onOperationQueued) await onOperationQueued(start.body);
+  while (start.body?.reformalization_id && !start.body.run_id) {
+    if (observerSignal?.aborted) return { ok: false, detached: true, error: 'Observation detached; the queued retry is retained.' };
+    if (!['queued', 'active'].includes(start.body.state)) {
+      return { ok: false, timedOut: false, error: start.body.result?.detail || 'The retry was retained without starting a solver.' };
+    }
+    if (onEvent) await onEvent('reformalization_queued', start.body);
+    await new Promise(resolve => setTimeout(resolve, busyRetryDelayMs));
+    const polled = await fetchJson(fetchImpl, `${baseUrl}/api/reformalizations/${encodeURIComponent(start.body.reformalization_id)}`, { headers: buildHeaders(apiKey) });
+    if (polled.ok) start = polled;
+    else if (polled.status != null && polled.status < 500) return { ok: false, timedOut: false, error: polled.error };
+  }
 
   const runId = start.body?.run_id;
   const newSessionId = start.body?.session_id || sessionId;

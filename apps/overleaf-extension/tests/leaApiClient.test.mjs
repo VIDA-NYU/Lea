@@ -90,6 +90,45 @@ function frame(type, payload) {
   return `event: ${type}\ndata: ${JSON.stringify(payload)}`;
 }
 
+test('serialized reformalization waits without starting the execution timeout', async () => {
+  const calls = [];
+  let polls = 0;
+  const queued = { reformalization_id: 'retry-1', run_id: null, session_id: 's1', state: 'queued' };
+  let retainedId;
+  const result = await runApiProofJob({ baseUrl: 'http://adapter.test', message: 'Retry B',
+    artifactOperation: 'reformalize', focusFormalizationId: 'B', timeoutMs: 5, busyRetryDelayMs: 10,
+    onOperationQueued: body => { retainedId = body.reformalization_id; },
+    fetchImpl: async (url, options) => {
+      calls.push([url, options]);
+      if (url.endsWith('/api/runs')) {
+        assert.equal(JSON.parse(options.body).artifact_operation, 'reformalize');
+        return jsonResponse(queued);
+      }
+      if (url.endsWith('/api/reformalizations/retry-1')) {
+        return jsonResponse(++polls < 2 ? queued : { ...queued, state: 'active', run_id: 'r1' });
+      }
+      if (url.endsWith('/r1/events')) return sseResponse([frame('done', { status: 'proved', result_kind: 'proved' })]);
+      throw new Error('Unexpected request: ' + url);
+    } });
+  assert.equal(result.ok, true);
+  assert.equal(result.timedOut, false);
+  assert.equal(retainedId, 'retry-1');
+  assert.equal(calls.filter(([url]) => url.endsWith('/api/runs')).length, 1);
+});
+
+test('reattaching a queued operation never submits another solver request', async () => {
+  let posts = 0;
+  const result = await runApiProofJob({ baseUrl: 'http://adapter.test', existingReformalizationId: 'retained',
+    fetchImpl: async (url, options) => {
+      if (options.method === 'POST') posts++;
+      assert.ok(url.endsWith('/api/reformalizations/retained'));
+      return jsonResponse({ reformalization_id: 'retained', run_id: null, state: 'retained', result: { detail: 'Source changed; draft retained.' } });
+    } });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /draft retained/);
+  assert.equal(posts, 0);
+});
+
 test("parseSseFrame reads the event name off the event: line, not the data body", () => {
   const { type, data } = parseSseFrame("event: code_step\ndata: {\"id\":\"s1\",\"turn\":2}");
   assert.equal(type, "code_step");

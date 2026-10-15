@@ -44,7 +44,7 @@ so the run thread's ``finally`` can call it unconditionally without a second fau
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import Lock
 from . import project_coordination
 
@@ -77,6 +77,7 @@ class ActiveRun:
     run_id: str
     session_id: str
     project_id: str | None = None
+    reserved: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,7 +113,7 @@ class RunRegistry:
     def capacity(self) -> int:
         return self._max
 
-    def try_admit(self, run_id: str, session_id: str, *, project_id: str | None = None) -> Admission:
+    def try_admit(self, run_id: str, session_id: str, *, project_id: str | None = None, reserve=False) -> Admission:
         """Atomically decide + claim. See the module docstring for the ordering.
 
         On ``admitted`` the slot is recorded and must be paired with a
@@ -133,9 +134,29 @@ class RunRegistry:
                 return Admission(AT_CAPACITY, len(self._active), capacity)
 
             project_coordination.worker_started(project_id, run_id)
-            self._active[run_id] = ActiveRun(run_id=run_id, session_id=session_id, project_id=project_id)
+            self._active[run_id] = ActiveRun(run_id=run_id, session_id=session_id, project_id=project_id, reserved=reserve)
             self._by_session[session_id] = run_id
             return Admission(ADMITTED, len(self._active), capacity)
+
+    def transfer_reservation(self, operation_id, run_id):
+        with self._lock:
+            reservation = self._active.get(operation_id)
+            if not reservation or not reservation.reserved:
+                return False
+            self._active.pop(operation_id)
+            self._active[run_id] = replace(reservation, run_id=run_id)
+            self._by_session[reservation.session_id] = run_id
+            project_coordination.worker_finished(reservation.project_id, operation_id)
+            project_coordination.worker_started(reservation.project_id, run_id)
+            return True
+
+    def claim_reservation(self, run_id):
+        with self._lock:
+            reservation = self._active.get(run_id)
+            if not reservation or not reservation.reserved:
+                return False
+            self._active[run_id] = replace(reservation, reserved=False)
+            return True
 
     def release(self, run_id: str) -> bool:
         """Free the slot held by ``run_id``. Idempotent — returns True if it was

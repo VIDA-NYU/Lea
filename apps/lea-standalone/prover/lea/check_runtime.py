@@ -128,11 +128,16 @@ def stop_process(proc: subprocess.Popen, *, deadline: float | None = None) -> No
 def serialize_result(result):
     if isinstance(result, CheckText):
         return {"text": str(result), "execution": result.execution,
-                "captured_content": result.captured_content, "snapshot_path": result.snapshot_path}
+                "captured_content": result.captured_content, "snapshot_path": result.snapshot_path,
+                "selected_result": getattr(result, "selected_result", None),
+                "selection": getattr(result, "selection", None)}
     return str(result)
 
 
 def restore_result(value):
     if isinstance(value, dict) and "text" in value:
-        return CheckText(value["text"], value.get("execution"), value.get("captured_content"), value.get("snapshot_path"))
+        result = CheckText(value["text"], value.get("execution"), value.get("captured_content"), value.get("snapshot_path"))
+        result.selected_result = value.get("selected_result")
+        result.selection = value.get("selection")
+        return result
     return str(value)

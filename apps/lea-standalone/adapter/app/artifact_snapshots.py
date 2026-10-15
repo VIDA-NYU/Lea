@@ -57,6 +57,18 @@ def _transitive_project_dependencies(project_id: str | None, roots: list[dict]) 
 
 @read_projection
 def _snapshot(formalization_id: str, *, run_id: str | None = None) -> tuple[dict, list[dict]] | None:
+    if run_id:
+        from . import reformalizations
+        op = reformalizations.for_run(run_id)
+        if op and op['formalization_id'] == formalization_id:
+            drafts = reformalizations.drafts(op['id'])
+            roots = [{**d, 'id': str(d['id']), 'role': 'generated',
+                      'blob_sha256': reformalizations.digest(d['code'])} for d in drafts]
+            refs = [{'path': d['path'], 'blob_id': d['blob_id'], 'sha256': d['blob_sha256'],
+                     'code_step_id': d['id'], 'role': 'generated', 'artifact_scope': 'attempt',
+                     'check_status': (d.get('evidence') or {}).get('status')} for d in roots]
+            return {'revision_token': reformalizations.digest(reformalizations.dumps(refs)),
+                    'files': refs, 'artifact_scope': 'attempt'}, roots
     current = formalizations.current_snapshot(formalization_id)
     if not current or not current.get("revision_token") or not current.get("files"):
         return None

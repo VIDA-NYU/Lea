@@ -11,14 +11,14 @@ import json
 from collections import Counter
 
 from .artifacts import contains_sorry_marker
-from .target_completion import checked_target, target_declaration
+from .target_completion import checked_target, target_declaration, compiler_result
 from .db import connect, row_to_dict
 from . import store
 from .public_errors import run_detail
 from .read_projections import read_projection
 
 
-def _certified_namespace_revision(formalization: dict, certified: dict, current: dict) -> bool:
+def _certified_namespace_revision(formalization: dict, certified: dict, current: dict, _depth=0) -> bool:
     """Accept only recorded, checked namespace replacements of certified bytes.
 
     Manual checks of identical bytes and successive renames are allowed. A
@@ -27,7 +27,26 @@ def _certified_namespace_revision(formalization: dict, certified: dict, current:
     """
     from .projects import rewrite_namespace_text
 
+    if _depth > 32:
+        return False
     if certified.get("path") != current.get("path"):
+        with connect() as conn:
+            receipt = conn.execute('select data from timeline where id=?', (current['id'],)).fetchone()
+            try:
+                data = json.loads(receipt['data'] or '{}')
+            except (TypeError, ValueError):
+                return False
+            accepted = conn.execute("select state from reformalization_applications where id=?", (data.get('reformalization_application'),)).fetchone()
+            if not accepted or accepted['state'] != 'published' or (data.get('preservation') or {}).get('source_update'):
+                return False
+            for move in (data.get('preservation') or {}).get('relocations', []):
+                named = target_declaration(current.get('code'), formalization.get('declaration_name'), formalization.get('kind') or 'theorem')
+                if not named or named.full_name != move['name'] or move['after_path'] != current['path']:
+                    continue
+                parent = conn.execute(store.TIMELINE_WITH_BLOB + ' where t.id=? and t.id<?', (move.get('from_step_id'), int(current['id']))).fetchone()
+                if parent and parent['after_blob_id'] == move['before_blob_id']:
+                    previous = store._code_step_from_row(parent)
+                    return _certified_namespace_revision(formalization, certified, previous, _depth + 1)
         return False
     if certified.get("code") == current.get("code"):
         return True
@@ -48,6 +67,24 @@ def _certified_namespace_revision(formalization: dict, certified: dict, current:
     for row in rows:
         if row["blob_content"] != expected or row["content_lost"]:
             continue
+        try:
+            data = json.loads(row['data'] or '{}')
+            preserved = data.get('preservation') or {}
+            original_decl = target_declaration(certified.get('code'), formalization.get('declaration_name'), formalization.get('kind') or 'theorem')
+            protected_name = original_decl.full_name if original_decl else formalization.get('declaration_name')
+            if (protected_name in preserved.get('protected', [])
+                    and not preserved.get('source_update') and row['check_status'] == 'ok'):
+                with connect() as conn:
+                    accepted = conn.execute("select state from reformalization_applications where id=?", (data.get('reformalization_application'),)).fetchone()
+                parent = by_id.get(str(preserved.get('from_step_id')))
+                if (accepted and accepted['state'] == 'published' and parent and parent['id'] < row['id']
+                        and parent['after_blob_id'] == preserved.get('before_blob_id')):
+                    expected = parent['blob_content']
+                    if expected == certified.get('code'):
+                        return True
+                    continue
+        except (ValueError, TypeError):
+            pass
         if row["author"] != "environment" or row["run_id"] is not None or row["check_status"] != "ok":
             continue
         try:
@@ -99,7 +136,9 @@ def _validity(
             if row['path'] in seen:
                 continue
             seen.add(row['path'])
-            if row['check_status'] != 'ok' or contains_sorry_marker(row['blob_content'] or ''):
+            actual = (artifact or {}).get('declaration_name') or formalization.get('declaration_name')
+            scoped = compiler_result(dict(row), actual, 'theorem') if actual else None
+            if row['check_status'] != 'ok' or scoped is False or (scoped is None and contains_sorry_marker(row['blob_content'] or '')):
                 continue
             certified = {**dict(row), 'code': row['blob_content'] or ''}
             if any(_certified_namespace_revision(formalization, certified, current) for current in fresh):
@@ -126,7 +165,8 @@ def _validity(
         return "unchecked", f"The artifact does not declare the requested {name or 'target'}.", check_current, None
     if any(step.get("check_status") == "error" and step.get("check_current") for step in current_steps):
         return "failing", "The current artifact failed its Lean check.", False, kind
-    if contains_sorry_marker(next((step.get("code") or "" for step in current_steps if target_declaration(step.get("code"), name, formalization.get("kind") or "theorem")), "")):
+    target_step = next((step for step in current_steps if target_declaration(step.get('code'), name, formalization.get('kind') or 'theorem')), None)
+    if target_step and compiler_result(target_step, name, formalization.get('kind') or 'theorem') is None and contains_sorry_marker(target_step.get('code') or ''):
         return "failing", "The requested declaration still contains sorry or admit.", False, kind
     current_hash = formalization.get("source_hash")
     artifact_hash = (artifact or {}).get("source_hash")
@@ -295,6 +335,9 @@ def decorate(rows: list[dict]) -> list[dict]:
                 from runs r
                 where r.focus_formalization_id in ({marks})
                   and r.result_kind in ('proved', 'defined', 'needs_review', 'disproved')
+                  and (r.reformalization_id is null or exists (
+                    select 1 from reformalization_operations ro
+                    where ro.id=r.reformalization_id and ro.state='settled'))
             ) where rn = 1
             """,
             ids,
@@ -314,6 +357,10 @@ def decorate(rows: list[dict]) -> list[dict]:
             """,
             ids,
         )
+        retries = _rows_for_ids(conn, """select * from (
+            select ro.*, row_number() over(partition by formalization_id order by rowid desc) as rn,
+            exists(select 1 from reformalization_drafts d where d.operation_id=ro.id) as has_drafts
+            from reformalization_operations ro where formalization_id in ({marks})) where rn=1""", ids)
         sessions = _rows_for_ids(
             conn,
             """
@@ -355,6 +402,7 @@ def decorate(rows: list[dict]) -> list[dict]:
     run_by_id = {str(item["focus_formalization_id"]): run_detail(item) for item in latest_runs}
     completion_by_id = {str(item["focus_formalization_id"]): run_detail(item) for item in completion_runs}
     verify_by_id = {str(item["formalization_id"]): item for item in verifications}
+    retry_by_id = {str(item['formalization_id']): item for item in retries}
 
     result = []
     for raw in rows:
@@ -391,6 +439,12 @@ def decorate(rows: list[dict]) -> list[dict]:
             requested=validity == 'needs_review')
         if technical is not None:
             validity, validity_reason, check_current, declaration_kind = technical
+        from .reformalization_review import published_approval
+        accepted_review = published_approval(item, current_steps)
+        if accepted_review and check_current:
+            review = {**review, 'approval': accepted_review, 'eligible': False,
+                'run_id': (completion_run or {}).get('id'), 'reason': 'Approved draft published after current canonical checks.'}
+            validity, validity_reason = accepted_review['outcome'], 'Approved by user.'
         certification = None
         if review.get('approval'):
             certification = {'source': 'user_review', 'outcome': review['approval']['outcome'],
@@ -398,6 +452,8 @@ def decorate(rows: list[dict]) -> list[dict]:
         elif validity in {'proved', 'defined', 'disproved'}:
             certification = {'source': 'run', 'outcome': validity, 'run_id': (completion_run or {}).get('id')}
         verification = verify_by_id.get(fid)
+        retry = retry_by_id.get(fid)
+        retry_result = json.loads(retry.get('result_json') or '{}') if retry else {}
         if item.get("origin") == "project_dependency":
             from . import project_dependencies
             with connect() as conn:
@@ -435,6 +491,10 @@ def decorate(rows: list[dict]) -> list[dict]:
                 "declaration_kind": declaration_kind,
                 "check_current": check_current,
                 "review": review,
+                'reformalization': ({'id': retry['id'], 'state': retry['state'],
+                    'has_drafts': bool(retry['has_drafts']), 'detail': retry_result.get('detail'),
+                    'run_id': retry['root_run_id'], 'repair_needed': retry_result.get('repair_needed', [])}
+                    if retry else None),
                 "certification": certification,
                 "activity": _activity(active),
                 "primary_path": (

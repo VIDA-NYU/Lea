@@ -103,3 +103,10 @@ test('current badges require evidence while history retains recorded checks', ()
   assert.equal(deriveCodeStepProofStatus(step({check_current: undefined})), 'unchecked');
   assert.equal(deriveCodeStepProofStatus(step({check_current: false}), {historical: true}), 'proved');
 });
+
+test('compiler-selected target can pass beside an unfinished sibling', () => {
+  const shared = step({ code: 'theorem b : True := by trivial\ntheorem c : True := by sorry',
+    selected_result: { declaration: 'b', kind: 'theorem', axioms: [] } });
+  assert.equal(deriveCodeStepProofStatus(shared), 'proved');
+  assert.equal(deriveCodeStepProofStatus({ ...shared, selected_result: { ...shared.selected_result, axioms: ['sorryAx'] } }), 'stubbed');
+});

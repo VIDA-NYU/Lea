@@ -98,6 +98,7 @@ import {
   initializeOverleafDefaultName,
   fetchProjectShareStatus,
   interruptApiRun,
+  cancelReformalization,
   mirrorProjectTexFiles,
   previewProjectNamespace,
   pushProjectBySlug,
@@ -662,8 +663,13 @@ async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
   ].filter(Boolean))];
   const ledger = await fetchTargetStatusFromAdapter({ state, target, declarations,
     formalizationIds: previousJob?.formalizationId ? [previousJob.formalizationId] : [] });
-  if (Object.values(ledger || {}).some((entry) => entry?.exists && entry.shared_file)) {
-    return errorResponse(409, "shared_artifact", "This Lean file contains other declarations; formalizing one item could overwrite them. Move the target into its own file first.");
+  const retryHealth = Object.values(ledger || {}).some(entry => entry?.exists)
+    ? await fetchAdapterHealth({ fetchImpl: state.fetchImpl || fetch,
+      baseUrl: state.settings.leaApiBaseUrl || DEFAULT_LEA_API_BASE_URL, apiKey: state.env?.LEA_API_KEY }) : null;
+  const safeReformalization = retryHealth?.body?.capabilities?.reformalization;
+  const canReformalize = safeReformalization?.version === 1 && safeReformalization.automatic_shared_files === true;
+  if (!canReformalize && Object.values(ledger || {}).some((entry) => entry?.exists && entry.shared_file)) {
+    return errorResponse(409, "shared_artifact", "Update the Lea adapter to re-formalize this shared file automatically while preserving its other declarations.");
   }
   if (batch) {
     if (Object.values(ledger || {}).some(entry => entry?.validity_status === 'needs_review')) {
@@ -862,6 +868,7 @@ async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
   if (preRunLean) job.preRunLean = preRunLean;
   if (leaSessionId) job.leaSessionId = leaSessionId;
   if (formalizationId) job.formalizationId = formalizationId;
+  if (canReformalize && formalizationId && artifact?.exists) job.artifactOperation = 'reformalize';
   if (recordedProofPath) {
     job.recordedProofPath = recordedProofPath;
     job.declarationName = artifact?.declarationName || job.declarationName;
@@ -883,6 +890,7 @@ async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
       declarationName: reusableStub.declarationName || target.targetLabel,
       leanStatement: reusableStub.leanStatement || ""
     };
+    if (canReformalize && job.formalizationId) job.artifactOperation = 'reformalize';
   }
   job.retryCleanup = { removedProofPaths: [], removedProjectEntries: [] };
   job.resumed = resume;
@@ -3558,7 +3566,7 @@ export async function handleBatchCancel(payload, state) {
 async function interruptBatchActiveRun(state, batch) {
   const running = batch.items.find((entry) => entry.state === "running");
   const job = running?.runJobId ? state.jobs?.[running.runJobId] : null;
-  if (!job?.apiRunId) return;
+  if (!job?.apiRunId && !job?.reformalizationId) return;
   job.dependencyCancelRequested = true;
   await persistJobs(state);
   state.dependencyObservers?.get(job.jobId)?.abort();
@@ -3571,6 +3579,11 @@ async function interruptBatchActiveRun(state, batch) {
     return;
   }
   try {
+    if (job.reformalizationId) {
+      await cancelReformalization({ fetchImpl: state.fetchImpl || fetch, baseUrl,
+        apiKey: state.env?.LEA_API_KEY, operationId: job.reformalizationId });
+      if (!job.apiRunId) return;
+    }
     await interruptApiRun({
       fetchImpl: state.fetchImpl || fetch,
       baseUrl,
@@ -6431,6 +6444,14 @@ async function runLeaProofJobForJob({ state, job, target, prompt, onEvent = null
     deadlineAt: job.deadlineAt || null,
     existingRunId,
     startResponse,
+    artifactOperation: job.artifactOperation || null,
+    existingReformalizationId: job.reformalizationId || null,
+    onOperationQueued: async body => {
+      job.reformalizationId = body.reformalization_id;
+      job.leaSessionId = body.session_id || job.leaSessionId;
+      job.connectionState = body.state === 'queued' ? 'queued' : null;
+      await persistJobs(state);
+    },
     idempotencyKey: job.jobId,
     autoApprove: true,
     projectSlug: target.projectSlug || null,
@@ -7056,7 +7077,7 @@ async function runLeaJob({
   // already-recorded declaration -- classify it against the pre-run snapshot
   // and cascade over dependents, exactly like a manual edit. Fully isolated:
   // a cascade failure must not fail the (already applied) run outcome.
-  if (job.preRunLean) {
+  if (job.preRunLean && !job.reformalizationId) {
     try {
       await runPostRunCascade({
         state,
@@ -8496,6 +8517,7 @@ async function enrichLeanPaneItem({
     leanArtifactPath: effectiveArtifact.relativePath || artifact.relativePath || statusInfo?.recordedProofPath || statusInfo?.relativePath || undefined,
     leanArtifactContent: effectiveArtifact.content || undefined,
     review: statusInfo?.review,
+    reformalization: statusInfo?.reformalization,
     certification: statusInfo?.certification,
     ...approvalMetadata,
     // The document overlay's badge already renders an amber "!" for a
@@ -8791,6 +8813,7 @@ async function getTheoremStatus({
         artifactExists: Boolean(evidence.exists),
         artifactContent: typeof evidence.content === "string" ? evidence.content : undefined,
         review: evidence.review,
+        reformalization: evidence.reformalization,
         certification: evidence.certification
       }
     : {};

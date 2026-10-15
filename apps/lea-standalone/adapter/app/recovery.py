@@ -106,6 +106,8 @@ def manifest(*, run: dict, config, repo: Path) -> dict:
     settings.pop("status_context", None)  # the saved execution position owns this mutable context
     settings.pop("project_context", None)  # fresh reservations belong to the current execution segment
     settings.pop("skills_root", None)
+    if not settings.get('selected_result'):
+        settings.pop('selected_result', None)  # canonical checkpoints retain their existing config contract
     settings["lea_root"] = str(settings.get("lea_root") or "")
     files: dict[str, str | None] = {}
     if repo.exists():
@@ -121,10 +123,12 @@ def manifest(*, run: dict, config, repo: Path) -> dict:
         if root_path.exists():
             role_contents.extend(_file_fingerprint(p) for p in sorted(root_path.rglob("*.yaml")))
             role_contents.extend(_file_fingerprint(p) for p in sorted(root_path.rglob("*.md")))
-    from lea import agent, mcp, registry, tools, project_library_tools, providers, condenser, events, stall, usage, subagents, check_evidence, lean_checks, check_runtime, interface, lsp_daemon, imports
+    from lea import agent, mcp, registry, tools, project_library_tools, providers, condenser, events, stall, usage, subagents, check_evidence, lean_checks, check_runtime, interface, lsp_daemon, imports, execution, result_selection, safeverify
     tool_code = [_file_fingerprint(Path(module.__file__))
                  for module in (agent, tools, registry, mcp, project_library_tools,
-                                providers, condenser, events, stall, usage, subagents, check_evidence, lean_checks, check_runtime, interface, lsp_daemon, imports)]
+                                providers, condenser, events, stall, usage, subagents, check_evidence, lean_checks, check_runtime, interface, lsp_daemon, imports, execution, result_selection, safeverify)]
+    tool_code.extend(_file_fingerprint(path) for path in (result_selection.INSPECTOR,
+        safeverify.SAFE_VERIFY_DIR / 'Main.lean', safeverify.SAFE_VERIFY_DIR / 'SafeVerify/Monads.lean'))
     tool_modules = {}
     for name in config.tool_modules:
         try:

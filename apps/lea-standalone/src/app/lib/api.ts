@@ -86,7 +86,10 @@ export async function createRun(
     };
     source_context_ref?: string;
     idempotency_key?: string;
+    artifact_operation?: 'reformalize';
   },
+  onQueued?: (operation: { session_id: string; reformalization_id: string }) => void,
+  stillSelected?: () => boolean,
 ): Promise<{
   session_id: string;
   run_id: string;
@@ -105,7 +108,39 @@ export async function createRun(
   if (!response.ok) {
     throw Object.assign(new Error(await detailMessage(response, `Failed to start run: ${response.statusText}`)), { status: response.status });
   }
+  return awaitReformalization(await response.json(), onQueued, stillSelected);
+}
+
+
+export async function cancelReformalization(id: string): Promise<void> {
+  const response = await fetch(`/api/reformalizations/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Could not stop the reformalization.'));
+}
+
+
+export async function getReformalization(id: string): Promise<{
+  reformalization_id: string; state: string; session_id: string; run_id?: string;
+  result?: { detail?: string }; drafts: CodeStep[];
+}> {
+  const response = await fetch(`/api/reformalizations/${encodeURIComponent(id)}`);
+  if (!response.ok) throw new Error(await detailMessage(response, 'Could not load the retained retry.'));
   return response.json();
+}
+
+export async function awaitReformalization(initial: any,
+  onQueued?: (operation: { session_id: string; reformalization_id: string }) => void,
+  stillSelected: () => boolean = () => true): Promise<any> {
+  let operation = initial;
+  if (operation.reformalization_id) onQueued?.(operation);
+  while (operation.reformalization_id && !operation.run_id) {
+    if (!stillSelected()) return operation;
+    if (operation.state && !['queued', 'active'].includes(operation.state)) {
+      throw new Error(operation.result?.detail || 'This retry is retained without an active solver.');
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    operation = await getReformalization(operation.reformalization_id);
+  }
+  return operation;
 }
 
 export async function resumeInterruptedRun(runId: string): Promise<{ run_id: string; session_id: string }> {
@@ -114,7 +149,7 @@ export async function resumeInterruptedRun(runId: string): Promise<{ run_id: str
     body: JSON.stringify({ acknowledge_uncertainty: true, idempotency_key: `resume:${runId}` }),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Could not resume the interrupted run.'));
-  return response.json();
+  return awaitReformalization(await response.json());
 }
 
 export async function prepareOverleafSource(formalizationId: string): Promise<{ source_context_ref: string; captured_at: string }> {
@@ -129,7 +164,7 @@ export async function continueOverleafRun(runId: string, reference: string, idem
     body: JSON.stringify({ source_context_ref: reference, idempotency_key: idempotencyKey })
   });
   if (!response.ok) throw Object.assign(new Error(await detailMessage(response, 'Could not continue the saved Overleaf formalization.')), { status: response.status });
-  return response.json();
+  return awaitReformalization(await response.json());
 }
 
 export async function listProjectFormalizations(

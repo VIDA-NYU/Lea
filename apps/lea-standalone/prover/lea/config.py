@@ -34,6 +34,8 @@ class LeaConfig:
     status_reporting: bool = False
     project_library: bool = False
     project_context: dict = field(default_factory=dict)
+    # Explicit result identity for scoped retries; updated only by select_result.
+    selected_result: dict = field(default_factory=dict)
     allow_source_pause: bool = False
     status_context: dict = field(default_factory=dict)
     narrate_tool_steps: bool = False  # True → ask the model to summarize intent before tool calls

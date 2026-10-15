@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import subprocess
 import threading
+import os
+import tempfile
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
@@ -168,6 +170,48 @@ class GitStore:
                 return self._git(repo, "rev-parse", "HEAD").strip()
             self._git(repo, "commit", "-q", "-m", commit_message(subject))
             return self._git(repo, "rev-parse", "HEAD").strip()
+
+    def commit_exact(self, repo: Path, subject: str, contents: dict[str, str | None], *, application_id: str) -> str:
+        """Commit immutable supplied bytes without consuming unrelated index entries.
+
+        An alternate index constructs the exact tree; update-ref compares the
+        parent. The real index is updated only for operation-owned paths.
+        """
+        with _repo_lock(repo), tempfile.TemporaryDirectory(prefix="lea-index-") as temp:
+            env = {**os.environ, "GIT_INDEX_FILE": str(Path(temp) / "index")}
+            def git(*args, input=None, alternate=True):
+                proc = subprocess.run(["git", *args], cwd=repo,
+                    env=env if alternate else None, input=input, text=True, capture_output=True)
+                if proc.returncode:
+                    raise GitStoreError(f"git {args[0]} failed: {proc.stderr.strip()}")
+                return proc.stdout.strip()
+            parent = git("rev-parse", "HEAD")
+            git("read-tree", parent)
+            entries = {}
+            for path, content in contents.items():
+                target = (repo / path).resolve()
+                if not target.is_relative_to(repo.resolve()) or any(p.startswith(".") for p in Path(path).parts):
+                    raise GitStoreError("Invalid exact-commit path")
+                if content is None:
+                    git("update-index", "--force-remove", "--", path)
+                    entries[path] = None
+                else:
+                    blob = git("hash-object", "-w", "--stdin", input=content)
+                    mode = "100755" if target.exists() and target.stat().st_mode & 0o111 else "100644"
+                    git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
+                    entries[path] = (mode, blob)
+            tree = git("write-tree")
+            if tree == git("rev-parse", parent + "^{tree}"):
+                return parent
+            message = commit_message(subject + "\n\nReformalization-Application: " + application_id)
+            commit = git("commit-tree", tree, "-p", parent, input=message)
+            git("update-ref", "HEAD", commit, parent)
+            for path, entry in entries.items():
+                if entry:
+                    git("update-index", "--add", "--cacheinfo", f"{entry[0]},{entry[1]},{path}", alternate=False)
+                else:
+                    git("update-index", "--force-remove", "--", path, alternate=False)
+            return commit
 
     def commit_write(self, session_id: str, *, turn, author: str = "agent", tool: str) -> str:
         """DEPRECATED — dead as of v2.3; scheduled for deletion with the contract step.

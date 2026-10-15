@@ -17,6 +17,8 @@ export function hasSorryLikeCheckDetail(detail) {
 
 export function codeStepContainsSorry(step) {
   if (!step) return false;
+  if (step.selected_result) return (step.selected_result.axioms || []).some(name =>
+    !['propext', 'Classical.choice', 'Quot.sound'].includes(name));
   return hasSorryLikeCode(step.code) || hasSorryLikeCheckDetail(step.check_detail);
 }
 

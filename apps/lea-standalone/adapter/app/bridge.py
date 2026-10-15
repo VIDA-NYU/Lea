@@ -191,12 +191,21 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
         if run:
             publish_terminal_from_row(run_id)
             runbroker.drop(run_id)
+            if run['status'] != 'running' and run.get('reformalization_id'):
+                from . import reformalizations
+                op = reformalizations.for_run(run_id)
+                if op and op['state'] == 'active' and run.get('stop_reason') != 'dependency_wait':
+                    reformalizations.update(op['id'], 'retained', result={'outcome': 'cancelled'})
+                if runregistry.registry.claim_reservation(run_id):
+                    runregistry.registry.release(run_id)
         return _SETTLED
     if run.get("deadline_at") and datetime.fromisoformat(run["deadline_at"]) <= datetime.now(timezone.utc):
         store.record_stop_request(run_id, "timeout", "adapter")
         store.fail_pending_run(run_id, "Time limit reached before the run started.")
         publish_terminal_from_row(run_id)
         runbroker.drop(run_id)
+        if runregistry.registry.claim_reservation(run_id):
+            runregistry.registry.release(run_id)
         return _SETTLED
 
     task = _resolve_task(run)
@@ -209,8 +218,18 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
 
     session = store.get_session(run["session_id"])
     project_id = (session or {}).get("project_id") or run.get("project_id")
+    from . import reformalizations
+    owner = reformalizations.owner(project_id)
+    if owner and run.get("reformalization_id") != owner["id"]:
+        parent = reformalizations.for_run(run.get("initiating_run_id")) if run.get("initiating_run_id") else None
+        if (run.get("purpose") != "project_dependency" or not parent
+                or not reformalizations.registered_dependency(run.get('initiating_run_id'), run.get('dependency_id'), project_id)
+                or (parent["id"] != owner["id"] and parent['request'].get('_foreground_owner') != owner['id'])):
+            return _DEFER
     try:
         admission = runregistry.registry.try_admit(run_id, run["session_id"], project_id=project_id)
+        if admission.outcome == runregistry.ALREADY_ACTIVE and run.get('reformalization_id') and runregistry.registry.claim_reservation(run_id):
+            admission = replace(admission, outcome=runregistry.ADMITTED)
     except HTTPException as exc:
         return _DEFER if exc.status_code == 409 else _SETTLED
     if admission.outcome == runregistry.ADMITTED:
@@ -1681,9 +1700,19 @@ def validate_continuation_runtime(old: dict, config: LeaConfig, checkpoint_id: i
 def run_lea(context: RunnerContext) -> None:
     # Keep the worker lease through all final bookkeeping, including SSE.
     try:
-        _run_lea(context)
+        from . import reformalizations
+        op = reformalizations.for_run(context.run_id)
+        if op:
+            from .reformalization_runner import run
+            with reformalizations.acting(op["id"]):
+                run(context, op)
+        else:
+            _run_lea(context)
     finally:
         runregistry.registry.release(context.run_id)
+        from . import reformalizations
+        row = store.get_run(context.run_id) or {}
+        reformalizations.dispatch_all()
 
 
 def _run_lea(context: RunnerContext) -> None:

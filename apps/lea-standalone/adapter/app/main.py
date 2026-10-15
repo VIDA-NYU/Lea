@@ -77,7 +77,11 @@ def startup() -> None:
         init_db()
         runtime.set_state("recovering")
         _startup_log.info("Startup: recovering interrupted work.")
+        from .reformalization_apply import recover as recover_applications
+        recover_applications()
         recovery.recover_running()
+        from . import reformalizations
+        reformalizations.recover_operations()
         alignment_store.recover_interrupted()
         batch_report_service.recover_interrupted()
         bridge.recover_runs_at_startup()
@@ -93,6 +97,7 @@ def startup() -> None:
         _startup_log.info("Startup: recovering interrupted GitHub imports.")
         github_import_service.recover_github_imports_at_startup(proofs_root)
         runtime.set_state("ready")
+        reformalizations.dispatch_all()
     except BaseException:
         runtime.release_data_lock()
         raise
@@ -101,7 +106,8 @@ def startup() -> None:
 @app.get("/api/health")
 def health() -> dict:
     from .lea_status import admission_enabled
-    return {"ok": True, **runtime.snapshot(), "capabilities": {"lea_status": {"version": 1, "admission_enabled": admission_enabled(), "independent_checks": False, "source_pause_policy": 1}, "overleaf_source_refresh": {"version": 1}, "project_library": {"version": 1, "dependency_coordination": True}}}
+    from .reformalizations import capability
+    return {"ok": True, **runtime.snapshot(), "capabilities": {"lea_status": {"version": 1, "admission_enabled": admission_enabled(), "independent_checks": False, "source_pause_policy": 1}, "overleaf_source_refresh": {"version": 1}, "project_library": {"version": 1, "dependency_coordination": True}, 'reformalization': capability()}}
 
 
 @app.get("/api/ready")

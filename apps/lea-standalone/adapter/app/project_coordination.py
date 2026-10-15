@@ -10,7 +10,7 @@ from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass, field
 from functools import wraps
 import inspect
-from threading import Condition, Lock
+from threading import Condition, Lock, RLock, get_ident
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -32,9 +32,48 @@ def _available(state):
         raise ProjectRenaming()
 
 
+class ApplicationGate:
+    """Concurrent ordinary I/O; exclusive, reentrant application intervals."""
+    def __init__(self):
+        self.condition = Condition(RLock())
+        self.readers = {}
+        self.writer = None
+        self.depth = 0
+
+    def acquire(self):
+        tid = get_ident()
+        with self.condition:
+            self.condition.wait_for(lambda: self.writer in (None, tid))
+            self.readers[tid] = self.readers.get(tid, 0) + 1
+
+    def release(self):
+        tid = get_ident()
+        with self.condition:
+            self.readers[tid] -= 1
+            if not self.readers[tid]:
+                del self.readers[tid]
+            self.condition.notify_all()
+
+    def __enter__(self):
+        tid = get_ident()
+        with self.condition:
+            self.condition.wait_for(lambda: self.writer in (None, tid) and not any(t != tid for t in self.readers))
+            self.writer = tid
+            self.depth += 1
+        return self
+
+    def __exit__(self, *_):
+        with self.condition:
+            self.depth -= 1
+            if not self.depth:
+                self.writer = None
+            self.condition.notify_all()
+
+
 @dataclass
 class _State:
     lock: Lock = field(default_factory=Lock)
+    application_lock: ApplicationGate = field(default_factory=ApplicationGate)
     revision: str = field(default_factory=lambda: uuid4().hex)
     renaming: bool = False
     deleting: bool = False
@@ -76,9 +115,13 @@ def read(project_id: str | None):
     with state.lock:
         _available(state)
         revision = state.revision
+    state.application_lock.acquire()
     try:
+        from .reformalizations import assert_readable
+        assert_readable(project_id)
         yield revision
     finally:
+        state.application_lock.release()
         # Also replace a filesystem exception caused by an overlapping move.
         with state.lock:
             if state.deleted or state.deleting:
@@ -93,6 +136,9 @@ def mutation(project_id: str | None, *, wait=False, admission=False):
         yield
         return
     state = _state(project_id)
+    if not admission:
+        from .reformalizations import assert_writer
+        assert_writer(project_id)
     with state.condition:
         while state.renaming:
             if not wait:
@@ -105,6 +151,7 @@ def mutation(project_id: str | None, *, wait=False, admission=False):
         if admission:
             state.admissions += 1
         revision = state.revision
+    state.application_lock.acquire()
     try:
         yield revision
     finally:
@@ -112,6 +159,17 @@ def mutation(project_id: str | None, *, wait=False, admission=False):
             state.mutations -= 1
             if admission:
                 state.admissions -= 1
+        state.application_lock.release()
+
+
+@contextmanager
+def application(project_id, root):
+    """Environment first, then the short gate shared by canonical I/O routes."""
+    from lea.check_evidence import mutation as environment_mutation
+    from .reformalizations import assert_writer
+    assert_writer(project_id)
+    with environment_mutation(root), _state(project_id).application_lock:
+        yield
 
 
 @contextmanager
@@ -181,6 +239,8 @@ def file_edit(project_id: str | None):
         yield
         return
     state = _state(project_id)
+    from .reformalizations import assert_writer
+    assert_writer(project_id)
     with state.lock:
         _available(state)
         if state.workers or state.admissions or state.reviews:
@@ -243,6 +303,18 @@ def guarded(resolver, *, write=False, metadata=False, admission=False, environme
             @contextmanager
             def coordinated():
                 with ExitStack() as stack:
+                    # Managed dependency workers carry a registered parent identity.
+                    # They may satisfy their waiting owner's reservation.
+                    from . import reformalizations, store
+                    req = bound.arguments.get("request")
+                    run = store.get_run(bound.arguments.get("run_id")) if bound.arguments.get("run_id") else None
+                    op = reformalizations.for_run(run["id"]) if run else None
+                    parent = getattr(req, "initiating_run_id", None)
+                    if (parent and getattr(req, "purpose", None) == "project_dependency"
+                            and reformalizations.registered_dependency(parent, getattr(req, 'dependency_id', None), project_id)):
+                        op = reformalizations.for_run(parent)
+                    if op and op["project_id"] == project_id:
+                        stack.enter_context(reformalizations.acting(op["id"]))
                     if project_id:
                         state = _state(project_id)
                         with state.lock:

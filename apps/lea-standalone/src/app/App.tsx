@@ -313,6 +313,7 @@ export default function App() {
   const handleStartProjectFormalization = async (
     formalization: Formalization,
     message?: string,
+    reformalize = false,
   ) => {
     if (!currentProject) return;
     const content = (
@@ -320,6 +321,7 @@ export default function App() {
       || `Continue working on ${formalization.declaration_name || formalization.display_title}.`
     ).trim();
     setError(undefined);
+    let queuedSession: string | undefined;
     try {
       resetForNewSession();
       const run = await createRun(
@@ -331,8 +333,22 @@ export default function App() {
           project_title: currentProject.title,
           project_namespace: currentProject.namespace,
           focus_formalization_id: formalization.id,
+          ...(reformalize ? { artifact_operation: 'reformalize' as const } : {}),
         },
+        operation => {
+          queuedSession = operation.session_id;
+          setSelectedSessionId(operation.session_id);
+          setFormalizations([{ ...formalization, reformalization: {
+            id: operation.reformalization_id, state: 'queued', has_drafts: false } }]);
+          setFormalizationScope(formalization.id);
+          setMessages([{ id: `queued:${operation.reformalization_id}`, session_id: operation.session_id,
+            role: 'assistant', content: 'Reformalization queued. It will start when this project is available.', created_at: new Date().toISOString() }]);
+          window.localStorage.setItem(SELECTED_SESSION_KEY, operation.session_id);
+          setView('main');
+        },
+        () => !queuedSession || useSessions.getState().selectedSessionId === queuedSession,
       );
+      if (!run.run_id || (queuedSession && useSessions.getState().selectedSessionId !== queuedSession)) return;
       setSelectedSessionId(run.session_id);
       setCurrentRunId(run.run_id);
       setRunStatus('running');

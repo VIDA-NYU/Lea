@@ -15,6 +15,7 @@ from pathlib import Path
 from queue import Empty, Full, Queue
 import select
 import subprocess
+from . import execution as command_executor
 import sys
 import threading
 import time
@@ -86,7 +87,7 @@ class _Transport:
                     command = [sys.executable, "-c", startup_gate,
                                str(gate_read), *self._command]
                     pass_fds = (lease.fd, gate_read)
-                proc = subprocess.Popen(
+                proc = command_executor.popen(
                     command, cwd=self._cwd, stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
                     start_new_session=True,

@@ -6567,7 +6567,8 @@
         block('Associated proof', source.proof);
         block('Source context', source.context);
         block('Checked declaration', context.review.candidate_declaration);
-        for (const artifact of context.artifacts || []) block(artifact.path, artifact.content);
+        for (const artifact of context.artifacts || []) block(
+          artifact.artifact_scope === 'attempt' ? `Draft: ${artifact.path}` : artifact.path, artifact.content);
         choices.replaceChildren(legend);
         selected = '';
         submission = null;

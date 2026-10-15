@@ -260,6 +260,7 @@ class Finished:
     result_detail: str | None = None
     # Explicit final artifact association, independent of outcome classification.
     candidate_path: str | None = None
+    selected_result: dict | None = None
 
 
 # Union of everything run_events() can yield — handy for type annotations.

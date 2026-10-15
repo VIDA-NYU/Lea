@@ -271,6 +271,19 @@ def ensure(project: dict, specification: dict, *, run_id: str | None = None,
     records = library.refresh(project)
     existing = next((d for d in sorted(records, key=lambda d: (d["path"], d["full_name"]))
                      if d.get("semantic_key") == key and d["reusable"]), None)
+    adopted = None
+    if not existing and inspected is not None and spec.get('name'):
+        names = [d for d in records if d['user_name'] == spec['name'] or
+                 ('.' not in spec['name'] and d['user_name'].rsplit('.', 1)[-1] == spec['name'])]
+        if len(names) > 1:
+            raise ValueError('An existing unfinished helper name is ambiguous; use its qualified declaration name.')
+        if names:
+            declarations = library.validate_module(project, names[0]['path'])
+            candidate = next((d for d in declarations if d['user_name'] == names[0]['user_name']), None)
+            if candidate and 'sorryAx' in (candidate.get('axioms') or []) and candidate.get('visibility') == 'public':
+                if candidate.get('semantic_key') != key:
+                    raise ValueError('The existing unfinished helper has a different pinned mathematical contract.')
+                adopted = candidate
     now, dep_id, fid = utc_now(), str(uuid4()), str(uuid4())
     label = _slug(spec["name"] or "SharedResult")
     suffix = key[-12:]
@@ -279,8 +292,8 @@ def ensure(project: dict, specification: dict, *, run_id: str | None = None,
         citation_key = spec["citation"].get("key", "Citation") if isinstance(spec["citation"], dict) else spec["citation"]
         relative = f"External/{_slug(citation_key)}/{label}_{suffix}.lean"
     declaration = project["namespace"] + "." + label[:1].lower() + label[1:] + "_" + suffix
-    if existing:
-        relative, declaration = existing["path"], existing["user_name"]
+    if existing or adopted:
+        relative, declaration = (existing or adopted)["path"], (existing or adopted)["user_name"]
     state = "ready" if existing else "blocked" if inspected is None else "inline" if mode == "inline" else "pending"
     blocker = {"category": "source_gap", "detail": "Available sources do not specify a precise Lean obligation. Supply its statement and hypotheses before retrying."} if inspected is None else None
     with write() as conn:
@@ -309,7 +322,7 @@ def ensure(project: dict, specification: dict, *, run_id: str | None = None,
                 conn.execute("update project_dependency_attempts set run_id=null,state='pending',updated_at=? where dependency_id=? and generation=?", (now, dep_id, old["generation"]))
         else:
             historical = conn.execute("select id from formalizations where project_id=? and declaration_name=?",
-                                      (project["id"], declaration)).fetchone() if existing else None
+                                      (project["id"], declaration)).fetchone() if existing or adopted else None
             if historical:
                 fid = historical["id"]
             else:
@@ -398,6 +411,11 @@ def admit_worker(conn, dependency_id: str, project_id: str, run_id: str, resumes
             raise ValueError("The initiating run must belong to this project.")
     dep = conn.execute("select * from project_dependencies where id=? and project_id=?", (dependency_id, project_id)).fetchone()
     continuation = bool(dep and resumes_run_id and dep["state"] == "waiting" and dep["owner_run_id"] == resumes_run_id)
+    if dep and resumes_run_id and not continuation and dep['state'] in {'interrupted', 'failed'} and not dep['owner_run_id']:
+        prior = conn.execute("""select r.status,r.recoverable from project_dependency_attempts a
+            join runs r on r.id=a.run_id where a.dependency_id=? and a.generation=? and a.run_id=?""",
+            (dependency_id, dep['generation'], resumes_run_id)).fetchone()
+        continuation = bool(prior and prior['recoverable'] and prior['status'] in {'cancelled', 'max_turns'})
     if not dep or (not continuation and (dep["state"] not in {"pending", "interrupted"} or dep["owner_run_id"])):
         raise ValueError("Dependency is absent, blocked, ready, or already owned by another attempt.")
     conn.execute("update project_dependencies set state='running',owner_run_id=?,updated_at=? where id=?", (run_id, utc_now(), dependency_id))

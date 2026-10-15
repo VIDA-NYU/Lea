@@ -11,6 +11,7 @@ import json
 import os
 import re
 import subprocess
+from lea import execution
 import tempfile
 from pathlib import Path
 from threading import RLock
@@ -100,12 +101,13 @@ def inspect_source(repo: Path, prefix: str, command: str):
     root = lake_root(repo)
     if not root:
         raise ValueError("No enclosing Lake project is available for statement inspection.")
-    scratch = repo / ".lea/tmp"
+    policy = execution.current() or {}
+    scratch = Path(policy['temporary_root']) / 'library' if policy.get('temporary_root') else repo / ".lea/tmp"
     scratch.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="library-", dir=scratch) as temp:
         path = Path(temp) / "Inspect.lean"
         path.write_text("import Lean\n" + prefix + "\n" + INSPECTOR.read_text().removeprefix("import Lean\n") + "\n" + command + "\n")
-        result = subprocess.run(["lake", "env", "lean", str(path)], cwd=root,
+        result = execution.run(["lake", "env", "lean", str(path)], cwd=root,
                                 capture_output=True, text=True, timeout=120)
         output = result.stdout + "\n" + result.stderr
         if result.returncode:
@@ -312,7 +314,7 @@ def entries(project: dict, *, repo: Path | None = None, path: str | None = None)
         for declaration in json.loads(row["declarations_json"]):
             decl = dict(declaration)
             axioms = decl.get("axioms")
-            reusable = (current and row["build_status"] == "ok" and row["verify_status"] == "ok"
+            reusable = (current and row["build_status"] == "ok" and (row["verify_status"] == "ok" or decl.get('audit_status') == 'ok')
                 and decl.get("visibility") == "public" and axioms is not None
                 and not (set(axioms) - ALLOWED_AXIOMS) and decl["kind"] not in {"axiom", "recursor"})
             owner = owners.get(row["path"])
@@ -320,7 +322,7 @@ def entries(project: dict, *, repo: Path | None = None, path: str | None = None)
             decl.update(path=row["path"], module=module_name(project, row["path"]),
                 import_statement="import " + module_name(project, row["path"]),
                 source_hash=row["source_hash"], environment_hash=row["environment_hash"],
-                build_status=row["build_status"], verify_status=row["verify_status"],
+                build_status=row["build_status"], verify_status=decl.get('audit_status') or row["verify_status"],
                 verification_detail=row["detail"], certified=reusable, reusable=reusable,
                 dependency_id=owner["id"] if owner else None,
                 formalization_id=owner["formalization_id"] if owner else prior["id"] if prior else None,

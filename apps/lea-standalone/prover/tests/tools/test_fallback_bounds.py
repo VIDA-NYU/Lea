@@ -24,6 +24,7 @@ import lea.lean_checks as lean_checks
 from unittest.mock import patch
 import lea.lsp_daemon as lsp_daemon
 from lea.tools import lean_check, rebuild_module
+from tests.check_fixtures import unit_environment
 
 _FAILURES: list[str] = []
 
@@ -45,6 +46,7 @@ def test_cold_check_semaphore_bounds_concurrency():
     """N threads on the cold subprocess path; no more than the semaphore's
     permit count run their compile at once."""
     limit = 2
+    _FAILURES.clear()
     n_threads = 6
 
     live = {"now": 0, "max": 0}
@@ -67,6 +69,7 @@ def test_cold_check_semaphore_bounds_concurrency():
         tmp = Path(directory) / "T.lean"
         tmp.write_text("theorem t : True := trivial\n")
         with patch.object(lean_checks.subprocess, 'Popen', FakeProcess), \
+             patch('lea.check_evidence.prepared_environment', unit_environment), \
              patch.object(lean_checks, 'stop_process'), \
              patch.object(lean_checks, '_cold_check_sem', threading.BoundedSemaphore(limit)):
             results = []
@@ -80,6 +83,7 @@ def test_cold_check_semaphore_bounds_concurrency():
             check("all cold checks succeeded", len(results) == n_threads and all(r.startswith('OK') for r in results))
             check(f"never more than {limit} cold compiles at once (saw {live['max']})", live["max"] <= limit)
             check("the bound was actually exercised (>1 concurrent)", live["max"] >= 2)
+            assert not _FAILURES
 
 
 def _make_project():
@@ -97,6 +101,7 @@ def test_lake_build_lock_serializes_and_marks_stale_inside():
     mark_stale fires before the lock releases — so no other build can slip in
     between a build writing its olean and that build flagging the daemon."""
     path = _make_project()
+    _FAILURES.clear()
     n = 3
 
     # [enter, stale] window per thread; if mark_stale were outside the lock a
@@ -135,6 +140,7 @@ def test_lake_build_lock_serializes_and_marks_stale_inside():
         disjoint = all(intervals[i][1] <= intervals[i + 1][0] + 1e-9
                        for i in range(len(intervals) - 1))
         check("build+mark_stale windows are disjoint (stale is inside the lock)", disjoint)
+        assert not _FAILURES
     finally:
         tools.subprocess.run = orig_run
         lsp_daemon.mark_stale = orig_stale

@@ -3,6 +3,7 @@
 import os
 import re
 import subprocess
+from . import execution as command_executor
 import tempfile
 import threading
 from functools import wraps
@@ -225,6 +226,11 @@ def _run_relative_path(path: str) -> Path:
     behaviour, and that is the real safety boundary.
     """
     p = Path(path).expanduser()
+    policy = command_executor.current() or {}
+    if p.is_absolute() and policy.get("canonical_repo"):
+        original = Path(policy["canonical_repo"]).resolve()
+        if p.resolve().is_relative_to(original):
+            p = Path(policy["attempt_repo"]) / p.resolve().relative_to(original)
     wd = current_working_dir()
     if wd is None or p.is_absolute():
         return p.resolve()
@@ -279,7 +285,7 @@ def _sandboxed_write_path(path: str) -> Path:
     unchanged so today's behavior is preserved — the confinement only engages once
     an activation has declared its working_dir (agent.run_events → run_context)."""
     wd = current_working_dir()
-    p = Path(path).expanduser()
+    p = _run_relative_path(path)
     if wd is None:
         return p
     root = Path(wd).expanduser().resolve()
@@ -425,7 +431,20 @@ def _generated_lean_check(path: str) -> str:
                 return policy_error
         except OSError:
             pass
-    return lean_check(path)
+    result = lean_check(path)
+    config = current_config()
+    selection = config.selected_result if config else {}
+    if selection and (not selection.get("path") or p == _run_relative_path(selection["path"])) and not _lean_check_has_error(result):
+        from .result_selection import inspect_selected
+        from .check_runtime import CheckText
+        try:
+            evidence = inspect_selected(p, selection["declaration"], selection.get("kind"))
+            if evidence["content_sha256"] != (getattr(result, "execution", None) or {}).get("content_sha256"):
+                raise ValueError("Source changed after the selected result check")
+            result.selected_result = evidence
+        except (ValueError, OSError) as exc:
+            result.selected_result_error = str(exc)
+    return result
 
 
 @_mutating
@@ -473,7 +492,7 @@ def rebuild_module(path: str) -> str:
     # build interleaves between this build writing the olean and that flag.
     with _build_lock_for(lake_root):
         try:
-            result = subprocess.run(
+            result = command_executor.run(
                 ["lake", "build", module_name],
                 # Explicit UTF-8: Lean's own output is full of non-ASCII (✖, ⊢,
                 # Mathlib's unicode notation). `text=True` alone decodes with the
@@ -584,7 +603,7 @@ def bash(command: str, timeout: int = 120) -> str:
     # subprocess to use the inherited cwd, i.e. today's behavior unchanged.
     cwd = current_working_dir()
     try:
-        result = subprocess.run(
+        result = command_executor.run(
             command, shell=True, capture_output=True, text=True, timeout=timeout, cwd=cwd,
             env=scrubbed_env(),
         )
@@ -638,7 +657,7 @@ def search_mathlib(query: str, max_results: int = 10, path: str | None = None) -
         return "Error: Mathlib source not found. Ensure Mathlib is a Lake dependency."
 
     try:
-        result = subprocess.run(
+        result = command_executor.run(
             ["grep", "-r", "-n", "--include=*.lean", "-l", query, search_dir],
             capture_output=True,
             text=True,
@@ -652,7 +671,7 @@ def search_mathlib(query: str, max_results: int = 10, path: str | None = None) -
         # Get matching lines from each file
         lines = []
         for f in files[:max_results]:
-            grep_result = subprocess.run(
+            grep_result = command_executor.run(
                 ["grep", "-n", query, f],
                 capture_output=True,
                 text=True,
@@ -799,6 +818,39 @@ for _schema in TOOLS_SCHEMA:
     register(Tool(name=_schema["name"], schema=_schema, handler=TOOL_HANDLERS[_schema["name"]]))
 
 
+def _select_result(args):
+    from .check_runtime import CheckText
+    from .result_selection import inspect_selected
+    config = current_config()
+    if not config or not config.selected_result:
+        return "Error: explicit result selection is unavailable for this run"
+    try:
+        path = _sandboxed_write_path(args["path"])
+        outcome = args["outcome"]
+        target = config.selected_result.get("target_declaration", config.selected_result.get("declaration"))
+        if outcome != "disproved" and args["declaration"].rsplit(".", 1)[-1] != target.rsplit(".", 1)[-1]:
+            raise ValueError("A proof must select the requested target; use disproved for a counterexample")
+        evidence = inspect_selected(path, args["declaration"], outcome)
+        if outcome != 'disproved' and '.' in target and evidence['user_name'] != target:
+            raise ValueError('The selected declaration is not the requested qualified target')
+        config.selected_result.update(declaration=evidence["user_name"], kind=outcome, path=str(path),
+                                      target_declaration=target)
+        result = CheckText("Selected result. Run lean_check on this file before finishing.")
+        result.selection = dict(config.selected_result)
+        return result
+    except (ValueError, OSError) as exc:
+        return f"Error: {exc}"
+
+
+register(Tool(name="select_result", opt_in=True, handler=_select_result, schema={
+    "name": "select_result",
+    "description": "Explicitly associate the requested proof/definition or a checked negation/counterexample with this target. Then run lean_check. A different result name is allowed only for disproof.",
+    "input_schema": {"type": "object", "properties": {
+        "path": {"type": "string"}, "declaration": {"type": "string"},
+        "outcome": {"type": "string", "enum": ["proved", "defined", "disproved"]}},
+        "required": ["path", "declaration", "outcome"]}}))
+
+
 # Opt-in SafeVerify tool: a kernel-level anti-cheat audit the interactive coordinator can
 # run on a finished proof file. Registered `opt_in=True` (like `spawn_subagent`) so it stays
 # off every default/eval run and a sub-agent's `tools=None` can never include it; the adapter
@@ -833,11 +885,15 @@ def safe_verify(args: dict) -> str:
     path = args.get("path")
     if not isinstance(path, str) or not path:
         return "Error: safe_verify requires a 'path' to the .lean file."
-    result = _verify(path)
+    resolved = _run_relative_path(path)
+    config = current_config()
+    selection = config.selected_result if config else {}
+    declaration = selection.get('declaration') if selection and str(resolved) == str(_run_relative_path(selection.get('path') or path)) else None
+    result = _verify(str(resolved), declaration=declaration) if declaration else _verify(str(resolved))
     detail = (result.detail or "").strip()
     if result.status == "ok":
         return ("SafeVerify: OK — the proof passed the kernel audit (no sorry / extra axiom / "
-                "native_decide / partial), and every theorem in the file verified.")
+                "native_decide / partial)." + (" The selected result verified." if declaration else " Every theorem in the file verified."))
     if result.status == "rejected":
         return f"SafeVerify: REJECTED — a cheat or type mismatch was caught.\n{detail}"
     if result.status == "unavailable":

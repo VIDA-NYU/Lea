@@ -5,6 +5,38 @@ from __future__ import annotations
 from .artifacts import LeanDeclaration, declaration_contains_sorry, scan_lean_declarations
 
 
+def compiler_result(step, name, kind=None):
+    """None denotes legacy evidence; False denotes a scoped failed selection."""
+    import json
+    import hashlib
+    from .db import connect
+    from lea.result_selection import ALLOWED_AXIOMS
+    execution = step.get('execution') or (step.get('evidence') or {}).get('execution')
+    if execution is None and step.get('check_evidence_id'):
+        with connect() as conn:
+            row = conn.execute('select evidence_json from proof_check_evidence where id=?', (step['check_evidence_id'],)).fetchone()
+        execution = json.loads(row[0]) if row else {}
+    execution = execution or {}
+    if 'selected_results' not in execution and 'selected_result' not in execution:
+        return None
+    code = step.get('code') or step.get('blob_content') or ''
+    if execution.get('content_sha256') != hashlib.sha256(code.encode()).hexdigest():
+        return False
+    results = execution.get('selected_results', [execution.get('selected_result')])
+    matches = [d for d in results if d and (d['user_name'] == name or d['full_name'] == name or
+               ('.' not in name and d['user_name'].rsplit('.', 1)[-1] == name))]
+    if len(matches) != 1:
+        return False
+    selected = matches[0]
+    if set(selected.get('axioms', [])) - ALLOWED_AXIOMS:
+        return False
+    if kind == 'definition' and selected['kind'] == 'theorem':
+        return False
+    if kind and kind != 'definition' and selected['kind'] != 'theorem':
+        return False
+    return selected
+
+
 def target_declaration(code: str | None, name: str | None, kind: str) -> LeanDeclaration | None:
     """Prefer an exact qualified name; accept an unambiguous short name only."""
     if not code or not name:
@@ -41,7 +73,10 @@ def checked_target(formalization: dict, steps: list[dict], *, require_current=Tr
         step, code, declaration = candidates[0]
         if step.get("check_status") != "ok" or (require_current and not step.get("check_current")):
             return None, "The requested declaration has no passing Lean check."
-        if declaration_contains_sorry(code, declaration.full_name):
+        compiler = compiler_result(step, name, formalization.get('kind') or 'theorem')
+        if compiler is False:
+            return None, 'The requested declaration has no passing compiler trust evidence.'
+        if compiler is None and declaration_contains_sorry(code, declaration.full_name):
             return None, "The requested declaration still uses sorry or admit."
         return step, ""
     return None, f"The checked artifact does not declare the requested {name}."

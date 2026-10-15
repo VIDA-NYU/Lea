@@ -547,6 +547,10 @@ def prepare_spawn(args: dict) -> "SpawnPlan | str":
     _child_stops[agent_id] = threading.Event()
 
     child_config = _child_config(parent_config, profile)
+    if parent_config.selected_result:
+        # A child proposes code inside its own scratch directory. Only the
+        # coordinator's selected-result gate and host application can publish it.
+        child_config = dataclasses.replace(child_config, selected_result={})
     task = f"{description}\n\n{prompt}" if description else prompt
     child_messages = [{"role": "user", "content": task}]
     # The running row's label: the same first line `_subagent_child_title` would pick

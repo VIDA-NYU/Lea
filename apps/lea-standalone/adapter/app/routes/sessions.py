@@ -173,9 +173,13 @@ def session_detail(session_id: str) -> dict:
         run for run in (detail.get("runs") or [])
         if run.get("focus_formalization_id")
     ]
+    from ..db import connect
+    with connect() as conn:
+        queued = [{'id': r[0]} for r in conn.execute("select id from reformalization_operations where session_id=? and state='queued'", (session_id,))]
     return {
         **detail,
         "formalizations": items,
+        'queued_reformalizations': queued,
         "formalization_summary": formalization_service.summary(items),
         "lean_check_runtime": lean_check_runtime(session_id),
         "latest_focus_formalization_id": (

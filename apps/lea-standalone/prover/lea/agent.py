@@ -409,7 +409,7 @@ def _meaning_events(tool_name: str, args: dict, result: str) -> list:
 class ProofVerificationState:
     """Track whether the latest Lean proof file has passed a fresh check."""
 
-    def __init__(self):
+    def __init__(self, selection=None):
         self.latest_proof_path: str | None = None
         self.unchecked_write = False
         self.latest_check_path: str | None = None
@@ -417,8 +417,16 @@ class ProofVerificationState:
         self.latest_check_passed: bool | None = None
         self.latest_check_execution: dict | None = None
         self.latest_check_content: str | None = None
+        self.selection = dict(selection or {})
+        self.selected_evidence = None
 
     def note_tool_result(self, tool_name: str, args: dict, result: str) -> None:
+        if tool_name == "select_result" and _tool_result_ok(result):
+            self.selection = dict(getattr(result, "selection", None) or self.selection)
+            self.latest_proof_path = str(_run_relative_path(args["path"]))
+            self.unchecked_write = True
+            self.selected_evidence = None
+            return
         raw = args.get("path")
         if not isinstance(raw, str) or not raw:
             return
@@ -431,14 +439,27 @@ class ProofVerificationState:
         path = getattr(result, "snapshot_path", None) or (getattr(result, "execution", None) or {}).get("source_path") or str(_run_relative_path(raw))
         if tool_name in {"write_file", "edit_file"}:
             if _tool_result_ok(result) and path.endswith(".lean"):
+                if self.selection.get("path") and path != str(_run_relative_path(self.selection["path"])):
+                    return
                 self.latest_proof_path = path
                 self.unchecked_write = True
             return
         if tool_name == "lean_check":
+            if self.selection.get("path") and path != str(_run_relative_path(self.selection["path"])):
+                return
             # A proof is only verified if it compiles with no errors AND no `sorry`
             # — `sorry` is a warning, so checking errors alone would accept a
             # skeleton as a finished proof (a false "Proved").
-            passed = not _lean_check_has_error(result) and not _lean_check_has_sorry(result)
+            selected = getattr(result, "selected_result", None)
+            expected = self.selection.get('declaration')
+            selected_name = (selected or {}).get('user_name')
+            matches_selection = bool(selected_name and (selected_name == expected or
+                (expected and '.' not in expected and selected_name.rsplit('.', 1)[-1] == expected)))
+            passed = not _lean_check_has_error(result) and (
+                bool(matches_selection and selected.get("content_sha256") ==
+                     (getattr(result, "execution", None) or {}).get("content_sha256"))
+                if self.selection else not _lean_check_has_sorry(result))
+            self.selected_evidence = selected
             self.latest_proof_path = self.latest_proof_path or path
             self.latest_check_execution = getattr(result, "execution", None)
             self.latest_check_content = getattr(result, "captured_content", None)
@@ -453,7 +474,8 @@ class ProofVerificationState:
             return False
         from .check_evidence import freshness
         return (
-            self.latest_check_content is None
+            bool(self.selection and not self.selected_evidence)
+            or self.latest_check_content is None
             or not freshness(self.latest_check_execution, self.latest_proof_path)[0]
             or self.unchecked_write
             or self.latest_check_path != self.latest_proof_path
@@ -772,7 +794,7 @@ def _run_events_inner(
         total_usage.usage_details = resume_state.get("usage_details")
     total_cost = float(resume_state.get("cost_usd", 0.0)) if resume_state else 0.0
     from .check_runtime import serialize_result, restore_result
-    proof_state = ProofVerificationState()
+    proof_state = ProofVerificationState(config.selected_result)
     if resume_state:
         proof_state.__dict__.update(resume_state.get("proof_state", {}))
     stall = StallDetector(resume_state.get("stall_detector") if resume_state else None)
@@ -879,7 +901,8 @@ def _run_events_inner(
         yield Finished("completed", final["text"], turn, session_id, model,
                        total_usage, total_cost, transcript(turn),
                        result_kind=kind, result_detail=detail,
-                       candidate_path=proof_state.latest_proof_path)
+                       candidate_path=proof_state.latest_proof_path,
+                       selected_result=proof_state.selected_evidence)
         return
     if resume_state and reporting_stop == "stalled":
         yield Finished("stalled", stall.explanation(proof_state), turn, session_id, model,
@@ -1186,7 +1209,8 @@ def _run_events_inner(
                 model=model,
                 messages=messages,
                 final_text=final_text,
-                theorem_signature=safeverify.theorem_signature(proof_state.latest_check_content or "") or "",
+                theorem_signature=(proof_state.selected_evidence or {}).get("signature") or
+                    safeverify.theorem_signature(proof_state.latest_check_content or "") or "",
                 config=config,
             )
             total_usage.add(result_usage)
@@ -1202,7 +1226,8 @@ def _run_events_inner(
             yield Finished("completed", final_text, turn, session_id, model,
                            total_usage, total_cost, final_transcript,
                            result_kind=result_kind, result_detail=result_detail,
-                           candidate_path=proof_state.latest_proof_path)
+                           candidate_path=proof_state.latest_proof_path,
+                           selected_result=proof_state.selected_evidence)
             return
 
         def _exec_tool(tc):
