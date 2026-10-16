@@ -204,6 +204,34 @@ defaults to the `@provider-slug` from the catalog name on the native route). Cos
 is estimated from the upstream model named inside the catalog string, cache reads
 and writes priced at their own rates; a model LiteLLM cannot price reports `$0.00`.
 
+### Model catalog updates
+
+Both interfaces use the adapter's shared model catalog. It loads saved data
+immediately and refreshes in the background once a week. Startup refreshes only
+missing or stale data, so restarting an app does not reset the weekly schedule.
+Configured OpenAI, Anthropic, Gemini, and Portkey accounts are queried through
+their model-list endpoints; public LiteLLM metadata supplements capabilities.
+Saving a provider key or gateway URL requests another refresh. Each picker also
+has **Refresh models**, the last update time, and any source-specific warnings.
+
+Failed or incomplete requests retain the last successful list. Account lists
+are scoped to their credentials and endpoint, and cached under the adapter's
+data directory in `model-catalog.json`, which persists in the Docker data volume.
+Keys are never included in catalog responses or the cache. New entries with
+unknown capabilities are labeled **Compatibility unverified**; metadata alone
+does not establish account access or a successful proof run. Existing selections
+and active proofs keep their chosen model when the catalog changes.
+
+For offline/reproducible environments, set `LEA_MODEL_CATALOG_OFFLINE=true`.
+This disables background discovery and serves saved or bundled data. Normal
+catalog updates use metadata requests rather than inference requests.
+
+The `Model catalog maintenance` GitHub Actions workflow checks the bundled
+fallback and LiteLLM dependency updates once a week. It opens or updates a
+maintenance PR after catalog regressions pass. Repository administrators must
+enable **Allow GitHub Actions to create and approve pull requests** in workflow
+permissions for PR creation. Runtime discovery works independently of these PRs.
+
 ## Running
 
 Start only the shared backend:

@@ -4,106 +4,184 @@
     {
       "id": "openai",
       "label": "OpenAI",
-      "env_vars": ["OPENAI_API_KEY"]
+      "env_vars": [
+        "OPENAI_API_KEY"
+      ]
     },
     {
       "id": "google",
       "label": "Google AI",
-      "env_vars": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-      "aliases": ["gemini"]
+      "env_vars": [
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY"
+      ],
+      "aliases": [
+        "gemini"
+      ]
     },
     {
       "id": "anthropic",
       "label": "Anthropic",
-      "env_vars": ["ANTHROPIC_API_KEY"]
+      "env_vars": [
+        "ANTHROPIC_API_KEY"
+      ]
     },
     {
       "id": "portkey",
       "label": "Portkey gateway",
-      "env_vars": ["PORTKEY_API_KEY"],
+      "env_vars": [
+        "PORTKEY_API_KEY"
+      ],
       "endpoint_env": "PORTKEY_BASE_URL",
       "model_prefix": "portkey/",
-      "model_hint": "portkey/@provider-slug/model — the catalog name your gateway expects"
+      "model_hint": "portkey/@provider-slug/model \u2014 the catalog name your gateway expects"
     }
   ],
   "models": [
     {
+      "value": "gpt-6-astra",
+      "label": "GPT-6 Astra",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "unverified",
+      "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
+      "value": "gpt-6.1-sol",
+      "label": "GPT-6.1 Sol",
+      "family": "openai",
+      "released_at": "2026-09-29",
+      "mode": "responses",
+      "compatibility": "unverified",
+      "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
+      "value": "gpt-6-luna",
+      "label": "GPT-6 Luna",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "unverified",
+      "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
+      "value": "claude-fable-5-1",
+      "label": "Claude Fable 5.1",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "unverified",
+      "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
+      "value": "claude-opus-5-5",
+      "label": "Claude Opus 5.5",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "unverified",
+      "released_at": "2026-09-22",
+      "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
+      "value": "claude-sonnet-5-5",
+      "label": "Claude Sonnet 5.5",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "unverified",
+      "released_at": "2026-09-28",
+      "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
+      "value": "claude-haiku-5-5",
+      "label": "Claude Haiku 5.5",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "unverified",
+      "released_at": "2026-10-07",
+      "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
+      "value": "gemini/gemini-4-argon",
+      "label": "Gemini 4 Argon",
+      "family": "google",
+      "released_at": "2026-10-13",
+      "mode": "chat",
+      "compatibility": "unverified",
+      "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
+      "value": "gemini/gemini-3.8-flash",
+      "label": "Gemini 3.8 Flash",
+      "family": "google",
+      "released_at": "2026-09-02",
+      "mode": "chat",
+      "compatibility": "unverified",
+      "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
       "value": "o4-mini",
       "label": "o4-mini",
-      "family": "openai",
-      "tag": "Current default"
+      "family": "openai"
     },
     {
       "value": "gpt-5.4-mini",
       "label": "GPT-5.4 Mini",
-      "family": "openai",
-      "tag": "Fast"
+      "family": "openai"
     },
     {
       "value": "gpt-5.4",
       "label": "GPT-5.4",
-      "family": "openai",
-      "tag": "Balanced"
+      "family": "openai"
     },
     {
       "value": "gpt-5.5",
       "label": "GPT-5.5",
-      "family": "openai",
-      "tag": "Most capable"
+      "family": "openai"
     },
     {
       "value": "gpt-5.6-sol",
       "label": "GPT-5.6 Sol",
-      "family": "openai",
-      "tag": "Flagship"
+      "family": "openai"
     },
     {
       "value": "gpt-5.6-terra",
       "label": "GPT-5.6 Terra",
-      "family": "openai",
-      "tag": "Balanced"
+      "family": "openai"
     },
     {
       "value": "gpt-5.6-luna",
       "label": "GPT-5.6 Luna",
-      "family": "openai",
-      "tag": "Fast"
+      "family": "openai"
     },
     {
       "value": "gpt-4o",
       "label": "GPT-4o",
-      "family": "openai",
-      "tag": "Legacy"
+      "family": "openai"
     },
     {
       "value": "gemini/gemini-3.1-pro-preview",
       "label": "Gemini 3.1 Pro Preview",
-      "family": "google",
-      "tag": "Research"
+      "family": "google"
     },
     {
       "value": "gemini/gemini-2.5-pro",
       "label": "Gemini 2.5 Pro",
-      "family": "google",
-      "tag": "Capable"
+      "family": "google"
     },
     {
       "value": "gemini/gemini-2.5-flash",
       "label": "Gemini 2.5 Flash",
-      "family": "google",
-      "tag": "Fast"
+      "family": "google"
     },
     {
       "value": "anthropic/claude-opus-4-8",
       "label": "Claude Opus 4.8",
-      "family": "anthropic",
-      "tag": "Most capable"
+      "family": "anthropic"
     },
     {
       "value": "anthropic/claude-sonnet-4-6",
       "label": "Claude Sonnet 4.6",
-      "family": "anthropic",
-      "tag": "Balanced"
+      "family": "anthropic"
     }
-  ]
+  ],
+  "schema_version": 1,
+  "generated_at": "2026-10-16T00:00:00Z"
 }
