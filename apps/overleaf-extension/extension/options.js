@@ -180,15 +180,16 @@ function renderModelOptions(catalog, featured, selectedModel) {
     value: selectedModel,
     catalog,
     featured,
+    loadCatalog: (refresh) => loadModelCatalog(companionUrlInput.value.trim().replace(/\/+$/, "") || DEFAULT_COMPANION_URL, refresh),
     onChange: (model) => {
       void loadModelRequirements(model);
     }
   });
 }
 
-async function loadModelCatalog(companionUrl) {
+async function loadModelCatalog(companionUrl, refresh = false) {
   try {
-    const response = await fetch(`${companionUrl}/settings/models`);
+    const response = await fetch(`${companionUrl}/settings/models${refresh ? "/refresh" : ""}`, { method: refresh ? "POST" : "GET" });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
     const models = Array.isArray(payload.models) && payload.models.length > 0
@@ -199,12 +200,14 @@ async function loadModelCatalog(companionUrl) {
         ? "The adapter catalog is unavailable; showing the offline fallback and current model."
         : `${models.length.toLocaleString()} models available. Search by model ID or provider.`;
     }
-    return { models, degraded: Boolean(payload.degraded) };
+    if (Array.isArray(payload.featured)) latestModelOptions = payload.featured;
+    if (modelCatalogStatus) modelCatalogStatus.textContent = globalThis.LeaModelPicker.catalogStatus(payload);
+    return { ...payload, models, degraded: Boolean(payload.degraded) };
   } catch {
     if (modelCatalogStatus) {
       modelCatalogStatus.textContent = "The adapter catalog is unavailable; showing the offline fallback.";
     }
-    return { models: latestModelOptions, degraded: true };
+    return { models: latestModelOptions, degraded: true, warnings: [{ message: "Adapter catalog unavailable; showing saved models." }] };
   }
 }
 

@@ -45,3 +45,10 @@ test("model picker offers arbitrary custom ids but not duplicate exact catalog i
   assert.equal(exact.some((row) => row.custom), false);
   assert.equal(exact[0].value, "mistral/large");
 });
+
+test("featured entries missing from metadata remain exact search results", () => {
+  const rows = buildModelRows({ catalog: [], featured, query: "o4-mini" });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].value, "o4-mini");
+  assert.equal(rows[0].custom, false);
+});

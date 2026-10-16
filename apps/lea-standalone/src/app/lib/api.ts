@@ -1110,8 +1110,22 @@ export interface SettingsUpdate {
   github_token?: { value?: string; clear?: boolean };
 }
 
-export interface ModelCatalogEntry { value: string; label: string; provider: string }
+export interface ModelCatalogEntry {
+  value: string; label: string; provider: string;
+  compatibility?: string; availability?: string; preview?: boolean;
+}
 export interface ModelOption { value: string; label: string; family?: string }
+export interface ModelCatalogPayload {
+  models: ModelCatalogEntry[];
+  featured?: ModelOption[];
+  revision?: string;
+  updated_at?: string | null;
+  refreshing?: boolean;
+  updates_disabled?: boolean;
+  degraded?: boolean;
+  warnings?: { message?: string; code?: string }[];
+  sources?: Record<string, { updated_at: string | null; stale: boolean; error?: string | null }>;
+}
 export interface ModelRequiredKey { env: string; label: string; configured: boolean }
 export interface ModelRequirements {
   model: string;
@@ -1205,11 +1219,11 @@ export async function saveSettings(update: SettingsUpdate): Promise<AppSettings>
   return response.json();
 }
 
-export async function fetchModelCatalog(): Promise<ModelCatalogEntry[]> {
-  const response = await fetch('/api/models');
+export async function fetchModelCatalog(refresh = false): Promise<ModelCatalogPayload> {
+  const response = await fetch(refresh ? '/api/models/refresh' : '/api/models', { method: refresh ? 'POST' : 'GET' });
   if (!response.ok) throw new Error(`Failed to load models: ${response.statusText}`);
   const data = await response.json();
-  return Array.isArray(data.models) ? data.models : [];
+  return { ...data, models: Array.isArray(data.models) ? data.models : [] };
 }
 
 export async function fetchModelRequirements(model: string): Promise<ModelRequirements> {

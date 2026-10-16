@@ -8572,10 +8572,8 @@
       if (!popover.isConnected) return;
       popover.leaModelCatalog = payload.models;
       const modelSelect = popover.querySelector("[data-role='model']");
-      renderModelOptions(modelSelect, payload.models, settings.leaModelOptions || DEFAULT_MODEL_OPTIONS, modelSelect.value);
-      if (status) status.textContent = payload.degraded
-        ? "Adapter catalog unavailable — using the offline fallback."
-        : `${payload.models.length.toLocaleString()} models available; search by ID or provider.`;
+      renderModelOptions(modelSelect, payload.models, payload.featured || settings.leaModelOptions || DEFAULT_MODEL_OPTIONS, modelSelect.value);
+      if (status) status.textContent = globalThis.LeaModelPicker.catalogStatus(payload);
       if (popover.dataset.settingsState !== "ready") setSettingsControlsDisabled(popover, true);
     } catch {
       if (status) status.textContent = "Adapter catalog unavailable — using the offline fallback.";
@@ -8635,7 +8633,17 @@
       root: select,
       value: selectedModel,
       catalog,
-      featured
+      featured,
+      loadCatalog: async (refresh) => {
+        const baseUrl = await chatCompanionBaseUrl();
+        const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/settings/models${refresh ? "/refresh" : ""}`, {
+          method: refresh ? "POST" : "GET"
+        }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS, timeoutMessage: "The model catalog request timed out." });
+        if (!response.ok) throw new Error("Catalog unavailable");
+        const status = select.closest(".ol-lean-settings-popover")?.querySelector("[data-role='model-catalog-status']");
+        if (status) status.textContent = globalThis.LeaModelPicker.catalogStatus(payload);
+        return payload;
+      }
     });
   }
 

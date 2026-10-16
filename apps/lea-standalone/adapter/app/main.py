@@ -96,6 +96,8 @@ def startup() -> None:
         proofs_root = config.lea_root / "workspace" / "proofs" if config.lea_root else None
         _startup_log.info("Startup: recovering interrupted GitHub imports.")
         github_import_service.recover_github_imports_at_startup(proofs_root)
+        from .catalog_service import service as catalog_service
+        catalog_service().start()
         runtime.set_state("ready")
         reformalizations.dispatch_all()
     except BaseException:
@@ -132,6 +134,8 @@ def restart_adapter(request: RestartRequest) -> dict:
 
 @app.on_event("shutdown")
 def shutdown_lean_checks() -> None:
+    from .catalog_service import service as catalog_service
+    catalog_service().close()
     from lea.lsp_daemon import _shutdown_all
     from lea.mcp import shutdown_pool
     try:

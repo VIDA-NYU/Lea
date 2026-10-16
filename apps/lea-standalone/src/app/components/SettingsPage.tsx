@@ -7,11 +7,12 @@ import {
   ModelRequirements,
   PermissionTier,
   SettingsUpdate,
-  fetchModelCatalog,
   fetchModelRequirements,
   getSettings,
   saveSettings,
 } from '../lib/api';
+import { useModel } from '../stores/model';
+import { useCatalogUpdates } from './ModelCatalogStatus';
 import { ModelCombobox } from './ModelCombobox';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Progress } from './ui/progress';
@@ -61,7 +62,9 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const [githubToken, setGithubToken] = useState('');
   const [githubVisible, setGithubVisible] = useState(false);
   const [clearGithub, setClearGithub] = useState(false);
-  const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([]);
+  const catalog = useModel(s => s.modelCatalog);
+  const featured = useModel(s => s.modelFeatured);
+  useCatalogUpdates(true);
   const [requirements, setRequirements] = useState<ModelRequirements>();
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -94,11 +97,6 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
 
   useEffect(() => {
     void load();
-    // The full model catalog is best-effort — a blank list just falls back to
-    // the featured shortlist in the combobox.
-    fetchModelCatalog()
-      .then(setCatalog)
-      .catch(() => setCatalog([]));
   }, []);
 
   // Look up which API key(s) the selected model needs, so the right field shows.
@@ -292,7 +290,7 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
                 value={model}
                 onChange={setModel}
                 catalog={catalog}
-                featured={settings?.model_options || []}
+                featured={featured.length ? featured : settings?.model_options || []}
               />
             </Section>
 

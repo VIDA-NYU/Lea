@@ -4775,6 +4775,12 @@ class FakeElement {
       search.value = "";
       const heading = popover.appendChild(new FakeElement("div"));
       heading.className = "lea-model-picker-heading";
+      const catalogStatus = popover.appendChild(new FakeElement("div"));
+      catalogStatus.className = "lea-model-picker-status";
+      const catalogStatusText = catalogStatus.appendChild(new FakeElement("span"));
+      catalogStatusText.className = "lea-model-picker-status-text";
+      const refreshModels = catalogStatus.appendChild(new FakeElement("button"));
+      refreshModels.className = "lea-model-picker-refresh";
       const results = popover.appendChild(new FakeElement("div"));
       results.className = "lea-model-picker-results";
       return;

@@ -32,7 +32,7 @@ test.beforeAll(async () => {
   await new Promise(r => probe.close(r));
   base = `http://127.0.0.1:${port}`;
   child = spawn(path.join(root, 'apps/lea-standalone/adapter/.venv/bin/python'), [path.join(root, 'tests/integration/adapter_entry.py')], {
-    env: {...process.env, LEA_ITEST_HOME:home, LEA_ITEST_PORT:String(port), LEA_WEB_DIST:path.join(root, 'apps/lea-standalone/dist')},
+    env: {...process.env, LEA_MODEL_CATALOG_OFFLINE:"true", LEA_ITEST_HOME:home, LEA_ITEST_PORT:String(port), LEA_WEB_DIST:path.join(root, 'apps/lea-standalone/dist')},
     stdio:['ignore','pipe','pipe'], detached:true,
   });
   child.stdout.on('data', d => {log += d;}); child.stderr.on('data', d => {log += d;});
@@ -84,6 +84,35 @@ test('settings expose gateway routing and render the current catalog', async ({p
   await search.press('Enter');
   await expect(page.getByLabel('Gateway URL')).toBeVisible();
   await expect(page.locator('body')).not.toContainText('Failed to load');
+});
+
+test('model settings preserve missing suggestions, refresh warnings and current selections', async ({page}) => {
+  let refreshed = false;
+  await page.route('**/api/models*', route => route.fulfill({ json: {
+    models: refreshed ? [{value:'gpt-new',label:'New model',provider:'openai',compatibility:'unverified'}] : [],
+    featured: [{value:'gpt-future',label:'Future model',family:'openai'}],
+    revision: refreshed ? 'new' : 'old', degraded:true, warnings:[{message:'Provider offline; saved models available.'}]
+  }}));
+  await page.route('**/api/models/refresh', route => { refreshed = true; return route.fulfill({json:{
+    models:[{value:'gpt-new',label:'New model',provider:'openai',compatibility:'unverified'}],
+    featured:[{value:'gpt-future',label:'Future model',family:'openai'}],
+    revision:'new',degraded:true,warnings:[{message:'Provider offline; saved models available.'}]
+  }}); });
+  await page.goto(base);
+  await page.getByRole('button',{name:'Settings',exact:true}).click();
+  await page.getByRole('combobox').click();
+  const search = page.getByPlaceholder(/Search models/);
+  await search.fill('gpt-future');
+  await expect(page.getByRole('option')).toHaveCount(1);
+  await expect(page.getByRole('option')).toContainText('gpt-future');
+  await expect(page.getByRole('status')).toContainText('Provider offline');
+  await page.getByRole('button',{name:'Refresh models'}).click();
+  await search.fill('gpt-new');
+  await expect(page.getByRole('option')).toHaveCount(1);
+  await expect(page.getByRole('option')).toContainText('Compatibility unverified');
+  if (process.env.LEA_CATALOG_SCREENSHOTS) await page.screenshot({path:'/tmp/lea-catalog-standalone-desktop.png'});
+  await page.setViewportSize({width:390,height:850});
+  if (process.env.LEA_CATALOG_SCREENSHOTS) await page.screenshot({path:'/tmp/lea-catalog-standalone-mobile.png'});
 });
 
 test('Overleaf chats stay approval-free through LeaChat reloads and new project chats', async ({page}) => {

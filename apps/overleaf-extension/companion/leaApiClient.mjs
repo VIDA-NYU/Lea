@@ -139,9 +139,9 @@ export function fetchAdapterSettings({ fetchImpl, baseUrl, timeoutMs = ADAPTER_M
   }, { timeoutMs });
 }
 
-export function fetchAdapterModelCatalog({ fetchImpl, baseUrl, timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
-  return fetchJson(fetchImpl, `${baseUrl}/api/models`, {
-    method: "GET",
+export function fetchAdapterModelCatalog({ fetchImpl, baseUrl, refresh = false, timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/models${refresh ? "/refresh" : ""}`, {
+    method: refresh ? "POST" : "GET",
     headers: buildHeaders(null),
   }, { timeoutMs });
 }

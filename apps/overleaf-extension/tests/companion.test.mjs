@@ -387,21 +387,7 @@ test("settings response includes model families and key status", async () => {
   const response = await buildSettingsResponse(state);
 
   assert.deepEqual(response.leaModelOptions, LEA_MODEL_OPTIONS);
-  assert.deepEqual(response.leaModelOptions.map((model) => model.value), [
-    "o4-mini",
-    "gpt-5.4-mini",
-    "gpt-5.4",
-    "gpt-5.5",
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
-    "gpt-4o",
-    "gemini/gemini-3.1-pro-preview",
-    "gemini/gemini-2.5-pro",
-    "gemini/gemini-2.5-flash",
-    "anthropic/claude-opus-4-8",
-    "anthropic/claude-sonnet-4-6"
-  ]);
+  assert.ok(response.leaModelOptions.some(model => model.value === "gpt-6.1-sol"));
   assert.equal(response.leaModelOptions.find((model) => model.value === "o4-mini").family, "openai");
   assert.equal(response.leaModelOptions.find((model) => model.value === "gemini/gemini-2.5-pro").family, "google");
   assert.equal(response.leaProviderKeys.openai.configured, true);
@@ -458,6 +444,23 @@ test("model catalog and requirements proxy the adapter's exhaustive source", asy
   assert.equal(requirements.body.required_keys[0].env, "MISTRAL_API_KEY");
   assert.ok(calls.some((call) => call.url.endsWith("/api/models")));
   assert.ok(calls.some((call) => call.url.includes("/api/models/requirements")));
+});
+
+test("model catalog proxy preserves warnings, freshness, compatibility and refresh method", async () => {
+  const calls = [];
+  const body = { models: [{ value: "gpt-future", provider: "openai", compatibility: "unverified" }],
+    featured: [{ value: "gpt-future" }], revision: "new-revision", updated_at: "2026-10-16T00:00:00Z",
+    degraded: true, sources: { openai: { stale: true } }, warnings: [{ message: "Saved data" }] };
+  const state = { settings: { leaApiBaseUrl: "http://127.0.0.1:8001", leaModel: "gpt-future" },
+    fetchImpl: async (url, options) => { calls.push({ url, options }); return new Response(JSON.stringify(body)); } };
+  const result = await handleGetModelCatalog(state, { refresh: true });
+  assert.equal(calls[0].options.method, "POST");
+  assert.ok(calls[0].url.endsWith("/api/models/refresh"));
+  assert.equal(result.body.revision, body.revision);
+  assert.deepEqual(result.body.warnings, body.warnings);
+  assert.deepEqual(result.body.sources, body.sources);
+  assert.equal(result.body.models[0].compatibility, "unverified");
+  assert.equal(result.body.degraded, true);
 });
 
 test("model catalog fallback preserves a configured custom model", async () => {

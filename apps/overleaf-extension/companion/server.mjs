@@ -4538,6 +4538,7 @@ function normalizeAdapterCatalog(models) {
   if (!Array.isArray(models)) return [];
   return models
     .map((model) => ({
+      ...model,
       value: String(model?.value || "").trim(),
       label: String(model?.label || model?.value || "").trim(),
       provider: normalizeProviderFamilyId(model?.provider || model?.family || "")
@@ -4545,7 +4546,7 @@ function normalizeAdapterCatalog(models) {
     .filter((model) => model.value);
 }
 
-export async function handleGetModelCatalog(state) {
+export async function handleGetModelCatalog(state, { refresh = false } = {}) {
   const selectedModel = normalizeLeaModelId(state.settings?.leaModel || DEFAULT_LEA_MODEL);
   let baseUrl;
   try {
@@ -4553,18 +4554,21 @@ export async function handleGetModelCatalog(state) {
   } catch {
     return {
       statusCode: 200,
-      body: { models: fallbackModelCatalog(selectedModel), source: "fallback", degraded: true }
+      body: { models: fallbackModelCatalog(selectedModel), featured: LEA_MODEL_OPTIONS, source: "fallback", degraded: true,
+        warnings: [{ code: "catalog.offline", message: "Adapter catalog unavailable; using bundled models." }] }
     };
   }
-  const result = await fetchAdapterModelCatalog({ fetchImpl: state.fetchImpl || fetch, baseUrl });
+  const result = await fetchAdapterModelCatalog({ fetchImpl: state.fetchImpl || fetch, baseUrl, refresh });
   const models = normalizeAdapterCatalog(result.body?.models);
   if (!result.ok || models.length === 0) {
     return {
       statusCode: 200,
-      body: { models: fallbackModelCatalog(selectedModel), source: "fallback", degraded: true }
+      body: { models: fallbackModelCatalog(selectedModel), featured: LEA_MODEL_OPTIONS, source: "fallback", degraded: true,
+        warnings: [{ code: "catalog.offline", message: "Adapter catalog unavailable; using bundled models." }] }
     };
   }
-  return { statusCode: 200, body: { models, source: "adapter", degraded: false } };
+  return { statusCode: 200, body: { ...result.body, models, source: "adapter",
+    degraded: Boolean(result.body?.degraded || result.body?.warnings?.length) } };
 }
 
 function fallbackModelRequirements(model, state) {
@@ -4961,8 +4965,9 @@ async function routeRequest(request, response, state) {
     return;
   }
 
-  if (request.method === "GET" && url.pathname === "/settings/models") {
-    const result = await handleGetModelCatalog(state);
+  if ((request.method === "GET" && url.pathname === "/settings/models")
+      || (request.method === "POST" && url.pathname === "/settings/models/refresh")) {
+    const result = await handleGetModelCatalog(state, { refresh: request.method === "POST" });
     sendJson(response, result.statusCode, result.body);
     return;
   }
@@ -5315,7 +5320,7 @@ export async function buildSettingsResponse(state) {
     // Featured/offline fallback only. The exhaustive catalog lives at
     // GET /settings/models and is intentionally not duplicated in every
     // settings response.
-    leaModelOptions: LEA_MODEL_OPTIONS,
+    leaModelOptions: state.adapterSettings?.model_options || LEA_MODEL_OPTIONS,
     leaMaxTurns: state.settings.leaMaxTurns || DEFAULT_LEA_MAX_TURNS,
     leaNarrateToolSteps: state.settings.leaNarrateToolSteps !== false,
     leaMaxSpendUsd: normalizeLeaMaxSpendUsd(state.settings.leaMaxSpendUsd),

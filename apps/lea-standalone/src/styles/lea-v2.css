@@ -134,6 +134,10 @@
 .mm-input input { border: none; outline: none; font-size: 16px; flex: 1; background: transparent; color: var(--ink); }
 .mm-input .mm-esc { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; cursor: pointer; }
 .mm-section { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); padding: 10px 14px 2px; font-weight: 600; }
+.model-catalog-status { display: flex; align-items: flex-start; gap: 12px; padding: 10px 14px; font: 400 12px/1.5 var(--font-sans, sans-serif); color: var(--ink-2); }
+.model-catalog-status span { min-width: 0; overflow-wrap: anywhere; }
+.model-catalog-status button { flex: none; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+.model-catalog-status button:disabled { opacity: .6; cursor: wait; }
 .mm-results { max-height: 52vh; overflow-y: auto; padding: 4px 6px 8px; }
 .mm-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 9px 10px;
   border: none; background: none; border-radius: 8px; cursor: pointer; }

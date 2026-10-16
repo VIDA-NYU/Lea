@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 import { Check, ChevronsUpDown } from 'lucide-react';
 import type { ModelCatalogEntry, ModelOption } from '../lib/api';
+import { buildModelRows, modelStatus } from '../lib/modelPickerRows.mjs';
+import { ModelCatalogStatus, useCatalogUpdates } from './ModelCatalogStatus';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import {
   Command,
@@ -33,6 +35,7 @@ export function ModelCombobox({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  useCatalogUpdates(open);
 
   const selectedLabel = useMemo(
     () => catalog.find((m) => m.value === value)?.value ?? value,
@@ -40,17 +43,8 @@ export function ModelCombobox({
   );
 
   const trimmed = query.trim();
-  const results = useMemo<ModelCatalogEntry[]>(() => {
-    if (!trimmed) {
-      return featured.map((m) => ({ value: m.value, label: m.label, provider: m.family ?? '' }));
-    }
-    const q = trimmed.toLowerCase();
-    return catalog
-      .filter((m) => m.value.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q))
-      .slice(0, MAX_RESULTS);
-  }, [catalog, featured, trimmed]);
-
-  const isKnown = catalog.some((m) => m.value === trimmed) || featured.some((m) => m.value === trimmed);
+  const results = useMemo(() => buildModelRows({ catalog, featured, value, query, maxResults: MAX_RESULTS }),
+    [catalog, featured, value, query]);
 
   const choose = (next: string) => {
     onChange(next);
@@ -75,6 +69,7 @@ export function ModelCombobox({
           Lea shadcn palette on the content itself (`.settings-scope` defines the
           vars). Without this the dropdown falls back to the generic theme. */}
       <PopoverContent className="settings-scope w-[var(--radix-popover-trigger-width)] p-0" align="start">
+        <ModelCatalogStatus />
         <Command shouldFilter={false}>
           <CommandInput
             placeholder="Search models or type any model ID…"
@@ -82,21 +77,13 @@ export function ModelCombobox({
             onValueChange={setQuery}
           />
           <CommandList>
-            {trimmed && !isKnown && (
-              <CommandGroup heading="Custom">
-                <CommandItem value={`custom:${trimmed}`} onSelect={() => choose(trimmed)}>
-                  <Check className={`mr-2 h-4 w-4 ${value === trimmed ? 'opacity-100' : 'opacity-0'}`} />
-                  Use <span className="ml-1 font-mono">{trimmed}</span>
-                </CommandItem>
-              </CommandGroup>
-            )}
-            <CommandGroup heading={trimmed ? 'Matches' : 'Featured'}>
+            <CommandGroup heading={trimmed ? 'Matches' : 'Suggested'}>
               {results.map((m) => (
                 <CommandItem key={m.value} value={m.value} onSelect={() => choose(m.value)}>
                   <Check className={`mr-2 h-4 w-4 ${value === m.value ? 'opacity-100' : 'opacity-0'}`} />
-                  <span className="flex-1 truncate font-mono text-xs">{m.value}</span>
-                  {m.provider && (
-                    <span className="ml-2 shrink-0 text-xs text-muted-foreground">{m.provider}</span>
+                  <span className="flex-1 truncate font-mono text-xs">{m.custom ? `Use “${m.value}”` : m.value}</span>
+                  {(m.provider || modelStatus(m)) && (
+                    <span className="ml-2 shrink-0 text-xs text-muted-foreground">{[m.provider, modelStatus(m)].filter(Boolean).join(" · ")}</span>
                   )}
                 </CommandItem>
               ))}

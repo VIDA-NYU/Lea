@@ -1,21 +1,12 @@
-"""LiteLLM-backed model catalog + per-model API-key requirements.
+"""Provider inference and installed LiteLLM capability metadata.
 
-This powers two things in Settings:
-  1. The searchable model picker — the full LiteLLM catalog (~2k chat models
-     across ~76 providers), not just a curated shortlist.
-  2. The dynamic API-key prompt — which env var(s) a chosen model needs, so the
-     API Keys section can surface the right field (OpenAI, Anthropic, Gemini,
-     HuggingFace, Mistral, …) on demand.
-
-All LiteLLM access is isolated in this module and degrades gracefully if
-LiteLLM can't be imported, so the rest of the adapter never hard-depends on it
-(the curated MODEL_OPTIONS in settings.py remain the fallback).
+The shared catalog service owns live discovery, refreshes, persistence and UI
+suggestions. This module also resolves API-key requirements for custom IDs.
 """
 
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
 from typing import Any
 
 logger = logging.getLogger("lea-interface.models")
@@ -39,6 +30,12 @@ except Exception as _exc:  # noqa: BLE001
 
 # Entries in litellm.model_cost that aren't real, selectable chat models.
 _SKIP_VALUES = {"sample_spec"}
+_CATALOG_PROVIDERS: dict[str, str] = {}
+
+
+def set_catalog_models(models: list[dict]) -> None:
+    global _CATALOG_PROVIDERS
+    _CATALOG_PROVIDERS = {m["value"]: m["provider"] for m in models if m.get("provider")}
 
 # Models behind a Portkey AI gateway. LiteLLM has no Portkey provider — the prover
 # routes `portkey/<catalog-name>` (or a bare `@provider-slug/model` catalog name)
@@ -62,7 +59,6 @@ def unavailable_reason() -> str | None:
     return _UNAVAILABLE_REASON
 
 
-@lru_cache(maxsize=1)
 def list_chat_models() -> list[dict[str, str]]:
     """Every chat-capable model in the LiteLLM catalog as {value, label, provider}."""
     if not _AVAILABLE:
@@ -71,7 +67,7 @@ def list_chat_models() -> list[dict[str, str]]:
     for value, spec in litellm.model_cost.items():
         if value in _SKIP_VALUES or not isinstance(spec, dict):
             continue
-        if spec.get("mode") != "chat":
+        if spec.get("mode") not in {"chat", "responses"} or spec.get("supports_function_calling") is False:
             continue
         models.append(
             {
@@ -122,6 +118,15 @@ def provider_for(model: str) -> str | None:
     """The model's LiteLLM provider, normalized. Environment-independent."""
     if is_portkey_model(model):
         return PORTKEY_PROVIDER
+    if model in _CATALOG_PROVIDERS:
+        return _CATALOG_PROVIDERS[model]
+    # Future direct-provider IDs need not already exist in LiteLLM's bundled map.
+    if model.startswith(("gpt-", "openai/", "responses/")) or (model.startswith("o") and model[1:2].isdigit()):
+        return "openai"
+    if model.startswith(("claude-", "anthropic/")):
+        return "anthropic"
+    if model.startswith("gemini/"):
+        return "gemini"
     if not _AVAILABLE or not model:
         return None
     try:
