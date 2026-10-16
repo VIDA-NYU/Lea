@@ -370,7 +370,6 @@ def lean_files(repo):
 
 def prepare(operation_id):
     from .project_library import project_repo, lake_root
-    from lea.result_selection import inspect_file
     op = get(operation_id)
     if op["manifest"]:
         return op["manifest"]
@@ -395,16 +394,19 @@ def prepare(operation_id):
     # Snapshot this project's current sources plus the compiler-resolved source
     # closure it actually imports. Other projects and recovery archives are not
     # part of an attempt's workspace.
-    from lea.check_evidence import prepared_environment
     from lea.check_runtime import CheckBudget
     from lea.runctx import current_should_stop
+    from .reformalization_cache import Baseline
     budget = CheckBudget(should_stop=current_should_stop())
     sources = set(lean_files(canonical).values())
-    with execution.scope(canonical_policy(original_root, canonical)):
-        for source in tuple(sources):
-            with prepared_environment(source, source.read_bytes().decode('utf-8'), original_root, budget) as inputs:
-                sources.update(Path(e['path']) for e in inputs['files'].values()
-                               if e.get('kind') == 'source' and Path(e['path']).is_relative_to(original_root / 'proofs'))
+    baseline = Baseline(project, original_root, canonical, budget)
+    inputs = {}
+    for source in sorted(sources):
+        entry = baseline.module(source)
+        inputs[source.relative_to(canonical).as_posix()] = entry
+        sources.update(Path(e['path']) for e in ((entry['check'].get('execution') or {}).get('environment') or {}).get('files', {}).values()
+                       if e.get('kind') == 'source' and Path(e['path']).is_relative_to(original_root / 'proofs'))
+    baseline.seal(sources)
     for source in sources:
         budget.remaining('dependencies')
         if source.is_symlink() or not source.resolve().is_relative_to(original_root / 'proofs'):
@@ -477,28 +479,25 @@ def prepare(operation_id):
                                      'previous_source_hash': manifest['previous_source_hash']}
     from .recovery import _dependency_fingerprints
     manifest['dependencies'] = _dependency_fingerprints(original_root)
-    policy = {**workspace_policy(staged_root), "canonical_repo": str(canonical), "attempt_repo": str(staged)}
-    with execution.scope(policy):
-        from lea.interface import check
-        for rel in files:
-            budget.remaining('dependencies')
-            checked = check(str(staged / rel), cold=True)
-            manifest["checks"][rel] = {"status": checked.status, "detail": checked.detail}
-            for evidence in ((checked.execution or {}).get('environment') or {}).get('files', {}).values():
-                path = Path(evidence['path']).resolve()
-                if path.is_relative_to(staged_root):
-                    if evidence.get('kind') == 'source' and path.is_relative_to(staged_root / 'proofs'):
-                        key = str(path.relative_to(staged_root))
-                        manifest['source_hashes'][key] = evidence['sha256']
-                else:
-                    manifest['dependency_files'][str(path)] = evidence['sha256']
-            try:
-                manifest["reports"][rel] = inspect_file(staged / rel, allow_errors=True)
-            except ValueError:
-                manifest["reports"][rel] = None
+    for rel, entry in inputs.items():
+        checked = entry['check']
+        # Historical baseline checks describe canonical inputs. They are never
+        # emitted as fresh candidate evidence or used as a publication receipt.
+        manifest['checks'][rel] = {k: checked[k] for k in ('status', 'detail')}
+        manifest['reports'][rel] = entry['report']
+        for evidence in ((checked.get('execution') or {}).get('environment') or {}).get('files', {}).values():
+            path = Path(evidence['path']).resolve()
+            if path.is_relative_to(original_root / 'proofs'):
+                manifest['source_hashes'][str(path.relative_to(original_root))] = evidence['sha256']
+            elif not path.is_relative_to(original_root / '.lake/build'):
+                manifest['dependency_files'][str(path)] = evidence['sha256']
+    reused = baseline.copy_artifacts(staged_root)
+    manifest['preparation'] = {'version': 1, 'baseline_scope': 'canonical',
+        'cache_hits': baseline.hits, 'cache_misses': baseline.misses, 'artifact_files_copied': reused}
     for rel, expected in manifest['source_hashes'].items():
         if digest((original_root / rel).read_bytes()) != expected or digest((staged_root / rel).read_bytes()) != expected:
             raise ValueError("Project source changed while capturing this retry")
+    baseline.save()
     update(operation_id, manifest=manifest)
     return manifest
 

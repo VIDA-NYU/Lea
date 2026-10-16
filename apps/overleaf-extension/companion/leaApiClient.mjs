@@ -1036,6 +1036,13 @@ export async function runApiProofJob({
   };
 }
 
+export function fetchInventoryAssessments({ fetchImpl, baseUrl, apiKey, comparisons }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/lea-status/compare`, {
+    method: "POST", headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ comparisons })
+  }, { timeoutMs: ADAPTER_METADATA_TIMEOUT_MS });
+}
+
 export function fetchCurrentLeaStatus({ fetchImpl, baseUrl, apiKey, formalizationId, sourceIdentityHash, sourceBundleHash, sourceBundle, coverage = "partial", timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
   if (sourceBundle) return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/lea-status/compare`, {
     method: "POST", headers: buildHeaders(apiKey, { "Content-Type": "application/json" }), body: JSON.stringify({ source_bundle: sourceBundle, coverage })

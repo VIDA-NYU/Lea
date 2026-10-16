@@ -39,6 +39,14 @@ def inspect_file(path: str | Path, *, allow_errors=False) -> dict:
             source.write_text('import Lean\nimport ' + module + '\n' +
                 INSPECTOR.read_text().removeprefix('import Lean\n') +
                 '\n#lea_inspect_module ' + json.dumps(module) + '\n')
+            from .check_evidence import ReadSnapshot, _artifact_family
+            artifacts = ReadSnapshot()
+            compiled_artifacts = {}
+            for directory in ('lib/lean', 'ir'):
+                stem = root / '.lake/build' / directory / Path(*module.split('.'))
+                family = _artifact_family(stem, {})
+                artifacts.artifact_sets[str(stem)] = family
+                compiled_artifacts.update({p: artifacts.observation(p)[0] for p in family})
         else:
             source.write_text("import Lean\n" + code + "\n" +
                 INSPECTOR.read_text().removeprefix("import Lean\n") +
@@ -47,6 +55,8 @@ def inspect_file(path: str | Path, *, allow_errors=False) -> dict:
                              or (root / "lakefile.lean").exists() or (root / "lakefile.toml").exists()
                              else ["lean", str(source)], cwd=root,
                              capture_output=True, text=True, timeout=120)
+        if module and (not compiled_artifacts or not artifacts.unchanged()):
+            raise ValueError('Compiled module changed during result inspection')
     output = proc.stdout + "\n" + proc.stderr
     if proc.returncode and not allow_errors:
         raise ValueError("Result inspection failed: " + output[-5000:])
@@ -66,6 +76,7 @@ def inspect_file(path: str | Path, *, allow_errors=False) -> dict:
         raise ValueError("Source changed during result inspection")
     return {"declarations": declarations, "complete": proc.returncode == 0,
             'inspection': 'compiled_module' if module else 'source',
+            'compiled_artifacts': compiled_artifacts if module else {},
             "content_sha256": hashlib.sha256(code.encode()).hexdigest(), "diagnostic": output[-5000:]}
 
 

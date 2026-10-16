@@ -821,8 +821,13 @@ By triviality.
   const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
     if (String(url).endsWith("/lea-status/compare")) {
       const body = JSON.parse(options.body);
-      comparisons.push(body);
+      const entries = body.comparisons || [body];
+      comparisons.push(...entries);
       assert.equal(options.method, "POST");
+      if (body.comparisons) return jsonResponse(200, { assessments: Object.fromEntries(entries.map(item => [item.formalization_id, {
+        lea_status: { freshness: item.coverage === "complete" ? "current" : "unknown" },
+        lea_check: { status: "N/A" }
+      }])) });
       return jsonResponse(200, { lea_status: { freshness: body.coverage === "complete" ? "current" : "unknown" } });
     }
     return fallback(url, options);
@@ -1017,6 +1022,42 @@ test("lean pane manifest surfaces a disproof as a counterexample, not a failure"
   assert.equal(staleSource.body.items[0].leanCheck.status, "checked");
   assert.equal(staleSource.body.items[0].resultKind, "disproved");
 });
+
+for (const available of [true, false]) {
+  test(`inventory batches assessments without hiding completed proofs when assessments are ${available ? "available" : "unavailable"}`, async () => {
+    let batchCalls = 0;
+    const fallback = makeAdapterApiFetch([]);
+    const names = ["alpha", "beta", "gamma"];
+    const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/lea-status/compare") {
+        batchCalls++;
+        const { comparisons } = JSON.parse(options.body);
+        assert.deepEqual(comparisons.map(item => item.formalization_id).sort(), names);
+        assert.ok(comparisons.every(item => item.coverage === "complete" && item.source_bundle.version === 2));
+        return available ? jsonResponse(200, { assessments: Object.fromEntries(comparisons.map(item => [item.formalization_id, {
+          lea_status: { formalization_id: item.formalization_id, freshness: "current", activity: { status: "proved" } },
+          lea_check: { status: "N/A", reason: "not_evaluated" }
+        }])) }) : jsonResponse(503, { detail: "Proof inputs are changing" });
+      }
+      if (pathname.includes("/lea-status/") || pathname.endsWith("/alignment-checks/current")) {
+        assert.fail("A batch response must not trigger individual assessment reads");
+      }
+      if (pathname.endsWith("/target-status")) return jsonResponse(200, { targets: names.map(name => ledgerEntry(name, {
+        formalization_id: name, session_id: `session-${name}`,
+        content: `theorem ${name} : True := by trivial\n`
+      })) });
+      return fallback(url, options);
+    } });
+    const result = await handleLeanPaneManifest({ overleafProjectId: "project-1", sourceCoverage: "complete",
+      files: [{ path: "main.tex", content: names.map(name =>
+        `\\begin{theorem}\n% lea: formalize label=${name}\nTrue.\n\\end{theorem}`).join("\n") }] }, state);
+    assert.equal(batchCalls, 1);
+    assert.equal(result.statusCode, 200);
+    assert.ok(result.body.items.every(item => item.status === "valid" && item.leanCheck.status === "checked" && !item.inProgress));
+    assert.ok(result.body.items.every(item => item.leaStatus.freshness === (available ? "current" : "unknown")));
+  });
+}
 
 test("manifest reads dependencies once and marks cached evidence when unavailable", async () => {
   let reads = 0, offline = false;

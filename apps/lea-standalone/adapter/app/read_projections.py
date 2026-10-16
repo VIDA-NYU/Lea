@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from lea.check_evidence import ReadSnapshot
 
 _active = ContextVar('proof_read_snapshot', default=None)
+_artifacts = ContextVar('artifact_read_snapshots', default=None)
 
 
 def decode_evidence(raw):
@@ -16,6 +17,10 @@ def decode_evidence(raw):
 
 def current_snapshot():
     return _active.get()
+
+
+def current_artifact_snapshots():
+    return _artifacts.get()
 
 
 def read_projection(fn):
@@ -31,11 +36,13 @@ def read_projection(fn):
         for _ in range(2):
             snapshot = ReadSnapshot()
             token = _active.set(snapshot)
+            artifact_token = _artifacts.set({})
             try:
                 result = fn(*args, **kwargs)
                 if snapshot.unchanged():
                     return result
             finally:
+                _artifacts.reset(artifact_token)
                 _active.reset(token)
         raise HTTPException(status_code=503,
             detail={'error': 'proof_environment_changing', 'message': 'Proof inputs changed while loading; retry.'},

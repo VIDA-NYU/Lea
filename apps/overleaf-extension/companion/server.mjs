@@ -119,6 +119,7 @@ import {
   getFormalizeBatchReport,
   retryFormalizeBatchReport,
   fetchCurrentAlignmentCheck,
+  fetchInventoryAssessments,
   updateProjectIdentityBySlug,
   writeApiSessionFile
 } from "./leaApiClient.mjs";
@@ -1772,26 +1773,29 @@ async function leanPaneManifestSnapshot(payload, state, identity) {
       if (!sync.ok) targetSyncWarning = adapterDetail(sync, "Imported declarations could not be synchronized.");
     }
   }
-  const approvalContext = await loadFormalizationApprovalContext({
-    state,
-    overleafProjectId,
-    projectNamespace: identity.namespace
-  });
   const jobsBeforeEnrichment = new Set(Object.keys(state.jobs || {}));
-  const ledgerSnapshot = await fetchInventoryLedger({ state, overleafProjectId, identity,
-    targets: manifest.items.map((item) => ({ targetKind: item.leanKind === "def" ? "definition" : "theorem",
-      targetLabel: String(item.leanDeclarationName || "") })) });
-  let currentDependencies = null;
-  try {
-    const result = await projectDependencyRequest({
-      fetchImpl: state.fetchImpl || fetch,
-      baseUrl: normalizeLeaApiBaseUrl(state.settings?.leaApiBaseUrl || DEFAULT_LEA_API_BASE_URL),
-      apiKey: state.env?.LEA_API_KEY, projectSlug: slugProjectId(overleafProjectId)
-    });
-    if (result.ok && Array.isArray(result.body?.dependencies)) {
-      currentDependencies = new Map(result.body.dependencies.map((dep) => [dep.id, dep]));
-    }
-  } catch { /* Keep cached evidence visibly identified when the registry is unavailable. */ }
+  const [approvalContext, ledgerSnapshot, currentDependencies] = await Promise.all([
+    loadFormalizationApprovalContext({ state, overleafProjectId, projectNamespace: identity.namespace }),
+    fetchInventoryLedger({ state, overleafProjectId, identity,
+      targets: manifest.items.map((item) => ({ targetKind: item.leanKind === "def" ? "definition" : "theorem",
+        targetLabel: String(item.leanDeclarationName || "") })) }),
+    (async () => {
+      try {
+        const result = await projectDependencyRequest({
+          fetchImpl: state.fetchImpl || fetch,
+          baseUrl: normalizeLeaApiBaseUrl(state.settings?.leaApiBaseUrl || DEFAULT_LEA_API_BASE_URL),
+          apiKey: state.env?.LEA_API_KEY, projectSlug: slugProjectId(overleafProjectId)
+        });
+        if (result.ok && Array.isArray(result.body?.dependencies)) {
+          return new Map(result.body.dependencies.map((dep) => [dep.id, dep]));
+        }
+      } catch { /* Keep cached evidence visibly identified when the registry is unavailable. */ }
+      return null;
+    })()
+  ]);
+  const assessmentSnapshot = await loadInventoryAssessments({ state, overleafProjectId, identity,
+    items: manifest.items, ledgerSnapshot,
+    coverage: payload.sourceCoverage === "complete" ? "complete" : "partial" });
   const items = await mapWithConcurrency(
     manifest.items,
     LEAN_PANE_ENRICH_CONCURRENCY,
@@ -1804,6 +1808,7 @@ async function leanPaneManifestSnapshot(payload, state, identity) {
       approvalContext,
       currentDependencies,
       ledgerSnapshot,
+      assessmentSnapshot,
       sourceCoverage: payload.sourceCoverage === "complete" ? "complete" : "partial"
     })
   );
@@ -8329,6 +8334,7 @@ async function enrichLeanPaneItem({
   approvalContext,
   currentDependencies = null,
   ledgerSnapshot,
+  assessmentSnapshot,
   sourceCoverage = "partial"
 }) {
   const targetKind = item.leanKind === "def" ? "definition" : "theorem";
@@ -8396,12 +8402,7 @@ async function enrichLeanPaneItem({
   // bounded context and mirror snapshot). Reuse that hash only while the
   // target-level source identity still matches; otherwise ask for the current
   // manifest bundle so the adapter correctly returns N/A/superseded.
-  const alignmentSourceBundleHash = (
-    latestJob?.sourceBundle?.bundleHash
-    && latestJob?.formalizationInputHash === currentInputHash
-  )
-    ? latestJob.sourceBundle.bundleHash
-    : item.sourceBundle?.bundleHash || currentInputHash;
+  const alignmentSourceBundleHash = paneAlignmentSourceHash(item, latestJob);
   const freshness = attachSourceFreshness({
     state,
     overleafProjectId,
@@ -8465,20 +8466,28 @@ async function enrichLeanPaneItem({
       const baseUrl = normalizeLeaApiBaseUrl(
         latestJob?.leaApiBaseUrl || state.settings?.leaApiBaseUrl || DEFAULT_LEA_API_BASE_URL
       );
-      const live = await fetchCurrentLeaStatus({ fetchImpl: state.fetchImpl || fetch, baseUrl,
-        apiKey: state.env?.LEA_API_KEY, formalizationId,
-        sourceIdentityHash: item.sourceBundle?.sourceIdentityHash || currentInputHash,
-        sourceBundleHash: item.sourceBundle?.bundleHash,
-        sourceBundle: item.sourceBundle, coverage: sourceCoverage });
-      if (live.ok) leaStatus = normalizeLeaStatus(live.body?.lea_status);
-      else leaStatus = { ...leaStatus, freshness: "unknown", deliveryError: live.error || "Lea Status unavailable" };
-      const result = await fetchCurrentAlignmentCheck({
-        fetchImpl: state.fetchImpl || fetch,
-        baseUrl,
-        formalizationId,
-        sourceBundleHash: alignmentSourceBundleHash
-      });
-      if (result.ok) leaCheck = normalizeLeaCheck(result.body?.lea_check);
+      if (assessmentSnapshot !== undefined) {
+        const live = assessmentSnapshot[formalizationId];
+        if (live?.lea_status) leaStatus = normalizeLeaStatus(live.lea_status);
+        else leaStatus = { ...leaStatus, freshness: "unknown", deliveryError: live?.error || "Lea Status unavailable" };
+        if (live?.lea_check) leaCheck = normalizeLeaCheck(live.lea_check);
+      } else {
+        // Compatibility with adapters predating the bounded inventory read.
+        const live = await fetchCurrentLeaStatus({ fetchImpl: state.fetchImpl || fetch, baseUrl,
+          apiKey: state.env?.LEA_API_KEY, formalizationId,
+          sourceIdentityHash: item.sourceBundle?.sourceIdentityHash || currentInputHash,
+          sourceBundleHash: item.sourceBundle?.bundleHash,
+          sourceBundle: item.sourceBundle, coverage: sourceCoverage });
+        if (live.ok) leaStatus = normalizeLeaStatus(live.body?.lea_status);
+        else leaStatus = { ...leaStatus, freshness: "unknown", deliveryError: live.error || "Lea Status unavailable" };
+        const result = await fetchCurrentAlignmentCheck({
+          fetchImpl: state.fetchImpl || fetch,
+          baseUrl,
+          formalizationId,
+          sourceBundleHash: alignmentSourceBundleHash
+        });
+        if (result.ok) leaCheck = normalizeLeaCheck(result.body?.lea_check);
+      }
     } catch {
       leaStatus = { ...leaStatus, freshness: "unknown", deliveryError: "Adapter offline; showing last known assessment." };
     }
@@ -8743,6 +8752,44 @@ function ledgerStatusBase({ leaRepoPath, target, entry }) {
     formalizationId: entry.formalizationId || null,
     leaSessionId: entry.leaSessionId || null
   };
+}
+
+function paneAlignmentSourceHash(item, job) {
+  const currentInputHash = item.formalizationInputHash || item.sourceBundle?.sourceIdentityHash || "";
+  return job?.sourceBundle?.bundleHash && job.formalizationInputHash === currentInputHash
+    ? job.sourceBundle.bundleHash : item.sourceBundle?.bundleHash || currentInputHash;
+}
+
+async function loadInventoryAssessments({ state, overleafProjectId, identity, items, ledgerSnapshot, coverage }) {
+  const comparisons = new Map();
+  for (const item of items) {
+    const targetLabel = String(item.leanDeclarationName || "");
+    if (!isValidLeanIdentifier(targetLabel)) continue;
+    const target = buildLeaTarget({ leaRepoPath: state.settings.leaRepoPath, overleafProjectId,
+      projectName: identity.projectName, projectNamespace: identity.namespace,
+      targetKind: item.leanKind === "def" ? "definition" : "theorem", targetLabel });
+    const job = findLatestFinishedJob(state.jobs || {}, target.jobKey);
+    const formalizationId = job?.formalizationId || ledgerSnapshot?.[targetLabel]?.formalization_id;
+    if (formalizationId) comparisons.set(formalizationId, {
+      formalization_id: formalizationId, source_bundle: item.sourceBundle, coverage,
+      alignment_source_bundle_hash: paneAlignmentSourceHash(item, job)
+    });
+  }
+  if (!comparisons.size) return {};
+  // Bound both the request size and outstanding reads for large inventories.
+  const values = [...comparisons.values()], chunks = [];
+  for (let i = 0; i < values.length; i += 100) chunks.push(values.slice(i, i + 100));
+  const results = await mapWithConcurrency(chunks, 2, (comparisons) => fetchInventoryAssessments({
+    fetchImpl: state.fetchImpl || fetch,
+    baseUrl: normalizeLeaApiBaseUrl(state.settings?.leaApiBaseUrl || DEFAULT_LEA_API_BASE_URL),
+    apiKey: state.env?.LEA_API_KEY, comparisons
+  }));
+  // Unsupported older adapters retain the original individual lookup path.
+  if (results.some(result => [404, 405, 501].includes(result.status)
+    || result.ok && !result.body?.assessments)) return undefined;
+  // A timed-out optional assessment must not hide current compiler/operation
+  // status or trigger a second wave of the same slow requests.
+  return Object.assign({}, ...results.map(result => result.ok ? result.body.assessments : {}));
 }
 
 // One current ledger read per inventory response. This value is never cached in

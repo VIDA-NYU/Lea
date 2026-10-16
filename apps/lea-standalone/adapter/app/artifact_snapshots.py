@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from . import formalizations, store
-from .read_projections import read_projection
+from .read_projections import read_projection, current_artifact_snapshots
 _IMPORT_LINE = re.compile(r"(?m)^\s*import\s+([^\n-]+)")
 
 def _imported_modules(code: str) -> list[str]:
@@ -57,6 +57,18 @@ def _transitive_project_dependencies(project_id: str | None, roots: list[dict]) 
 
 @read_projection
 def _snapshot(formalization_id: str, *, run_id: str | None = None) -> tuple[dict, list[dict]] | None:
+    cache = current_artifact_snapshots()
+    # Live and historical assessments in one response must describe the same
+    # canonical revision. Discard this reuse when the response ends or retries;
+    # attempt drafts and publication never reuse a captured canonical snapshot.
+    if run_id is not None or cache is None:
+        return _capture_snapshot(formalization_id, run_id=run_id)
+    if formalization_id not in cache:
+        cache[formalization_id] = _capture_snapshot(formalization_id)
+    return cache[formalization_id]
+
+
+def _capture_snapshot(formalization_id: str, *, run_id: str | None = None) -> tuple[dict, list[dict]] | None:
     if run_id:
         from . import reformalizations
         op = reformalizations.for_run(run_id)

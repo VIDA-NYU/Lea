@@ -80,6 +80,81 @@ def test_source_only_publication_is_durable_and_idempotent(fresh):
     assert lea_status_store.get(first["id"]) == first
 
 
+def test_inventory_assessments_share_one_fresh_response_snapshot(fresh, monkeypatch):
+    from app import alignment_checks, formalizations
+    from app.read_projections import current_snapshot
+    from app.routes.lea_status import compare_assessments, AssessmentComparisons
+    run, form, _ = ids(fresh)
+    lea_status.publish(run, "initial", payload())
+    observations = []
+    captures = []
+    capture_original = formalizations.current_snapshot
+
+    def capture_current(*args, **kwargs):
+        captures.append(args[0])
+        return capture_original(*args, **kwargs)
+
+    monkeypatch.setattr(formalizations, "current_snapshot", capture_current)
+    for module in (lea_status, alignment_checks):
+        original = module._snapshot
+
+        def capture(*args, _original=original, **kwargs):
+            observations.append(current_snapshot())
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(module, "_snapshot", capture)
+    request = AssessmentComparisons(comparisons=[dict(formalization_id=form,
+        source_bundle=bundle(), coverage="complete", alignment_source_bundle_hash=bundle()["bundleHash"])])
+    result = compare_assessments(request)["assessments"][form]
+    assert result["lea_status"]["freshness"] == "current"
+    assert result["lea_check"]["status"] == "N/A"
+    assert len(observations) == 2 and observations[0] is observations[1]
+    assert observations[0] is not None
+    assert captures == [form]
+    assert current_snapshot() is None
+    previous = observations[0]
+    observations.clear()
+    compare_assessments(request)
+    assert observations[0] is not None and observations[0] is not previous
+    assert captures == [form, form]
+
+
+def test_inventory_assessments_do_not_hide_other_targets_on_invalid_input(fresh):
+    from app.routes.lea_status import compare_assessments, AssessmentComparisons
+    _, form, _ = ids(fresh)
+    request = AssessmentComparisons(comparisons=[
+        dict(formalization_id="missing", source_bundle=bundle()),
+        dict(formalization_id=form, source_bundle=bundle(), coverage="complete")])
+    result = compare_assessments(request)["assessments"]
+    assert result["missing"]["error"] == "Formalization not found"
+    assert result[form]["lea_status"]["freshness"] == "current"
+
+
+def test_inventory_assessments_retry_when_inputs_change_during_the_response(fresh, monkeypatch, tmp_path):
+    from app import alignment_checks
+    from app.read_projections import current_snapshot
+    from app.routes.lea_status import compare_assessments, AssessmentComparisons
+    _, form, _ = ids(fresh)
+    path = tmp_path / "proof.lean"
+    path.write_text("old")
+    reads = []
+
+    def status(*args, **kwargs):
+        current_snapshot().observation(path)
+        reads.append(path.read_text())
+        return {"version": reads[-1]}
+
+    def legacy(*args, **kwargs):
+        path.write_text("new") if path.read_text() == "old" else None
+        return {"lea_check": {"status": "N/A"}}
+
+    monkeypatch.setattr(lea_status, "current", status)
+    monkeypatch.setattr(alignment_checks, "current", legacy)
+    request = AssessmentComparisons(comparisons=[dict(formalization_id=form, source_bundle=bundle())])
+    assert compare_assessments(request)["assessments"][form]["lea_status"]["version"] == "new"
+    assert reads == ["old", "new"]
+
+
 def rehash_source(value):
     value["bundleHash"] = source_hash(value)
     value["sourceIdentityHash"] = source_hash(value, identity=True)
