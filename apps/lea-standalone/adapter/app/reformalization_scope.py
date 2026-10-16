@@ -233,5 +233,5 @@ def validate_project(before, after, baseline, candidate, target, selected, *, so
         if context(code, report) != context(after[path], other):
             raise PreservationConflict(f'Protected comments or module context changed in {path}')
     return {'editable': sorted(editable), 'protected': sorted(protected),
-            'source_update': source_update, 'target_before': original, 'target_after': actual,
+            'source_update': source_update, 'stable_protected': sorted(protected - affected if source_update else protected), 'target_before': original, 'target_after': actual,
             'relocations': [{'name': n, 'before_path': old[n][0], 'after_path': new[n][0]} for n in sorted(relocated)]}

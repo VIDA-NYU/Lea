@@ -246,6 +246,7 @@ export default function App() {
   const loadSession = async (sessionId: string) => {
     const detail = await loadOwnedSession(sessionId);
     if (detail) window.localStorage.setItem(SELECTED_SESSION_KEY, detail.id);
+    return detail;
   };
 
   // Open a project's window (F1/F2). Loading its detail also sets it as the
@@ -321,12 +322,20 @@ export default function App() {
       || `Continue working on ${formalization.declaration_name || formalization.display_title}.`
     ).trim();
     setError(undefined);
-    let queuedSession: string | undefined;
+    let ownsQueuedSelection: (() => boolean) | undefined;
     try {
-      resetForNewSession();
+      const retrySession = reformalize
+        ? (formalization.sessions.find(session => session.id === selectedSessionId)?.id || formalization.sessions[0]?.id)
+        : undefined;
+      if (retrySession) {
+        if (!await loadSession(retrySession)) return;
+      } else {
+        resetForNewSession();
+      }
+      const owned = captureSelection(false);
       const run = await createRun(
         content,
-        undefined,
+        retrySession,
         useModel.getState().model,
         {
           project_slug: currentProject.slug,
@@ -336,19 +345,29 @@ export default function App() {
           ...(reformalize ? { artifact_operation: 'reformalize' as const } : {}),
         },
         operation => {
-          queuedSession = operation.session_id;
+          if (!owned()) return;
           setSelectedSessionId(operation.session_id);
           setFormalizations([{ ...formalization, reformalization: {
             id: operation.reformalization_id, state: 'queued', has_drafts: false } }]);
           setFormalizationScope(formalization.id);
-          setMessages([{ id: `queued:${operation.reformalization_id}`, session_id: operation.session_id,
+          setMessages(previous => [...(retrySession === operation.session_id ? previous : []), { id: `queued:${operation.reformalization_id}`, session_id: operation.session_id,
             role: 'assistant', content: 'Reformalization queued. It will start when this project is available.', created_at: new Date().toISOString() }]);
           window.localStorage.setItem(SELECTED_SESSION_KEY, operation.session_id);
           setView('main');
+          ownsQueuedSelection = captureSelection(false);
         },
-        () => !queuedSession || useSessions.getState().selectedSessionId === queuedSession,
+        () => (ownsQueuedSelection || owned)(),
       );
-      if (!run.run_id || (queuedSession && useSessions.getState().selectedSessionId !== queuedSession)) return;
+      if (!run.run_id || !(ownsQueuedSelection || owned)()) return;
+      if (reformalize) {
+        const detail = await loadSession(run.session_id);
+        if (detail) {
+          setFormalizationScope(formalization.id);
+          setView('main');
+          await refreshSessions();
+        }
+        return;
+      }
       setSelectedSessionId(run.session_id);
       setCurrentRunId(run.run_id);
       setRunStatus('running');

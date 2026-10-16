@@ -128,7 +128,10 @@ def run(context, op):
                 prompt_variant='overleaf_faithful' if context.purpose == 'overleaf_solver' else 'overleaf_continuation',
                 extra_tools=list(dict.fromkeys([*cfg.extra_tools, 'update_lea_status'])),
                 tools=list(dict.fromkeys([*cfg.tools, 'update_lea_status'])) if cfg.tools else None)
-        prior = store.latest_transcript_for_session(sid, exclude_run_id=rid) or []
+        prior = (recovery.load_safe_conversation(row['resumes_run_id'])
+                 if row.get('resumes_run_id') and not row.get('resume_checkpoint_id') else None)
+        if prior is None:
+            prior = store.latest_transcript_for_session(sid, exclude_run_id=rid) or []
         prior = [m for m in prior if not projects.is_context_message(m) and not bridge._is_formalization_context_message(m)]
         ctx = projects.compose_context_message(project, repo)
         task = context.task + '\n\nCurrent retry workspace: ' + str(repo) + '\nSelected declaration: ' + declaration['user_name'] + '\nCurrent target file: ' + str(repo / target_path)
@@ -284,9 +287,6 @@ def run(context, op):
                             status = kind
                             detail = kind.upper()
                             bridge.emit(events, 'reformalization_applied', receipt)
-                            if dependency:
-                                from .reformalization_helpers import refresh_parent
-                                refresh_parent(op['id'])
                         else:
                             status = kind = 'needs_review'
                             for rel in assessment['checks']:
@@ -307,8 +307,12 @@ def run(context, op):
                     break
     except Exception as exc:
         detail = bridge._public_error_detail(exc)
-        operations.update(op['id'], 'retained', result={'outcome': 'conflict', 'detail': detail})
-        store.update_run(rid, 'failed', result_kind='failed', result_detail=detail)
+        if operations.get(op['id'])['state'] != 'settled':
+            operations.update(op['id'], 'retained', result={'outcome': 'conflict', 'detail': detail})
+            store.update_run(rid, 'failed', result_kind='failed', result_detail=detail)
+        else:
+            accepted = store.get_run(rid)
+            status, kind = accepted['status'], accepted['result_kind']
         bridge.emit(events, 'run_error', {'message': detail})
     finally:
         if repo:

@@ -293,8 +293,9 @@ def _accept(op, journal_id, journal, commit):
     fid, sid, rid = (journal.get('helper') or {}).get('formalization_id', op['formalization_id']), op['session_id'], op['root_run_id']
     project = store.get_project(op['project_id'])
     with db.write() as conn:
-        operation_state = conn.execute('select state from reformalization_operations where id=?', (op['id'],)).fetchone()
-        if operation_state['state'] not in {'active', 'applying', 'worker'}:
+        operation_state = conn.execute('select state,request_json from reformalization_operations where id=?', (op['id'],)).fetchone()
+        if (operation_state['state'] not in {'active', 'applying', 'worker'}
+                or json.loads(operation_state['request_json']).get('_cancelled')):
             raise PreservationConflict('The operation was cancelled before acceptance')
         approved = (op.get('result') or {}).get('approval_id')
         if approved and conn.execute("select 1 from formalization_review_events where action='withdraw' and approval_id=?", (approved,)).fetchone():
@@ -314,7 +315,8 @@ def _accept(op, journal_id, journal, commit):
             data = {'reformalization_application': journal_id,
                     'preservation': {'from_step_id': str(previous['id']) if previous and previous['after_blob_id'] == before_blob else None,
                         'before_blob_id': before_blob,
-                        'protected': journal['scope']['protected'], 'source_update': journal['scope']['source_update']}}
+                        'protected': journal['scope']['protected'], 'source_update': journal['scope']['source_update'],
+                        'stable_protected': journal['scope']['stable_protected']}}
             relocated = []
             for move in journal['scope'].get('relocations', []):
                 if move['after_path'] != rel:
@@ -449,8 +451,24 @@ def restore(op, journal_id, journal, *, committed=False):
         displaced = Path(entry['displaced'])
         _retain_displaced(entry, displaced)
         observed = _content(entry.get('displaced_blob'))
+        rollback = Path(entry['rollback_displaced']) if entry.get('rollback_displaced') else None
+        if rollback and rollback.exists():
+            captured = {}
+            _retain_displaced(captured, rollback)
+            entry['rollback_blob'] = captured.get('displaced_blob')
+            rolled = _content(entry['rollback_blob'])
+            if rolled != after:
+                conflict = True
+                if current is None and rolled is not None:
+                    try:
+                        _install(path, rolled, entry['mode'])
+                    except FileExistsError:
+                        pass
+                continue
+        # Both an untouched path and a completed per-path restore are safe.
         # A crash before displacement leaves the original untouched.
-        if not entry.get('displaced_blob') and current == before:
+        if current == before and (observed is None or observed == before):
+            restored[rel] = before
             continue
         if current not in (after, None) or (observed is not None and observed != before):
             conflict = True
@@ -459,6 +477,8 @@ def restore(op, journal_id, journal, *, committed=False):
                     entry['conflicting_blob'] = store._put_blob(conn, current)
             if current == after and current is not None and observed != before:
                 archived = displaced.with_name(displaced.name + '.candidate-' + uuid4().hex)
+                entry['rollback_displaced'] = str(archived)
+                _write_journal(journal_id, 'restoring', journal)
                 os.rename(path, archived)
                 captured = {}
                 _retain_displaced(captured, archived)
@@ -478,6 +498,8 @@ def restore(op, journal_id, journal, *, committed=False):
             continue
         if current is not None:
             rollback = displaced.with_name(displaced.name + '.candidate-' + uuid4().hex)
+            entry['rollback_displaced'] = str(rollback)
+            _write_journal(journal_id, 'restoring', journal)
             os.rename(path, rollback)
             rolled = {}
             _retain_displaced(rolled, rollback)
@@ -506,6 +528,19 @@ def restore(op, journal_id, journal, *, committed=False):
 
 def apply(operation_id, selection, outcome, *, assessment=None, helper=None):
     op = operations.get(operation_id)
+    # Acquire publication ownership before preparing any durable journal. A
+    # blocked contender has neither changed files nor left recovery work behind.
+    with operations.acting(operation_id), project_coordination.application(
+            op['project_id'], op['manifest']['canonical_root']):
+        receipt = _apply(operation_id, selection, outcome, assessment=assessment, helper=helper)
+        if helper and op['request'].get('_foreground_owner'):
+            from .reformalization_helpers import refresh_parent
+            refresh_parent(operation_id)
+        return receipt
+
+
+def _apply(operation_id, selection, outcome, *, assessment=None, helper=None):
+    op = operations.get(operation_id)
     if op['state'] not in {'active', 'worker'}:
         raise PreservationConflict('This operation no longer owns publication')
     manifest = op['manifest']
@@ -526,50 +561,49 @@ def apply(operation_id, selection, outcome, *, assessment=None, helper=None):
         conn.execute("insert into reformalization_applications(id,operation_id,state,manifest_json,created_at,updated_at) values (?,?,'prepared',?,?,?)",
                      (journal_id, operation_id, operations.dumps(journal), db.utc_now(), db.utc_now()))
     commit = None
-    with operations.acting(operation_id), project_coordination.application(op['project_id'], root):
-        try:
-            operations.fresh(op)
-            operations.update(operation_id, 'worker' if op['request'].get('_foreground_owner') else 'applying')
-            _write_journal(journal_id, 'applying', journal)
-            for rel, entry in journal['files'].items():
-                path = _path(repo, rel)
-                displaced = Path(entry['displaced'])
-                displaced.parent.mkdir(parents=True, exist_ok=True)
-                before = _content(entry['before_blob'])
-                if before is not None:
-                    os.rename(path, displaced)
-                    _retain_displaced(entry, displaced)
-                    _write_journal(journal_id, 'applying', journal)
-                    if _content(entry.get('displaced_blob')) != before:
-                        raise PreservationConflict('An external edit was captured during application: ' + rel)
-                if entry['after_blob']:
-                    _install(path, _content(entry['after_blob']), entry['mode'])
-                entry['installed'] = True
+    try:
+        operations.fresh(op)
+        operations.update(operation_id, 'worker' if op['request'].get('_foreground_owner') else 'applying')
+        _write_journal(journal_id, 'applying', journal)
+        for rel, entry in journal['files'].items():
+            path = _path(repo, rel)
+            displaced = Path(entry['displaced'])
+            displaced.parent.mkdir(parents=True, exist_ok=True)
+            before = _content(entry['before_blob'])
+            if before is not None:
+                os.rename(path, displaced)
+                _retain_displaced(entry, displaced)
                 _write_journal(journal_id, 'applying', journal)
-            journal['checks'] = _canonical_checks(op, journal)
-            for entry in journal['files'].values():
-                displaced = Path(entry['displaced'])
-                if displaced.exists():
-                    _retain_displaced(entry, displaced)
-                    if _content(entry['displaced_blob']) != _content(entry['before_blob']):
-                        raise PreservationConflict('A displaced source changed before acceptance; all observed versions are retained')
+                if _content(entry.get('displaced_blob')) != before:
+                    raise PreservationConflict('An external edit was captured during application: ' + rel)
+            if entry['after_blob']:
+                _install(path, _content(entry['after_blob']), entry['mode'])
+            entry['installed'] = True
             _write_journal(journal_id, 'applying', journal)
-            commit = GitStore(repo.parent).commit_exact(repo, 'Reformalize selected result', assessment['changes'], application_id=journal_id)
-            _write_journal(journal_id, 'applying', journal, commit)
-            _accept(op, journal_id, journal, commit)
-        except BaseException as exc:
-            # Process death recovery sees the pre-written journal. Ordinary failures
-            # restore observed operation-owned paths immediately.
-            if isinstance(exc, Exception):
-                journal['failure'] = str(exc)
-                if not commit:
-                    commit = GitStore(repo.parent)._git(repo, 'log', '-1', '--format=%H', '--fixed-strings', '--grep', 'Reformalization-Application: ' + journal_id).strip() or None
-                restored = restore(op, journal_id, journal, committed=bool(commit))
-                if helper and restored:
-                    operations.update(operation_id, 'worker' if op['request'].get('_foreground_owner') else 'active')
-                else:
-                    operations.update(operation_id, 'retained', result={'outcome': 'conflict', 'detail': str(exc), 'application_id': journal_id})
-            raise
+        journal['checks'] = _canonical_checks(op, journal)
+        for entry in journal['files'].values():
+            displaced = Path(entry['displaced'])
+            if displaced.exists():
+                _retain_displaced(entry, displaced)
+                if _content(entry['displaced_blob']) != _content(entry['before_blob']):
+                    raise PreservationConflict('A displaced source changed before acceptance; all observed versions are retained')
+        _write_journal(journal_id, 'applying', journal)
+        commit = GitStore(repo.parent).commit_exact(repo, 'Reformalize selected result', assessment['changes'], application_id=journal_id)
+        _write_journal(journal_id, 'applying', journal, commit)
+        _accept(op, journal_id, journal, commit)
+    except BaseException as exc:
+        # Process death recovery sees the pre-written journal. Ordinary failures
+        # restore observed operation-owned paths immediately.
+        if isinstance(exc, Exception):
+            journal['failure'] = str(exc)
+            if not commit:
+                commit = GitStore(repo.parent)._git(repo, 'log', '-1', '--format=%H', '--fixed-strings', '--grep', 'Reformalization-Application: ' + journal_id).strip() or None
+            restored = restore(op, journal_id, journal, committed=bool(commit))
+            if helper and restored:
+                operations.update(operation_id, 'worker' if op['request'].get('_foreground_owner') else 'active')
+            else:
+                operations.update(operation_id, 'retained', result={'outcome': 'conflict', 'detail': str(exc), 'application_id': journal_id})
+        raise
     return operations.get(operation_id)['result']
 
 
@@ -581,7 +615,7 @@ def recover():
         op = operations.get(row['operation_id'])
         journal = json.loads(row['manifest_json'])
         repo, root = Path(op['manifest']['canonical_repo']), Path(op['manifest']['canonical_root'])
-        with operations.acting(op['id']), project_coordination.application(op['project_id'], root):
+        with operations.acting(op['id']), project_coordination.application(op['project_id'], root, recovery=True):
             gs = GitStore(repo.parent)
             commit = row['commit_sha']
             if not commit:
@@ -597,6 +631,19 @@ def recover():
                 journal['failure'] = str(exc)
                 restore(op, row['id'], journal, committed=bool(commit))
                 operations.update(op['id'], 'retained', result={'outcome': 'conflict', 'detail': str(exc), 'application_id': row['id']})
+
+    # Acceptance can commit immediately before a crash. Reconcile its parent
+    # stage before admissions restart, even though its journal is now published.
+    from .reformalization_helpers import refresh_parent
+    with db.connect() as conn:
+        children = [r[0] for r in conn.execute("""select distinct o.id from reformalization_operations o
+            join reformalization_applications a on a.operation_id=o.id
+            where a.state='published' and o.request_json like '%_foreground_owner%'""")]
+    for child_id in children:
+        child = operations.get(child_id)
+        with operations.acting(child_id), project_coordination.application(
+                child['project_id'], child['manifest']['canonical_root'], recovery=True):
+            refresh_parent(child_id)
 
 
 def publish_helper(op, dep, report, selected):

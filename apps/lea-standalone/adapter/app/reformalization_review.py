@@ -135,7 +135,7 @@ def decide(fid, request):
                 raise HTTPException(409, 'The attempt is no longer awaiting review')
             conn.execute(f"insert into formalization_review_events ({','.join(event)}) values ({','.join('?' for _ in event)})", tuple(event.values()))
             result = {**op['result'], 'approval_id': event['id'], 'approval_token': token, 'outcome': request['outcome']}
-            conn.execute("update reformalization_operations set state='queued',result_json=?,updated_at=? where id=?", (ops.dumps(result), db.utc_now(), op['id']))
+            conn.execute("update reformalization_operations set state='queued',result_json=?,queued_at=?,updated_at=? where id=?", (ops.dumps(result), db.utc_now(), db.utc_now(), op['id']))
         ops.dispatch(op['project_id'])
     else:
         with db.connect() as conn:

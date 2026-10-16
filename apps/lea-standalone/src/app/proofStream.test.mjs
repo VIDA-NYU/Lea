@@ -13,14 +13,14 @@ const bundle = build({
     b.onResolve({filter: /^\.\.\/stores\/(proofSession|sessions)$/}, a => ({path:a.path.split('/').pop(), namespace:'fake'}));
     b.onLoad({filter: /.*/, namespace:'fake'}, a => ({contents: a.path === 'react'
       ? 'exports.useRef=x=>({current:x}); exports.useEffect=f=>globalThis.effects.push(f);'
-      : a.path === 'api' ? 'exports.getSession=(...args)=>globalThis.getSession(...args);'
+      : a.path === 'api' ? 'exports.getSession=(...args)=>globalThis.getSession(...args); exports.awaitReformalization=(...args)=>globalThis.awaitReformalization(...args);'
       : `exports.use${a.path === 'proofSession' ? 'ProofSession':'Sessions'}=globalThis.${a.path};`}));
   }}],
 });
 const detail = (id, active=false) => ({id, messages:[{id:`message-${id}`, content:id}], code_steps:[], runs:[], formalizations:[],
   active_run:active?{id:`run-${id}`, status:'running'}:null});
 async function setup() {
-  const requests=[], timers=new Map(), sources=[], effects=[], subscribers=[];
+  const requests=[], operations=[], timers=new Map(), sources=[], effects=[], subscribers=[];
   let timerId=0;
   const state={formalizationScope:'project', messages:[], runStatusById:{}, runResultKindById:{}};
   const proxy=new Proxy(state,{get(t,k) {
@@ -44,13 +44,14 @@ async function setup() {
     setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),
     setInterval:()=>0,clearInterval:()=>{},document:{visibilityState:'visible'},
     proofSession:{getState:()=>proxy,subscribe:fn=>{subscribers.push(fn);return()=>{};}},sessions:{getState:()=>sessions},
+    awaitReformalization:(initial,_queued,owned)=>new Promise(resolve=>operations.push({initial,owned,resolve})),
     getSession:(id,signal)=>new Promise((resolve,reject)=>requests.push({id,signal,resolve,reject})),
   };
   context.exports=context.module.exports;context.globalThis=context;
   vm.runInNewContext((await bundle).outputFiles[0].text,context);
   const hook=context.module.exports.useProofStream();
   const cleanups=effects.map(fn=>fn());
-  return {hook,state,proxy,sessions,requests,sources,cleanup:()=>cleanups.forEach(fn=>fn?.()),
+  return {hook,state,proxy,sessions,requests,operations,sources,cleanup:()=>cleanups.forEach(fn=>fn?.()),
     tick:async()=>{const entries=[...timers];timers.clear();for(const [,fn] of entries)fn();await flush();}};
 }
 const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
@@ -131,4 +132,65 @@ test('App verification expires on formalization changes within a chat',async()=>
   const x=await setup();const response=deferred();const app=appCallbacks(x,{verifySession:()=>response.promise});
   const pending=app.handleVerify();x.proxy.setFormalizationScope('target');response.resolve({status:'ok'});await pending;
   assert.deepEqual(app.calls,[]);x.cleanup();
+});
+
+
+test('reloading a preparing reformalization observes its future run',async()=>{
+  const x=await setup();const pending=x.hook.loadSession('A');
+  x.requests[0].resolve({...detail('A'),queued_reformalizations:[{id:'preparing-operation'}]});await pending;
+  assert.equal(x.operations[0].initial.reformalization_id,'preparing-operation');
+  assert.equal(x.operations[0].owned(),true);
+  x.operations[0].resolve({run_id:'new-segment'});await flush();
+  assert.equal(x.sources.length,1);assert.ok(x.sources[0].url.includes('new-segment'));x.cleanup();
+});
+test('a preparing retry cannot reattach after navigation',async()=>{
+  const x=await setup();const pending=x.hook.loadSession('A');
+  x.requests[0].resolve({...detail('A'),queued_reformalizations:[{id:'preparing-operation'}]});await pending;
+  x.hook.applyDetail(detail('B'));
+  assert.equal(x.operations[0].owned(),false);
+  x.operations[0].resolve({run_id:'late-segment'});await flush();
+  assert.equal(x.sources.length,0);assert.equal(x.sessions.selectedSessionId,'B');x.cleanup();
+});
+
+const startHandlers=await transform(appSource.slice(appSource.indexOf('  const handleStartProjectFormalization = async'),appSource.indexOf('  // F3:',appSource.indexOf('  const handleStartProjectFormalization = async')))
+  +'\nmodule.exports={handleStartProjectFormalization};',{loader:'tsx',format:'cjs'});
+function startCallbacks(x,overrides={}) {
+  const calls=[];
+  const context={module:{exports:{}},currentProject:{slug:'study',title:'Study',namespace:'Lea.Study'},selectedSessionId:'A',
+    useSessions:{getState:()=>x.sessions},useModel:{getState:()=>({model:'fixture'})},captureSelection:x.hook.captureSelection,
+    setError:()=>{},resetForNewSession:()=>calls.push('reset'),
+    loadSession:async id=>{calls.push(['load',id]);x.state.messages=[{content:'Existing conversation'}];return detail(id);},
+    setSelectedSessionId:id=>x.sessions.setSelectedSessionId(id),setFormalizations:()=>{},setFormalizationScope:()=>{},
+    setMessages:x.proxy.setMessages,setView:()=>{},refreshSessions:async()=>{},
+    SELECTED_SESSION_KEY:'selected',window:{localStorage:{setItem:()=>{}}},
+    createRun:async (message,session,model,options,onQueued)=>{
+      assert.equal(session,'A');onQueued({session_id:'A',reformalization_id:'retry'});
+      assert.equal(x.state.messages[0].content,'Existing conversation');
+      assert.equal(x.state.messages.length,2);
+      return {run_id:'new-run',session_id:'A'};
+    },...overrides};
+  vm.runInNewContext(startHandlers.code,context);
+  return {...context.module.exports,calls};
+}
+test('standalone reformalization reuses the selected target conversation and hydrates its history',async()=>{
+  const x=await setup();const app=startCallbacks(x);
+  await app.handleStartProjectFormalization({id:'B',sessions:[{id:'older'},{id:'A'}]},'Retry B',true);
+  assert.deepEqual(app.calls,[['load','A'],['load','A']]);
+  assert.equal(x.state.messages[0].content,'Existing conversation');x.cleanup();
+});
+test('late standalone admission cannot navigate back to an old conversation',async()=>{
+  const x=await setup();const response=deferred();
+  const app=startCallbacks(x,{createRun:async (...args)=>{await response.promise;args[4]({session_id:'A',reformalization_id:'retry'});return {run_id:'late-run',session_id:'A'};}});
+  const pending=app.handleStartProjectFormalization({id:'B',sessions:[{id:'A'}]},'Retry B',true);await flush();
+  x.hook.applyDetail(detail('B'));response.resolve();await pending;
+  assert.equal(x.sessions.selectedSessionId,'B');assert.equal(x.state.messages[0].content,'B');x.cleanup();
+});
+
+test('queued standalone admission expires across navigation away and back to the same chat',async()=>{
+  const x=await setup();const response=deferred();
+  const app=startCallbacks(x,{createRun:async (...args)=>{args[4]({session_id:'A',reformalization_id:'retry'});await response.promise;return {run_id:'late-run',session_id:'A'};}});
+  const pending=app.handleStartProjectFormalization({id:'target',sessions:[{id:'A'}]},'Retry B',true);await flush();
+  x.hook.applyDetail(detail('B'));x.hook.applyDetail(detail('A'));
+  response.resolve();await pending;
+  assert.deepEqual(app.calls,[['load','A']]);assert.equal(x.state.messages[0].content,'A');x.cleanup();
 });

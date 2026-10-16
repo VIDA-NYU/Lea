@@ -74,7 +74,7 @@ def publish(operation_id, run_id, relative):
 def refresh_parent(child_id):
     child = operations.get(child_id)
     with db.connect() as conn:
-        rows = conn.execute("select manifest_json from reformalization_applications where operation_id=? and state='published' order by created_at", (child_id,)).fetchall()
+        rows = conn.execute("select manifest_json,id from reformalization_applications where operation_id=? and state='published' order by created_at", (child_id,)).fetchall()
     parent_id = child['request'].get('_parent_operation') or child['request'].get('_foreground_owner')
     visited = {child_id}
     while parent_id and parent_id not in visited:
@@ -82,8 +82,14 @@ def refresh_parent(child_id):
         parent = operations.get(parent_id)
         if not parent:
             break
-        if parent['manifest']:
-            _refresh(parent, rows)
+        if parent['manifest'] and parent['state'] != 'settled':
+            try:
+                _refresh(parent, rows)
+            except (ValueError, OSError) as exc:
+                # The helper is already durably published. Retain an incompatible
+                # parent draft without undoing that independently accepted work.
+                operations.update(parent_id, 'retained', result={**(parent.get('result') or {}),
+                    'outcome': 'conflict', 'detail': 'The helper was published; the parent draft needs refresh: ' + str(exc)})
         parent_id = parent['request'].get('_parent_operation') or parent['request'].get('_foreground_owner')
 
 
@@ -91,8 +97,11 @@ def _refresh(parent, rows):
     parent_id = parent['id']
     import json
     baseline = parent['manifest']
+    applied = set(baseline.get('helper_applications', []))
     for row in rows:
-        receipt = json.loads(row[0])
+        if row['id'] in applied:
+            continue
+        receipt = json.loads(row['manifest_json'])
         for rel, entry in receipt['files'].items():
             content = store.blob_content(entry['after_blob'])
             if content is None:
@@ -125,4 +134,26 @@ def _refresh(parent, rows):
             baseline['source_hashes'][key] = operations.digest(content)
             baseline['reports'][rel] = receipt['reports'][rel]
             baseline['checks'][rel] = {'status': receipt['checks'][rel]['status']}
-    operations.update(parent_id, manifest=baseline)
+        # A helper can introduce an import that the parent's original target did
+        # not use. Refresh exactly the accepted compiler inputs, never another
+        # project's whole tree or a solver-modified dependency copy.
+        root, repo = Path(baseline['canonical_root']), Path(baseline['canonical_repo'])
+        inputs = {e['path']: e for check in receipt['checks'].values()
+                  for e in (check.get('execution', {}).get('environment') or {}).get('files', {}).values()}
+        for raw, evidence in inputs.items():
+            source = Path(raw).resolve()
+            if evidence.get('kind') == 'source' and source.is_relative_to(root / 'proofs') and not source.is_relative_to(repo):
+                content = source.read_bytes()
+                if operations.digest(content) != evidence['sha256']:
+                    raise ValueError('An imported helper source changed before parent refresh')
+                target = Path(baseline['workspace']) / source.relative_to(root)
+                if target.exists() and target.read_bytes() != content:
+                    raise ValueError('A parent dependency copy differs from the published helper inputs')
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+                baseline['source_hashes'][str(source.relative_to(root))] = evidence['sha256']
+            elif not source.is_relative_to(root) or source.is_relative_to(root / '.lake/packages'):
+                baseline['dependency_files'][str(source)] = evidence['sha256']
+        applied.add(row['id'])
+        baseline['helper_applications'] = sorted(applied)
+        operations.update(parent_id, manifest=baseline)

@@ -37,11 +37,12 @@ def _certified_namespace_revision(formalization: dict, certified: dict, current:
             except (TypeError, ValueError):
                 return False
             accepted = conn.execute("select state from reformalization_applications where id=?", (data.get('reformalization_application'),)).fetchone()
-            if not accepted or accepted['state'] != 'published' or (data.get('preservation') or {}).get('source_update'):
+            if not accepted or accepted['state'] != 'published':
                 return False
             for move in (data.get('preservation') or {}).get('relocations', []):
                 named = target_declaration(current.get('code'), formalization.get('declaration_name'), formalization.get('kind') or 'theorem')
-                if not named or named.full_name != move['name'] or move['after_path'] != current['path']:
+                if (not named or named.full_name != move['name'] or move['after_path'] != current['path']
+                        or (data.get('preservation', {}).get('source_update') and move['name'] not in data['preservation'].get('stable_protected', []))):
                     continue
                 parent = conn.execute(store.TIMELINE_WITH_BLOB + ' where t.id=? and t.id<?', (move.get('from_step_id'), int(current['id']))).fetchone()
                 if parent and parent['after_blob_id'] == move['before_blob_id']:
@@ -73,7 +74,7 @@ def _certified_namespace_revision(formalization: dict, certified: dict, current:
             original_decl = target_declaration(certified.get('code'), formalization.get('declaration_name'), formalization.get('kind') or 'theorem')
             protected_name = original_decl.full_name if original_decl else formalization.get('declaration_name')
             if (protected_name in preserved.get('protected', [])
-                    and not preserved.get('source_update') and row['check_status'] == 'ok'):
+                    and (not preserved.get('source_update') or protected_name in preserved.get('stable_protected', [])) and row['check_status'] == 'ok'):
                 with connect() as conn:
                     accepted = conn.execute("select state from reformalization_applications where id=?", (data.get('reformalization_application'),)).fetchone()
                 parent = by_id.get(str(preserved.get('from_step_id')))

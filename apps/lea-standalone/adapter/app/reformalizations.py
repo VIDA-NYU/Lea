@@ -178,6 +178,9 @@ def enqueue(request, project_id):
         return get_after_transaction(dict(duplicate))
     session_id = request.get("session_id")
     if not session_id:
+        sessions = store.session_ids_for_formalization(form['id'])
+        session_id = sessions[0] if sessions else None
+    if not session_id:
         session_id = store.create_session("Re-formalize " + form["display_title"], project_id=project_id)["id"]
     session = store.get_session(session_id)
     if not session or session.get("project_id") != project_id:
@@ -243,7 +246,7 @@ def dispatch(project_id):
     try:
         if not (op.get('result') or {}).get('approval_id'):
             from . import runregistry
-            admitted = runregistry.registry.try_admit(operation_id, op['session_id'], project_id=project_id, reserve=True)
+            admitted = runregistry.registry.try_admit(operation_id, op['session_id'], project_id=project_id, reserve=True, serialize_project=True)
             if admitted.outcome != runregistry.ADMITTED:
                 with db.write() as conn:
                     conn.execute("update reformalization_operations set state='queued' where id=?", (operation_id,))
@@ -368,18 +371,31 @@ def prepare(operation_id):
         # The executor makes this dependency mount read-only, including build
         # outputs. Local project outputs are built in our own .lake/build.
         (staged_root / ".lake/packages").symlink_to(packages.resolve(), target_is_directory=True)
-    source_hashes = {}
-    for source in (original_root / "proofs").rglob("*.lean"):
-        if source.is_symlink() or any(part.startswith(".") for part in source.relative_to(original_root / "proofs").parts):
-            continue
-        rel = source.relative_to(original_root)
-        target = staged_root / rel
+    # Snapshot this project's current sources plus the compiler-resolved source
+    # closure it actually imports. Other projects and recovery archives are not
+    # part of an attempt's workspace.
+    from lea.check_evidence import prepared_environment
+    from lea.check_runtime import CheckBudget
+    sources = set(lean_files(canonical).values())
+    with execution.scope(canonical_policy(original_root, canonical)):
+        for source in tuple(sources):
+            with prepared_environment(source, source.read_bytes().decode('utf-8'), original_root, CheckBudget()) as inputs:
+                sources.update(Path(e['path']) for e in inputs['files'].values()
+                               if e.get('kind') == 'source' and Path(e['path']).is_relative_to(original_root / 'proofs'))
+    for source in sources:
+        if source.is_symlink() or not source.resolve().is_relative_to(original_root / 'proofs'):
+            raise ValueError('An imported project source is outside the source workspace')
+        target = staged_root / source.relative_to(original_root)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
-        source_hashes[str(rel)] = digest(source.read_bytes())
-    if (canonical / ".lea").exists():
-        shutil.copytree(canonical / ".lea", staged / ".lea", dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns("inspection", "executor-tmp", "tmp", "operations"))
+    from .projects import EDITABLE_DOCS
+    for name in EDITABLE_DOCS:
+        source = canonical / '.lea' / name
+        if source.is_file():
+            (staged / '.lea').mkdir(exist_ok=True)
+            shutil.copy2(source, staged / '.lea' / name)
+    if (canonical / '.lea/files').is_dir():
+        shutil.copytree(canonical / '.lea/files', staged / '.lea/files', dirs_exist_ok=True)
     files = {}
     with db.write() as conn:
         for rel, path in lean_files(canonical).items():
@@ -485,6 +501,9 @@ def fresh(op, *, applied=None):
     """Check the captured effective inputs, including new/deleted source paths."""
     from .project_library import lake_root, project_repo
     manifest = op["manifest"]
+    foreground_id = op['request'].get('_foreground_owner')
+    if foreground_id and (get(foreground_id) or {}).get('request', {}).get('_cancelled'):
+        raise ValueError('The foreground reformalization was stopped; its helper draft is retained')
     project = store.get_project(op["project_id"])
     repo, root = Path(manifest["canonical_repo"]), Path(manifest["canonical_root"])
     if project["namespace"] != manifest["namespace"] or project_repo(project) != repo or lake_root(repo) != root:
@@ -565,15 +584,24 @@ def versions(operation_id):
 
 
 def cancel(operation_id):
-    op = get(operation_id)
-    if not op:
-        raise HTTPException(404, "Reformalization not found")
+    # Inspect the state and record Stop in the same transaction as acceptance.
+    # A late request cannot turn an already published result into retained work.
+    with db.write() as conn:
+        row = conn.execute('select * from reformalization_operations where id=?', (operation_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, 'Reformalization not found')
+        op = get_after_transaction(dict(row))
+        if op['state'] != 'settled':
+            conn.execute('update reformalization_operations set request_json=? where id=?',
+                         (dumps({**op['request'], '_cancelled': True}), operation_id))
+    if op['state'] == 'settled':
+        return response(op)
     run = store.get_run(op['root_run_id']) if op['root_run_id'] else None
     if run and run['status'] in {'pending', 'running'} and op["state"] in {"active", "applying", 'worker'}:
         from .bridge import request_stop
         request_stop(op["root_run_id"], reason="user_stop", source="reformalization")
     else:
-        update(operation_id, "retained", result={"outcome": "cancelled"})
+        update(operation_id, "retained", result={**{k: v for k, v in (op.get("result") or {}).items() if k != "continuation"}, "outcome": "cancelled"})
         from . import runregistry
         runregistry.registry.release(operation_id)
         dispatch_all()
@@ -609,9 +637,17 @@ def wake(operation_id):
         dispatch(op['project_id'])
 
 
+def continuation_hash(run_id, request):
+    return digest(json.dumps({'predecessor': run_id, **request}, sort_keys=True))
+
+
 def queue_continuation(op, old, request, *, recovery_review=False):
     """Reacquire FIFO ownership before creating another accounting segment."""
-    request_hash = digest(dumps({'operation_id': op['id'], 'old_run_id': old['id'], 'request': request}))
+    request_hash = continuation_hash(old['id'], request)
+    op = get(op['id'])
+    foreground = get(op['request'].get('_foreground_owner')) if op['request'].get('_foreground_owner') else op
+    if request.get('dependency_resume') and (op['request'].get('_cancelled') or foreground['request'].get('_cancelled')):
+        raise HTTPException(409, 'This attempt was stopped; automatic continuation is disabled')
     previous = store.get_run_submission(request.get('idempotency_key')) if request.get('idempotency_key') else None
     if previous:
         if previous['run'].get('client_request_hash') != request_hash:
@@ -619,7 +655,9 @@ def queue_continuation(op, old, request, *, recovery_review=False):
         from .routes.runs import _creation_response
         return {**response(op), **_creation_response(previous)}
     waiting = (op.get('result') or {}).get('continuation')
-    if waiting and waiting['request'].get('idempotency_key') == request.get('idempotency_key'):
+    if waiting:
+        if waiting['request'].get('idempotency_key') != request.get('idempotency_key'):
+            raise HTTPException(409, 'A continuation of this attempt is already waiting')
         if waiting['request'] != request or waiting['old_run_id'] != old['id']:
             raise HTTPException(409, 'Continuation identity was reused with different inputs')
         return response(op)
@@ -627,13 +665,25 @@ def queue_continuation(op, old, request, *, recovery_review=False):
         raise HTTPException(409, 'A newer segment of this attempt already exists')
     if op['state'] not in {'paused', 'active', 'worker', 'retained'}:
         raise HTTPException(409, 'This attempt is not paused for continuation')
+    if request.get('dependency_resume') and (op['state'] not in {'active', 'worker'} or old.get('stop_reason') != 'dependency_wait'):
+        raise HTTPException(409, 'Automatic continuation requires an owned dependency wait')
     if not old.get('recoverable') or old['status'] not in {'cancelled', 'max_turns'}:
         raise HTTPException(409, 'This run is not a settled recoverable pause')
     if request.get('best_effort') and old.get('stop_reason') != 'source_obstruction':
         raise HTTPException(409, 'Best-effort continuation requires a source-obstruction pause')
     fresh(op)
     from . import recovery
-    state, _, checkpoint_id = recovery.continuation_checkpoint(old['id'])
+    if recovery_review:
+        if old['status'] != 'cancelled' or old.get('recovery_state') != 'review':
+            raise HTTPException(409, 'Run is not awaiting recovery review')
+        if old.get('deadline_at') and datetime.fromisoformat(old['deadline_at']) <= datetime.now(timezone.utc):
+            raise HTTPException(409, 'The original run deadline has expired')
+        state = (recovery.load_checkpoint(old['id']) or ({}, {}))[0]
+        checkpoint_id = None
+        if old.get('max_turns') is not None and int(old['max_turns']) <= int(state.get('turn', 0)):
+            raise HTTPException(409, 'The original turn allowance is exhausted')
+    else:
+        state, _, checkpoint_id = recovery.continuation_checkpoint(old['id'])
     source = None
     if request.get('source_context_ref'):
         from . import overleaf_source
@@ -652,21 +702,50 @@ def queue_continuation(op, old, request, *, recovery_review=False):
                 or effective_source.get('proofAssociation', {}).get('status') not in {'missing', 'not_applicable'}):
             raise HTTPException(409, 'Best-effort continuation requires a proofless source-obstruction pause')
     payload = {'old_run_id': old['id'], 'checkpoint_id': checkpoint_id,
-        'request': request, 'source': source, 'saved_turn': int(state.get('turn', 0))}
-    result = {**(op.get('result') or {}), 'continuation': payload}
+        'request': request, 'source': source, 'saved_turn': int(state.get('turn', 0)), 'recovery_review': recovery_review}
     dependent_worker = bool(op['request'].get('_foreground_owner')
         and (owner(op['project_id']) or {}).get('id') == op['request']['_foreground_owner']
         and registered_dependency(old.get('initiating_run_id'), old.get('dependency_id'), op['project_id']))
-    if ((request.get('dependency_resume') and op['state'] in {'active', 'worker'} and old.get('stop_reason') == 'dependency_wait')
-            or dependent_worker):
+    keep_owner = request.get('dependency_resume') or dependent_worker
+    if keep_owner:
         from .project_dependencies import get as dependency
         if any(not (dependency(key) or {}).get('ready') for key in json.loads(old.get('waiting_dependencies_json') or '[]')):
             raise HTTPException(409, 'The shared dependencies are not verified yet')
-        update(op['id'], 'worker' if dependent_worker else None, result=result)
-        _dispatch_continuation(get(op['id']))
+    # One durable transition accepts a successor request. Two HTTP callers cannot
+    # overwrite each other's pending continuation, or race a newer Stop request.
+    joined = False
+    with db.write() as conn:
+        current = get_after_transaction(dict(conn.execute('select * from reformalization_operations where id=?', (op['id'],)).fetchone()))
+        admitted = conn.execute('select client_request_hash from runs where client_request_id=?', (request.get('idempotency_key'),)).fetchone()
+        pending = (current.get('result') or {}).get('continuation')
+        if admitted:
+            if admitted['client_request_hash'] != request_hash:
+                raise HTTPException(409, 'Continuation identity was reused with different inputs')
+            joined = True
+        elif pending:
+            if pending['old_run_id'] != old['id'] or pending['request'] != request:
+                raise HTTPException(409, 'This attempt already has a successor request')
+            joined = True
+        else:
+            if current['root_run_id'] != old['id'] or current['state'] not in {'paused', 'active', 'worker', 'retained'}:
+                raise HTTPException(409, 'This attempt already has a successor request')
+            if current['request'].get('_cancelled') and (request.get('dependency_resume') or not op['request'].get('_cancelled')):
+                raise HTTPException(409, 'This attempt was stopped during continuation admission')
+            current_request = current['request'] if request.get('dependency_resume') else {k: v for k, v in current['request'].items() if k != '_cancelled'}
+            state = ('worker' if dependent_worker else current['state']) if keep_owner else 'queued'
+            result = {**(current.get('result') or {}), 'continuation': payload}
+            conn.execute('update reformalization_operations set state=?,request_json=?,result_json=?,queued_at=?,updated_at=? where id=?',
+                (state, dumps(current_request), dumps(result), current['queued_at'] if keep_owner else db.utc_now(), db.utc_now(), op['id']))
+    if joined:
+        submission = store.get_run_submission(request.get('idempotency_key'))
+        if submission:
+            from .routes.runs import _creation_response
+            return {**response(get(op['id'])), **_creation_response(submission)}
         return response(get(op['id']))
-    update(op['id'], 'queued', result=result)
-    dispatch(op['project_id'])
+    if keep_owner:
+        _dispatch_continuation(get(op['id']))
+    else:
+        dispatch(op['project_id'])
     return response(get(op['id']))
 
 
@@ -708,7 +787,7 @@ def _start_continuation(op):
         return
     fresh(op)
     if not runregistry.registry.is_active(op['id']):
-        admitted = runregistry.registry.try_admit(op['id'], op['session_id'], project_id=op['project_id'], reserve=True)
+        admitted = runregistry.registry.try_admit(op['id'], op['session_id'], project_id=op['project_id'], reserve=True, serialize_project=True)
         if admitted.outcome != runregistry.ADMITTED:
             return
     saved = op['result']['continuation']
@@ -738,22 +817,30 @@ def _start_continuation(op):
     if get(op['id'])['state'] not in {'active', 'worker'}:
         runregistry.registry.release(op['id'])
         return
-    allowance = old.get('max_turns') if automatic else (saved['saved_turn'] + config.max_turns if config.max_turns else None)
+    manual_recovery = saved.get('recovery_review', False)
+    if manual_recovery:
+        allowance = max(0, old['max_turns'] - saved['saved_turn']) if old.get('max_turns') is not None else None
+    elif automatic:
+        allowance = old.get('max_turns')
+    else:
+        allowance = saved['saved_turn'] + config.max_turns if config.max_turns else None
     seconds = budget.get('remaining_seconds', 900) if automatic else request.get('timeout_seconds') or 900
-    if seconds <= 0 or (allowance is not None and allowance <= saved['saved_turn']):
+    if seconds <= 0 or (allowance is not None and allowance <= (0 if manual_recovery else saved['saved_turn'])):
         raise ValueError('The original allowance is exhausted; no automatic solver was restarted')
-    bundle = store.create_run_bundle(message='Continue the retained staged reformalization from its saved execution point.',
+    message = ('Resume the retained staged reformalization after recovery review. Inspect the current files and recorded action history before taking any new action. An earlier model request or tool effect may have completed without a durable response; do not repeat a mutating action blindly.'
+               if manual_recovery else 'Continue the retained staged reformalization from its saved execution point.')
+    bundle = store.create_run_bundle(message=message,
         session_id=op['session_id'], project_id=op['project_id'], session_origin='ui', session_origin_url=None,
         model=old['model'], provider=old.get('provider'), max_turns=allowance, autonomous=bool(old['autonomous']),
         focus_formalization_id=op['formalization_id'], focus_source_hash=old.get('focus_source_hash'),
         purpose=old['purpose'], source_bundle=source, source_context_ref=source_ref,
         allow_source_pause=old.get('allow_source_pause', False) if request.get('allow_source_pause') is None else request['allow_source_pause'],
         client_request_id=request['idempotency_key'],
-        client_request_hash=digest(dumps({'operation_id': op['id'], 'old_run_id': old['id'], 'request': request})),
+        client_request_hash=continuation_hash(old['id'], request),
         resumes_run_id=old['id'], resume_checkpoint_id=saved['checkpoint_id'],
         continuation_best_effort=request.get('best_effort', False), dependency_id=old.get('dependency_id'),
         initiating_run_id=old.get('initiating_run_id'), automation_budget=budget if automatic else None,
-        deadline_at=(datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat())
+        deadline_at=old.get('deadline_at') if manual_recovery else (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat())
     if not attach_run(op['id'], bundle['run']['id']):
         store.update_run(bundle['run']['id'], 'cancelled', result_kind='interrupted', cost_usd=0, input_tokens=0, output_tokens=0, usage_status='final')
         raise ValueError('This continuation was cancelled before dispatch')

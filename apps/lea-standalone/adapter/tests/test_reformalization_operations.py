@@ -652,3 +652,446 @@ def test_managed_worker_gets_own_stage_under_waiting_parent(project, monkeypatch
     assert ops.owner(p['id'])['id'] == op['id']
     assert ops.get(op['id'])['root_run_id'] == op['root_run_id']
     runregistry.registry.release(resumed['run_id'])
+
+
+def paused_operation(project, monkeypatch, *, review=False, reason='turn_cap'):
+    from app import bridge, recovery, runregistry, runtime
+    from app.routes import runs
+    op = operation(project, monkeypatch)
+    old = store.get_run(op['root_run_id'])
+    attempt = recovery.start_attempt(old['id'])
+    recovery.Recorder(old['id'], attempt,
+        recovery.manifest(run=old, config=config.load_config(), repo=Path(op['manifest']['repo'])))(
+        'checkpoint', {'stage': 'turn_boundary', 'turn': 2,
+            'messages': [{'role': 'assistant', 'content': 'Saved useful progress'}],
+            'proof_state': {}, 'status_context': {}})
+    store.update_run(old['id'], 'cancelled' if review or reason == 'dependency_wait' else 'max_turns',
+        recoverable=True, stop_reason=reason)
+    if review:
+        with db.write() as conn:
+            conn.execute("update runs set recovery_state='review' where id=?", (old['id'],))
+    ops.update(op['id'], 'active' if reason == 'dependency_wait' else 'retained' if review else 'paused')
+    monkeypatch.setattr(runregistry, 'registry', runregistry.RunRegistry(max_concurrent=4))
+    monkeypatch.setattr(runtime, 'accepting_work', lambda: True)
+    monkeypatch.setattr(runs, 'load_config', config.load_config)
+    monkeypatch.setattr(bridge, 'enqueue_run', lambda _: None)
+    return ops.get(op['id']), store.get_run(old['id'])
+
+
+def test_cancel_settled_is_noop_and_preserves_completion_receipt(project, monkeypatch):
+    from app import formalizations
+    op = operation(project, monkeypatch)
+    candidate = project[3].replace('theorem b : True := by sorry', 'theorem b : True := by trivial')
+    (Path(op['manifest']['repo']) / 'Shared.lean').write_text(candidate)
+    receipt = publication.apply(op['id'], selection(), 'proved')
+    assert formalizations.get(project[2]['id'])['validity_status'] == 'proved'
+    ops.cancel(op['id'])
+    ops.cancel(op['id'])
+    assert ops.get(op['id'])['state'] == 'settled'
+    assert ops.get(op['id'])['result'] == receipt
+    assert formalizations.get(project[2]['id'])['validity_status'] == 'proved'
+    assert (project[1] / 'Shared.lean').read_text() == candidate
+
+
+def test_cancelled_dependency_wait_cannot_be_revived_by_late_automatic_resume(project, monkeypatch):
+    from fastapi import HTTPException
+    op, old = paused_operation(project, monkeypatch, reason='dependency_wait')
+    ops.cancel(op['id'])
+    with pytest.raises(HTTPException, match='automatic continuation'):
+        ops.queue_continuation(ops.get(op['id']), old,
+            {'idempotency_key': 'late-automatic', 'dependency_resume': True})
+    assert ops.get(op['id'])['state'] == 'retained'
+    with db.connect() as conn:
+        assert conn.execute('select count(*) from runs').fetchone()[0] == 1
+
+
+def test_public_continue_replays_same_admission_and_rejects_changed_inputs(project, monkeypatch):
+    from fastapi import HTTPException
+    from app.routes import runs
+    from app import runregistry
+    op, old = paused_operation(project, monkeypatch)
+    request = runs.ContinueRequest(idempotency_key='public-continue', timeout_seconds=90)
+    first = runs.continue_run(old['id'], request)
+    second = runs.continue_run(old['id'], request)
+    assert first['run_id'] == second['run_id']
+    with pytest.raises(HTTPException):
+        runs.continue_run(old['id'], request.model_copy(update={'timeout_seconds': 91}))
+    with db.connect() as conn:
+        assert conn.execute('select count(*) from runs').fetchone()[0] == 2
+    runregistry.registry.release(first['run_id'])
+
+
+def test_acknowledged_manual_recovery_starts_new_turn_with_same_draft(project, monkeypatch):
+    from app.routes import runs
+    from app import runregistry, recovery, bridge
+    from app.reformalization_runner import run as run_attempt
+    from lea.events import Finished
+    from lea.providers import Usage
+    from queue import Queue
+    op, old = paused_operation(project, monkeypatch, review=True)
+    stage = Path(op['manifest']['repo'])
+    candidate = project[3] + '-- unfinished idea survives recovery\n'
+    (stage / 'Shared.lean').write_text(candidate)
+    # An invocation outside the checkpoint must never be blindly replayed.
+    uncertain_attempt = old['attempt_id']
+    with db.write() as conn:
+        conn.execute("insert into run_invocations(id,run_id,attempt_id,kind,name,turn,started_at) values (?,?,?,?,?,?,?)",
+            ('uncertain-action', old['id'], uncertain_attempt, 'tool', 'bash', 3, db.utc_now()))
+    resumed = runs.resume_run(old['id'], runs.ResumeRequest(acknowledge_uncertainty=True, idempotency_key='manual-recovery'))
+    successor = store.get_run(resumed['run_id'])
+    assert successor['resume_checkpoint_id'] is None
+    assert successor['max_turns'] == 8
+    assert successor['resumes_run_id'] == old['id']
+    assert ops.for_run(successor['id'])['id'] == op['id']
+    def scripted(cfg, messages, **options):
+        assert options['resume_state'] is None
+        assert any(m.get('content') == 'Saved useful progress' for m in messages)
+        assert 'do not repeat a mutating action blindly' in messages[-1]['content']
+        assert (stage / 'Shared.lean').read_text() == candidate
+        yield Finished('max_turns', 'Paused', 1, op['session_id'], 'fixture', Usage(), 0, {'messages': messages})
+    monkeypatch.setattr(bridge, 'run_events', scripted)
+    run_attempt(bridge.RunnerContext(session_id=op['session_id'], run_id=successor['id'],
+        task=store.get_run_submission('manual-recovery')['message']['content'], config=config.load_config(), events=Queue(), autonomous=True), ops.get(op['id']))
+    assert (stage / 'Shared.lean').read_text() == candidate
+    assert (project[1] / 'Shared.lean').read_text() == project[3]
+    runregistry.registry.release(successor['id'])
+
+
+def test_blocked_publication_does_not_prepare_another_journal(project, monkeypatch):
+    from fastapi import HTTPException
+    op = operation(project, monkeypatch)
+    contender = ops.enqueue({'message': 'another attempt', 'focus_formalization_id': project[2]['id']}, project[0]['id'])
+    ops.update(contender['id'], 'worker', manifest=op['manifest'])
+    with db.write() as conn:
+        conn.execute("insert into reformalization_applications(id,operation_id,state,manifest_json,created_at,updated_at) values (?,?,'prepared','{}',?,?)",
+            ('interrupted', op['id'], db.utc_now(), db.utc_now()))
+    with pytest.raises(HTTPException):
+        publication.apply(contender['id'], selection(), 'proved')
+    with db.connect() as conn:
+        assert conn.execute('select count(*) from reformalization_applications').fetchone()[0] == 1
+    assert (project[1] / 'Shared.lean').read_text() == project[3]
+
+
+@pytest.mark.parametrize('multiple', [False, True])
+def test_recovery_is_idempotent_after_original_reinstalled(project, monkeypatch, multiple):
+    op = operation(project, monkeypatch)
+    original = project[3]
+    repo = project[1]
+    other = ops.enqueue({'message': 'legacy contender', 'focus_formalization_id': project[2]['id']}, project[0]['id'])
+    ops.update(other['id'], 'worker', manifest=op['manifest'])
+    with db.write() as conn:
+        after = store._put_blob(conn, original.replace('by sorry', 'by trivial'))
+        for num, oid in enumerate([op['id'], other['id']] if multiple else [op['id']]):
+            displaced = repo / '.lea/displaced' / str(num) / 'Shared.lean'
+            displaced.parent.mkdir(parents=True)
+            displaced.write_text(original)
+            journal = {'files': {'Shared.lean': {'before_blob': op['manifest']['files']['Shared.lean']['blob_id'],
+                'after_blob': after, 'displaced': str(displaced), 'displaced_blob': op['manifest']['files']['Shared.lean']['blob_id'], 'mode': 0o644}}}
+            conn.execute("insert into reformalization_applications(id,operation_id,state,manifest_json,created_at,updated_at) values (?,?,'restoring',?,?,?)",
+                ('restore-' + str(num), oid, ops.dumps(journal), db.utc_now(), db.utc_now()))
+    publication.recover()
+    publication.recover()
+    with db.connect() as conn:
+        assert {r[0] for r in conn.execute('select state from reformalization_applications')} == {'restored'}
+    assert (repo / 'Shared.lean').read_text() == original
+    ops.assert_readable(project[0]['id'])
+
+
+def test_unaffected_proved_neighbor_keeps_completion_across_source_update(project, monkeypatch):
+    from app import formalizations
+    from lea import interface, result_selection
+    from app.proof_evidence import record_check
+    p, repo, form, original = project
+    a = store.create_formalization(project_id=p['id'], loose_session_id=None,
+        display_title='A', declaration_name='Lea.Study.a', statement='True')
+    store.link_formalization_file(a['id'], 'Shared.lean', 'primary')
+    session = store.create_session('Original A', project_id=p['id'])
+    prior = store.create_run(session['id'], 'fixture', None, 10, project_id=p['id'], focus_formalization_id=a['id'])
+    store.link_session_formalization(session['id'], a['id'])
+    store.add_code_step(session['id'], prior['id'], 'Shared.lean', content=original,
+        check_status='ok', artifact_kind='proof', formalization_id=a['id'])
+    checked = interface.check(str(repo / 'Shared.lean'), cold=True)
+    checked.execution['selected_results'] = [result_selection.inspect_selected(repo / 'Shared.lean', 'Lea.Study.a')]
+    record_check(session['id'], 'Shared.lean', repo / 'Shared.lean', checked, run_id=prior['id'], formalization_id=a['id'])
+    store.update_run(prior['id'], 'proved', result_kind='proved')
+    store.update_formalization(form['id'], source_hash='new-statement', statement='1 = 1')
+    op = operation(project, monkeypatch, source_update_evidence={'previous_statement': 'True', 'current_statement': '1 = 1'})
+    candidate = original.replace('theorem b : True := by sorry', 'theorem b : 1 = 1 := by rfl')
+    (Path(op['manifest']['repo']) / 'Shared.lean').write_text(candidate)
+    receipt = publication.apply(op['id'], selection(), 'proved')
+    assert 'Lea.Study.a' in receipt['preservation']['stable_protected']
+    assert formalizations.get(a['id'])['validity_status'] == 'proved'
+    assert formalizations.get(a['id'])['completion_run_id'] == prior['id']
+    with db.connect() as conn:
+        assert conn.execute('select count(*) from formalization_review_events').fetchone()[0] == 0
+
+
+def test_review_publication_joins_fifo_at_approval_time(project, monkeypatch):
+    from app import reformalization_review as review
+    op = operation(project, monkeypatch)
+    store.update_run(op['root_run_id'], 'needs_review', result_kind='needs_review')
+    ops.update(op['id'], 'review', result={'selection': selection(), 'outcome': 'needs_review'})
+    with db.write() as conn:
+        conn.execute("update reformalization_operations set queued_at='2000-01-01' where id=?", (op['id'],))
+    c = store.create_formalization(project_id=project[0]['id'], loose_session_id=None,
+        display_title='C', declaration_name='Lea.Study.c', statement='True')
+    store.link_formalization_file(c['id'], 'Shared.lean', 'primary')
+    first = ops.enqueue({'message': 'already waiting', 'focus_formalization_id': c['id']}, project[0]['id'])
+    monkeypatch.setattr(review, 'context', lambda *_: {'review': {'eligible': True, 'revision_token': 'reviewed', 'allowed_outcomes': ['proved']}})
+    monkeypatch.setattr(review, 'binding', lambda *_: ('reviewed', []))
+    monkeypatch.setattr(ops, 'dispatch', lambda _: None)
+    review.decide(project[2]['id'], {'action': 'approve', 'revision_token': 'reviewed', 'outcome': 'proved', 'idempotency_key': 'fifo-approval'})
+    with db.connect() as conn:
+        ids = [r[0] for r in conn.execute("select id from reformalization_operations where state='queued' order by queued_at,rowid")]
+    assert ids == [first['id'], op['id']]
+
+
+def test_logical_owner_excludes_rename_and_delete_between_segments(project, monkeypatch):
+    from fastapi import HTTPException
+    from app import project_coordination
+    op, _ = paused_operation(project, monkeypatch, reason='dependency_wait')
+    for guard in (project_coordination.migration, project_coordination.deletion):
+        with pytest.raises(HTTPException):
+            with guard(project[0]['id']):
+                pytest.fail('Logical ownership must outlive a worker lease')
+    assert ops.owner(project[0]['id'])['id'] == op['id']
+
+
+def test_standalone_retry_reuses_conversation_and_reload_observes_preparing(project, monkeypatch):
+    from app.routes import sessions
+    p, _, form, _ = project
+    prior = store.create_session('Existing work', project_id=p['id'])
+    store.link_session_formalization(prior['id'], form['id'])
+    op = ops.enqueue({'message': 'Retry in the same conversation', 'focus_formalization_id': form['id']}, p['id'])
+    assert op['session_id'] == prior['id']
+    ops.update(op['id'], 'active')
+    assert sessions.session_detail(prior['id'])['queued_reformalizations'] == [{'id': op['id']}]
+    ops.update(op['id'], result={'continuation': {'old_run_id': 'earlier'}})
+    assert sessions.session_detail(prior['id'])['queued_reformalizations'] == [{'id': op['id']}]
+    with db.connect() as conn:
+        assert conn.execute('select count(*) from sessions').fetchone()[0] == 1
+
+
+def test_snapshot_omits_unrelated_projects_and_recovery_archives(project, monkeypatch):
+    p, repo, form, _ = project
+    root = repo.parents[2]
+    unrelated = root / 'proofs/Lea/Unrelated/Huge.lean'
+    unrelated.parent.mkdir(parents=True)
+    unrelated.write_text('invalid unrelated work that is never imported\n')
+    for n in range(4):
+        archive = repo / '.lea/displaced' / str(n) / 'Shared.lean'
+        archive.parent.mkdir(parents=True)
+        archive.write_text(project[3] * 100)
+    (repo / '.lea/memory.md').write_text('Preserve useful context')
+    op = operation(project, monkeypatch)
+    stage = Path(op['manifest']['repo'])
+    assert (stage / '.lea/memory.md').read_text() == 'Preserve useful context'
+    assert not (stage / '.lea/displaced').exists()
+    assert not (Path(op['manifest']['workspace']) / unrelated.relative_to(root)).exists()
+    assert set(op['manifest']['source_hashes']) == {'proofs/Lea/Study/Shared.lean'}
+    store.update_run(op['root_run_id'], 'cancelled', result_kind='interrupted')
+    ops.update(op['id'], 'retained')
+    (repo / '.lea/displaced/another-large-archive').write_text(project[3] * 1000)
+    second = operation(project, monkeypatch)
+    next_stage = Path(second['manifest']['repo'])
+    assert not (next_stage / '.lea/displaced').exists()
+    assert {rel: path.read_bytes() for rel, path in ops.lean_files(stage).items()} == {
+        rel: path.read_bytes() for rel, path in ops.lean_files(next_stage).items()}
+
+
+@pytest.mark.parametrize('crash_after_acceptance', [False, True])
+def test_managed_siblings_execute_serially_and_capture_published_helpers(project, monkeypatch, crash_after_acceptance):
+    from app import bridge, runregistry, runtime, project_dependencies as deps
+    from app.routes import runs
+    from app.reformalization_helpers import refresh_parent
+    op = operation(project, monkeypatch)
+    p, repo, _, original = project
+    imported = repo.parents[2] / 'proofs/Lea/Foreign/Fact.lean'
+    imported.parent.mkdir(parents=True)
+    imported.write_text('namespace Lea.Foreign\ntheorem fact : True := by trivial\nend Lea.Foreign\n')
+    (Path(op['manifest']['repo']) / 'Shared.lean').write_text(original + '-- parent draft must survive helper refresh\n')
+    with execution.scope(ops.canonical_policy(op['manifest']['canonical_root'], repo)):
+        dependencies = [deps.ensure(p, {'name': name, 'kind': 'theorem', 'signature': signature, 'imports': []},
+            run_id=op['root_run_id'], mode='deferred')['dependency']
+            for name, signature in [('FirstHelper', ': True'), ('SecondHelper', ': False → False')]]
+    store.update_run(op['root_run_id'], 'cancelled', recoverable=True, stop_reason='dependency_wait')
+    monkeypatch.setattr(runtime, 'accepting_work', lambda: True)
+    monkeypatch.setattr(runs, 'load_config', config.load_config)
+    monkeypatch.setattr(bridge, 'enqueue_run', lambda _: None)
+    registry = runregistry.RunRegistry(max_concurrent=4)
+    monkeypatch.setattr(runregistry, 'registry', registry)
+    children = [runs.create_run(runs.RunRequest(message='Prove ' + dep['declaration_name'], project_slug=p['slug'],
+        purpose='project_dependency', autonomous=True, focus_formalization_id=dep['formalization_id'],
+        dependency_id=dep['id'], initiating_run_id=op['root_run_id'])) for dep in dependencies]
+    first, second = [ops.for_run(child['run_id']) for child in children]
+    assert registry.try_admit(first['root_run_id'], first['session_id'], project_id=p['id'], serialize_project=True).ok
+    assert registry.try_admit(second['root_run_id'], second['session_id'], project_id=p['id'], serialize_project=True).outcome == runregistry.AT_CAPACITY
+    assert ops.get(second['id'])['manifest'] is None
+    for child, dep, proof in zip([first, second], dependencies, ['trivial', 'intro h; exact h']):
+        if child['id'] == second['id']:
+            assert registry.try_admit(child['root_run_id'], child['session_id'], project_id=p['id'], serialize_project=True).ok
+        store.claim_pending_run(child['root_run_id'])
+        manifest = ops.prepare(child['id'])
+        if child['id'] == second['id']:
+            assert dependencies[0]['path'] in manifest['files']
+        target = Path(manifest['repo']) / dep['path']
+        target.parent.mkdir(parents=True, exist_ok=True)
+        signature = 'True' if child['id'] == first['id'] else 'False → False'
+        imports = ''
+        if child['id'] == first['id']:
+            copied = Path(manifest['workspace']) / 'proofs/Lea/Foreign/Fact.lean'
+            copied.parent.mkdir(parents=True)
+            copied.write_bytes(imported.read_bytes())
+            imports, proof = 'import Lea.Foreign.Fact\n', 'exact Lea.Foreign.fact'
+        target.write_text(imports + 'namespace Lea.Study\ntheorem ' + dep['declaration_name'].rsplit('.', 1)[-1] + ' : ' + signature + ' := by ' + proof + '\nend Lea.Study\n')
+        chosen = {'path': dep['path'], 'declaration': dep['declaration_name'], 'kind': 'proved'}
+        if crash_after_acceptance and child['id'] == first['id']:
+            from app import reformalization_helpers
+            class ProcessDeath(BaseException):
+                pass
+            with monkeypatch.context() as patch:
+                def interrupted_refresh(_):
+                    raise ProcessDeath()
+                patch.setattr(reformalization_helpers, 'refresh_parent', interrupted_refresh)
+                with pytest.raises(ProcessDeath):
+                    publication.apply(child['id'], chosen, 'proved', helper=dep)
+            assert ops.get(child['id'])['state'] == 'settled'
+            publication.recover()
+        else:
+            publication.apply(child['id'], chosen, 'proved', helper=dep)
+        refresh_parent(child['id'])
+        assert deps.get(dep['id'])['ready']
+        registry.release(child['root_run_id'])
+    ops.fresh(ops.get(op['id']))
+    assert len(ops.get(op['id'])['manifest']['helper_applications']) == 2
+    refreshed = ops.get(op['id'])['manifest']
+    assert (Path(refreshed['workspace']) / 'proofs/Lea/Foreign/Fact.lean').read_bytes() == imported.read_bytes()
+    assert refreshed['source_hashes']['proofs/Lea/Foreign/Fact.lean'] == ops.digest(imported.read_bytes())
+    publication.recover()
+    assert len(ops.get(op['id'])['manifest']['helper_applications']) == 2
+    assert (repo / 'Shared.lean').read_text() == original
+    assert (Path(op['manifest']['repo']) / 'Shared.lean').read_text().endswith('-- parent draft must survive helper refresh\n')
+
+
+def test_cancel_during_publication_restores_files_instead_of_accepting(project, monkeypatch):
+    op = operation(project, monkeypatch)
+    candidate = project[3].replace('theorem b : True := by sorry', 'theorem b : True := by trivial')
+    (Path(op['manifest']['repo']) / 'Shared.lean').write_text(candidate)
+    original_checks = publication._canonical_checks
+    def stop_before_accept(*args):
+        checks = original_checks(*args)
+        ops.cancel(op['id'])
+        return checks
+    monkeypatch.setattr(publication, '_canonical_checks', stop_before_accept)
+    with pytest.raises(ValueError, match='cancelled before acceptance'):
+        publication.apply(op['id'], selection(), 'proved')
+    assert ops.get(op['id'])['state'] == 'retained'
+    assert (project[1] / 'Shared.lean').read_text() == project[3]
+
+
+def test_snapshot_materializes_only_actual_transitive_foreign_imports(project, monkeypatch):
+    _, repo, _, original = project
+    root = repo.parents[2]
+    foreign = root / 'proofs/Lea/Foreign'
+    foreign.mkdir(parents=True)
+    (foreign / 'Base.lean').write_text('namespace Lea.Foreign\ntheorem base : True := by trivial\nend Lea.Foreign\n')
+    (foreign / 'Needed.lean').write_text('import Lea.Foreign.Base\nnamespace Lea.Foreign\ntheorem needed : True := base\nend Lea.Foreign\n')
+    (foreign / 'Unrelated.lean').write_text('-- unrelated source must not be copied\n')
+    (repo / 'Shared.lean').write_text('import Lea.Foreign.Needed\n' + original)
+    op = operation(project, monkeypatch)
+    stage_root = Path(op['manifest']['workspace'])
+    assert (stage_root / 'proofs/Lea/Foreign/Needed.lean').is_file()
+    assert (stage_root / 'proofs/Lea/Foreign/Base.lean').is_file()
+    assert not (stage_root / 'proofs/Lea/Foreign/Unrelated.lean').exists()
+    assert {'proofs/Lea/Foreign/Base.lean', 'proofs/Lea/Foreign/Needed.lean'} <= set(op['manifest']['source_hashes'])
+    ops.fresh(op)
+
+
+def test_pending_owned_continuation_cannot_be_replaced_by_another_request(project, monkeypatch):
+    from app import runregistry
+    from fastapi import HTTPException
+    op, old = paused_operation(project, monkeypatch, reason='dependency_wait')
+    registry = runregistry.RunRegistry(max_concurrent=1)
+    monkeypatch.setattr(runregistry, 'registry', registry)
+    assert registry.try_admit('another-project', 'another-chat').ok
+    first = {'idempotency_key': 'first-resume', 'dependency_resume': True}
+    waiting = ops.queue_continuation(op, old, first)
+    assert waiting['run_id'] is None
+    assert ops.queue_continuation(ops.get(op['id']), old, first)['run_id'] is None
+    with pytest.raises(HTTPException, match='already waiting'):
+        ops.queue_continuation(ops.get(op['id']), old, {**first, 'idempotency_key': 'second-resume'})
+    assert ops.get(op['id'])['result']['continuation']['request'] == first
+    ops.cancel(op['id'])
+    registry.release('another-project')
+    ops.wake(op['id'])
+    assert ops.get(op['id'])['state'] == 'retained'
+    assert ops.get(op['id'])['root_run_id'] == old['id']
+
+
+@pytest.mark.parametrize('external_edit', [False, True])
+def test_restore_recovers_after_rollback_rename_before_capture(project, monkeypatch, external_edit):
+    op = operation(project, monkeypatch)
+    _, repo, _, original = project
+    candidate = original.replace('theorem b : True := by sorry', 'theorem b : True := by trivial')
+    external = candidate + '-- observed external edit during restoration\n'
+    (Path(op['manifest']['repo']) / 'Shared.lean').write_text(candidate)
+    assessment = publication.assess(op['id'], selection())
+    real_rename = publication.os.rename
+    class ProcessDeath(BaseException):
+        pass
+    def stop_after_rollback_rename(source, destination):
+        if '.candidate-' in str(destination):
+            if external_edit:
+                Path(source).write_text(external)
+            real_rename(source, destination)
+            raise ProcessDeath()
+        return real_rename(source, destination)
+    with monkeypatch.context() as patch:
+        patch.setattr(publication.os, 'rename', stop_after_rollback_rename)
+        def fail_checks(*_):
+            raise ValueError('Force restoration')
+        patch.setattr(publication, '_canonical_checks', fail_checks)
+        with pytest.raises(ProcessDeath):
+            publication.apply(op['id'], selection(), 'proved', assessment=assessment)
+    assert not (repo / 'Shared.lean').exists()
+    publication.recover()
+    publication.recover()
+    assert (repo / 'Shared.lean').read_text() == (external if external_edit else original)
+    retained = {store.blob_content(v['blob_id']) for v in ops.versions(op['id'])}
+    assert {original, candidate} <= retained
+    if external_edit:
+        assert external in retained
+
+
+@pytest.mark.parametrize('same_identity', [True, False])
+def test_overlapping_continuation_admissions_share_one_durable_successor(project, monkeypatch, same_identity):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, local
+    from fastapi import HTTPException
+    from app import runregistry
+    op, old = paused_operation(project, monkeypatch, reason='dependency_wait')
+    registry = runregistry.RunRegistry(max_concurrent=1)
+    monkeypatch.setattr(runregistry, 'registry', registry)
+    assert registry.try_admit('occupied', 'occupied-chat').ok
+    barrier, calls = Barrier(2), local()
+    real_fresh = ops.fresh
+    def simultaneous_capture(*args, **kwargs):
+        real_fresh(*args, **kwargs)
+        if not getattr(calls, 'captured', False):
+            calls.captured = True
+            barrier.wait(timeout=5)
+    monkeypatch.setattr(ops, 'fresh', simultaneous_capture)
+    def submit(index):
+        try:
+            return ops.queue_continuation(op, old, {'idempotency_key': 'overlap-' + str(0 if same_identity else index), 'dependency_resume': True})
+        except HTTPException as exc:
+            return exc
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(submit, [0, 1]))
+    assert sum(isinstance(r, dict) for r in results) == (2 if same_identity else 1)
+    assert all(r['run_id'] is None for r in results if isinstance(r, dict))
+    assert ops.get(op['id'])['result']['continuation']['old_run_id'] == old['id']
+    with db.connect() as conn:
+        assert conn.execute('select count(*) from runs').fetchone()[0] == 1
+    ops.cancel(op['id'])
+    registry.release('occupied')

@@ -549,12 +549,12 @@ def resume_run(run_id: str, request: ResumeRequest) -> dict:
 @project_coordination.guarded(_admission_project, write=True, admission=True)
 def continue_run(run_id: str, request: ContinueRequest) -> dict:
     """Continue a clean Overleaf pause from its pinned execution checkpoint."""
-    from .. import lea_status, lea_status_store
+    from .. import lea_status, lea_status_store, reformalizations
     from ..source_context import validate_source
     timeout_seconds = request.timeout_seconds if request.timeout_seconds is not None else int(os.environ.get("LEA_JOB_TIMEOUT_SECONDS", "900"))
     if not request.idempotency_key.strip() or timeout_seconds < 1 or request.lea_status_version != 1:
         raise HTTPException(status_code=422, detail="A request identity, positive timeout and Lea Status v1 are required.")
-    request_hash = hashlib.sha256(json.dumps({"predecessor": run_id, **request.model_dump()}, sort_keys=True).encode()).hexdigest()
+    request_hash = reformalizations.continuation_hash(run_id, request.model_dump())
     prior = store.get_run_submission(request.idempotency_key)
     if prior:
         if prior["run"].get("resumes_run_id") != run_id or prior["run"].get("client_request_hash") != request_hash:

@@ -163,17 +163,20 @@ def mutation(project_id: str | None, *, wait=False, admission=False):
 
 
 @contextmanager
-def application(project_id, root):
+def application(project_id, root, *, recovery=False):
     """Environment first, then the short gate shared by canonical I/O routes."""
     from lea.check_evidence import mutation as environment_mutation
     from .reformalizations import assert_writer
-    assert_writer(project_id)
     with environment_mutation(root), _state(project_id).application_lock:
+        if not recovery:
+            assert_writer(project_id)
         yield
 
 
 @contextmanager
 def migration(project_id: str):
+    from .reformalizations import assert_writer
+    assert_writer(project_id)
     state = _state(project_id)
     with state.lock:
         _available(state)
@@ -209,6 +212,8 @@ def worker_finished(project_id: str | None, run_id: str):
 @contextmanager
 def deletion(project_id: str):
     """Exclude admission and I/O for the full busy check and destructive operation."""
+    from .reformalizations import assert_writer
+    assert_writer(project_id)
     state = _state(project_id)
     with state.lock:
         _available(state)

@@ -227,7 +227,8 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
                 or (parent["id"] != owner["id"] and parent['request'].get('_foreground_owner') != owner['id'])):
             return _DEFER
     try:
-        admission = runregistry.registry.try_admit(run_id, run["session_id"], project_id=project_id)
+        admission = runregistry.registry.try_admit(run_id, run["session_id"], project_id=project_id,
+            serialize_project=bool(run.get("reformalization_id")))
         if admission.outcome == runregistry.ALREADY_ACTIVE and run.get('reformalization_id') and runregistry.registry.claim_reservation(run_id):
             admission = replace(admission, outcome=runregistry.ADMITTED)
     except HTTPException as exc:

@@ -774,6 +774,7 @@ export interface Diagnostic {
 }
 
 export interface SessionDetail extends SessionSummary {
+  // Includes source preparation and continuations awaiting execution capacity.
   queued_reformalizations?: Array<{ id: string }>;
   lean_check_runtime?: LeanCheckRuntime;
   messages: ChatMessage[];

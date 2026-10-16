@@ -231,3 +231,15 @@ def test_process_singleton_exists_and_is_a_registry():
     """The endpoint + bridge share one registry."""
     assert isinstance(process_registry, RunRegistry)
     assert process_registry is runregistry.registry
+
+
+def test_project_serialization_is_atomic_and_does_not_reduce_other_project_capacity():
+    reg = RunRegistry(max_concurrent=4)
+    assert reg.try_admit('parent', 'parent-chat', project_id='A', serialize_project=True).ok
+    assert reg.try_admit('helper', 'helper-chat', project_id='A', serialize_project=True).outcome == AT_CAPACITY
+    assert reg.try_admit('ordinary', 'ordinary-chat', project_id='A').outcome == AT_CAPACITY
+    assert reg.try_admit('other', 'other-chat', project_id='B').ok
+    reg.release('parent')
+    assert reg.try_admit('helper', 'helper-chat', project_id='A', serialize_project=True).ok
+    reg.release('helper')
+    reg.release('other')

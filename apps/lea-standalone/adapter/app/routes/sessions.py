@@ -175,7 +175,7 @@ def session_detail(session_id: str) -> dict:
     ]
     from ..db import connect
     with connect() as conn:
-        queued = [{'id': r[0]} for r in conn.execute("select id from reformalization_operations where session_id=? and state='queued'", (session_id,))]
+        queued = [{'id': r[0]} for r in conn.execute("select id from reformalization_operations where session_id=? and (state='queued' or (state='active' and (root_run_id is null or json_extract(result_json,'$.continuation') is not null)))", (session_id,))]
     return {
         **detail,
         "formalizations": items,

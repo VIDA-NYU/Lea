@@ -78,6 +78,7 @@ class ActiveRun:
     session_id: str
     project_id: str | None = None
     reserved: bool = False
+    serialize_project: bool = False
 
 
 @dataclass(frozen=True)
@@ -113,7 +114,7 @@ class RunRegistry:
     def capacity(self) -> int:
         return self._max
 
-    def try_admit(self, run_id: str, session_id: str, *, project_id: str | None = None, reserve=False) -> Admission:
+    def try_admit(self, run_id: str, session_id: str, *, project_id: str | None = None, reserve=False, serialize_project=False) -> Admission:
         """Atomically decide + claim. See the module docstring for the ordering.
 
         On ``admitted`` the slot is recorded and must be paired with a
@@ -130,11 +131,17 @@ class RunRegistry:
                 return Admission(SESSION_BUSY, len(self._active), capacity,
                                  incumbent_run_id=incumbent)
 
+            # Staged work shares one execution slot within its project. A waiting
+            # parent releases it, so a helper can run without bypassing capacity.
+            if project_id and any(a.project_id == project_id and (serialize_project or a.serialize_project)
+                                  for a in self._active.values()):
+                return Admission(AT_CAPACITY, len(self._active), capacity)
+
             if len(self._active) >= capacity:
                 return Admission(AT_CAPACITY, len(self._active), capacity)
 
             project_coordination.worker_started(project_id, run_id)
-            self._active[run_id] = ActiveRun(run_id=run_id, session_id=session_id, project_id=project_id, reserved=reserve)
+            self._active[run_id] = ActiveRun(run_id=run_id, session_id=session_id, project_id=project_id, reserved=reserve, serialize_project=serialize_project)
             self._by_session[session_id] = run_id
             return Admission(ADMITTED, len(self._active), capacity)
 
