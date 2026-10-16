@@ -224,6 +224,40 @@ def _check_import_cycle(project, requester, imports):
         visit(imported)
 
 
+def _reject_primary_target(project, specification, targets):
+    """A focused target is already tracked; it cannot reserve itself as a helper.
+
+    Compare declaration identities, not types: distinct supporting results can
+    legitimately have the same signature or cite the same source passage.
+    """
+    name = specification.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return
+
+    def qualified(value):
+        value = value.strip().removeprefix("_root_.")
+        return value if "." in value else project["namespace"] + "." + value
+
+    requested = qualified(name)
+    for target in targets:
+        if not target:
+            continue
+        names = [target.get("declaration_name")]
+        # A manually renamed Overleaf target retains its original document label.
+        if target.get("origin") == "overleaf" and target.get("origin_key"):
+            names.append(target["origin_key"].rsplit(":", 1)[-1])
+        if not any(value and requested == qualified(value) for value in names):
+            continue
+        paths = [item["path"] for item in store.list_formalization_files(target["id"])]
+        location = (" Use its existing associated file(s): " + ", ".join(paths) + ".") if paths else (
+            " Write it directly in the ordinary target file in this project's workspace.")
+        raise ValueError(
+            "The requested dependency is the current formalization target, not a supporting result. "
+            "It is already tracked and must not receive a second shared reservation. "
+            "Keep the target declaration name " + (target.get("declaration_name") or name) + "." + location +
+            " Use request_project_dependency only for distinct supporting mathematics.")
+
+
 def ensure(project: dict, specification: dict, *, run_id: str | None = None,
            requester_id: str | None = None, mode: str = "deferred") -> dict:
     if mode not in {"inline", "deferred"}:
@@ -233,11 +267,14 @@ def ensure(project: dict, specification: dict, *, run_id: str | None = None,
         raise ValueError("The requesting run belongs to another project.")
     if run_id and not run:
         raise ValueError("The requesting run does not exist.")
+    focus = store.get_formalization(run["focus_formalization_id"]) if run and run.get("focus_formalization_id") else None
     requester_id = requester_id or (run.get("focus_formalization_id") if run else None)
+    requester = None
     if requester_id:
         requester = store.get_formalization(requester_id)
         if not requester or requester.get("project_id") != project["id"]:
             raise ValueError("The requesting target belongs to another project.")
+    _reject_primary_target(project, specification, [focus, requester])
     if mode == "inline" and (not run or run["status"] != "running"):
         raise ValueError("Inline ownership requires an active requesting run.")
     spec = {key: specification.get(key) for key in

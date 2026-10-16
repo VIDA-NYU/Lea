@@ -53,11 +53,19 @@ def run(context, op):
     children = {}
     skill_temp = None
     started = time.monotonic()
+    initial = store.get_run(rid) or {}
+    deadline = datetime.fromisoformat(initial['deadline_at']) if initial.get('deadline_at') else None
+    def preparation_stopped():
+        if not stop.is_set() and deadline and deadline <= datetime.now(timezone.utc):
+            bridge.request_stop(rid, reason='timeout', source='adapter')
+        return stop.is_set()
     try:
         if not store.claim_pending_run(rid):
             return
         attempt = recovery.start_attempt(rid)
-        manifest = operations.prepare(op['id'])
+        from lea.runctx import run_context
+        with run_context(should_stop=preparation_stopped):
+            manifest = operations.prepare(op['id'])
         op = operations.get(op['id'])
         operations.fresh(op)
         repo = Path(manifest['repo']).resolve()

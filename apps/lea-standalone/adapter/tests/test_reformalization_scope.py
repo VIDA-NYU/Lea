@@ -95,3 +95,58 @@ def test_capability_requires_executor_and_honors_admission_rollback(monkeypatch)
     monkeypatch.setenv('LEA_REFORMALIZATION_ENABLED', '1')
     monkeypatch.setattr(execution, 'capability', lambda: {'available': False})
     assert not ops.capability()['automatic_shared_files']
+
+
+def generated_constant_fixture():
+    energy = 'def energy (x : Nat) := x + 1\n'
+    target = 'theorem target : True := by trivial\n'
+    aux = {**decl('energy._proof_1', 1), 'range': None}
+    definition = {**decl('energy', 1), 'kind': 'definition', 'body_expr': 'x + 1'}
+    definition_report = report(energy, [definition])
+    definition_report['declarations'].append(aux)
+    sources = {'Energy.lean': energy, 'Target.lean': target}
+    reports = {'Energy.lean': definition_report, 'Target.lean': report(target, [decl('target', 1)])}
+    return sources, reports
+
+
+def test_project_retains_rangeless_compiler_constants_in_unchanged_modules():
+    from app.reformalization_scope import validate_project
+    before, baseline = generated_constant_fixture()
+    after, candidate = deepcopy(before), deepcopy(baseline)
+    after['Target.lean'] = 'theorem target : True := by exact True.intro\n'
+    candidate['Target.lean'] = report(after['Target.lean'], [decl('target', 1)])
+    result = validate_project(before, after, baseline, candidate, 'target', candidate['Target.lean']['declarations'][0])
+    assert result['protected'] == ['energy', 'energy._proof_1']
+    assert result['editable'] == ['target']
+
+
+@pytest.mark.parametrize('change', ['source', 'relocation', 'type', 'axioms', 'removed'])
+def test_rangeless_constants_never_grant_source_or_semantic_edit_permission(change):
+    from app.reformalization_scope import validate_project
+    before, baseline = generated_constant_fixture()
+    after, candidate = deepcopy(before), deepcopy(baseline)
+    if change == 'source':
+        after['Energy.lean'] += '-- changed context\n'
+    elif change == 'relocation':
+        after['Moved.lean'] = after.pop('Energy.lean')
+        candidate['Moved.lean'] = candidate.pop('Energy.lean')
+    elif change == 'type':
+        candidate['Energy.lean']['declarations'][1]['type_expr'] = 'False'
+    elif change == 'axioms':
+        candidate['Energy.lean']['declarations'][1]['axioms'] = ['sorryAx']
+    else:
+        candidate['Energy.lean']['declarations'].pop()
+    with pytest.raises(PreservationConflict):
+        validate_project(before, after, baseline, candidate, 'target', candidate['Target.lean']['declarations'][0])
+
+
+def test_file_with_rangeless_constant_requires_exact_retention():
+    code = 'theorem target : True := by trivial\n'
+    baseline = report(code, [decl('target', 1)])
+    baseline['declarations'].append({**decl('generated', 1), 'range': None})
+    assert validate_file(code, code, baseline, deepcopy(baseline), 'target')['protected'] == ['generated']
+    changed = code.replace('trivial', 'exact True.intro')
+    candidate = report(changed, [decl('target', 1)])
+    candidate['declarations'].append({**decl('generated', 1), 'range': None})
+    with pytest.raises(PreservationConflict, match='protected boundaries'):
+        validate_file(code, changed, baseline, candidate, 'target')

@@ -271,17 +271,18 @@ def test_change_during_projection_retries_before_publishing(tmp_path, change):
             else:
                 (target.parent / 'lakefile.toml').write_text('name = "changed"\n')
         return answer
-    assert project()[0] is False
+    assert project()[0] is (change == 'replace')
     assert attempts[0] == (True, None)
     assert len(attempts) == 2
 
 
-def test_continuous_changes_fail_closed_and_reset_context(tmp_path):
+@pytest.mark.parametrize('metadata_only', [False, True])
+def test_continuous_changes_fail_closed_and_reset_context(tmp_path, metadata_only):
     target, raw = execution_with_imports(tmp_path, 1)
     @read_projection
     def project():
         check_evidence.freshness(decode_evidence(raw), target, snapshot=current_snapshot())
-        target.write_text(target.read_text() + '\n')
+        target.write_text(target.read_text() + ('' if metadata_only else '\n'))
         return {'check_current': True}
     with pytest.raises(HTTPException) as exc:
         project()

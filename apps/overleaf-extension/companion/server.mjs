@@ -1694,7 +1694,13 @@ export async function handleLeanPaneManifest(payload, state) {
   return withProjectSnapshot(payload, state, (identity) => leanPaneManifestSnapshot(payload, state, identity));
 }
 
-async function leanPaneManifestSnapshot(payload, state, identity) {
+export async function handleSourceContextManifest(payload, state) {
+  // Source acquisition must not wait for artifact/status enrichment or perform
+  // project writes while its reformalization owns the project's mathematics.
+  return { statusCode: 200, body: await buildSourceManifest(payload, state) };
+}
+
+async function buildSourceManifest(payload, state) {
   const overleafProjectId = payload.overleafProjectId || "unknown";
   const reservedLabels = legacyExplicitJobLabels(state, overleafProjectId);
   let generatedChanged = false;
@@ -1711,6 +1717,12 @@ async function leanPaneManifestSnapshot(payload, state, identity) {
     }
   });
   if (generatedChanged) await persistGeneratedTargets(state);
+  return manifest;
+}
+
+async function leanPaneManifestSnapshot(payload, state, identity) {
+  const overleafProjectId = payload.overleafProjectId || "unknown";
+  const manifest = await buildSourceManifest(payload, state);
 
   const leaValidation = validateLeaRuntime(state, { requireApiKey: false });
   if (!leaValidation.ok) {
@@ -4931,6 +4943,11 @@ async function routeRequest(request, response, state) {
     try {
       sendJson(response, 200, await respondSourceRequest(state, chatBaseUrls(state).baseUrl, payload));
     } catch (error) { sendJson(response, 409, { message: error.message }); }
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/source-context/manifest") {
+    const result = await handleSourceContextManifest(await readBodyJson(request), state);
+    sendJson(response, result.statusCode, result.body);
     return;
   }
 

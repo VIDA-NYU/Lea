@@ -3697,6 +3697,90 @@ test("Formalize all carries the Overleaf title on every queued item without sour
   assert.equal(h.fetchCalls.some(c => c.url.endsWith("/mirror-tex")), false);
 });
 
+for (const mirrorEnabled of [false, true]) {
+  test(`source refresh completes without the slow proof-status manifest (mirror ${mirrorEnabled})`, async () => {
+    let socket;
+    const replies = [];
+    class EventSource {
+      listeners = new Map();
+      constructor() { socket = this; }
+      addEventListener(type, callback) { this.listeners.set(type, callback); }
+      close() {}
+    }
+    const source = "\\begin{theorem}\n% lea: formalize label=demo_theorem uses={base}\nTrue.\n\\end{theorem}\n\\begin{proof}\nBy the base lemma.\n\\end{proof}";
+    const h = createContentHarness({ status: "formalized" }, {}, {
+      EventSource, companionSettings: { leaTexMirrorEnabled: mirrorEnabled },
+      fetchOverride(url, options) {
+        if (url.includes("/download/zip")) {
+          const zip = Buffer.from("UEsDBBQAAAAAAPW5TV0AAAAAAAAAAAAAAAAIAAAAbWFpbi50ZXhQSwECFAMUAAAAAAD1uU1dAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAgAEAAAAAbWFpbi50ZXhQSwUGAAAAAAEAAQA2AAAAJgAAAAAA", "base64");
+          return { ok: true, arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength) };
+        }
+        if (url.endsWith("/mirror-tex")) return { ok: true, json: async () => ({
+          mirrorRevision: "revision", mirroredFiles: { "main.tex": createHash("sha256").update(source).digest("hex") }
+        }) };
+        if (url.endsWith("/lean-pane/manifest")) return new Promise((_resolve, reject) => {
+          options.signal.addEventListener("abort", () => reject(new Error("Slow proof inventory")), { once: true });
+        });
+        if (url.endsWith("/source-context/manifest")) return { ok: true,
+          json: async () => buildLeanPaneManifest(JSON.parse(options.body)) };
+        if (url.endsWith("/source-context/respond")) {
+          replies.push(JSON.parse(options.body));
+          return { ok: true, json: async () => ({ ok: true }) };
+        }
+      }
+    });
+    await h.loadVisibleTheorems({ activeTex: source });
+    assert.ok(socket);
+    socket.listeners.get("source-refresh-requested")({ data: JSON.stringify({ request_id: "refresh",
+      overleafProjectId: "project-1", targetLabel: "demo_theorem", targetKind: "theorem" }) });
+    await flushPromises();
+    await h.runTimersAt(10000);
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].error, undefined);
+    const context = replies[0].sourceContext;
+    assert.equal(context.sourceBundle.proof, "By the base lemma.");
+    assert.deepEqual(context.sourceBundle.uses, ["base"]);
+    assert.equal(context.sourceBundle.targetKey, "demo_theorem");
+    assert.equal(context.sourceBundle.mirror?.verified || false, mirrorEnabled);
+    assert.equal(h.fetchCalls.some(call => call.url.endsWith("/lean-pane/manifest")), false);
+  });
+}
+
+test("source refresh reports an explicit timeout when the source parser is unresponsive", async () => {
+  let socket;
+  const replies = [];
+  class EventSource {
+    listeners = new Map();
+    constructor() { socket = this; }
+    addEventListener(type, callback) { this.listeners.set(type, callback); }
+    close() {}
+  }
+  const h = createContentHarness({ status: "formalized" }, {}, {
+    EventSource, companionSettings: { leaTexMirrorEnabled: false },
+    fetchOverride(url, options) {
+      if (url.includes("/download/zip")) {
+        const zip = Buffer.from("UEsDBBQAAAAAAPW5TV0AAAAAAAAAAAAAAAAIAAAAbWFpbi50ZXhQSwECFAMUAAAAAAD1uU1dAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAgAEAAAAAbWFpbi50ZXhQSwUGAAAAAAEAAQA2AAAAJgAAAAAA", "base64");
+        return { ok: true, arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength) };
+      }
+      if (url.endsWith("/source-context/manifest")) return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(new Error("Aborted")), { once: true });
+      });
+      if (url.endsWith("/source-context/respond")) {
+        replies.push(JSON.parse(options.body));
+        return { ok: true, json: async () => ({ ok: true }) };
+      }
+    }
+  });
+  await h.loadVisibleTheorems();
+  socket.listeners.get("source-refresh-requested")({ data: JSON.stringify({ request_id: "timeout",
+    overleafProjectId: "project-1", targetLabel: "demo_theorem", targetKind: "theorem" }) });
+  await flushPromises();
+  await h.runTimersAt(10000);
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].error, /source timed out/);
+  assert.equal(replies[0].sourceContext, undefined);
+});
+
 function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
   const document = new FakeDocument();
   document.title = options.documentTitle || "";

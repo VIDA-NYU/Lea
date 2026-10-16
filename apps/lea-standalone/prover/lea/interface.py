@@ -155,7 +155,7 @@ def _verify_impl(path: str, declaration: str | None = None) -> VerifyResult:
         return VerifyResult("error", f"File not found: {path}")
     code = p.read_bytes().decode('utf-8')
     if declaration:
-        from .check_evidence import lake_root, file_hash, file_version
+        from .check_evidence import lake_root, ReadSnapshot
         from .result_selection import inspect_file, select
         try:
             report = inspect_file(p)
@@ -165,17 +165,23 @@ def _verify_impl(path: str, declaration: str | None = None) -> VerifyResult:
                 return VerifyResult('error', 'Selected replay requires an actual built Lake module.')
             relative = p.resolve().relative_to(root / 'proofs').with_suffix('.olean')
             olean = root / '.lake/build/lib/lean' / relative
-            before_hash = file_hash(olean)
+            inputs = ReadSnapshot()
+            module_files = []
+            for artifact in [olean, *sorted(olean.parent.glob(olean.name + '.*'))]:
+                hashed, version = inputs.observation(artifact)
+                module_files.append({'path': str(artifact), 'sha256': hashed,
+                                     'version': version, 'kind': 'compiled'})
             sv_root = root / '.sv_scratch'
             sv_root.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(dir=sv_root) as temp:
                 ok, detail = safeverify.verify_selected_module(olean, chosen['full_name'], root, Path(temp))
-            if file_hash(olean) != before_hash or p.read_bytes().decode('utf-8') != code:
+            if (not inputs.unchanged() or
+                    sorted(olean.parent.glob(olean.name + '.*')) != [Path(r['path']) for r in module_files[1:]]
+                    or p.read_bytes().decode('utf-8') != code):
                 return VerifyResult('error', 'Selected replay inputs changed during verification.')
-            record = {'path': str(olean), 'sha256': before_hash,
-                      'version': file_version(olean), 'kind': 'compiled'}
             return VerifyResult('ok' if ok else 'rejected', None if ok else detail,
-                {'selected_module': record, 'selected_result': chosen})
+                {'selected_module': module_files[0], 'selected_module_companions': module_files[1:],
+                 'selected_result': chosen})
         except (ValueError, OSError) as exc:
             return VerifyResult('error', str(exc))
 
@@ -249,17 +255,22 @@ def verify(path: str, *, declaration: str | None = None) -> VerifyResult:
                     'path': str(binary), 'sha256': file_hash(binary), 'version': file_version(binary), 'kind': 'verifier'}}}
             budget.execution.update(evidence_version=PROTOCOL_VERSION, environment=environment,
                                     environment_sha256=environment_hash(environment))
+            from .check_evidence import execution_snapshot
+            inputs = execution_snapshot(budget.execution, p)
             result = _verify_impl(str(p), declaration) if declaration else _verify_impl(str(p))
             if declaration:
                 budget.execution['selected_declaration'] = declaration
                 selected = result.execution or {}
                 if selected.get('selected_module'):
                     environment = {**environment, 'files': {**environment['files'],
-                        'audit:selected-module': selected['selected_module']}}
+                        'audit:selected-module': selected['selected_module'],
+                        **{f'audit:selected-module:{index}': record for index, record in
+                           enumerate(selected.get('selected_module_companions', []))}}}
                     budget.execution.update(environment=environment, environment_sha256=environment_hash(environment),
                         selected_result=selected.get('selected_result'))
-            if not freshness(budget.execution, p)[0]:
+            if not inputs.unchanged() or not freshness(budget.execution, p)[0]:
                 return VerifyResult('error', 'Proof inputs changed during kernel verification.', budget.finish(), content)
+            execution_snapshot(budget.execution, p)  # Includes any newly captured selected-module artifact.
             return VerifyResult(result.status, result.detail, budget.finish(), content)
     except (OSError, UnicodeError, CheckFailure) as exc:
         return VerifyResult('error', str(exc))

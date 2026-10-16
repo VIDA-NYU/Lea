@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from bisect import bisect_left
 import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
+import time
 from . import execution as command_executor
 import threading
 
@@ -20,6 +22,47 @@ _hashes = {}
 _resolutions = {}
 _prepared = {}
 _observed = {}
+_source_imports = {}
+
+
+def _artifact_family(path, directories):
+    """Observe a directory once per operation, including unknown Lean sidecars."""
+    path = Path(path)
+    parent = str(path.parent)
+    if parent not in directories:
+        try:
+            directories[parent] = sorted(os.listdir(parent))
+        except (FileNotFoundError, NotADirectoryError):
+            directories[parent] = []
+    names = directories[parent]
+    prefix = path.name + '.'
+    index = bisect_left(names, prefix)
+    result = []
+    while index < len(names) and names[index].startswith(prefix):
+        result.append(os.path.join(parent, names[index]))
+        index += 1
+    return result
+
+
+def _artifact_families(paths):
+    directories = {}
+    return {path: _artifact_family(path, directories) for path in paths}
+
+
+def _imports_for_source(path, observation):
+    # Cache parsing by checked bytes, never by a timestamp or module name alone.
+    key = (str(path), observation['sha256'])
+    with _guard:
+        cached = _source_imports.get(key)
+    if cached is not None:
+        return cached
+    code = path.read_bytes()
+    if digest(code) != observation['sha256'] or file_version(path) != observation['version']:
+        raise CheckFailure('source_changed', 'Imported source changed during dependency discovery', retryable=False)
+    imports = direct_imports(code.decode('utf-8'))
+    with _guard:
+        _source_imports[key] = imports
+    return imports
 
 
 def digest(value):
@@ -71,12 +114,23 @@ class ReadSnapshot:
         self.executions = {}
         self.environments = {}
         self.topology = {}
+        self.artifact_sets = {}
         self.checks = {}
 
     def observation(self, path):
         key = str(path)
         if key not in self.files:
-            self.files[key] = file_observation(path)
+            observed = file_observation(path)
+            if observed[0] is None:
+                # A missing optional configuration and an unreadable/racing file
+                # both have no digest. Only genuine absence may match old absence.
+                try:
+                    Path(path).stat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise OSError(f'Cannot observe stable input bytes: {path}')
+            self.files[key] = observed
         return self.files[key]
 
     def decode(self, raw):
@@ -93,7 +147,8 @@ class ReadSnapshot:
 
     def unchanged(self):
         return (all(file_version(path) == observed[1] for path, observed in self.files.items())
-            and all(file_version(path) == version for path, version in self.topology.items()))
+            and all(file_version(path) == version for path, version in self.topology.items())
+            and _artifact_families(self.artifact_sets) == self.artifact_sets)
 
     def watch_root(self, path, root):
         # A newly created, nearer Lake file changes module resolution even when
@@ -238,23 +293,50 @@ def manifest(path, content, root, budget=None):
     Source roots learned from the compiler avoid launching Lean per Mathlib module.
     Unknown roots are resolved by the compiler rather than guessed from the catalog.
     """
-    budget = budget or CheckBudget()
+    from .runctx import current_should_stop
+    budget = budget or CheckBudget(should_stop=current_should_stop())
+    budget.remaining('dependencies')
     root = Path(root).resolve() if root else None
     if root is None:
         # No package resolver is available: never certify imported standalone files.
         if any(module_parts(name)[0] not in {'Init', 'Lean', 'Std'} for name in direct_imports(content)):
             raise CheckFailure('dependency_resolution', 'Imported files require a Lake workspace', retryable=False)
-    configuration = _configuration(root) if root else {}
+    configuration_observations = {name: file_observation(root / name) for name in
+        ('lean-toolchain', 'lakefile.lean', 'lakefile.toml', 'lake-manifest.json')} if root else {}
+    configuration = {name: value[0] for name, value in configuration_observations.items()}
     files, roots, seen = {}, {}, set()
+    directories, recorded = {}, set()
+    last_poll = time.monotonic()
+    def poll():
+        nonlocal last_poll
+        now = time.monotonic()
+        if now - last_poll >= .05:
+            budget.remaining('dependencies')
+            last_poll = now
     def record(candidate, kind):
-        files[_identity(candidate, root)] = {'path': str(candidate), 'sha256': file_hash(candidate),
-            'kind': kind, 'version': file_version(candidate)}
+        poll()
+        if (candidate, kind) in recorded:
+            return
+        recorded.add((candidate, kind))
+        hashed, version = file_observation(candidate)
+        files[_identity(candidate, root)] = {'path': str(candidate), 'sha256': hashed,
+            'kind': kind, 'version': version}
     def add(source, compiled, module):
+        poll()
+        if module:
+            parts = module_parts(module)
+            roots[parts[0]] = (source.parents[len(parts)-1], compiled.parents[len(parts)-1])
+        # Import diamonds must not re-observe every artifact family on each edge.
+        # Keep distinct compiler-resolved artifacts even if their source is shared.
+        pair = (source, compiled)
+        if pair in seen:
+            return
+        seen.add(pair)
         for kind, candidate in [('source', source), ('compiled', compiled)]:
             record(candidate, kind)
             if kind == 'compiled':
-                for companion in candidate.parent.glob(candidate.name + '.*'):
-                    record(companion, kind)
+                for companion in _artifact_family(candidate, directories):
+                    record(Path(companion), kind)
         # Pin the actual compiler installation as well as the toolchain selector.
         if _identity(source, root).startswith('toolchain:'):
             installation = Path(source.as_posix().split('/src/lean/', 1)[0])
@@ -265,28 +347,21 @@ def manifest(path, content, root, budget=None):
                 candidate = package / name
                 if candidate.is_file():
                     record(candidate, 'configuration')
-        if module:
-            parts = module_parts(module)
-            roots[parts[0]] = (source.parents[len(parts)-1], compiled.parents[len(parts)-1])
-        if source in seen:
-            return
-        seen.add(source)
         # Built-in libraries are an immutable installation, identified by its
         # toolchain and the resolved source/artifact hashes, not writable projects.
         if _identity(source, root).startswith('toolchain:'):
             return
         try:
-            code = source.read_text()
+            imports = _imports_for_source(source, files[_identity(source, root)])
         except (OSError, UnicodeError):
             raise CheckFailure('dependency_resolution', f'Cannot read imported module {source}', retryable=False)
         if root and source.is_relative_to(root) and '.lake' not in source.relative_to(root).parts:
-            local = _resolve(source, code, root, budget, configuration)
-            imports = direct_imports(code)
+            local = _resolve(source, source.read_text(), root, budget, configuration)
             for dep_source, dep_compiled in local:
                 inferred = next((name for name in imports if dep_source.as_posix().endswith('/'.join(module_parts(name)) + '.lean')), 'Init')
                 add(dep_source, dep_compiled, inferred)
             return
-        for name in direct_imports(code):
+        for name in imports:
             prefix = module_parts(name)[0]
             if prefix in roots:
                 src, obj = roots[prefix]
@@ -295,7 +370,10 @@ def manifest(path, content, root, budget=None):
                 if dep_source.is_file():
                     add(dep_source, dep_compiled, name)
                     continue
-            resolved = _resolve(path, 'import ' + name + '\n', root, budget, configuration)
+            # A probe contains only an absolute import. Give it one stable
+            # filename per workspace so sibling targets reuse compiler discovery.
+            probe = root / 'LeaDependencyImports.lean' if root else path
+            resolved = _resolve(probe, 'import ' + name + '\n', root, budget, configuration)
             for dep_source, dep_compiled in resolved:
                 inferred = name if dep_source.name == module_parts(name)[-1] + '.lean' else 'Init'
                 add(dep_source, dep_compiled, inferred)
@@ -304,23 +382,127 @@ def manifest(path, content, root, budget=None):
     for source, compiled in resolved:
         name = next((name for name in names if source.as_posix().endswith('/'.join(module_parts(name)) + '.lean')), 'Init')
         add(source, compiled, name)
+    budget.remaining('dependencies')
     return {'configuration': configuration, 'files': files,
-        'configuration_versions': {name: file_version(root / name) for name in configuration} if root else {}}
+        'configuration_versions': {name: value[1] for name, value in configuration_observations.items()}}
 
 
-def observed_changed(root, current):
-    previous = _observed.get(str(root), {})
-    if previous.get('configuration') != current['configuration']:
+def _runtime_files(current):
+    return {name: {**record, 'resolved_path': str(Path(record['path']).resolve())}
+        for name, record in current['files'].items()
+        if record['kind'] in {'source', 'compiled', 'compiler', 'configuration'}}
+
+
+def _runtime_record_changed(old, current):
+    # Source bytes govern build preparation and proof evidence. A server needs
+    # retirement when its loaded artifacts or their resolution identities change.
+    return (any(old[key] != current[key] for key in ('kind', 'path', 'resolved_path'))
+        or current['kind'] != 'source' and old['sha256'] != current['sha256'])
+
+
+def _companions(files):
+    paths = {record['path'] for record in files.values()}
+    result = {path: [] for path in paths if path.endswith('.olean')}
+    for path in paths:
+        base, separator, _ = path.rpartition('.olean.')
+        if separator and base + '.olean' in result:
+            result[base + '.olean'].append(path)
+    return {path: sorted(values) for path, values in result.items()}
+
+
+def observe(root, current, *, generation):
+    """Remember inputs before dispatch, including requests that subsequently fail.
+
+    A new generation starts with no predecessor inputs. Unknown admissions remain
+    conservative: a later build cannot establish that such a server is reusable.
+    """
+    if current is not None:
+        files = _runtime_files(current)
+        configuration_paths = {name: str((Path(root) / name).resolve()) for name in current['configuration']}
+        companions = _companions(files)
+        if _artifact_families(companions) != companions:
+            raise CheckFailure('stale_generation', 'Lean artifacts changed during admission')
+    with _guard:
+        previous = _observed.get(str(root), {})
+        if previous.get('generation') != generation:
+            previous = {'generation': generation, 'files': {}, 'companions': {}}
+        if current is None:
+            _observed[str(root)] = {**previous, 'unknown': True}
+            return
+        if (previous.get('invalidated') or previous.get('unknown')
+                or 'configuration' in previous and previous['configuration'] != current['configuration']
+                or 'configuration_paths' in previous and previous['configuration_paths'] != configuration_paths
+                or any(
+                name in previous['files'] and _runtime_record_changed(previous['files'][name], record)
+                for name, record in files.items())):
+            raise CheckFailure('stale_generation', 'Lean admission inputs no longer match the serving generation')
+        _observed[str(root)] = {**previous, 'configuration': dict(current['configuration']),
+            'configuration_paths': configuration_paths,
+            'files': {**previous['files'], **files},
+            'companions': {**previous['companions'], **companions}}
+
+
+def observed_changed(root, current=None):
+    """Validate the serving generation's entire admitted environment, not just
+    the build's target closure. Metadata changes require fresh hashes, not retirement.
+    Callers hold a workspace lease; mutations reconcile under its exclusive lease.
+    """
+    try:
+        return _observed_changed(root, current)
+    except (OSError, KeyError, TypeError, ValueError, RuntimeError):
+        return True  # Uncertain compatibility must never preserve a serving cache.
+
+
+def _observed_changed(root, current):
+    from .lsp_daemon import runtime_snapshot
+    generation = runtime_snapshot(root)['generation']
+    if generation is None:
+        return False
+    with _guard:
+        previous = _observed.get(str(root), {})
+    if previous.get('generation') != generation or previous.get('unknown'):
         return True
-    return any(previous.get('files', {}).get(name) not in (None, record['sha256'])
-        for name, record in current['files'].items() if record['kind'] == 'compiled')
+    if previous.get('invalidated'):
+        return False  # Retirement is already scheduled before the next admission.
+    if current is not None:
+        if previous['configuration'] != current['configuration']:
+            return True
+        for name, record in _runtime_files(current).items():
+            old = previous['files'].get(name)
+            if old and _runtime_record_changed(old, record):
+                return True
+    snapshot = ReadSnapshot()
+    for name, hashed in previous['configuration'].items():
+        if str((Path(root) / name).resolve()) != previous['configuration_paths'][name]:
+            return True
+        if snapshot.observation(Path(root) / name)[0] != hashed:
+            return True
+    for record in previous['files'].values():
+        path = Path(record['path'])
+        if str(path.resolve()) != record['resolved_path']:
+            return True
+        if record['kind'] == 'source':
+            continue
+        if record['sha256'] is None:
+            return True
+        if snapshot.observation(path)[0] != record['sha256']:
+            return True
+    for path, companions in previous['companions'].items():
+        snapshot.topology[str(Path(path).parent)] = file_version(Path(path).parent)
+    if _artifact_families(previous['companions']) != previous['companions']:
+        return True
+    return not snapshot.unchanged()
 
 
-def observe(root, current):
-    previous = _observed.setdefault(str(root), {'files': {}})
-    previous['configuration'] = current['configuration']
-    previous['files'].update({name: record['sha256'] for name, record in current['files'].items()
-        if record['kind'] == 'compiled'})
+def reconcile_daemon(root, current=None):
+    """Reconcile even failed/partial builds, before releasing the writer lease."""
+    if observed_changed(root, current):
+        from .lsp_daemon import mark_stale, runtime_snapshot
+        generation = runtime_snapshot(root)['generation']
+        mark_stale(str(root))
+        with _guard:
+            _observed[str(root)] = {**_observed.get(str(root), {}),
+                'generation': generation, 'invalidated': True, 'unknown': False}
 
 
 def environment_hash(value):
@@ -350,15 +532,15 @@ def prepared_environment(path, content, root, budget):
                 targets = [name for name in direct_imports(content) if name.split('.')[0] not in {'Init', 'Lean', 'Std'}]
                 if not targets:
                     raise
-                status, output, error = _command(['lake', 'build', *targets], root, budget)
+                try:
+                    status, output, error = _command(['lake', 'build', *targets], root, budget)
+                finally:
+                    reconcile_daemon(root)
                 if status:
                     raise CheckFailure('dependency_build', (output + '\n' + error).strip(),
                         phase='dependencies', retryable=False)
-                from .lsp_daemon import mark_stale
-                mark_stale(str(root))
                 current = manifest(path, content, root, budget)
                 _prepared[(str(root), tuple(direct_imports(content)))] = environment_hash(current)
-                observe(root, current)
             continue
         with lock.lease(exclusive=True, budget=budget):
             current = manifest(path, content, root, budget)
@@ -367,17 +549,18 @@ def prepared_environment(path, content, root, budget):
                 # Lake follows exactly these roots and their transitive dependencies.
                 targets = [name for name in direct_imports(content) if name.split('.')[0] not in {'Init', 'Lean', 'Std'}]
                 if targets and _prepared.get(key) != environment_hash(current):
-                    status, output, error = _command(['lake', 'build', *targets], root, budget)
+                    try:
+                        status, output, error = _command(['lake', 'build', *targets], root, budget)
+                    finally:
+                        reconcile_daemon(root)
                     if status:
                         raise CheckFailure('dependency_build', (output + '\n' + error).strip(),
                             phase='dependencies', retryable=False)
-                from .lsp_daemon import mark_stale
-                mark_stale(str(root))
                 current = manifest(path, content, root, budget)
+                reconcile_daemon(root, current)
                 if before_sources != {k: v['sha256'] for k, v in current['files'].items() if v['kind'] == 'source'}:
                     raise CheckFailure('source_changed', 'Imported source changed during its build', retryable=False)
                 _prepared[key] = environment_hash(current)
-                observe(root, current)
 
 
 def source_identity(path):
@@ -387,6 +570,10 @@ def source_identity(path):
 
 
 def freshness(execution, path, content=None, *, snapshot=None):
+    if snapshot is None:
+        observation = ReadSnapshot()
+        result = _freshness(execution, path, content, snapshot=observation)
+        return result if observation.unchanged() else (False, 'unavailable')
     if snapshot and content is None:
         key = (id(execution), str(path))
         if key not in snapshot.checks:
@@ -417,15 +604,11 @@ def _freshness(execution, path, content=None, *, snapshot=None):
             ('lean-toolchain', 'lakefile.lean', 'lakefile.toml', 'lake-manifest.json')} if root else {}
         if env['configuration'] != configuration:
             return False, 'environment_changed'
-        if root and env.get('configuration_versions') and any(observe(root / name)[1] != version for name, version in env['configuration_versions'].items()):
-            return False, 'environment_changed'
         root_path = str(root) if root else None
         for identity, record in env['files'].items():
             actual = os.path.join(root_path, identity[len('workspace:'):]) if root and identity.startswith('workspace:') else record['path']
-            observed_hash, observed_version = observe(actual)
+            observed_hash, _ = observe(actual)
             if observed_hash != record['sha256'] or record['sha256'] is None:
-                return False, 'dependency_changed'
-            if record.get('version') and observed_version != record['version']:
                 return False, 'dependency_changed'
         if not (snapshot.environment_valid(execution) if snapshot else
                 environment_hash(env) == execution.get('environment_sha256')):
@@ -433,6 +616,45 @@ def _freshness(execution, path, content=None, *, snapshot=None):
     except (OSError, KeyError, TypeError, ValueError):
         return False, 'unavailable'
     return True, None
+
+
+def execution_snapshot(execution, path):
+    """Strict operation-local guard, independent of historical content validity.
+
+    Retain identities from manifest capture through completion. A changed-and-
+    restored input must not certify a compiler run that could have seen mixed bytes.
+    """
+    snapshot = ReadSnapshot()
+    valid, _ = freshness(execution, path, snapshot=snapshot)
+    env = execution['environment']
+    root = lake_root(path)
+    if root:
+        valid = valid and all(snapshot.observation(root / name)[1] == version
+            for name, version in env.get('configuration_versions', {}).items())
+    valid = valid and all(not record.get('version') or
+        snapshot.observation(record['path'])[1] == record['version']
+        for record in env['files'].values())
+    for artifact, companions in _companions(env['files']).items():
+        # Track the relevant artifact family. Unrelated files created by kernel
+        # replay or another module's preparation do not change these inputs.
+        snapshot.artifact_sets[artifact] = companions
+    if not valid or not snapshot.unchanged():
+        raise CheckFailure('source_changed', 'Compiler inputs changed while preparing the check', retryable=False)
+    return snapshot
+
+
+@contextmanager
+def execution_guard(execution, path, root):
+    snapshot = execution_snapshot(execution, path)
+    try:
+        yield snapshot
+    finally:
+        generation = execution.get('daemon_generation')
+        if generation and not snapshot.unchanged():
+            # Even a rejected/cancelled request may have loaded mixed imports.
+            # Retire its generation while the surrounding reader lease is held.
+            from .lsp_daemon import mark_stale
+            mark_stale(root, generation=generation)
 
 
 def public_execution(execution):

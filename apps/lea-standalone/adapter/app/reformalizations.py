@@ -76,6 +76,27 @@ def owner(project_id):
     return dict(row) if row else None
 
 
+def source_refresh_owner(project_id):
+    """Identify the owner whose pending editor acquisition needs the tex mirror.
+
+    The editor replies on a separate HTTP request, so it cannot inherit the
+    starter's ContextVar. Only the mirror route may use this identity, and only
+    before a solver segment starts (including a queued continuation).
+    """
+    current = owner(project_id)
+    if not current or current['state'] != 'active':
+        return None
+    if current['root_run_id'] and not (json.loads(current['result_json'] or '{}').get('continuation')):
+        return None
+    with db.connect() as conn:
+        pending = conn.execute("""select 1 from overleaf_source_requests r
+            join formalizations f on f.id=r.formalization_id
+            where r.formalization_id=? and f.project_id=? and f.origin='overleaf'
+            and r.state='pending' and r.expires_at>? limit 1""",
+            (current['formalization_id'], project_id, db.utc_now())).fetchone()
+    return current['id'] if pending else None
+
+
 def assert_writer(project_id):
     unsettled = unfinished_application(project_id)
     if unsettled and unsettled['operation_id'] != actor():
@@ -376,13 +397,16 @@ def prepare(operation_id):
     # part of an attempt's workspace.
     from lea.check_evidence import prepared_environment
     from lea.check_runtime import CheckBudget
+    from lea.runctx import current_should_stop
+    budget = CheckBudget(should_stop=current_should_stop())
     sources = set(lean_files(canonical).values())
     with execution.scope(canonical_policy(original_root, canonical)):
         for source in tuple(sources):
-            with prepared_environment(source, source.read_bytes().decode('utf-8'), original_root, CheckBudget()) as inputs:
+            with prepared_environment(source, source.read_bytes().decode('utf-8'), original_root, budget) as inputs:
                 sources.update(Path(e['path']) for e in inputs['files'].values()
                                if e.get('kind') == 'source' and Path(e['path']).is_relative_to(original_root / 'proofs'))
     for source in sources:
+        budget.remaining('dependencies')
         if source.is_symlink() or not source.resolve().is_relative_to(original_root / 'proofs'):
             raise ValueError('An imported project source is outside the source workspace')
         target = staged_root / source.relative_to(original_root)
@@ -457,6 +481,7 @@ def prepare(operation_id):
     with execution.scope(policy):
         from lea.interface import check
         for rel in files:
+            budget.remaining('dependencies')
             checked = check(str(staged / rel), cold=True)
             manifest["checks"][rel] = {"status": checked.status, "detail": checked.detail}
             for evidence in ((checked.execution or {}).get('environment') or {}).get('files', {}).values():

@@ -31,7 +31,7 @@ register(Tool(TOOL_NAMES[0], {
 }, _unsupported, opt_in=True))
 register(Tool(TOOL_NAMES[1], {
     "name": TOOL_NAMES[1],
-    "description": "Reuse or reserve supporting mathematics under a canonical identity. Use inline for a short helper, deferred for substantial/cited results. The host assigns the path/name/skeleton. Preserve its signature and defining body. Deferred work pauses at a saved checkpoint. Existing/blocked results must not be independently reproved. A citation key is metadata, never a proof.",
+    "description": "Reuse or reserve supporting mathematics distinct from the current formalization target. The requested target is already tracked: write it directly in its ordinary target file without reserving it again. Use inline for a short helper, deferred for substantial/cited results. Write reserved helpers at the exact host-assigned path and declaration name using its skeleton; preserve the signature and defining body. Deferred work pauses at a saved checkpoint. Existing/blocked results must not be independently reproved. A citation key is metadata, never a proof.",
     "input_schema": {"type": "object", "properties": {
         "mode": {"type": "string", "enum": ["inline", "deferred"]},
         "specification": {"type": "object", "properties": {

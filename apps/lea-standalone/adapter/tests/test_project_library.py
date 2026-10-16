@@ -70,6 +70,41 @@ def test_helpers_private_unicode_and_inventory_over_limit(project):
     assert library.search(p, "lemma109", validate=False)["total"] == 1
 
 
+def test_read_only_library_search_does_not_resolve_every_environment(project, monkeypatch):
+    p, repo = project
+    for name in ['Needle', 'Other']:
+        (repo / (name + '.lean')).write_text('theorem ' + name + ' : True := by trivial\n')
+    monkeypatch.setattr(library, 'environment_hash', lambda *_: pytest.fail('Search inventory must not resolve environments'))
+    monkeypatch.setattr(library, 'validate_module', lambda *_: pytest.fail('Read-only search must not validate'))
+    result = library.search(p, 'Needle', validate=False)
+    assert [d['path'] for d in result['declarations']] == ['Needle.lean']
+    assert not result['declarations'][0]['reusable']
+
+
+def test_library_search_validates_only_returned_modules_and_keeps_freshness_checks(project, monkeypatch):
+    p, repo = project
+    for name in ['Needle', 'Other']:
+        (repo / (name + '.lean')).write_text('theorem ' + name + ' : True := by trivial\n')
+    hashes, audits = [], []
+    def environment(_project, _repo, path):
+        hashes.append(path.name)
+        return library.digest(path.read_bytes())
+    monkeypatch.setattr(library, 'environment_hash', environment)
+    monkeypatch.setattr(library, 'rebuild', lambda path: CheckResult(path, 'ok'))
+    monkeypatch.setattr(library, 'inspect_module', lambda *args: [{**library._lexical((repo / args[-1]).read_text())[0],
+        'axioms': [], 'type_expr': 'True', 'body_expr': None}])
+    monkeypatch.setattr(library, 'verify', lambda path: (audits.append(path) or VerifyResult('ok')))
+    result = library.search(p, 'Needle')
+    assert hashes and set(hashes) == {'Needle.lean'}
+    assert len(audits) == 1 and result['declarations'][0]['reusable']
+    hashes.clear()
+    library.search(p, 'Needle')
+    assert set(hashes) == {'Needle.lean'} and len(audits) == 1
+    (repo / 'Needle.lean').write_text('theorem Needle : True := by exact True.intro\n')
+    library.search(p, 'Needle')
+    assert len(audits) == 2
+
+
 def test_atomic_reservation_and_two_consumers(project):
     p, _ = project
     a, b = target(p, "A"), target(p, "B")
@@ -87,6 +122,81 @@ def test_definitions_with_same_type_different_bodies_remain_distinct(project):
     one = spec(": Nat"); one.update(kind="definition", body="1")
     two = {**one, "body": "2"}
     assert deps.ensure(p, one)["dependency_id"] != deps.ensure(p, two)["dependency_id"]
+
+
+@pytest.mark.parametrize("kind", ["definition", "theorem"])
+@pytest.mark.parametrize("mode", ["inline", "deferred"])
+@pytest.mark.parametrize("qualified", [False, True])
+def test_primary_target_cannot_reserve_itself(project, monkeypatch, kind, mode, qualified):
+    p, repo = project
+    run = active_run(p, "descent_energy")
+    fid = run["focus_formalization_id"]
+    store.update_formalization(fid, kind=kind)
+    store.link_formalization_file(fid, "descent_energy.lean", "primary")
+    requested = p["namespace"] + ".descent_energy" if qualified else "descent_energy"
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("A self-reservation must be rejected before compiler work")
+
+    monkeypatch.setattr(library, "specification_environment", unexpected)
+    with pytest.raises(ValueError, match="current formalization target") as rejected:
+        deps.ensure(p, spec(name=requested, kind=kind, body="1" if kind == "definition" else None),
+                    run_id=run["id"], mode=mode)
+    assert "descent_energy.lean" in str(rejected.value)
+    with db.connect() as conn:
+        for table in ("project_dependencies", "project_dependency_attempts", "project_dependency_edges"):
+            assert conn.execute(f"select count(*) from {table}").fetchone()[0] == 0
+        assert conn.execute("select count(*) from formalizations").fetchone()[0] == 1
+    assert not (repo / "Shared").exists()
+    assert json.loads(store.get_run(run["id"])["waiting_dependencies_json"] or "[]") == []
+
+
+def test_primary_target_guard_handles_qualified_declaration_and_original_source_label(project):
+    p, _ = project
+    run = active_run(p, "descent_energy")
+    fid = run["focus_formalization_id"]
+    store.update_formalization(fid, declaration_name=p["namespace"] + ".renamed_energy")
+    with db.write() as conn:
+        conn.execute("update formalizations set origin='overleaf',origin_key=? where id=?",
+                     ("document:definition:descent_energy", fid))
+    for name in ("renamed_energy", p["namespace"] + ".renamed_energy", "descent_energy",
+                 p["namespace"] + ".descent_energy", "_root_." + p["namespace"] + ".renamed_energy"):
+        with pytest.raises(ValueError, match="current formalization target"):
+            deps.ensure(p, spec(name=name), run_id=run["id"], mode="inline")
+    # An explicit alternative requester must not bypass the run's focus.
+    other = target(p, "Other")
+    with pytest.raises(ValueError, match="current formalization target"):
+        deps.ensure(p, spec(name="descent_energy"), run_id=run["id"], requester_id=other["id"], mode="inline")
+
+
+def test_requester_without_run_cannot_reserve_itself(project):
+    p, _ = project
+    own = target(p, "Target")
+    with pytest.raises(ValueError, match="current formalization target"):
+        deps.ensure(p, spec(name="Target"), requester_id=own["id"])
+
+
+def test_distinct_helper_with_same_contract_or_short_name_is_allowed(project):
+    p, _ = project
+    run = active_run(p, "energy")
+    supporting = deps.ensure(p, spec(name="Other.energy"), run_id=run["id"], mode="inline")
+    assert supporting["outcome"] == "inline"
+    assert supporting["dependency"]["formalization_id"] != run["focus_formalization_id"]
+
+
+def test_tool_rejects_primary_reservation_then_accepts_real_helper(project):
+    p, _ = project
+    run = active_run(p, "descent_energy")
+    arguments = {"mode": "inline", "specification": spec(name="descent_energy", kind="definition", body="1")}
+    with pytest.raises(ValueError, match="current formalization target"):
+        deps.tool_request(run["id"], "self-reservation", "request_project_dependency", arguments)
+    with db.connect() as conn:
+        assert conn.execute("select count(*) from project_library_invocations").fetchone()[0] == 0
+    supporting = {"mode": "inline", "specification": spec(name="SupportingEnergy", kind="definition", body="1")}
+    result = deps.tool_request(run["id"], "supporting-result", "request_project_dependency", supporting)
+    assert result["outcome"] == "inline"
+    assert result["dependency"]["requesting_targets"] == [run["focus_formalization_id"]]
+    assert deps.tool_request(run["id"], "supporting-result", "request_project_dependency", supporting) == result
 
 
 def test_inline_handoff_preserves_draft_notes_and_attempt_identity(project):

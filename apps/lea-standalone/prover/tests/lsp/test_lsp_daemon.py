@@ -104,6 +104,26 @@ def test_mark_stale_is_a_noop_for_an_untracked_root():
         _reset()
 
 
+def test_late_check_invalidation_does_not_retire_a_replacement():
+    _reset()
+    real_cls = lsp_daemon.LeanDaemon
+    lsp_daemon.LeanDaemon = _FakeDaemon
+    try:
+        check_via_lsp('a.lean', 'content', '/root')
+        original = lsp_daemon._daemons['/root']
+        mark_stale('/root', generation=original.generation)
+        check_via_lsp('a.lean', 'content', '/root')
+        replacement = lsp_daemon._daemons['/root']
+        assert replacement is not original
+        mark_stale('/root', generation=original.generation)
+        assert not replacement.stale
+        check_via_lsp('a.lean', 'content', '/root')
+        assert lsp_daemon._daemons['/root'] is replacement
+    finally:
+        lsp_daemon.LeanDaemon = real_cls
+        _reset()
+
+
 def test_a_stale_daemon_is_restarted_on_its_next_check():
     """The actual bug fix: without this, a daemon that already imported a
     module keeps serving that module's pre-rebuild environment forever, no

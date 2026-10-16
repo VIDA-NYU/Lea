@@ -32,6 +32,7 @@ import {
   handleGithubImportStatus,
   handleGithubTokenUpdate,
   handleLeanPaneManifest,
+  handleSourceContextManifest,
   handleMirrorTex,
   handleProjectIdentity,
   handleProjectDefaultName,
@@ -63,6 +64,48 @@ test("companion listen host stays loopback-local unless a container overrides it
   assert.equal(companionListenHost({}), "127.0.0.1");
   assert.equal(companionListenHost({ LEA_COMPANION_HOST: "0.0.0.0" }), "0.0.0.0");
   assert.equal(companionListenHost({ LEA_COMPANION_HOST: "  " }), "127.0.0.1");
+});
+
+test("source acquisition parses current proof and dependencies without adapter/status calls", async () => {
+  const state = await makeState({ fetchImpl: async () => {
+    assert.fail("Source acquisition must not wait for the adapter's proof/status inventory");
+  } });
+  const files = [{ path: "main.tex", content: [
+    "\\input{definitions}",
+    "\\begin{lemma}\\label{lem:error}",
+    "% lea: formalize label=descent_error uses={descent_step}",
+    "The centered update identity.",
+    "\\end{lemma}",
+    "\\begin{proof}",
+    "Expand the existing step and collect terms.",
+    "\\end{proof}"
+  ].join("\n") }, { path: "definitions.tex", content: "Current definitions." }];
+  const request = { overleafProjectId: "project-1", files, sourceCoverage: "complete" };
+  const result = await handleSourceContextManifest(request, state);
+  const expected = buildLeanPaneManifest({ ...request });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.items.length, 1);
+  const item = result.body.items[0];
+  assert.equal(item.label, "descent_error");
+  assert.deepEqual(item.targetUses, ["descent_step"]);
+  assert.equal(item.sourceBundle.proof, "Expand the existing step and collect terms.");
+  assert.equal(item.sourceBundle.sourceIdentityHash, expected.items[0].sourceBundle.sourceIdentityHash);
+  assert.equal(item.sourceBundle.proofAssociation.status, "associated");
+  assert.equal(item.sourceBundle.mirror.verified, false);
+  files[0].content = files[0].content.replace("collect terms", "factor the centered error");
+  const changed = await handleSourceContextManifest(request, state);
+  assert.notEqual(changed.body.items[0].sourceBundle.sourceIdentityHash, item.sourceBundle.sourceIdentityHash);
+});
+
+test("source acquisition and the pane share stable generated target identities", async () => {
+  const state = await makeState({ fetchImpl: async () => assert.fail("No adapter request expected") });
+  const request = { overleafProjectId: "project-1", files: [{ path: "main.tex",
+    content: "\\begin{theorem}\\label{thm:sample}\n% lea: formalize\nA proposition.\n\\end{theorem}" }] };
+  const source = await handleSourceContextManifest(request, state);
+  const pane = await handleLeanPaneManifest(request, state);
+  assert.equal(source.body.items[0].labelSource, "generated");
+  assert.equal(source.body.items[0].label, pane.body.items[0].label);
+  assert.equal(source.body.items[0].sourceBundle.sourceIdentityHash, pane.body.items[0].sourceBundle.sourceIdentityHash);
 });
 
 test("buildOverleafDocumentUrl builds the canonical public-Overleaf URL", () => {

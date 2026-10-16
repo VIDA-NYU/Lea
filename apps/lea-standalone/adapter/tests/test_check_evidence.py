@@ -66,6 +66,35 @@ def test_unchanged_warm_check_reuses_environment(workspace, monkeypatch):
     assert not calls
 
 
+def test_reordered_imports_new_module_and_noop_rebuild_keep_real_daemon(workspace):
+    from lea.tools import rebuild_module, _lean_check_has_error
+    base = workspace / 'proofs/Fixture/Base.lean'
+    other = workspace / 'proofs/Fixture/Other.lean'
+    target = workspace / 'proofs/Fixture/Target.lean'
+    base.write_text('namespace Fixture\ntheorem base : True := trivial\nend Fixture\n')
+    other.write_text('namespace Fixture\ntheorem other : True := trivial\nend Fixture\n')
+    imports = ['import Fixture.Base\n', 'import Fixture.Other\n']
+    body = 'example : True := Fixture.base\n'
+    target.write_text(''.join(imports) + body)
+    first = interface.check(str(target))
+    assert first.status == 'ok', first.detail
+    target.write_text(''.join(reversed(imports)) + body)
+    reordered = interface.check(str(target))
+    assert reordered.status == 'ok', reordered.detail
+    assert reordered.execution['daemon_generation'] == first.execution['daemon_generation']
+    added = workspace / 'proofs/Fixture/Added.lean'
+    added.write_text('namespace Fixture\ntheorem added : True := trivial\nend Fixture\n')
+    target.write_text('import Fixture.Added\n' + ''.join(reversed(imports)) + body)
+    extended = interface.check(str(target))
+    assert extended.status == 'ok', extended.detail
+    assert extended.execution['daemon_generation'] == first.execution['daemon_generation']
+    rebuilt = rebuild_module(str(base))
+    assert not _lean_check_has_error(rebuilt), rebuilt
+    following = interface.check(str(target))
+    assert following.status == 'ok', following.detail
+    assert following.execution['daemon_generation'] == first.execution['daemon_generation']
+
+
 def test_checkpoint_preserves_structured_evidence():
     result = CheckText('OK', {'check_id': 'check', 'content_sha256': 'hash'}, 'theorem t : True := by trivial')
     restored = restore_result(json.loads(json.dumps(serialize_result(result))))

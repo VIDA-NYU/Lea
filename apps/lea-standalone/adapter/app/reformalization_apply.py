@@ -16,6 +16,7 @@ import tempfile
 from uuid import uuid4
 
 from lea import execution, interface
+from lea.runctx import run_context, current_run_key, current_should_stop
 from lea.check_evidence import freshness
 from lea.result_selection import inspect_file, select, ALLOWED_AXIOMS
 from . import db, store, project_coordination, reformalizations as operations
@@ -75,7 +76,8 @@ def _stage_assessment(op, selection, *, contents=None, target_name=None):
     changed = {p: after.get(p) for p in before.keys() | after.keys() if before.get(p) != after.get(p)}
     reports, checks = {}, {}
     policy = operations.workspace_policy(manifest['workspace'])
-    with execution.scope(policy):
+    with run_context(working_dir=str(stage), run_key=current_run_key(),
+                     should_stop=current_should_stop()), execution.scope(policy):
         for rel in sorted(after):
             path = _path(stage, rel)
             checked = interface.check(str(path), cold=True)
@@ -190,7 +192,11 @@ def _canonical_checks(op, journal):
     repo, root = Path(m['canonical_repo']), Path(m['canonical_root'])
     selection = journal['selection']
     checks, reports = {}, {}
-    with execution.scope(operations.canonical_policy(root, repo)):
+    # Finished is yielded while the agent's run context is still active. Bind
+    # trusted host checks to the actual repo, retaining cancellation and identity,
+    # without widening the agent's workspace or its subprocess write policy.
+    with run_context(working_dir=str(repo), run_key=current_run_key(),
+                     should_stop=current_should_stop()), execution.scope(operations.canonical_policy(root, repo)):
         # Check all effective project consumers, including previously failing ones.
         # prepared_environment rebuilds local imports from the current source.
         for rel, path in sorted(operations.lean_files(repo).items()):
@@ -223,7 +229,8 @@ def _canonical_checks(op, journal):
                     raise PreservationConflict('The actual canonical result failed Lean: ' + str(result.detail or (report or {}).get('diagnostic') or locals().get('inspection_error')))
                 evidence['selected_result'] = select(report, selection['declaration'], selection.get('kind'))
             if result.status != 'ok' and m['checks'].get(rel, {}).get('status') == 'ok' and not journal['scope']['source_update']:
-                raise PreservationConflict('The actual canonical consumer failed: ' + rel)
+                raise PreservationConflict('The actual canonical consumer failed: ' + rel
+                    + ': ' + str(result.detail or 'Unknown compiler error'))
             if not evidence.get('environment_sha256') or not freshness(evidence, path)[0]:
                 raise PreservationConflict('Canonical check evidence is missing or stale: ' + rel)
             checks[rel] = {'status': result.status, 'detail': result.detail,

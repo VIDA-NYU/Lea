@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import ExitStack
 import json
 import logging
 import os
@@ -40,9 +41,11 @@ def check_file(path: Path, lake_root: str | None, *, use_lsp=True, allow_cold=Tr
         evidence.update(content_sha256=hashlib.sha256(content).hexdigest(), source_path=str(path.resolve()),
                         source_identity=source_identity(path))
         from .check_evidence import prepared_environment, environment_hash, PROTOCOL_VERSION
-        with prepared_environment(path, content.decode('utf-8'), lake_root, budget) as environment:
+        with prepared_environment(path, content.decode('utf-8'), lake_root, budget) as environment, ExitStack() as cleanup:
             evidence.update(evidence_version=PROTOCOL_VERSION, environment=environment,
                             environment_sha256=environment_hash(environment))
+            from .check_evidence import execution_guard
+            inputs = cleanup.enter_context(execution_guard(evidence, path, runtime_root))
             if reason is not None and use_lsp and not allow_cold:
                 raise CheckFailure("cascade_unavailable", "Cascade verification requires an available Lean server",
                                    retryable=False)
@@ -118,7 +121,7 @@ def check_file(path: Path, lake_root: str | None, *, use_lsp=True, allow_cold=Tr
                 raise CheckFailure("source_changed", "File changed during its Lean check; check the new revision",
                                    retryable=False)
             from .check_evidence import freshness
-            if not freshness(evidence, path)[0]:
+            if not inputs.unchanged() or not freshness(evidence, path)[0]:
                 raise CheckFailure("source_changed", "Compiler inputs changed during the check", retryable=False)
             from .tools import _lean_check_has_error
             status = "error" if _lean_check_has_error(output) else "ok"

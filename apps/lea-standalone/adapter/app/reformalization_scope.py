@@ -108,10 +108,15 @@ def validate_file(before, after, baseline, candidate, target, *, source_update=F
                 raise PreservationConflict(f"Protected declaration {name} changed ({key})")
         if set(other.get("axioms", [])) - set(d.get("axioms", [])) - ALLOWED_AXIOMS:
             raise PreservationConflict(f"Protected declaration {name} gained trust assumptions")
-        lo, hi = bounds(before, d)
-        nlo, nhi = bounds(after, other)
-        if before[lo:hi] != after[nlo:nhi]:
-            raise PreservationConflict(f"Protected proof/source for {name} changed")
+        if d.get('range') and other.get('range'):
+            lo, hi = bounds(before, d)
+            nlo, nhi = bounds(after, other)
+            if before[lo:hi] != after[nlo:nhi]:
+                raise PreservationConflict(f"Protected proof/source for {name} changed")
+        elif before != after:
+            # Compiled modules include generated constants without source ranges.
+            # Only exact whole-file retention can establish their source here.
+            raise PreservationConflict(f'Cannot establish protected boundaries for {name}')
     extra = set(new) - set(old)
     if extra - needed:
         raise PreservationConflict("The retry added unrelated declarations: " + ", ".join(sorted(extra - needed)))
@@ -186,7 +191,8 @@ def validate_project(before, after, baseline, candidate, target, selected, *, so
                 raise PreservationConflict(f'Cannot establish protected boundaries in {path}')
             continue
         ranges = {bounds(before[path], d) for d in report['declarations'] if d['user_name'] in editable}
-        editable.update(d['user_name'] for d in report['declarations'] if bounds(before[path], d) in ranges)
+        editable.update(d['user_name'] for d in report['declarations']
+                        if d.get('range') and bounds(before[path], d) in ranges)
     protected = set(old) - editable
     affected = {original}
     while True:
@@ -205,10 +211,15 @@ def validate_project(before, after, baseline, candidate, target, selected, *, so
                     continue
             raise PreservationConflict(f'Protected declaration {name} was removed')
         other_path, other = new[name]
-        lo, hi = bounds(before[path], d)
-        nlo, nhi = bounds(after[other_path], other)
-        if before[path][lo:hi] != after[other_path][nlo:nhi]:
-            raise PreservationConflict(f'Protected source for {name} changed')
+        if d.get('range') and other.get('range'):
+            lo, hi = bounds(before[path], d)
+            nlo, nhi = bounds(after[other_path], other)
+            if before[path][lo:hi] != after[other_path][nlo:nhi]:
+                raise PreservationConflict(f'Protected source for {name} changed')
+        elif path != other_path or before[path] != after.get(other_path):
+            # A generated constant may have no compiler range. Do not infer one
+            # from its name: retain its entire module at the same path instead.
+            raise PreservationConflict(f'Cannot establish protected boundaries for {name}')
         keys = ('kind', 'visibility', 'type_expr', 'body_expr')
         if any(d.get(k) != other.get(k) for k in keys) and not (source_update and name in affected):
             raise PreservationConflict(f'Protected mathematics for {name} changed')

@@ -733,6 +733,8 @@ def check_via_lsp(file_path, content, lake_root, *, budget=None):
                 budget.execution["daemon_generation"] = daemon.generation
                 if daemon.stale:
                     raise CheckFailure("stale_generation", "Dependencies changed during Lean initialization")
+                from .check_evidence import observe
+                observe(key, budget.execution.get('environment'), generation=daemon.generation)
                 result = daemon.check(file_path, content, budget=budget)
                 with state.condition:
                     if daemon.stale:
@@ -803,11 +805,13 @@ def check_via_lsp(file_path, content, lake_root, *, budget=None):
                 state.condition.notify_all()
 
 
-def mark_stale(lake_root):
+def mark_stale(lake_root, *, generation=None):
     key, state = _root(lake_root)
     with state.condition:
-        state.revision += 1
         daemon = _daemons.get(key)
+        if generation is not None and (daemon is None or daemon.generation != generation):
+            return  # A late check must not invalidate its healthy replacement.
+        state.revision += 1
         if daemon is not None:
             daemon.stale = True
 

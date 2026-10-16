@@ -291,7 +291,8 @@ def review_decision(project_id: str | None, run_id: str | None):
             state.mutations -= 1
 
 
-def guarded(resolver, *, write=False, metadata=False, admission=False, environment_write=True):
+def guarded(resolver, *, write=False, metadata=False, admission=False, environment_write=True,
+            source_refresh=False):
     """Guard sync/async route functions without changing FastAPI's signature.
 
     Database-only mutations can opt out of the compiler environment lease while
@@ -330,6 +331,12 @@ def guarded(resolver, *, write=False, metadata=False, admission=False, environme
                         from pathlib import Path
                         root = load_config().lea_root or Path(__file__).resolve().parents[2] / 'prover'
                         stack.enter_context(environment_mutation(root / 'workspace'))
+                    # An editor refresh uses a separate HTTP request. Resolve its
+                    # narrow mirror permission after any environment-lease wait.
+                    if source_refresh:
+                        refresh_owner = reformalizations.source_refresh_owner(project_id)
+                        if refresh_owner:
+                            stack.enter_context(reformalizations.acting(refresh_owner))
                     revision = stack.enter_context(mutation(project_id, admission=admission) if write else read(project_id))
                     yield revision
             return project_id, coordinated()

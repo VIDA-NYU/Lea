@@ -486,10 +486,8 @@ def rebuild_module(path: str) -> str:
 
     timeout = int(os.environ.get("LEAN_CHECK_TIMEOUT", "900"))
     # Serialize builds per lake_root: concurrent `lake build` against one shared
-    # workspace races on its `.lake` artifacts (a documented non-goal). mark_stale
-    # is called INSIDE this lock (D74 / item 6) so the daemon is flagged before
-    # the lock releases — no build completes without its stale flag, and no other
-    # build interleaves between this build writing the olean and that flag.
+    # workspace races on its `.lake` artifacts. Reconcile the daemon before the
+    # writer lease releases, including partial failures and timeouts.
     with _build_lock_for(lake_root):
         try:
             result = command_executor.run(
@@ -507,19 +505,6 @@ def rebuild_module(path: str) -> str:
             )
             output = (result.stdout + "\n" + result.stderr).strip()
             if result.returncode == 0:
-                # This module's .olean on disk just changed, but a persistent LSP
-                # daemon (lsp_daemon.py) already holding it imported keeps its own
-                # in-memory copy for the life of its process -- this subprocess
-                # rebuild can't reach into that other process to fix it. Flag the
-                # daemon (if one exists for this lake_root) so its *next* check
-                # restarts it first, rather than silently serving the pre-rebuild
-                # environment forever. Best-effort: a project with LEA_DISABLE_LSP
-                # set, or no daemon started yet, has nothing to flag.
-                try:
-                    from lea.lsp_daemon import mark_stale
-                    mark_stale(lake_root)
-                except Exception:
-                    pass
                 return output if output else "OK — rebuilt."
             # Lake's own build-failure report (e.g. "✗ [n/total] Building <module>
             # (Ns)" plus a `trace:` block showing the invocation it ran) is NOT the
@@ -539,6 +524,9 @@ def rebuild_module(path: str) -> str:
             return f"Error: lake build timed out after {timeout}s."
         except FileNotFoundError:
             return "Error: `lake` not found. Is Lean 4 installed?"
+        finally:
+            from .check_evidence import reconcile_daemon
+            reconcile_daemon(lake_root)
 
 
 # --- output classifiers -----------------------------------------------------

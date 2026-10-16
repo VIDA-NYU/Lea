@@ -155,6 +155,154 @@ def test_mirror_change_rejects_snapshot_even_when_target_identity_is_same(target
         overleaf_source.resolve(conn, reference, original["formalization"]["id"])
 
 
+def project_retry(target, monkeypatch):
+    from app import projects, reformalizations as ops, runregistry, runtime
+    from app.routes import projects as project_routes
+    from lea import execution
+
+    original, cfg = target
+    proofs = cfg.lea_root / "workspace" / "proofs"
+    project = projects.ensure_project("doc", proofs, title="Study", namespace="Lea.Study")
+    monkeypatch.setattr(project_routes, "load_config", lambda: cfg)
+    monkeypatch.setattr(execution, "capability", lambda: {"available": True})
+    monkeypatch.setattr(runtime, "accepting_work", lambda: True)
+    monkeypatch.setattr(runregistry, "registry", runregistry.RunRegistry(max_concurrent=2))
+    with db.write() as conn:
+        conn.execute("update formalizations set project_id=?,loose_session_id=null where id=?",
+                     (project["id"], original["formalization"]["id"]))
+        conn.execute("update sessions set project_id=? where id=?", (project["id"], original["session"]["id"]))
+    repo = projects.project_repo_dir(project, proofs)
+    (repo / "target.lean").write_text("namespace Lea.Study\ntheorem target : True := by trivial\nend Lea.Study\n")
+    (repo / "dependent.lean").write_text("import Lea.Study.target\nnamespace Lea.Study\ntheorem dependent : True := target\nend Lea.Study\n")
+    store.link_formalization_file(original["formalization"]["id"], "target.lean", "primary")
+    uploads.sync_overleaf_tex(project, proofs, [{"path": "main.tex", "content": "Original source"}], commit=False)
+    op = ops.enqueue(dict(message="Retry target", project_slug="doc", purpose="overleaf_solver",
+        session_id=original["session"]["id"], focus_formalization_id=original["formalization"]["id"]), project["id"])
+    return original, project, repo, op
+
+
+@pytest.mark.parametrize("changed_source", [False, True])
+def test_reformalization_refresh_mirrors_source_before_starting_solver(target, monkeypatch, changed_source):
+    import time
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app import reformalizations as ops
+    from app.routes import projects as project_routes, overleaf_source as source_routes
+    from app.source_context import source_hash
+
+    original, project, repo, op = project_retry(target, monkeypatch)
+    app = FastAPI()
+    app.include_router(project_routes.router)
+    app.include_router(source_routes.router)
+    client = TestClient(app)
+    admitted = []
+    monkeypatch.setattr(bridge, "enqueue_run", admitted.append)
+    before = {p.name: p.read_bytes() for p in repo.glob("*.lean")}
+    ops.dispatch(project["id"])
+    try:
+        deadline = time.monotonic() + 5
+        while not overleaf_source.pending() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        request = overleaf_source.pending()[0]
+        assert ops.actor() is None  # The editor's HTTP request has no solver identity.
+        assert ops.owner(project["id"])["id"] == op["id"]
+        content = "Updated source" if changed_source else "Original source"
+        mirror = client.post("/api/projects/by-slug/doc/mirror", json={
+            "files": [{"path": "main.tex", "content": content}]})
+        assert mirror.status_code == 200, mirror.text
+        assert mirror.json()["changed"] is changed_source
+        assert (repo / ".lea/files/overleaf/main.tex").read_text() == content
+        # A mirror refresh must not grant access to canonical proof writes.
+        blocked = client.put(f"/api/projects/{project['id']}/file",
+            json={"path": "dependent.lean", "content": "overwritten"})
+        assert blocked.status_code == 409, blocked.text
+        assert blocked.json()["detail"]["error"] == "project_busy"
+        source = bundle("Updated proof." if changed_source else "By triviality.")
+        source["mirror"] = dict(revision="a" * 64, mirroredFileCount=1, verified=True)
+        source["bundleHash"] = source_hash(source)
+        response = client.post(f"/api/overleaf/source-requests/{request['request_id']}", json={
+            "document_id": "doc", "source_bundle": source,
+            "mirrored_files": {"main.tex": hashlib.sha256(content.encode()).hexdigest()}})
+        assert response.status_code == 200, response.text
+        while not admitted and ops.get(op["id"])["state"] == "active" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        current = ops.get(op["id"])
+        assert current["state"] == "active", current.get("result")
+        assert admitted == [current["root_run_id"]] and current["root_run_id"]
+        run = store.get_run(current["root_run_id"])
+        assert run["session_id"] == original["session"]["id"]
+        assert run["focus_formalization_id"] == original["formalization"]["id"]
+        assert run["reformalization_id"] == op["id"]
+        assert lea_status_store.context(run["id"])["source_bundle"]["proof"] == source["proof"]
+        assert {p.name: p.read_bytes() for p in repo.glob("*.lean")} == before
+        # The exception ends when the pending acquisition is settled.
+        assert client.post("/api/projects/by-slug/doc/mirror", json={
+            "files": [{"path": "main.tex", "content": content}]}).status_code == 409
+    finally:
+        if overleaf_source.pending():
+            overleaf_source.respond(overleaf_source.pending()[0]["request_id"], None,
+                                    "Test ended source acquisition.", "doc")
+        ops.cancel(op["id"])
+
+
+@pytest.mark.parametrize("phase", ["no_request", "other_target", "expired", "solver", "continuation", "applying"])
+def test_refresh_mirror_access_is_limited_to_pending_owner_acquisition(target, monkeypatch, phase):
+    from fastapi import BackgroundTasks
+    from app import reformalizations as ops
+    from app.routes import projects as project_routes
+
+    original, project, _, op = project_retry(target, monkeypatch)
+    ops.update(op["id"], "applying" if phase == "applying" else "active")
+    if phase != "no_request":
+        fid = original["formalization"]["id"]
+        if phase == "other_target":
+            other = store.create_formalization(project_id=project["id"], loose_session_id=None,
+                display_title="Other", origin="overleaf", origin_key="doc:theorem:other")
+            with db.write() as conn:
+                overleaf_source.bind(conn, other, {**bundle(), "targetKey": "other"})
+            fid = other["id"]
+        reference = overleaf_source.new_request(fid)
+        with db.write() as conn:
+            if phase == "expired":
+                conn.execute("update overleaf_source_requests set expires_at='2000' where id=?", (reference,))
+            if phase in {"solver", "continuation"}:
+                conn.execute("update reformalization_operations set root_run_id=? where id=?", (original["run"]["id"], op["id"]))
+        if phase == "continuation":
+            ops.update(op["id"], result={"continuation": {"old_run_id": original["run"]["id"]}})
+    request = project_routes.MirrorRequest(files=[project_routes.MirrorFile(path="main.tex", content="Original source")])
+    if phase == "continuation":
+        assert project_routes.mirror_overleaf_tex("doc", request, BackgroundTasks())["changed"] is False
+    else:
+        with pytest.raises(HTTPException) as error:
+            project_routes.mirror_overleaf_tex("doc", request, BackgroundTasks())
+        assert error.value.status_code == 409
+    assert ops.actor() is None
+
+
+def test_refresh_background_commit_keeps_owner_after_snapshot_is_ready(target, monkeypatch):
+    from fastapi import BackgroundTasks
+    from app import reformalizations as ops
+    from app.routes import projects as project_routes
+
+    original, project, repo, op = project_retry(target, monkeypatch)
+    ops.update(op["id"], "active")
+    reference = overleaf_source.new_request(original["formalization"]["id"])
+    tasks = BackgroundTasks()
+    project_routes.mirror_overleaf_tex("doc", project_routes.MirrorRequest(
+        files=[project_routes.MirrorFile(path="main.tex", content="Updated source")]), tasks)
+    overleaf_source.respond(reference, bundle(), document_id="doc")
+    with db.write() as conn:
+        conn.execute("update reformalization_operations set root_run_id=? where id=?",
+                     (original["run"]["id"], op["id"]))
+    assert ops.source_refresh_owner(project["id"]) is None
+    assert ops.actor() is None
+    asyncio.run(tasks())
+    import subprocess
+    assert subprocess.check_output(["git", "-C", str(repo), "show", "HEAD:.lea/files/overleaf/main.tex"],
+                                   text=True) == "Updated source"
+    assert ops.actor() is None
+
+
 def test_interactive_tool_publication_is_durable_and_approval_gate_is_preserved(target, monkeypatch):
     original, cfg = target
     result = runs.create_run(chat(original, refresh(original)))

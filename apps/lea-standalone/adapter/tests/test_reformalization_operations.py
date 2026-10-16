@@ -93,6 +93,50 @@ def test_real_shared_retry_preserves_a_and_unfinished_c(project, monkeypatch):
         'provider_calls': 0}))
 
 
+def test_cancelled_preparation_stops_before_checks_or_model_work(project, monkeypatch):
+    from lea.check_runtime import CheckFailure
+    from lea.runctx import run_context
+    p, repo, form, original = project
+    queued = ops.enqueue({'message': 'Retry B', 'focus_formalization_id': form['id']}, p['id'])
+    with run_context(should_stop=lambda: True), pytest.raises(CheckFailure, match='cancelled'):
+        ops.prepare(queued['id'])
+    assert ops.get(queued['id'])['manifest'] is None
+    assert (repo / 'Shared.lean').read_text() == original
+    with db.connect() as conn:
+        assert conn.execute('select count(*) from runs').fetchone()[0] == 0
+
+
+def test_real_retry_retains_compiler_generated_constants_without_ranges(project, monkeypatch):
+    _, repo, _, original = project
+    energy = 'namespace Lea.Study\ndef energy : Fin 1 := ⟨0, by decide⟩\nend Lea.Study\n'
+    (repo / 'Energy.lean').write_text(energy)
+    original = 'import Lea.Study.Energy\n' + original
+    (repo / 'Shared.lean').write_text(original)
+    op = operation(project, monkeypatch)
+    generated = {d['user_name'] for d in op['manifest']['reports']['Energy.lean']['declarations']
+                 if not d.get('range')}
+    assert generated, 'The real compiler fixture must produce a constant without a range'
+    candidate = original.replace('theorem b : True := by sorry', 'theorem b : True := by trivial')
+    (Path(op['manifest']['repo']) / 'Shared.lean').write_text(candidate)
+    from lea.runctx import run_context, current_working_dir, current_run_key, current_should_stop
+    from lea import interface
+    staged = str(Path(op['manifest']['repo']))
+    stop = lambda: False
+    with run_context(working_dir=staged, run_key=op['root_run_id'], should_stop=stop):
+        # A yielded Finished event still carries the agent's isolated context.
+        # Host publication must check canonical files and restore that boundary.
+        assert 'outside this run' in interface.check(str(repo / 'Shared.lean'), cold=True).detail
+        receipt = publication.apply(op['id'], selection(), 'proved')
+        assert current_working_dir() == staged
+        assert current_run_key() == op['root_run_id']
+        assert current_should_stop() is stop
+        assert 'outside this run' in interface.check(str(repo / 'Shared.lean'), cold=True).detail
+    assert generated <= set(receipt['preservation']['protected'])
+    assert (repo / 'Energy.lean').read_text() == energy
+    assert (repo / 'Shared.lean').read_text() == candidate
+    assert ops.get(op['id'])['state'] == 'settled'
+
+
 def test_destructive_compiling_candidate_and_freshness_conflict(project, monkeypatch):
     op = operation(project, monkeypatch)
     _, repo, _, original = project
@@ -389,7 +433,7 @@ def test_scripted_solver_keeps_drafts_out_of_canonical_history(project, monkeypa
     p, repo, form, original = project
     store.update_run(op['root_run_id'], 'pending')
     candidate = original.replace('theorem b : True := by sorry', 'theorem b : True := by trivial')
-    def scripted(cfg, messages, **options):
+    def script_steps(cfg, messages, **options):
         path = Path(options['working_dir']) / 'Shared.lean'
         path.write_text(candidate)
         yield FileChanged(str(path), candidate)
@@ -402,6 +446,11 @@ def test_scripted_solver_keeps_drafts_out_of_canonical_history(project, monkeypa
         yield Finished('completed', 'Done', 1, op['session_id'], 'fixture', Usage(), 0,
             {'messages': messages}, result_kind='proved', result_detail='PROVED',
             candidate_path=str(path), selected_result=selected)
+    def scripted(cfg, messages, **options):
+        from lea.runctx import run_context
+        with run_context(working_dir=options['working_dir'], run_key=op['root_run_id'],
+                         config=cfg, should_stop=options.get('should_stop')):
+            yield from script_steps(cfg, messages, **options)
     monkeypatch.setattr(bridge, 'run_events', scripted)
     context = bridge.RunnerContext(session_id=op['session_id'], run_id=op['root_run_id'],
         task='Retry B', config=config.load_config(), events=Queue(), autonomous=True)

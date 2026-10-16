@@ -9035,10 +9035,11 @@
           lastLeanPaneFiles = files.map((file) => ({ ...file }));
           lastLeanPaneProjectId = request.overleafProjectId;
           const baseUrl = await chatCompanionBaseUrl();
-          const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/lean-pane/manifest`, {
+          const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/source-context/manifest`, {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ overleafProjectId: request.overleafProjectId, activePath: latestActiveTexPath, files, sourceCoverage: "complete" })
-          }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS });
+          }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+            timeoutMessage: "Reading the current Overleaf source timed out. Check that the Lea companion is running, then retry." });
           if (!response.ok) throw new Error(payload.message || "The current document could not be parsed.");
           const item = sourceModule.selectSourceTarget(payload.items, request);
           const target = { ...item, ...leanPaneView.paneItemToChatTarget(item, request.overleafProjectId),

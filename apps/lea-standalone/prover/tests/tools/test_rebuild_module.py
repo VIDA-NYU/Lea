@@ -26,6 +26,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import lea.tools as tools
 from lea.tools import _first_error_line, _lean_check_has_error, rebuild_module
@@ -115,19 +116,31 @@ def test_successful_build_marks_the_lsp_daemon_stale():
     keeps serving its pre-rebuild environment in memory even after this real
     `lake build` refreshes the .olean on disk -- from a *different* process,
     which can't reach into the daemon at all. rebuild_module must flag the
-    daemon (mark_stale) on every successful build so it restarts on its next
+    daemon when a loaded artifact changes so it restarts on its next
     use rather than silently staying wrong. See lea/lsp_daemon.py and
     docs/FEATURE-overleaf-lean-pane-manual-edit.md ('Cascade verification')."""
     tmp, foo = _make_lake_project()
     try:
         import lea.lsp_daemon as lsp_daemon
+        from lea import check_evidence
+        root = (tmp / 'workspace').resolve()
+        artifact = root / 'Foo.olean'
+        artifact.write_text('original artifact')
+        environment = {'configuration': check_evidence._configuration(root), 'files': {
+            'workspace:Foo.olean': {'path': str(artifact), 'kind': 'compiled',
+                                  'sha256': check_evidence.file_hash(artifact)}}}
         calls = []
         real_mark_stale = lsp_daemon.mark_stale
         lsp_daemon.mark_stale = lambda lake_root: calls.append(lake_root)
         real_run = tools.subprocess.run
-        tools.subprocess.run = lambda *a, **k: _FakeCompletedProcess(0, "", "")
+        def build(*a, **k):
+            artifact.write_text('rebuilt artifact')
+            return _FakeCompletedProcess(0, '', '')
+        tools.subprocess.run = build
         try:
-            rebuild_module(str(foo))
+            with patch.object(lsp_daemon, 'runtime_snapshot', return_value={'generation': 'fixture'}):
+                check_evidence.observe(root, environment, generation='fixture')
+                rebuild_module(str(foo))
         finally:
             tools.subprocess.run = real_run
             lsp_daemon.mark_stale = real_mark_stale
@@ -135,14 +148,14 @@ def test_successful_build_marks_the_lsp_daemon_stale():
         check("mark_stale was called exactly once on success", len(calls) == 1)
         check("mark_stale was called with this build's lake_root",
               bool(calls) and calls[0] == str((tmp / "workspace").resolve()))
+        assert calls == [str(root)]
     finally:
         shutil.rmtree(tmp)
 
 
 def test_failed_build_does_not_mark_the_daemon_stale():
-    """A failed build never changed the .olean on disk, so there is nothing
-    for a daemon to have missed -- marking it stale here would just cost an
-    unnecessary restart on the next check."""
+    """A failure without a serving daemon has no cache to invalidate. Partial
+    failures with changed loaded artifacts are covered by the boundary suite."""
     tmp, foo = _make_lake_project()
     try:
         import lea.lsp_daemon as lsp_daemon

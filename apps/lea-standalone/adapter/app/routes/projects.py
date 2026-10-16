@@ -38,7 +38,8 @@ from ..read_projections import read_projection
 router = APIRouter()
 
 
-def _guard_project(*, by_slug=False, write=False, metadata=False, environment_write=True):
+def _guard_project(*, by_slug=False, write=False, metadata=False, environment_write=True,
+                   source_refresh=False):
     def resolve(arguments):
         if by_slug:
             try:
@@ -48,7 +49,7 @@ def _guard_project(*, by_slug=False, write=False, metadata=False, environment_wr
             return project["id"] if project else None
         return arguments["project_id"]
     return project_coordination.guarded(resolve, write=write, metadata=metadata,
-                                        environment_write=environment_write)
+                                        environment_write=environment_write, source_refresh=source_refresh)
 
 
 
@@ -1203,7 +1204,7 @@ def list_files(project_id: str) -> dict:
 
 
 @router.post("/api/projects/by-slug/{slug}/mirror")
-@_guard_project(by_slug=True, write=True)
+@_guard_project(by_slug=True, write=True, source_refresh=True)
 def mirror_overleaf_tex(slug: str, request: MirrorRequest, background_tasks: BackgroundTasks) -> dict:
     """Mirror the Overleaf project's `.tex`/`.sty`/`.cls` sources into the matching project's
     `.lea/files/overleaf/` (resolving/creating the project by slug, like `/api/runs`).
@@ -1222,7 +1223,9 @@ def mirror_overleaf_tex(slug: str, request: MirrorRequest, background_tasks: Bac
         raise HTTPException(status_code=_UPLOAD_ERROR_STATUS.get(exc.code, 400), detail=str(exc))
     store.mark_project_overleaf_linked(project["id"])
     if summary.get("changed"):
-        background_tasks.add_task(uploads.commit_mirror, project, proofs_root)
+        from .. import reformalizations
+        background_tasks.add_task(uploads.commit_mirror, project, proofs_root,
+                                  reformalization_id=reformalizations.actor())
     return {"project_id": project["id"], "slug": project["slug"],
             "identity": project_service.project_identity(project), **summary}
 
