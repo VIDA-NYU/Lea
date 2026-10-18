@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://discord.com/invite/CtEJvUTjm">
+  <a href="https://discord.gg/58ZWUXU8FM">
     <img alt="Join the Lea Discord"
          src="https://img.shields.io/badge/Discord-5865F2?style=flat-square&logo=discord&logoColor=white">
   </a>

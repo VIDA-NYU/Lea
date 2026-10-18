@@ -24,7 +24,7 @@ export const site = {
   links: {
     github: "https://github.com/VIDA-NYU/Lea",
     githubProver: "https://github.com/darturi/lea-prover",
-    discord: "https://discord.gg/CtEJvUTjm",
+    discord: "https://discord.gg/58ZWUXU8FM",
     issues: "https://github.com/VIDA-NYU/Lea/issues",
   },
 
@@ -40,7 +40,7 @@ export const site = {
     { label: "install", href: "/install/" },
     { label: "blog", href: "/blog/" },
     { label: "github", href: "https://github.com/VIDA-NYU/Lea", external: true },
-    { label: "discord", href: "https://discord.gg/CtEJvUTjm", external: true },
+    { label: "discord", href: "https://discord.gg/58ZWUXU8FM", external: true },
   ],
 
   // Facts rendered in the hero strip. Keep these true.
