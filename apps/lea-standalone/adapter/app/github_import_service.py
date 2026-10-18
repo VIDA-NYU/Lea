@@ -195,27 +195,27 @@ def _upsert_target(project_id: str, target: TaggedTarget) -> tuple[dict | None, 
 
 def sync_targets(project: dict, targets: list[TaggedTarget], proofs_root: Path) -> dict:
     results = []
-    for target in targets:
-        row, conflict = _upsert_target(project["id"], target)
-        adoption = None
-        if row:
-            if row.get("origin") == "overleaf":
+    from . import workspace_commands
+    # Publish the metadata set atomically under the owning claim. File discovery
+    # and import adoption stay outside this short SQL transaction.
+    rows = []
+    with db.write() as conn:
+        workspace_commands.authorize(conn)
+        for target in targets:
+            row, conflict = _upsert_target(project["id"], target)
+            rows.append(row)
+            if row and row.get("origin") == "overleaf":
                 from .overleaf_source import bind
                 binding_source = target.source_bundle or {
                     "targetKey": target.label,
                     "targetKind": "definition" if target.kind in {"def", "definition"} else "theorem"}
-                with db.write() as conn:
-                    bind(conn, row, binding_source)
-            adoption = try_adopt_imported_declaration(project, row, proofs_root)
-        results.append(
-            {
-                "origin_key": target.origin_key,
-                "declaration_name": target.declaration_name,
-                "formalization_id": row.get("id") if row else None,
-                "conflict": conflict,
-                "adoption": adoption,
-            }
-        )
+                bind(conn, row, binding_source)
+            results.append({"origin_key":target.origin_key,"declaration_name":target.declaration_name,
+                "formalization_id":row.get('id') if row else None,"conflict":conflict,"adoption":None})
+    for row, result in zip(rows, results):
+        workspace_commands.authorize()
+        if row:
+            result['adoption'] = try_adopt_imported_declaration(project, row, proofs_root)
     return {"project_id": project["id"], "targets": results}
 
 
@@ -672,21 +672,17 @@ def try_adopt_imported_declaration(
     session_id = candidate.get("session_id")
     if not session_id:
         return {"adopted": False, "reason": "Import provenance session is unavailable."}
-    store.link_session_formalization(session_id, formalization["id"])
-    store.link_formalization_file(formalization["id"], path, "primary")
-    artifact_kind = "definition" if candidate["kind"] == "definition" else "proof"
-    store.upsert_artifact(
-        project_id=project["id"],
-        session_id=session_id,
-        run_id=None,
-        declaration_name=name,
-        kind=artifact_kind,
-        path=path,
-        module_name=candidate["module_name"],
-        formalization_id=formalization["id"],
-        source_hash=formalization.get("source_hash"),
-    )
-    store.bind_github_import_declaration(
-        candidate["id"], formalization["id"], formalization.get("source_hash")
-    )
+    with db.write() as conn:
+        from .workspace_commands import authorize
+        authorize(conn)
+        store.link_session_formalization(session_id, formalization["id"])
+        store.link_formalization_file(formalization["id"], path, "primary")
+        artifact_kind = "definition" if candidate["kind"] == "definition" else "proof"
+        store.upsert_artifact(
+            project_id=project["id"], session_id=session_id, run_id=None,
+            declaration_name=name, kind=artifact_kind, path=path,
+            module_name=candidate["module_name"], formalization_id=formalization["id"],
+            source_hash=formalization.get("source_hash"),
+        )
+        store.bind_github_import_declaration(candidate["id"],formalization["id"],formalization.get("source_hash"))
     return {"adopted": True, "path": path, "import_id": candidate["import_id"]}

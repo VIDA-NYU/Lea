@@ -1,0 +1,44 @@
+PREPARATION CHECKS -- 2026-10-18
+===============================
+
+LaTeX
+-----
+Both projects compile successfully in the Codex desktop LaTeX editor and with
+the local latexmk/pdfLaTeX installation. Exported PDFs have 4 pages (document)
+and 10 pages (presenter script). Final compiler logs have no overfull or underfull
+boxes. Every page was rendered for visual review; layout and selected detailed
+pages were inspected. The ZIP carries the extension's unchanged lea-tags.sty.
+
+Extension parsing
+-----------------
+Checked with the current parseTargetDocument and buildLeanPaneManifest code:
+- 9 initially marked items; no parser or manifest diagnostics.
+- 10 items after inserting the exact live marker from snippet A.
+- Every declared uses dependency resolves to an item in the project.
+- Expected author proofs are associated, including the newly marked zero lemma.
+- The corrected-source snippet yields one valid theorem with the same stable
+  label and the added x >= 1 hypothesis.
+
+Lean references
+---------------
+Command run from apps/lea-standalone/prover/workspace:
+  lake env lean <absolute path to reference/reference-proofs.lean>
+
+Toolchain: leanprover/lean4:v4.29.0; repository Mathlib v4.29.0.
+The complete reference file passes. Its 13 theorem axiom reports contain only
+standard axioms (propext, Classical.choice, Quot.sound), or no axioms.
+There are no unfinished proofs in the delivered reference file.
+
+The reference includes both proof bodies used in the safe manual-edit demo,
+the corrected square bound, a formal refutation of the original universal claim,
+the shared shift identity and both consumers, and the repaired implicit-argument
+consumer. An isolated temporary variant with the old explicit call produced
+the expected "Function expected" error after the binder change. The delivered
+reference uses the repaired named-argument call and compiles successfully.
+
+Scope
+-----
+These are source, parsing, reference-proof, and PDF checks. No live Overleaf
+project was created or modified, no paid agent formalizations were started,
+and no GitHub push/import was performed. Agent-generated files, shared-library
+choices, pause checkpoints, and execution time require the script's live rehearsal.

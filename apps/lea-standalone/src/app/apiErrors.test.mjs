@@ -21,3 +21,14 @@ test('an optimistic save conflict still carries its revision metadata',async()=>
   await assert.rejects(api.writeSessionFile('session','Proof.lean','content'),error=>
     error instanceof api.RevisionConflictError && error.currentRevision==='new-revision');
 });
+test('a pending runtime projection is reported as pending status, with no compiler failure',async()=>{
+  const runtime=await client({detail:{error:'projection_unavailable',message:'Worker has not published this view yet.'}},503).fetchLeanCheckRuntime('session');
+  assert.equal(runtime.state,'unavailable');
+  assert.equal(runtime.observation?.state,'pending');
+  assert.equal(runtime.last_failure,undefined);
+});
+test('runtime status HTTP failures retain their explanation for reconnection',async()=>{
+  const runtime=await client({detail:'Status service restarting'},502).fetchLeanCheckRuntime('session');
+  assert.equal(runtime.observation?.state,'unavailable');
+  assert.equal(runtime.observation?.message,'Status service restarting');
+});

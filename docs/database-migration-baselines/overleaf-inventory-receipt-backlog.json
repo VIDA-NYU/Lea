@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T02:38:24.957287+00:00",
+  "scope": "Read-only inspection of live SQL query receipts, isolated browser/HTTP regression tests, and reload of only the supervised stateless public transport. No live business commands, compiler checks or provider calls were submitted.",
+  "observed_manifest_requests": [
+    {
+      "id": "a721dfb313a14c72aa02d62095399963",
+      "created_at": "2026-10-18T02:26:45.051958+00:00",
+      "started": "2026-10-18T02:26:48.260407+00:00",
+      "finished": "2026-10-18T02:26:57.268659+00:00",
+      "total_seconds": 12.217,
+      "execution_seconds": 9.009,
+      "http_status": 200,
+      "item_count": 9
+    },
+    {
+      "id": "fc50978e14284436b6faca82644270e1",
+      "created_at": "2026-10-18T02:26:47.590259+00:00",
+      "started": "2026-10-18T02:26:57.285052+00:00",
+      "finished": "2026-10-18T02:27:04.036797+00:00",
+      "total_seconds": 16.447,
+      "execution_seconds": 6.752,
+      "http_status": 200,
+      "item_count": 9
+    },
+    {
+      "id": "3f5b2453817c4ca3b839d83d5c379de1",
+      "created_at": "2026-10-18T02:26:54.438186+00:00",
+      "started": "2026-10-18T02:27:11.316905+00:00",
+      "finished": "2026-10-18T02:27:27.094704+00:00",
+      "total_seconds": 32.657,
+      "execution_seconds": 15.778,
+      "http_status": 200,
+      "item_count": 9
+    },
+    {
+      "id": "a45e05e0d8f74f3a8b779d805d575f32",
+      "created_at": "2026-10-18T02:26:57.616336+00:00",
+      "started": "2026-10-18T02:27:27.307719+00:00",
+      "finished": "2026-10-18T02:27:40.684838+00:00",
+      "total_seconds": 43.069,
+      "execution_seconds": 13.377,
+      "http_status": 200,
+      "item_count": 9
+    },
+    {
+      "id": "9d38eacc82f24d56b2bc643a765861cf",
+      "created_at": "2026-10-18T02:27:00.756949+00:00",
+      "started": "2026-10-18T02:27:40.756893+00:00",
+      "finished": "2026-10-18T02:27:53.987948+00:00",
+      "total_seconds": 53.231,
+      "execution_seconds": 13.231,
+      "http_status": 200,
+      "item_count": 9
+    },
+    {
+      "id": "6e7129b168d140b1856fbb05658a532a",
+      "created_at": "2026-10-18T02:27:03.799223+00:00",
+      "started": "2026-10-18T02:27:54.357612+00:00",
+      "finished": "2026-10-18T02:28:01.655044+00:00",
+      "total_seconds": 57.856,
+      "execution_seconds": 7.297,
+      "http_status": 200,
+      "item_count": 9
+    },
+    {
+      "id": "baeb55f56c394abeae47cb24a7e80d5d",
+      "created_at": "2026-10-18T02:27:17.523080+00:00",
+      "started": "2026-10-18T02:28:03.928018+00:00",
+      "finished": "2026-10-18T02:28:09.353327+00:00",
+      "total_seconds": 51.83,
+      "execution_seconds": 5.425,
+      "http_status": 200,
+      "item_count": 9
+    }
+  ],
+  "previous_browser_http_deadline_seconds": 10,
+  "diagnosis": "The browser deadline enclosed queue wait plus execution. All seven delayed requests completed successfully after 12\u201358 seconds, but the browser had timed out and queued new refreshes. Parallel status/manifest refresh triggers amplified the serialized query-lane backlog.",
+  "fix": {
+    "admission": "Inventory and status clients request immediate SQL receipts with Prefer: respond-async. Legacy synchronous clients remain supported.",
+    "observation": "Each HTTP exchange is bounded to ten seconds; the original accepted receipt is observed for up to fifteen minutes. Transient receipt failures are retried without another query submission.",
+    "coalescing": "Each project/surface/generation shares one in-flight read. Repeated triggers retain at most one deferred follow-up. Source changes invalidate older responses; forced archive requests still await a forced snapshot.",
+    "presentation": "Pending inventory reads have an explicit neutral queued-refresh notice. Cached personal approval stays disabled while the current inventory is unconfirmed. Actual connection failures retain the previous error/backoff behavior.",
+    "boundary": "No direct worker/workspace/LSP access was introduced; all intake and receipt reads remain through the database API. The transport dispatch digest was reviewed and updated."
+  },
+  "validation": {
+    "overleaf_suite": {
+      "tests": 828,
+      "pass": 828,
+      "fail": 0,
+      "skipped": 0
+    },
+    "content_vm_cases": 164,
+    "transport_and_publisher_cases": 16,
+    "receipt_deadline_case": "A simulated 59-second query survives HTTP 503/408 receipt failures and follows the same command ID.",
+    "browser_cases": 3,
+    "browser_queued_refresh": "An 11.5-second accepted query survives the former ten-second deadline. Ten repeated clicks and ten push notifications create one pending inventory submission; source text selection/tree DOM are preserved.",
+    "boundary_audit": {
+      "adapter_routes": 179,
+      "companion_dispatch_branches": 27,
+      "result": "pass"
+    },
+    "whitespace_check": "pass",
+    "visual_check": "Narrow-pane queued-refresh notice reviewed; text and controls fit the existing pane."
+  },
+  "activation": {
+    "previous_transport_pid": 23496,
+    "new_transport_pid": 33268,
+    "api_pid_unchanged": true,
+    "worker_identity_unchanged": true,
+    "worker_ready": true,
+    "transport_only": true
+  },
+  "source_sha256": {
+    "apps/overleaf-extension/extension/content.js": "c584dce7ad257f2b5285f3212177e7e75cae78c14ba969de8dc76367e4b47c1b",
+    "apps/overleaf-extension/extension/content.css": "7e9e186e5f330bf9526f98b1a187b1b96e5f66726959598bb587d6616327b3d3",
+    "apps/overleaf-extension/extension/commandClient.mjs": "35551ce9a07f14a1ac91d1fc352ed266abc2165e1d6eb0f4a0c39be8234aff44",
+    "apps/overleaf-extension/companion/server.mjs": "6fbd6de81a753887fb6c3a3402001e569fe152cb09af971afdbf25f04533473f",
+    "apps/overleaf-extension/tests/contentActions.test.mjs": "a025a6ce20214601e239530833922d1b272dbc23e2aa313fa2899ecb0f4dce57",
+    "apps/overleaf-extension/tests/databaseTransport.test.mjs": "dc3fdba6d55bc8a3af0dc59ea6f0ef522babdc9d96187dcb14103e29ef7a6108",
+    "tests/browser/overleaf-admission.spec.mjs": "a333fefad298d477ff6b88ae6476a7f1ae961bfb98b0a9eb89aff06719376a68",
+    "docs/database-boundary-inventory.json": "0accaec02cbea86cc164fa661ba1d054198ffcc8d17b08db1aefa236ca540fda"
+  }
+}

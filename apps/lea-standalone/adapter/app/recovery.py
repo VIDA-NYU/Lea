@@ -118,6 +118,8 @@ def manifest(*, run: dict, config, repo: Path) -> dict:
     settings.pop("skills_root", None)
     if not settings.get('selected_result'):
         settings.pop('selected_result', None)  # canonical checkpoints retain their existing config contract
+    if not settings.get('mathematical_request'):
+        settings.pop('mathematical_request', None)
     settings["lea_root"] = str(settings.get("lea_root") or "")
     files: dict[str, str | None] = {}
     if repo.exists():
@@ -139,6 +141,9 @@ def manifest(*, run: dict, config, repo: Path) -> dict:
                                 providers, condenser, events, stall, usage, subagents, check_evidence, lean_checks, check_runtime, interface, lsp_daemon, imports, execution, result_selection, safeverify)]
     tool_code.extend(_file_fingerprint(path) for path in (result_selection.INSPECTOR,
         safeverify.SAFE_VERIFY_DIR / 'Main.lean', safeverify.SAFE_VERIFY_DIR / 'SafeVerify/Monads.lean'))
+    # Target agreement and exact-statement completion are executable inputs too.
+    tool_code.extend(_file_fingerprint(Path(__file__).with_name(name))
+                     for name in ('target_contexts.py', 'target_completion.py', 'artifacts.py'))
     tool_modules = {}
     for name in config.tool_modules:
         try:

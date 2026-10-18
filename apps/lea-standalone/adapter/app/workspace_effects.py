@@ -14,12 +14,16 @@ from . import commands, db, store, workspace_commands as intake
 
 SNAPSHOT_ACTIONS = {'project.identity', 'project.update', 'project.default_name', 'project.retire',
                     'project.restore', 'project.generate_blueprint', 'project.generate_blueprint_slug',
-                    'project.sync_formalizations', 'project.delete_file', 'project.upload'}
+                    'project.delete_file', 'project.upload'}
+SQL_ACTIONS = {'project.sync_formalizations'}
 
 
 def prepare(token):
     body = json.loads(token['payload_json'])
-    if body['action'] in intake.EDIT_ACTIONS or body['action'] == 'project.delete':
+    # Target sync only updates SQL metadata/import bindings. A file-effect
+    # journal would itself invalidate the projection on every inventory read.
+    # The queue receipt, worker claim and SQL transactions retain its authority.
+    if body['action'] in intake.EDIT_ACTIONS | SQL_ACTIONS or body['action'] == 'project.delete':
         return None
     effect_id = uuid4().hex
     manifest = {'action': body['action'], 'files': {}, 'project': store.get_project(token['project_id']) if token['project_id'] else None}

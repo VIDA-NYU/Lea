@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T01:28:48.144375+00:00",
+  "scope": "Read-only inspection of recorded target sync commands; no new commands or model calls. Regression tests use isolated fake HTTP exchanges.",
+  "project_slug": "6ad188c333723b9dbc0bb6fe",
+  "http_deadline_ms": 5000,
+  "observed_sync_commands": [
+    {
+      "id": "eb7a2d4a1e0b4da68f6836f546e61325",
+      "state": "succeeded",
+      "created_at": "2026-10-18T01:24:51.289751+00:00",
+      "started_at": "2026-10-18T01:24:51.478913+00:00",
+      "finished_at": "2026-10-18T01:24:56.715634+00:00",
+      "admission_to_completion_ms": 5425.88,
+      "execution_ms": 5236.72
+    },
+    {
+      "id": "4e2ccf23572e4561a34870e322bcb4fc",
+      "state": "succeeded",
+      "created_at": "2026-10-18T01:24:59.990382+00:00",
+      "started_at": "2026-10-18T01:25:00.052419+00:00",
+      "finished_at": "2026-10-18T01:25:03.929922+00:00",
+      "admission_to_completion_ms": 3939.54,
+      "execution_ms": 3877.5
+    },
+    {
+      "id": "a05c0c349399435a937bc708df7b9bbf",
+      "state": "succeeded",
+      "created_at": "2026-10-18T01:25:07.374344+00:00",
+      "started_at": "2026-10-18T01:25:07.424106+00:00",
+      "finished_at": "2026-10-18T01:25:12.796760+00:00",
+      "admission_to_completion_ms": 5422.42,
+      "execution_ms": 5372.65
+    },
+    {
+      "id": "e9245376303840c48157f5c6a641d9e3",
+      "state": "succeeded",
+      "created_at": "2026-10-18T01:25:59.576808+00:00",
+      "started_at": "2026-10-18T01:25:59.652505+00:00",
+      "finished_at": "2026-10-18T01:26:01.688046+00:00",
+      "admission_to_completion_ms": 2111.24,
+      "execution_ms": 2035.54
+    },
+    {
+      "id": "89f5614742c74f4c9862bec369ed9704",
+      "state": "succeeded",
+      "created_at": "2026-10-18T01:26:05.347068+00:00",
+      "started_at": "2026-10-18T01:26:05.406049+00:00",
+      "finished_at": "2026-10-18T01:26:10.387226+00:00",
+      "admission_to_completion_ms": 5040.16,
+      "execution_ms": 4981.18
+    }
+  ],
+  "formalization_count": 9,
+  "observed_proof_run_count": 0,
+  "cause": "The HTTP deadline wrapped receipt observation, falsely timing out accepted work that subsequently succeeded.",
+  "fix": "Bound each HTTP exchange separately; observe the original SQL receipt under the existing 15-minute workspace deadline, retrying transient observation failures without resubmission.",
+  "regressions": [
+    "Accepted work exceeds initial HTTP deadline and completes through its original receipt.",
+    "Stalled receipt headers and bodies time out individually; observation resumes without another POST.",
+    "Terminal worker rejection retains status, detail and command ID.",
+    "Existing metadata-header/body and proof execution deadlines remain bounded."
+  ],
+  "source_sha256": {
+    "apps/overleaf-extension/companion/leaApiClient.mjs": "83d2fd0692ab87c44f1844e193f58ae8bf66d34bca8302fd350cb0f6a7f8fdbe",
+    "apps/overleaf-extension/tests/leaApiClient.test.mjs": "008021bb9f1dee6f4b86c50bcc277c8f9c0af2cfac623f435c4888c320c857af",
+    "packages/lea-workspace-client/index.mjs": "b684cb3ed90a2d66df5eef3393aa5497884be669ab6c6beeaca483c21e79b4ad"
+  },
+  "validation": {
+    "client_and_boundary_tests": {
+      "passed": 40,
+      "failed": 0
+    },
+    "overleaf_suite_restricted_sandbox": {
+      "passed": 800,
+      "loopback_permission_failures": 2,
+      "total": 802
+    },
+    "transport_and_sse_rerun_with_loopback": {
+      "passed": 11,
+      "failed": 0,
+      "covers_both_restricted_cases": true
+    },
+    "database_boundary_audit": {
+      "adapter_routes": 179,
+      "companion_branches": 27
+    },
+    "diff_whitespace": "passed"
+  }
+}

@@ -1,0 +1,418 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T03:46:28.680242+00:00",
+  "scope": "Read-only postmortem of the latest Formalize All batch. No commands, compiler checks, provider calls, process signals, source edits, or history relabeling were performed during assessment.",
+  "batch": {
+    "batchId": "formalize-batch-1792293957088-1",
+    "overleafProjectId": "6ad188c333723b9dbc0bb6fe",
+    "createdAt": "2026-10-18T03:25:57.088Z",
+    "finishedAt": "2026-10-18T03:42:24.130Z",
+    "done": true,
+    "acceptedCommandId": "5afb2d833d90483f8597835fdbede1f1"
+  },
+  "counts": {
+    "incomplete": 2,
+    "skipped": 6,
+    "formalized": 1
+  },
+  "items": [
+    {
+      "targetKind": "definition",
+      "targetLabel": "descent_energy",
+      "state": "incomplete",
+      "reason": "command_fenced",
+      "runJobId": "definition-descent_energy-2026-10-18T03-25-57-759Z",
+      "moduleName": "descent_energy",
+      "detail": "Solver ownership expired; retained results require reconciliation.",
+      "recoverable": true
+    },
+    {
+      "targetKind": "definition",
+      "targetLabel": "descent_step",
+      "state": "incomplete",
+      "reason": "turn_cap",
+      "runJobId": "definition-descent_step-2026-10-18T03-30-01-008Z",
+      "moduleName": "descent_step",
+      "detail": "Automatic recovery was already attempted for this run.",
+      "recoverable": true
+    },
+    {
+      "targetKind": "theorem",
+      "targetLabel": "descent_error",
+      "state": "skipped",
+      "reason": "depends_on_incomplete:descent_step",
+      "runJobId": null,
+      "moduleName": "descent_error"
+    },
+    {
+      "targetKind": "theorem",
+      "targetLabel": "descent_energy_step",
+      "state": "skipped",
+      "reason": "depends_on_incomplete:descent_energy",
+      "runJobId": null,
+      "moduleName": "descent_energy_step"
+    },
+    {
+      "targetKind": "theorem",
+      "targetLabel": "descent_strict",
+      "state": "skipped",
+      "reason": "depends_on_incomplete:descent_energy",
+      "runJobId": null,
+      "moduleName": "descent_strict"
+    },
+    {
+      "targetKind": "theorem",
+      "targetLabel": "descent_geometric",
+      "state": "skipped",
+      "reason": "depends_on_incomplete:descent_energy",
+      "runJobId": null,
+      "moduleName": "descent_geometric"
+    },
+    {
+      "targetKind": "theorem",
+      "targetLabel": "descent_converges",
+      "state": "skipped",
+      "reason": "depends_on_incomplete:descent_step",
+      "runJobId": null,
+      "moduleName": "descent_converges"
+    },
+    {
+      "targetKind": "theorem",
+      "targetLabel": "descent_calibration",
+      "state": "skipped",
+      "reason": "depends_on_incomplete:descent_energy",
+      "runJobId": null,
+      "moduleName": "descent_calibration"
+    },
+    {
+      "targetKind": "theorem",
+      "targetLabel": "independent_square",
+      "state": "formalized",
+      "reason": null,
+      "runJobId": "theorem-independent_square-2026-10-18T03-35-41-011Z",
+      "moduleName": "independent_square"
+    }
+  ],
+  "runs": [
+    {
+      "id": "7fb4d558-dbc5-4dc0-a99c-5ba74cc5380f",
+      "session_id": "be5cea23-1f81-4cf8-81a1-1a320fbe6cb5",
+      "status": "cancelled",
+      "result_kind": "interrupted",
+      "result_detail": "Solver ownership expired; retained results require reconciliation.",
+      "stop_reason": "command_fenced",
+      "recoverable": 1,
+      "max_turns": 100,
+      "created_at": "2026-10-18T03:25:57.999206+00:00",
+      "updated_at": "2026-10-18T03:29:50.847014+00:00",
+      "recovery_state": "review",
+      "recovery_reason": "Solver ownership expired; retained results require reconciliation.",
+      "recovery_count": 0,
+      "cost_usd": 0.1994776,
+      "last_checkpoint_turn": 6
+    },
+    {
+      "id": "e5b02650-17d0-4f41-a136-edb5c26a20b5",
+      "session_id": "0d6a3f91-780c-4a31-8b95-ea68b58e287a",
+      "status": "cancelled",
+      "result_kind": "interrupted",
+      "result_detail": "Automatic recovery was already attempted for this run.",
+      "stop_reason": null,
+      "recoverable": 1,
+      "max_turns": 100,
+      "created_at": "2026-10-18T03:30:01.448710+00:00",
+      "updated_at": "2026-10-18T03:35:33.591217+00:00",
+      "recovery_state": "review",
+      "recovery_reason": "Automatic recovery was already attempted for this run.",
+      "recovery_count": 1,
+      "cost_usd": 0.1325304,
+      "last_checkpoint_turn": 4
+    },
+    {
+      "id": "f8152ada-4d36-4f54-ab23-9aab8c2917e5",
+      "session_id": "823a283e-6e06-4ee3-8d8b-7f4658a98132",
+      "status": "proved",
+      "result_kind": "proved",
+      "result_detail": "PROVED",
+      "stop_reason": null,
+      "recoverable": 0,
+      "max_turns": 100,
+      "created_at": "2026-10-18T03:35:41.240424+00:00",
+      "updated_at": "2026-10-18T03:42:15.312275+00:00",
+      "recovery_state": null,
+      "recovery_reason": null,
+      "recovery_count": 0,
+      "cost_usd": 0.5414408,
+      "last_checkpoint_turn": 13
+    }
+  ],
+  "attempts": [
+    {
+      "id": "c5586f2a48f14b039a5230b8f416d9fa",
+      "run_id": "7fb4d558-dbc5-4dc0-a99c-5ba74cc5380f",
+      "runtime_id": "2e0135e5a4bb4340bb759f526ec5a581",
+      "started_at": "2026-10-18T03:25:59.111019+00:00",
+      "ended_at": null,
+      "outcome": null
+    },
+    {
+      "id": "30fa39d400be4c20b3fb0ccd5fb2055b",
+      "run_id": "e5b02650-17d0-4f41-a136-edb5c26a20b5",
+      "runtime_id": "066da0743e934cc8ae0e33dfb81b053b",
+      "started_at": "2026-10-18T03:30:04.029052+00:00",
+      "ended_at": null,
+      "outcome": null
+    },
+    {
+      "id": "f322c975b74c4c4188281731ce54a59d",
+      "run_id": "e5b02650-17d0-4f41-a136-edb5c26a20b5",
+      "runtime_id": "2fea8166e2ba49c5942e14e8c329e02a",
+      "started_at": "2026-10-18T03:34:12.378502+00:00",
+      "ended_at": null,
+      "outcome": null
+    },
+    {
+      "id": "6764de82e63d498598b46f19aeb73462",
+      "run_id": "f8152ada-4d36-4f54-ab23-9aab8c2917e5",
+      "runtime_id": "0b1a951433a1481fa2a00358eac4b839",
+      "started_at": "2026-10-18T03:35:45.115093+00:00",
+      "ended_at": "2026-10-18T03:42:16.112461+00:00",
+      "outcome": "proved"
+    }
+  ],
+  "command_worker_transitions": [
+    {
+      "action": "insert",
+      "created_at": "2026-10-18T03:25:22.220Z"
+    },
+    {
+      "action": "delete",
+      "created_at": "2026-10-18T03:29:50.179Z"
+    },
+    {
+      "action": "insert",
+      "created_at": "2026-10-18T03:29:54.060Z"
+    },
+    {
+      "action": "delete",
+      "created_at": "2026-10-18T03:34:04.737Z"
+    },
+    {
+      "action": "insert",
+      "created_at": "2026-10-18T03:34:09.042Z"
+    },
+    {
+      "action": "delete",
+      "created_at": "2026-10-18T03:35:30.097Z"
+    },
+    {
+      "action": "insert",
+      "created_at": "2026-10-18T03:35:34.229Z"
+    }
+  ],
+  "runtime_control_commands": [],
+  "checks": [
+    {
+      "id": "cf796ec2afc8464aba81b95f15f561e7",
+      "run_id": "7fb4d558-dbc5-4dc0-a99c-5ba74cc5380f",
+      "path": "descent_energy.lean",
+      "status": "error",
+      "detail": "Error: Lean check cancelled",
+      "created_at": "2026-10-18T03:29:50.420133+00:00",
+      "backend": "none",
+      "failure": {
+        "kind": "cancelled",
+        "message": "Lean check cancelled",
+        "phase": "dependencies"
+      },
+      "timings_ms": {
+        "cold": 0.0,
+        "dependency_resolution": 17782.15,
+        "initialization": 0.0,
+        "lsp": 0.0,
+        "preparation": 197058.86,
+        "queue": 0.0,
+        "source": 0.32,
+        "total": 197210.15
+      },
+      "environment_files": 0,
+      "environment_kind_counts": {}
+    },
+    {
+      "id": "62bd7c75ea764787a6dcce48aee12c88",
+      "run_id": "f8152ada-4d36-4f54-ab23-9aab8c2917e5",
+      "path": "independent_square.lean",
+      "status": "error",
+      "detail": "/Users/danielarturi/Developer/VIDA_Dev/LeaEcosystem/apps/lea-standalone/prover/workspace/proofs/Lea/FailInduce1OnlineLaTeXEditorOverleaf/independent_square.lean:6:35: error: Unknown identifier `\u211d`",
+      "created_at": "2026-10-18T03:39:59.205933+00:00",
+      "backend": "lsp",
+      "failure": null,
+      "timings_ms": {
+        "cleanup": 78.32,
+        "cold": 0.0,
+        "dependency_build": 882.78,
+        "dependency_resolution": 16987.42,
+        "evidence_hash": 4.1,
+        "guard_setup": 100.89,
+        "initialization": 1375.65,
+        "lsp": 2750.56,
+        "preparation": 215914.06,
+        "queue": 916.13,
+        "source": 0.32,
+        "total": 221333.89,
+        "validation": 213.93
+      },
+      "environment_files": 5380,
+      "environment_kind_counts": {
+        "compiler": 1,
+        "compiled": 4518,
+        "source": 837,
+        "configuration": 24
+      }
+    },
+    {
+      "id": "7f5133c2ae9248e19702e5ee2ff78280",
+      "run_id": "f8152ada-4d36-4f54-ab23-9aab8c2917e5",
+      "path": "independent_square.lean",
+      "status": "ok",
+      "detail": null,
+      "created_at": "2026-10-18T03:41:50.430853+00:00",
+      "backend": "lsp",
+      "failure": null,
+      "timings_ms": {
+        "cleanup": 66.42,
+        "cold": 0.0,
+        "dependency_build": 895.77,
+        "dependency_resolution": 3318.43,
+        "evidence_hash": 5.28,
+        "guard_setup": 121.29,
+        "initialization": 0.0,
+        "lsp": 2561.71,
+        "preparation": 70831.1,
+        "queue": 98.26,
+        "source": 0.29,
+        "total": 74736.11,
+        "validation": 229.34
+      },
+      "environment_files": 6003,
+      "environment_kind_counts": {
+        "compiler": 1,
+        "compiled": 5052,
+        "source": 926,
+        "configuration": 24
+      }
+    }
+  ],
+  "slow_tool_calls": [
+    {
+      "run_id": "7fb4d558-dbc5-4dc0-a99c-5ba74cc5380f",
+      "name": "lean_check",
+      "started_at": "2026-10-18T03:26:32.845483+00:00",
+      "completed_at": "2026-10-18T03:29:50.223583+00:00",
+      "duration_seconds": 197.3781
+    },
+    {
+      "run_id": "e5b02650-17d0-4f41-a136-edb5c26a20b5",
+      "name": "search_project_library",
+      "started_at": "2026-10-18T03:30:13.785072+00:00",
+      "completed_at": "2026-10-18T03:33:23.910424+00:00",
+      "duration_seconds": 190.125352,
+      "query": "descent energy relaxation step real function",
+      "note": "Search synchronously validated the returned incomplete descent_energy module; catalog recorded lake build error."
+    },
+    {
+      "run_id": "f8152ada-4d36-4f54-ab23-9aab8c2917e5",
+      "name": "lean_check",
+      "started_at": "2026-10-18T03:36:15.991307+00:00",
+      "completed_at": "2026-10-18T03:39:57.467008+00:00",
+      "duration_seconds": 221.475701
+    },
+    {
+      "run_id": "f8152ada-4d36-4f54-ab23-9aab8c2917e5",
+      "name": "lean_check",
+      "started_at": "2026-10-18T03:40:34.682233+00:00",
+      "completed_at": "2026-10-18T03:41:49.510843+00:00",
+      "duration_seconds": 74.82861
+    }
+  ],
+  "report": {
+    "state": "ready",
+    "counts": {
+      "verified": 1,
+      "verifiedProofs": 1,
+      "verifiedDefinitions": 0,
+      "disproved": 0,
+      "incomplete": 2,
+      "needsReview": 0,
+      "failed": 0,
+      "alreadyVerified": 0,
+      "dependencySkipped": 6,
+      "spendCapSkipped": 0,
+      "otherSkipped": 0,
+      "stopped": 0
+    },
+    "narrative_contains_incorrect_turn_cap": true
+  },
+  "findings": [
+    {
+      "priority": 1,
+      "issue": "Worker lifetimes changed three times during the batch. The first solver lost command ownership while checking; the second was automatically recovered once and then conservatively paused after another interruption.",
+      "certainty": "Unexpected worker restarts and their effects are confirmed by retained history and user confirmation; trigger still under investigation."
+    },
+    {
+      "priority": 1,
+      "issue": "Lean check preparation dominated elapsed time: 197 seconds before cancellation, 216 seconds of a 221-second check, and 71 seconds of a 75-second successful check. The successful checks spent about 2.6\u20132.8 seconds in LSP.",
+      "certainty": "confirmed by retained execution timings; exact hottest preparation subroutine requires targeted profiling"
+    },
+    {
+      "priority": 2,
+      "issue": "Library discovery synchronously validated an incomplete sibling module, taking 190 seconds.",
+      "certainty": "confirmed by invocation record, library row and project_library.search implementation"
+    },
+    {
+      "priority": 2,
+      "issue": "Generic recoverable interruption without a stop reason defaults to turn_cap in resolveProofOutcome. The second run stopped at turn 4 of 100, but this false reason reached the generated report.",
+      "certainty": "confirmed"
+    },
+    {
+      "priority": 3,
+      "issue": "Companion batch document still says reportState=saving although the canonical SQL report is ready.",
+      "certainty": "confirmed; presentation/projection discrepancy"
+    }
+  ],
+  "preserved_state": {
+    "drafts": [
+      "descent_energy.lean",
+      "descent_step.lean"
+    ],
+    "checked_proof": "independent_square.lean",
+    "dependent_targets_executed": false,
+    "no_disproof_recorded": true
+  },
+  "unknowns": [
+    "The trigger for the three unexpected worker restarts. The user confirmed they were automatic; terminal traceback has been requested because SQL records the lifetime changes but not the triggering exception.",
+    "The exact current compiler diagnostics for the incomplete drafts; one library build failed, and no successful proof-check evidence exists for either definition."
+  ],
+  "next_work": [
+    "Establish restart cause and qualify worker shutdown/recovery with an in-flight check.",
+    "Profile and reduce preparation cost on this real import closure while keeping evidence validation and database-only UI access.",
+    "Make library discovery bounded and move expensive module certification out of broad searches.",
+    "Preserve truthful interruption reasons and reconcile batch report presentation."
+  ],
+  "user_confirmation": {
+    "worker_restarts": "unexpected; user did not restart the stack or use Lea restart control"
+  },
+  "log_availability": {
+    "worker_stdout_stderr": "/dev/ttys010; no saved file was attached to the current process",
+    "matching_macos_crash_reports": 0,
+    "matching_filtered_macos_events": 0,
+    "terminal_traceback_requested": true,
+    "user_response": "User sees no traceback or supervisor exit message."
+  },
+  "timing_crosscheck": {
+    "prior_overleaf_tests_finished_at": "2026-10-18T03:23:20.949986+00:00",
+    "prior_public_transport_reload_at": "2026-10-18T03:23:31.967150+00:00",
+    "batch_started_at": "2026-10-18T03:25:57.088Z",
+    "conclusion": "The previously performed tests and public transport reload preceded this batch; neither overlapped its three unexpected worker restarts."
+  }
+}

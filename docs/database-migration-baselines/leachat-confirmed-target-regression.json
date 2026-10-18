@@ -1,0 +1,208 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T01:19:00.242815+00:00",
+  "scope": "Private SQLite backup and disposable Lake workspace; original database/workspace unchanged; no provider calls. This qualifies deterministic target completion, not a new production run or model classification.",
+  "session_id": "cae941be-d31f-4a3c-a2ae-79ee3fe3399b",
+  "formalization_id": "950c4e41-7330-4dd7-9e1d-d64377acb1dc",
+  "historical_run_id": "56e8ed3c-03e2-41ad-97ff-ead242cf241b",
+  "historical_status_before": "needs_review",
+  "historical_status_after": "needs_review",
+  "queue_claim_verified": true,
+  "target_statement": "theorem multiple_of_even_is_even (n m : ℕ) (hn : Even n) (hdiv : n ∣ m) :\n    Even m",
+  "request_message_id": 1,
+  "proposal_message_id": 2,
+  "confirmation_message_id": 3,
+  "proof_content_sha256": "977b05d4c3cd514ef3fb6f2e51547bf2cb309a66524a3fa0db0af36b245a152f",
+  "compiler_selected_result": {
+    "axioms": [
+      "propext"
+    ],
+    "body_expr": null,
+    "dependencies": [
+      "Nat",
+      "Even",
+      "instAddNat",
+      "Dvd.dvd",
+      "Nat.instDvd",
+      "Nat",
+      "Even",
+      "instAddNat",
+      "Dvd.dvd",
+      "Nat.instDvd",
+      "Exists.casesOn",
+      "Eq",
+      "HAdd.hAdd",
+      "instHAdd",
+      "Eq.ndrec",
+      "HMul.hMul",
+      "instHMul",
+      "instMulNat",
+      "Lea.Misc.even_mul_of_even",
+      "Eq.symm"
+    ],
+    "full_name": "Lea.Misc.multiple_of_even_is_even",
+    "kind": "theorem",
+    "level_params": [],
+    "range": {
+      "end_column": 28,
+      "end_line": 12,
+      "start_column": 0,
+      "start_line": 8
+    },
+    "type": "∀ (n m : Nat), Even.{0} n → Dvd.dvd.{0} n m → Even.{0} m",
+    "type_expr": [
+      "forall",
+      "Lean.BinderInfo.default",
+      [
+        "constant",
+        "Nat",
+        []
+      ],
+      [
+        "forall",
+        "Lean.BinderInfo.default",
+        [
+          "constant",
+          "Nat",
+          []
+        ],
+        [
+          "forall",
+          "Lean.BinderInfo.default",
+          [
+            "apply",
+            [
+              "apply",
+              [
+                "apply",
+                [
+                  "constant",
+                  "Even",
+                  [
+                    "zero"
+                  ]
+                ],
+                [
+                  "constant",
+                  "Nat",
+                  []
+                ]
+              ],
+              [
+                "constant",
+                "instAddNat",
+                []
+              ]
+            ],
+            [
+              "bound",
+              1
+            ]
+          ],
+          [
+            "forall",
+            "Lean.BinderInfo.default",
+            [
+              "apply",
+              [
+                "apply",
+                [
+                  "apply",
+                  [
+                    "apply",
+                    [
+                      "constant",
+                      "Dvd.dvd",
+                      [
+                        "zero"
+                      ]
+                    ],
+                    [
+                      "constant",
+                      "Nat",
+                      []
+                    ]
+                  ],
+                  [
+                    "constant",
+                    "Nat.instDvd",
+                    []
+                  ]
+                ],
+                [
+                  "bound",
+                  2
+                ]
+              ],
+              [
+                "bound",
+                1
+              ]
+            ],
+            [
+              "apply",
+              [
+                "apply",
+                [
+                  "apply",
+                  [
+                    "constant",
+                    "Even",
+                    [
+                      "zero"
+                    ]
+                  ],
+                  [
+                    "constant",
+                    "Nat",
+                    []
+                  ]
+                ],
+                [
+                  "constant",
+                  "instAddNat",
+                  []
+                ]
+              ],
+              [
+                "bound",
+                2
+              ]
+            ]
+          ]
+        ]
+      ]
+    ],
+    "user_name": "Lea.Misc.multiple_of_even_is_even",
+    "visibility": "public",
+    "content_sha256": "977b05d4c3cd514ef3fb6f2e51547bf2cb309a66524a3fa0db0af36b245a152f",
+    "signature": "Lea.Misc.multiple_of_even_is_even : ∀ (n m : Nat), Even.{0} n → Dvd.dvd.{0} n m → Even.{0} m"
+  },
+  "current_evidence": true,
+  "deterministic_completion_gate": "passed",
+  "artifact_role": "primary",
+  "timings_ms": {
+    "queue": 0.18,
+    "initialization": 722.51,
+    "lsp": 1889.42,
+    "cold": 0.0,
+    "total": 20988.09,
+    "source": 0.21,
+    "dependency_resolution": 10569.93,
+    "dependency_build": 792.52,
+    "preparation": 12921.19,
+    "evidence_hash": 2.2,
+    "guard_setup": 58.12,
+    "validation": 115.37,
+    "cleanup": 48.36,
+    "result_inspection": 4964.02
+  },
+  "source_sha256": {
+    "apps/lea-standalone/adapter/app/target_contexts.py": "2a1b3f0eb409d55817f21e9b0d63c4096b69c7d46c827b2fba5a74f0f2784753",
+    "apps/lea-standalone/adapter/app/target_completion.py": "4042201bbd9b476718141140844e14a4c5b95a3a05fdb601e3e2a6a42ce8a58d",
+    "apps/lea-standalone/adapter/app/artifacts.py": "ee3f5582bee219feaaffbdca18ee7ab0ff8c4b78bb3ba04110ebef2a5c91fbf4",
+    "apps/lea-standalone/prover/lea/agent.py": "3ba0130bf63cffd0baf9841eaabe9268b578993b927725f3c45aa0b7110147bb",
+    "apps/lea-standalone/prover/lea/result_selection.py": "968d6f576b7ccb973c36ab59d50ab100ca54790faf7fdc8f472231fc9255b724",
+    "apps/lea-standalone/prover/lea/LibraryInspect.lean": "248a1a7e458db0e4c33b41e307611341384881704929aef33b71fad42800758c"
+  }
+}

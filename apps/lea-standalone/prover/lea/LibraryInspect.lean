@@ -79,7 +79,10 @@ end LeaLibraryInspector
 
 elab "#lea_inspect_module " moduleName:str : command => do
   let env ← getEnv
-  let moduleIdx := env.getModuleIdx? moduleName.getString.toName
+  let moduleIdx := (env.header.moduleNames.find? fun name =>
+    name.toString == moduleName.getString).bind fun name => env.getModuleIdx? name
+  if moduleIdx.isNone then
+    throwError "Requested compiled module {moduleName.getString} is not loaded"
   let mut results : Array Json := #[]
   for (name, ci) in env.constants.toList do
     if moduleIdx.isSome && env.getModuleIdxFor? name == moduleIdx then

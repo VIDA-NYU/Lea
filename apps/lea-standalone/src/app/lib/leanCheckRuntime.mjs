@@ -1,11 +1,27 @@
 // Runtime health is independent of the theorem/proof verdict.
+export function runtimeObservation({ ok, body, status, error } = {}) {
+  if (ok && body?.projection?.state === 'observation_expired') return {
+    ...body, state: 'unavailable', observation: { state: 'unavailable',
+      message: 'The worker runtime observation has expired. Waiting for a fresh status.' },
+  };
+  if (ok && body && typeof body.state === 'string') return body;
+  const detail = body?.detail;
+  return { state: 'unavailable', observation: {
+    state: status === 503 && detail?.error === 'projection_unavailable' ? 'pending' : 'unavailable',
+    message: (typeof detail === 'string' ? detail : detail?.message) || body?.message || error || 'Could not read Lean runtime status. Retrying automatically.',
+    ...(status ? { status } : {}),
+  } };
+}
+
 export function runtimeNeedsPolling(runtime, active = false) {
   return active || Number(runtime?.active_cold_checks) > 0
-    || ['starting', 'recovering', 'degraded'].includes(runtime?.state);
+    || ['starting', 'recovering', 'degraded', 'unavailable'].includes(runtime?.state);
 }
 
 export function runtimeStatusMessage(runtime) {
   if (!runtime) return '';
+  if (runtime.observation?.state === 'pending') return 'Waiting for Lean runtime status';
+  if (runtime.observation?.state === 'unavailable') return 'Lean runtime status unavailable · retrying';
   if (Number(runtime.active_cold_checks) > 0) return 'Checking with full compilation';
   if (runtime.state === 'starting') return 'Starting Lean server';
   if (runtime.state === 'recovering') return 'Recovering Lean server';

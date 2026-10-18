@@ -207,7 +207,23 @@ def maintain():
     config=load_config()
     if not config.lea_root:
         return {}
-    return scan(project['id'],project_repo_dir(dict(project),config.lea_root/'workspace/proofs'))
+    root=project_repo_dir(dict(project),config.lea_root/'workspace/proofs')
+    if not root.exists() and not root.is_symlink():
+        # SQL-only project/source creation precedes workspace materialization.
+        # Waiting is normal here; it must not create a directory or manufacture
+        # an empty observed inventory. A disappeared observed root fails closed
+        # immediately while its immutable historical bytes remain readable.
+        with db.write() as conn:
+            enrollment=conn.execute('select observation_id from projection_enrollment where project_id=?',
+                                   (project['id'],)).fetchone()
+            if not enrollment:return {}
+            previous=enrollment[0]
+            if previous:
+                now=db.utc_now()
+                conn.execute('update workspace_observations set expires_at=? where id=? and expires_at>?',
+                             (now,previous,now))
+        return {'state':'unavailable' if previous else 'awaiting_materialization','processed':0}
+    return scan(project['id'],root)
 
 
 if __name__=='__main__':

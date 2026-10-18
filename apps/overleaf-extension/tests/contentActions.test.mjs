@@ -123,6 +123,7 @@ test("a status response from before admission cannot clear a newly started forma
   releasePreviousStatus();
   await flushPromises();
   assert.equal(button.classList.contains("is-working"), true);
+  await harness.runTimersAt(250);
   releaseStatus();
   await flushPromises();
   assert.equal(button.classList.contains("is-working"), false);
@@ -149,10 +150,10 @@ test("project activity retries after a companion outage and reconciles on tab vi
   await harness.setVisibility(false);
   await harness.runTimersAt(250);
   assert.equal(button.dataset.pageHidden, "false");
-  assert.ok(harness.pendingTimers().includes(30000));
+  assert.ok(harness.pendingTimers().includes(5000));
   failing = false;
   activeJobs = 0;
-  await harness.runTimersAt(30000);
+  await harness.runTimersAt(5000);
   assert.equal(button.classList.contains("is-working"), false);
 });
 
@@ -242,6 +243,41 @@ test("status refresh sends the canonical version-2 source identity", async () =>
   assert.ok(statusCall, "expected a status request");
   const request = JSON.parse(statusCall.options.body);
   assert.match(request.targets[0].sourceIdentityHash, /^[a-f0-9]{64}$/);
+});
+
+test("opening a document reads statuses without acquiring another tab's source publisher", async () => {
+  const h = createContentHarness({ status: "formalized" }, {}, { fetchOverride: async url => {
+    if (url.endsWith('/source-context/publisher')) return {ok:false,status:409,json:async()=>({detail:{
+      code:'publisher_conflict',generation:1,retry_after_ms:90000,message:'Another tab owns the document publisher.'}})};
+  } });
+  await h.loadStatusForVisibleTheorem();
+  assert.equal(h.hasButtonText('formalized'),true);
+  assert.equal(h.hasButtonText('offline'),false);
+  assert.equal(h.fetchCalls.filter(call=>/\/source-context\/(publisher|publish)$/.test(call.url)).length,0);
+  const request=JSON.parse(h.fetchCalls.find(call=>call.url.endsWith('/statuses')).options.body);
+  assert.match(request.targets[0].sourceIdentityHash,/^[a-f0-9]{64}$/);
+  await h.runTimersAt(30000);
+  assert.equal(h.fetchCalls.filter(call=>/\/source-context\/(publisher|publish)$/.test(call.url)).length,0);
+});
+
+test("an HTTP status error is unavailable, a network failure is offline, and both recover promptly", async () => {
+  let phase='http';
+  const h=createContentHarness({status:'formalized'}, {}, {fetchOverride:async url=>{
+    if(!url.endsWith('/statuses'))return;
+    if(phase==='http')return {ok:false,status:503,json:async()=>({message:'Worker is starting.'})};
+    if(phase==='network')throw new TypeError('Failed to fetch');
+  }});
+  await h.loadStatusForVisibleTheorem();
+  assert.equal(h.hasButtonText('unavailable'),true);
+  assert.equal(h.hasButtonText('offline'),false);
+  assert.match(h.document.body.querySelector('.ol-lean-status-unavailable').title,/Worker is starting/);
+  phase='network';
+  await h.runTimersAt(5000);
+  assert.equal(h.hasButtonText('offline'),true);
+  phase='ready';
+  await h.runTimersAt(5000);
+  assert.equal(h.hasButtonText('formalized'),true);
+  assert.equal(h.hasButtonText('offline'),false);
 });
 
 test("formalize requests and pane refresh hash unchanged targets identically across LaTeX environments", async () => {
@@ -346,6 +382,106 @@ test("definition success renders a defined badge", async () => {
 
   assert.equal(harness.hasButtonText("defined"), true);
   assert.equal(harness.hasButtonText("formalized"), false);
+});
+
+for (const [result, label] of [["proved", "formalized"], ["defined", "defined"], ["disproved", "Counterexample found"]]) {
+  test(`source badges keep recorded ${result} results labelled while SQL status refreshes`, async () => {
+    let fresh = false;
+    const h = createContentHarness({}, {}, { fetchOverride: async url => url.endsWith("/statuses")
+      ? { ok: true, json: async () => ({ statuses: { "theorem:demo_theorem": fresh
+        ? { status: result === "disproved" ? "disproved" : "formalized", resultKind: result === "defined" ? "defined" : "proved", projection: { state: "observed" } }
+        : { status: "unknown", projection: { state: "inputs_changed" },
+            lastObservedResult: { validity_status: result, observed_at: "2026-10-18T15:12:00Z" } } } }) }
+      : undefined });
+    await h.loadStatusForVisibleTheorem();
+    assert.equal(h.hasButtonText(label), true);
+    assert.equal(h.hasButtonText("checking"), false);
+    assert.equal(h.countSelector(".ol-lean-human-approval-approved"), 0);
+    fresh = true;
+    await h.runTimersAt(3000);
+    assert.equal(h.hasButtonText(label), true, "projection freshness must not change the recorded state label");
+    assert.equal(h.fetchCalls.some(call => /formalize|interrupt|restart|cancel/.test(new URL(call.url).pathname)), false);
+  });
+}
+
+test("source badges label unknown SQL status as awaiting and keep active work distinct", async () => {
+  const h = createContentHarness({ status: "unknown", projection: { state: "inputs_changed" } });
+  await h.loadStatusForVisibleTheorem();
+  assert.equal(h.hasButtonText("awaiting status"), true);
+  assert.equal(h.hasButtonText("checking"), false);
+  const active = createContentHarness({ status: "in_progress", lastObservedResult: { validity_status: "proved" } });
+  await active.loadStatusForVisibleTheorem();
+  assert.match(active.document.body.querySelector(".ol-lean-status-in_progress").textContent, /^in progress/);
+  assert.equal(active.hasButtonText("formalized · updating status"), false);
+  const changed = createContentHarness({ status: "unknown", sourceFreshness: "stale",
+    projection: { state: "inputs_changed" }, lastObservedResult: { validity_status: "proved" } });
+  await changed.loadStatusForVisibleTheorem();
+  assert.equal(changed.hasButtonText("out of date"), true);
+  assert.equal(changed.hasButtonText("formalized · updating status"), false);
+});
+
+test("known tag states stay stable across refreshes, expiry and read errors, then follow actual run events", async () => {
+  let phase='known';
+  const response=value=>({ok:true,json:async()=>({statuses:{'theorem:demo_theorem':value}})});
+  const h=createContentHarness({}, {}, {fetchOverride:async url=>{
+    if(!url.endsWith('/statuses'))return;
+    if(phase==='busy')return {ok:false,status:503,json:async()=>({message:'Database status read delayed'})};
+    if(phase==='offline')throw new TypeError('Failed to fetch');
+    if(phase==='active')return response({status:'in_progress'});
+    if(phase==='finished')return response({status:'formalized',resultKind:'proved',projection:{state:'observed'}});
+    if(['pending','expired','success_expired'].includes(phase))return response({status:'unknown',
+      projection:{state:phase==='pending'?'inputs_changed':'observation_expired'},
+      lastObservedResult:{validity_status:phase==='success_expired'?'proved':'planned'}});
+    return response({status:'unformalized',projection:{state:'observed'}});
+  }});
+  await h.loadStatusForVisibleTheorem();
+  assert.equal(h.hasButtonText('unformalized'),true);
+  for(const [next,delay] of [['pending',30000],['expired',3000],['known',3000],['busy',30000],['offline',5000],['known',5000]]){
+    phase=next;await h.runTimersAt(delay);
+    assert.equal(h.hasButtonText('unformalized'),true,`${next} must not replace the known state`);
+    assert.equal(h.hasButtonText('awaiting status'),false);
+    assert.equal(h.hasButtonText('offline'),false);
+  }
+  phase='active';await h.runTimersAt(30000);
+  assert.match(h.document.body.querySelector('.ol-lean-status-in_progress').textContent,/^in progress/);
+  phase='finished';await h.runTimersAt(3000);
+  assert.equal(h.hasButtonText('formalized'),true);
+  phase='success_expired';await h.runTimersAt(30000);
+  assert.equal(h.hasButtonText('formalized'),true);
+  assert.equal(h.hasButtonText('formalized · updating status'),false);
+  assert.equal(h.fetchCalls.some(call=>/\/formalize(?:\/all)?$|\/interrupt$|\/restart$/.test(call.url)),false);
+});
+
+for(const [status,label,resultKind] of [['unformalized','unformalized'],['formalized','formalized'],
+  ['formalized','defined','defined'],['failed','failed'],['paused','paused'],['needs_review','Needs review'],['sorry_stub','sorry stub']]){
+  test(`known ${label} tags retain presentation when an older SQL response has no display history`,async()=>{
+    let stale=false;
+    const h=createContentHarness({}, {}, {fetchOverride:async url=>url.endsWith('/statuses')
+      ?{ok:true,json:async()=>({statuses:{'theorem:demo_theorem':stale
+        ?{status:'unknown',projection:{state:'observation_expired'},approvalEligible:false}
+        :{status,resultKind,projection:{state:'observed'}}}})}:undefined});
+    await h.loadStatusForVisibleTheorem();
+    assert.equal(h.hasButtonText(label),true);
+    stale=true;
+    await h.runTimersAt(30000);
+    assert.equal(h.hasButtonText(label),true);
+    assert.equal(h.hasButtonText('awaiting status'),false);
+    assert.equal(h.countSelector('.ol-lean-human-approval-approved'),0);
+  });
+}
+
+test('retaining a tag through a read failure does not retain approval eligibility',async()=>{
+  let failed=false;
+  const h=createContentHarness({status:'formalized',leanCheckPassed:true,
+    approvalEligible:true,approvalRevision:'checked-revision',projection:{state:'observed'}},{},{fetchOverride:async url=>{
+      if(failed&&url.endsWith('/statuses'))return {ok:false,status:503,json:async()=>({message:'Status read delayed'})};
+    }});
+  await h.loadStatusForVisibleTheorem();
+  assert.equal(h.document.body.querySelector('.ol-lean-human-approval-source').disabled,false);
+  failed=true;await h.runTimersAt(30000);
+  assert.equal(h.hasButtonText('formalized'),true);
+  assert.equal(h.document.body.querySelector('.ol-lean-human-approval-source').disabled,true);
+  assert.match(h.document.body.querySelector('.ol-lean-status-formalized').title,/Status refresh delayed/);
 });
 
 test("personal approval toggles in browser-local storage and updates the source badge", async () => {
@@ -1492,9 +1628,9 @@ test("Lean pane renders every source file equally with file rows collapsed by de
 
   assert.match(harness.bodyText(), /3 labeled items across 3 \.tex files\./);
   assert.deepEqual(harness.paneTreeRowTexts().map((text) => text.replace(/\s+/g, " ")), [
-    "▸main.tex1 item",
+    "▸main.tex1 item1 verified",
     "▸sections/1 itemmissing stub",
-    "▸supp.tex1 item"
+    "▸supp.tex1 item1 verified"
   ]);
   assert.equal(harness.countSelector(".ol-lean-project-progress"), 2);
   assert.doesNotMatch(harness.bodyText(), /Main theorem/);
@@ -1539,15 +1675,16 @@ test("Lean pane file rows render proportional progress segments", async () => {
 
   const [progress] = harness.paneProgresses();
   assert.equal(progress.role, "img");
-  assert.equal(progress.label, "main.tex: 8 Lea items, 2 verified, 1 disproved, 1 sorry-stubbed, 1 failed, 1 out of date, 2 unformalized, 1 in progress.");
-  assert.equal(progress.inProgress, true);
+  assert.equal(progress.label, "main.tex: 8 Lea items, 2 verified, 1 disproved, 1 sorry-stubbed, 1 failed, 1 out of date, 1 awaiting status, 1 in progress.");
+  assert.equal(progress.inProgress, false, 'active work must not stripe the entire file status bar');
   assert.deepEqual(progress.segments.map((segment) => [segment.bucket, segment.count, segment.width]), [
     ["success", "2", "25%"],
     ["disproved", "1", "12.5%"],
     ["sorry-stubbed", "1", "12.5%"],
     ["failed", "1", "12.5%"],
     ["out-of-date", "1", "12.5%"],
-    ["unformalized", "2", "25%"]
+    ["running", "1", "12.5%"],
+    ["unconfirmed", "1", "12.5%"]
   ]);
 
   harness.clickPaneTreeRowText("main.tex");
@@ -1604,6 +1741,155 @@ for (const failure of ["timeout", "server", "network"]) {
     assert.equal(harness.editTextarea()?.value, "theorem unsaved : True := by trivial");
   });
 }
+
+test("a queued inventory refresh survives the HTTP deadline and coalesces repeated refreshes", async () => {
+  let slow = false, complete = false;
+  const manifest = { ok: true, rootFile: "main.tex", items: [editableItem()], diagnostics: [] };
+  const receipt = { workspace_command: true, command: { id: "inventory-query", state: "queued" } };
+  const h = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/unknown", manifest,
+    fetchOverride: async url => {
+      if (slow && url.endsWith("/lean-pane/manifest")) return { ok: true, status: 202, json: async () => receipt };
+      if (url.endsWith("/commands/inventory-query")) return { ok: true, status: 200, json: async () => complete
+        ? { workspace_command: true, command: { id: "inventory-query", state: "succeeded", result: { statusCode: 200, body: manifest } } }
+        : receipt };
+    }
+  });
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  h.clickPaneTreeRowText("main.tex");
+  h.clickFirstPaneItem();
+  const selected = h.document.body.querySelector(".ol-lean-project-item");
+  h.document.getSelection = () => ({ isCollapsed: false, anchorNode: selected, focusNode: selected });
+  slow = true;
+  const before = h.fetchCalls.filter(call => call.url.endsWith("/lean-pane/manifest")).length;
+  h.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  assert.equal(h.countSelector(".ol-lean-project-pane-refresh-warning"), 0, "ordinary polling must not insert a flashing banner");
+  await h.runTimersAt(10000);
+  await h.runTimersAt(30000);
+  assert.match(h.bodyText(), /taking longer than usual.*while the queued refresh completes/);
+  for (let i = 0; i < 12; i++) {
+    h.clickButtonLabel("Refresh Lean pane");
+    await h.runTimersAt(1000);
+  }
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/lean-pane/manifest")).length, before + 1);
+  assert.equal(h.document.body.querySelector(".ol-lean-project-item"), selected);
+  assert.doesNotMatch(h.bodyText(), /Retrying in 5 seconds/);
+  complete = true;
+  await h.runTimersAt(1000);
+  assert.equal(h.countSelector(".ol-lean-project-pane-refresh-warning"), 0);
+  assert.equal(h.document.body.querySelector(".ol-lean-project-item"), selected);
+  await h.runTimersAt(1500);
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/lean-pane/manifest")).length, before + 2,
+    "all coalesced refreshes produce at most one follow-up");
+});
+
+test("inventory reads current SQL runtime status and retries missing observations without a compiler alarm", async () => {
+  let phase = "pending";
+  const manifest = { ok: true, rootFile: "main.tex", items: [{ ...editableItem(), leaSessionId: "runtime-session" }], diagnostics: [],
+    leanCheckRuntime: { state: "unavailable" }, leanCheckRuntimeMessage: "Lean check runtime unavailable", leanCheckRuntimePolling: true };
+  const h = createContentHarness({ status: "unformalized" }, {}, { manifest,
+    fetchOverride: async (url, options) => {
+      if (!url.endsWith("/lean-pane/check-runtime/runtime-session")) return;
+      assert.ok(!options?.method || options.method === "GET");
+      if (phase === "offline") throw new Error("Status connection lost");
+      const runtime = phase === "pending" ? { state: "unavailable", observation: { state: "pending", message: "Not published yet" } }
+        : { state: phase };
+      return { ok: true, json: async () => ({ runtime, polling: phase !== "ready",
+        message: phase === "pending" ? "Waiting for Lean runtime status" : phase === "unavailable" ? "Lean check runtime unavailable" : "" }) };
+    }
+  });
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  assert.match(h.bodyText(), /Waiting for Lean runtime status/);
+  assert.doesNotMatch(h.bodyText(), /Lean check runtime unavailable/);
+  assert.equal(h.document.body.querySelector(".ol-lean-project-pane-runtime").title, "Not published yet");
+  phase = "offline";
+  await h.runTimersAt(5000);
+  assert.match(h.bodyText(), /Lean runtime status unavailable · retrying/);
+  assert.doesNotMatch(h.bodyText(), /Lean check runtime unavailable/);
+  phase = "unavailable";
+  await h.runTimersAt(5000);
+  assert.match(h.bodyText(), /Lean check runtime unavailable/);
+  assert.equal(h.countSelector(".ol-lean-project-pane-runtime"), 0);
+  phase = "ready";
+  await h.runTimersAt(5000);
+  assert.doesNotMatch(h.bodyText(), /Lean (check )?runtime status? ?unavailable/);
+  assert.equal(h.countSelector(".ol-lean-project-pane-runtime"), 0);
+  assert.equal(h.pendingTimers().filter(delay => delay === 5000).length, 0, "healthy idle runtime stops polling");
+});
+
+test("settled solver results awaiting SQL observations stay neutral in collapsed and expanded inventory", async () => {
+  let fresh = false;
+  const manifest = () => ({ ok: true, rootFile: "main.tex", diagnostics: [],
+    items: Array.from({ length: 9 }, (_, n) => editableItem({ id: `theorem:target_${n}:0`, label: `target_${n}`,
+      inProgress: false, status: fresh ? "valid" : "synchronizing",
+      projection: { state: fresh ? "observed" : "inputs_changed" },
+      leanCheck: { status: fresh ? "checked" : "synchronizing" } })) });
+  const h = createContentHarness({}, {}, { locationPath: "/project/unknown", manifest });
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  const segment = h.document.body.querySelector(".ol-lean-project-progress-segment-unconfirmed");
+  assert.equal(segment.dataset.count, "9");
+  assert.match(segment.title, /Awaiting status/);
+  assert.equal(h.countSelector(".ol-lean-project-progress-segment-unformalized"), 0);
+  assert.equal(h.countSelector(".ol-lean-project-progress-segment-failed"), 0);
+  assert.match(h.bodyText(), /Updating proof statuses/);
+  h.clickPaneTreeRowText("main.tex");
+  assert.equal(h.countSelector(".ol-lean-project-check-chip-synchronizing"), 9);
+  assert.equal(h.countSelector(".ol-lean-project-check-chip-error"), 0);
+  assert.ok(h.pendingTimers().includes(5000), "terminal solver states must not stop observation polling");
+  fresh = true;
+  await h.runTimersAt(5000);
+  assert.equal(h.countSelector(".ol-lean-project-check-chip-checked"), 9);
+  assert.equal(h.countSelector(".ol-lean-project-pane-synchronizing"), 0);
+  assert.equal(h.document.body.querySelector(".ol-lean-project-progress-segment-success").dataset.count, "9");
+  assert.equal(h.pendingTimers().filter(ms => ms === 5000).length, 0);
+});
+
+test("a busy inventory metadata sync retries without a red banner or replaying formalizations", async () => {
+  let busy = true;
+  const h = createContentHarness({}, {}, { locationPath: "/project/unknown", manifest: () => ({ ok: true,
+    rootFile: "main.tex", items: [editableItem({ leanCheck: { status: "checked" } })], diagnostics: [],
+    inventorySync: busy ? { state: "pending", reason: "database_busy",
+      message: "Inventory synchronization is waiting for the project. Retrying automatically; saved formalizations are retained." } : null }) });
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  assert.equal(h.countSelector(".ol-lean-project-pane-diagnostics"), 0);
+  assert.match(h.bodyText(), /Retrying automatically; saved formalizations are retained/);
+  assert.ok(h.pendingTimers().includes(5000));
+  busy = false;
+  await h.runTimersAt(5000);
+  assert.equal(h.countSelector(".ol-lean-project-pane-synchronizing"), 0);
+  assert.equal(h.fetchCalls.filter(c => /\/formalize(?:\/all)?$/.test(c.url)).length, 0);
+});
+
+test("status refresh events share the accepted query instead of filling its worker lane", async () => {
+  let slow = false, complete = false;
+  const receipt = { workspace_command: true, command: { id: "status-query", state: "queued" } };
+  const h = createContentHarness({ status: "unformalized" }, {}, { fetchOverride: async url => {
+    if (slow && url.endsWith("/statuses")) return { ok: true, status: 202, json: async () => receipt };
+    if (url.endsWith("/commands/status-query")) return { ok: true, status: 200, json: async () => complete
+      ? { workspace_command: true, command: { id: "status-query", state: "succeeded", result: { statusCode: 200,
+          body: { statuses: { "theorem:demo_theorem": { status: "formalized" } }, projectActivity: { activeJobs: 0 } } } } }
+      : receipt };
+  } });
+  await h.loadVisibleTheorems();
+  slow = true;
+  const before = h.fetchCalls.filter(call => call.url.endsWith("/statuses")).length;
+  await h.runTimersAt(30000);
+  for (let i = 0; i < 5; i++) await h.setVisibility(false);
+  await h.runTimersAt(250);
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/statuses")).length, before + 1);
+  complete = true;
+  await h.runTimersAt(1000);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+});
 
 test("Lean pane initial inventory failure retries without a running item and stops when closed", async () => {
   let fail = true;
@@ -2808,6 +3094,109 @@ async function startNavigationQueue(items, entries, options = {}) {
   return harness;
 }
 
+async function progressRefreshHarness() {
+  const state = { processed: 0, accepted: false, done: false, fail: false, hold: false, reads: 0 };
+  class EventSource {
+    static instances = [];
+    constructor() { this.listeners = new Map(); EventSource.instances.push(this); }
+    addEventListener(type, fn) { this.listeners.set(type, fn); }
+    close() {}
+    emit(type) { this.listeners.get(type)?.({ data: '{}' }); }
+  }
+  const items = Array.from({ length: 9 }, (_, i) => queuePaneItem(`t${i}`));
+  const batch = () => ({ ok: true, batchId: 'navigation-batch', operation: 'formalize',
+    running: !state.done, done: state.done, pausedOn: null, items: items.map((item, i) => ({
+      targetKind: 'theorem', targetLabel: item.label,
+      state: i < state.processed ? 'formalized' : i === state.processed ? 'running' : 'pending'
+    })) });
+  const response = (value, status = 200) => ({ ok: status === 200, status, json: async () => value });
+  const h = await startNavigationQueue(items, batch().items, { EventSource,
+    manifest: () => ({ ok: true, rootFile: 'main.tex', diagnostics: [], items: items.map((item, i) => state.accepted
+      ? { ...item, status: i < state.processed ? 'valid' : i === state.processed ? 'in-progress' : 'synchronizing',
+        inProgress: i === state.processed, projection: i === state.processed ? undefined
+          : { state: i < state.processed ? 'observed' : 'inputs_changed' } }
+      : item) }),
+    fetchOverride: async (url) => {
+      if (url.endsWith('/formalize/all')) state.accepted = true;
+      if (!url.endsWith('/lean-pane/repair/status')) return;
+      state.reads++;
+      if (state.fail) return response({ message: 'SQL read temporarily unavailable' }, 503);
+      const snapshot = batch();
+      if (state.hold) await new Promise(resolve => { state.release = resolve; });
+      return response(snapshot);
+    }
+  });
+  for (const source of EventSource.instances) source.onopen?.();
+  await h.runTimersAt(0);
+  return { h, state, events: EventSource.instances[0] };
+}
+
+test('active batch and file inventory advance together every five seconds with a connected push stream', async () => {
+  const { h, state } = await progressRefreshHarness();
+  assert.equal(h.batchQueue().progress.now, '0');
+  assert.match(h.bodyText(), /0 verified · 1 running · 8 awaiting SQL status/);
+  const reads = state.reads;
+  const manifests = h.fetchCalls.filter(c => c.url.endsWith('/lean-pane/manifest')).length;
+  state.processed = 1;
+  await h.runTimersAt(5000);
+  assert.equal(state.reads, reads + 1);
+  assert.equal(h.fetchCalls.filter(c => c.url.endsWith('/lean-pane/manifest')).length, manifests + 1);
+  assert.equal(h.batchQueue().progress.now, '1');
+  assert.match(h.bodyText(), /Current · 2 of 9●t1/);
+  assert.match(h.bodyText(), /1 verified · 1 running · 7 awaiting SQL status/);
+  assert.equal(h.pendingTimers().filter(ms => ms === 5000).length, 1);
+  state.processed = 9; state.done = true;
+  await h.runTimersAt(5000);
+  assert.equal(h.batchQueue().progress.now, '9');
+  assert.match(h.bodyText(), /9 verified/);
+  assert.equal(h.pendingTimers().filter(ms => ms === 5000).length, 0);
+  assert.equal(h.fetchCalls.filter(c => c.url.endsWith('/formalize/all')).length, 1);
+  assert.ok(!h.fetchCalls.some(c => /cancel|restart|interrupt/.test(c.url)));
+});
+
+test('push bursts coalesce the shared batch and inventory read while SQL is slow', async () => {
+  const { h, state, events } = await progressRefreshHarness();
+  const reads = state.reads;
+  state.hold = true;
+  const cycle = h.runTimersAt(5000);
+  await flushPromises();
+  assert.ok(state.release);
+  for (let i = 0; i < 25; i++) events.emit('jobs-changed');
+  const burst = h.runTimersAt(0);
+  await flushPromises();
+  assert.equal(state.reads, reads + 1);
+  state.hold = false; state.release();
+  await Promise.all([cycle, burst]);
+  assert.equal(state.reads, reads + 1);
+  assert.equal(h.fetchCalls.filter(c => c.url.endsWith('/formalize/all')).length, 1);
+});
+
+test('a failed batch SQL read identifies the retained queue and catches up on the next inventory cycle', async () => {
+  const { h, state } = await progressRefreshHarness();
+  state.processed = 1; state.fail = true;
+  await h.runTimersAt(5000);
+  assert.equal(h.batchQueue().progress.now, '0');
+  assert.match(h.bodyText(), /Batch status delayed.*last loaded queue.*retrying automatically/);
+  assert.match(h.bodyText(), /1 verified · 1 running · 7 awaiting SQL status/);
+  state.fail = false;
+  await h.runTimersAt(5000);
+  assert.equal(h.batchQueue().progress.now, '1');
+  assert.doesNotMatch(h.bodyText(), /Batch status delayed/);
+});
+
+test('an old batch SQL response cannot repopulate the panel after a project switch', async () => {
+  const { h, state } = await progressRefreshHarness();
+  state.hold = true;
+  const cycle = h.runTimersAt(5000);
+  await flushPromises();
+  h.window.location.pathname = '/project/other-project';
+  await h.loadVisibleTheorems({ activeTex: 'A different document.' });
+  state.hold = false; state.release();
+  await cycle;
+  assert.equal(h.batchQueue(), null);
+  assert.ok(!h.fetchCalls.some(c => /cancel|restart|interrupt/.test(c.url)));
+});
+
 function queueNavigationButton(harness, label, action, kind = "theorem") {
   return harness.leanPane().querySelectorAll(".ol-lean-batch-queue-action").find((button) => {
     const key = JSON.parse(button.dataset.batchNavigationKey);
@@ -3699,7 +4088,7 @@ test("Formalize all carries the Overleaf title on every queued item without sour
 });
 
 for (const mirrorEnabled of [false,true]) {
-  test(`source is browser-published without reverse callbacks (mirror ${mirrorEnabled})`,async()=>{
+  test(`formalization source is browser-published without reverse callbacks (mirror ${mirrorEnabled})`,async()=>{
     let socket;
     class EventSource {
       listeners=new Map();
@@ -3707,9 +4096,18 @@ for (const mirrorEnabled of [false,true]) {
       addEventListener(type,callback){this.listeners.set(type,callback);}
       close(){}
     }
-    const h=createContentHarness({status:'formalized'},{},{EventSource,companionSettings:{leaTexMirrorEnabled:mirrorEnabled}});
+    const h=createContentHarness({status:'unformalized'},{},{EventSource,companionSettings:{leaTexMirrorEnabled:mirrorEnabled},fetchOverride(url){
+      if(url.includes('/download/zip')){
+        const zip=Buffer.from('UEsDBBQAAAAAAPW5TV0AAAAAAAAAAAAAAAAIAAAAbWFpbi50ZXhQSwECFAMUAAAAAAD1uU1dAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAgAEAAAAAbWFpbi50ZXhQSwUGAAAAAAEAAQA2AAAAJgAAAAAA','base64');
+        return {ok:true,arrayBuffer:async()=>zip.buffer.slice(zip.byteOffset,zip.byteOffset+zip.byteLength)};
+      }
+    }});
     await h.loadVisibleTheorems();
     assert.equal(socket.listeners.has('source-refresh-requested'),false);
+    assert.equal(h.fetchCalls.some(call=>call.url.endsWith('/source-context/publish')),false,'status reads do not publish source');
+    h.openTargetPopover();
+    h.clickButtonText('Formalize');
+    await flushPromises();
     const publication=h.fetchCalls.find(call=>call.url.endsWith('/source-context/publish'));
     assert.ok(publication,'visible source must be published by the browser');
     assert.equal(JSON.parse(publication.options.body).source_bundle.targetKey,'demo_theorem');
@@ -3739,6 +4137,301 @@ test('pane refresh preserves selected source/code text until the range is cleare
   harness.document.dispatchEvent({ type: 'selectionchange' });
   await flushPromises();
   assert.notEqual(harness.document.body.querySelector('.ol-lean-project-item'), selected);
+});
+
+// Batch admission is distinct from the eventual worker-created batch panel.
+test("concurrent batch targets share one publisher identity and ordered publication sequence", async () => {
+  let owner = null, sequence = 0, conflicts = 0;
+  const clients = [], publications = [];
+  const h = createContentHarness({ status: "unformalized" }, {}, {
+    companionSettings:{leaTexMirrorEnabled:false},
+    manifest:{ok:true,rootFile:'main.tex',items:Array.from({length:9},(_,i)=>queuePaneItem(`visible_${i}`)),diagnostics:[]},
+    fetchOverride: async (url, options) => {
+    if (url.endsWith("/source-context/publisher")) {
+      const value = JSON.parse(options.body);
+      clients.push(value.client_id);
+      if (owner && owner !== value.client_id) {
+        conflicts++;
+        return admissionResponse({ detail: { code: "publisher_conflict", generation: 1, retry_after_ms: 90000 } }, 409);
+      }
+      owner = value.client_id;
+      return admissionResponse({ generation: 1, sequence });
+    }
+    if (url.endsWith("/source-context/publish")) {
+      const value = JSON.parse(options.body);
+      assert.equal(value.client_id, owner);
+      assert.equal(value.sequence, ++sequence);
+      publications.push(value);
+      return admissionResponse({ source_context_ref: `source-${sequence}` });
+    }
+  } });
+  const targets = Array.from({ length: 9 }, (_, i) => ({ ...h.target, targetLabel: `visible_${i}` }));
+  await h.loadVisibleTheorems({ targets });
+  assert.equal(publications.length,0,'opening a document does not contend for publication');
+  h.clickPaneTrigger();
+  await flushPromises();
+  h.clickButtonText('Formalize all (9)');
+  await flushPromises();
+  assert.equal(new Set(clients).size, 1, "one page must not compete with itself for the document lease");
+  assert.equal(conflicts, 0);
+  assert.equal(publications.length, 9);
+});
+
+async function batchAdmissionHarness(options = {}) {
+  const item = queuePaneItem("queued_target");
+  const h = createContentHarness({ status: "unformalized" }, {}, {
+    manifest: { ok: true, rootFile: "main.tex", items: [item], diagnostics: [] },
+    companionSettings: { leaTexMirrorEnabled: false }, ...options
+  });
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  return h;
+}
+const admissionResponse = (value, status = 200) => ({ ok: status < 400, status, async json() { return value; } });
+const queuedAdmission = { workspace_command: true, command: { id: "sql-command", state: "queued" } };
+const admittedBatch = { batchId: "admitted-batch", operation: "formalize", done: false, running: true,
+  items: [{ targetKind: "theorem", targetLabel: "queued_target", state: "pending" }] };
+
+test("a batch click is visible during source preparation, deduplicated, and preserves source selection", async () => {
+  let release;
+  const h = await batchAdmissionHarness({ fetchOverride: async (url, options) => {
+    if (url.endsWith("/source-context/publish") && JSON.parse(options.body).source_bundle.targetKey === "queued_target") {
+      return new Promise(resolve => { release = () => resolve(admissionResponse({ source_context_ref: "frozen-target" })); });
+    }
+  } });
+  const button = h.document.body.querySelector(".ol-lean-formalize-all-button");
+  const selected = h.document.body.querySelector(".ol-lean-project-tree");
+  const selection = { isCollapsed: false, anchorNode: selected, focusNode: selected };
+  h.document.getSelection = () => selection;
+  button.click();
+  assert.match(h.paneText(), /Preparing source for your request/);
+  button.click(); // A retained/stale DOM listener must also deduplicate.
+  await flushPromises();
+  assert.equal(button.disabled, true);
+  assert.equal(h.document.body.querySelector(".ol-lean-project-tree"), selected);
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 0);
+  release();
+  await flushPromises();
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 1);
+  assert.equal(h.document.body.querySelector(".ol-lean-project-tree"), selected);
+});
+
+test("a displayed batch button retains its target set across a manifest refresh", async () => {
+  let items = [queuePaneItem("queued_target")];
+  const h = await batchAdmissionHarness({ manifest: () => ({ ok: true, items, diagnostics: [] }) });
+  const displayed = h.document.body.querySelector(".ol-lean-formalize-all-button");
+  items = [{ ...items[0], status: "unknown" }];
+  h.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  displayed.click();
+  await flushPromises();
+  const calls = h.fetchCalls.filter(call => call.url.endsWith("/formalize/all"));
+  assert.equal(calls.length, 1);
+  assert.equal(JSON.parse(calls[0].options.body).items[0].targetLabel, "queued_target");
+});
+
+test("a disconnected click retries then shows SQL acceptance while the worker is unavailable", async () => {
+  let offline = false, failRead = false, complete = false;
+  const h = await batchAdmissionHarness({ fetchOverride: async url => {
+    if (offline && url.endsWith("/settings")) return admissionResponse({ message: "API starting" }, 503);
+    if (url.endsWith("/formalize/all")) return admissionResponse(queuedAdmission, 202);
+    if (url.endsWith("/commands/sql-command")) {
+      if (failRead) throw new TypeError("Connection interrupted");
+      return admissionResponse(complete ? { workspace_command: true, command: { id: "sql-command", state: "succeeded",
+        result: { statusCode: 200, body: admittedBatch } } } : queuedAdmission);
+    }
+  } });
+  offline = true;
+  h.clickButtonText("Formalize all (1)");
+  await flushPromises();
+  assert.match(h.paneText(), /Waiting for a connection.*pending in this tab/);
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 0);
+  offline = false;
+  await h.runTimersAt(1000);
+  assert.match(h.paneText(), /Queued in the database.*Waiting for Lea/);
+  const status = h.document.body.querySelector(".ol-lean-batch-admission").querySelector("p");
+  assert.equal(status.getAttribute("role"), "status");
+  assert.equal(status.getAttribute("aria-live"), "polite");
+  failRead = true;
+  await h.runTimersAt(1000);
+  assert.match(h.paneText(), /request is accepted.*Reconnecting/);
+  failRead = false;
+  complete = true;
+  h.clickButtonText("Retry connection now");
+  await flushPromises();
+  assert.equal(h.countSelector(".ol-lean-batch-admission"), 0);
+  assert.ok(h.batchQueue());
+  const posts = h.fetchCalls.filter(call => call.url.endsWith("/formalize/all"));
+  assert.equal(posts.length, 1, "observing an accepted command must never resubmit it");
+  assert.equal(posts[0].options.headers.get("Prefer"), "respond-async");
+});
+
+test("a publisher lease conflict retains the batch intent without repeated HTTP claims", async () => {
+  let blocked = false, claims = 0;
+  const h = await batchAdmissionHarness({ fetchOverride: async url => {
+    if (blocked && url.endsWith("/source-context/publisher")) {
+      claims++;
+      return admissionResponse({ detail: { code: "publisher_conflict", generation: 7, retry_after_ms: 60000,
+        message: "Another tab owns this document publication" } }, 409);
+    }
+  } });
+  blocked = true;
+  h.clickButtonText("Formalize all (1)");
+  await flushPromises();
+  assert.match(h.paneText(), /Waiting for the source publication lease.*request is pending.*retry automatically/);
+  assert.equal(h.hasButtonText("Dismiss request"), false);
+  assert.equal(h.hasButtonText("Cancel request"), true);
+  assert.ok(h.pendingTimers().some(delay => delay >= 59000 && delay <= 60000));
+  for (let i = 0; i < 3; i++) {
+    h.clickButtonText("Retry connection now");
+    await flushPromises();
+  }
+  assert.equal(claims, 1, "retry controls and all target callers share the cached lease conflict");
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 0);
+  h.clickButtonText("Cancel request");
+  assert.equal(h.countSelector(".ol-lean-batch-admission"), 0);
+});
+
+test("batch admission updates preserve the user's Blueprint view", async () => {
+  let release;
+  const h = await batchAdmissionHarness({ fetchOverride: async url => {
+    if (url.endsWith("/formalize/all")) return admissionResponse(queuedAdmission, 202);
+    if (url.endsWith("/commands/sql-command")) return new Promise(resolve => { release = () => resolve(admissionResponse({
+      workspace_command: true, command: { id: "sql-command", state: "succeeded", result: { statusCode: 200, body: admittedBatch } }
+    })); });
+  } });
+  h.clickButtonText("Formalize all (1)");
+  await flushPromises();
+  await h.runTimersAt(1000);
+  h.clickButtonText("Blueprint");
+  await flushPromises();
+  const blueprint = h.paneText();
+  release();
+  await flushPromises();
+  assert.equal(h.paneText(), blueprint);
+  assert.equal(h.countSelector(".ol-lean-batch-admission"), 0);
+  h.clickButtonText("Items");
+  assert.ok(h.batchQueue());
+});
+
+test("an ambiguous batch POST retains frozen bytes and its idempotency key through reconnect", async () => {
+  let attempts = 0;
+  const h = await batchAdmissionHarness({ fetchOverride: async url => {
+    if (url.endsWith("/formalize/all")) {
+      if (++attempts <= 2) throw new TypeError("Acknowledgement lost");
+      return admissionResponse(queuedAdmission, 202);
+    }
+  } });
+  h.clickButtonText("Formalize all (1)");
+  await flushPromises();
+  assert.match(h.paneText(), /Acceptance is unconfirmed.*same request/);
+  const retry = h.document.body.querySelector(".ol-lean-batch-admission").querySelector("button");
+  retry.click();
+  retry.click();
+  await flushPromises();
+  const posts = h.fetchCalls.filter(call => call.url.endsWith("/formalize/all"));
+  assert.equal(posts.length, 3);
+  assert.equal(new Set(posts.map(call => call.options.body)).size, 1);
+  assert.equal(new Set(posts.map(call => call.options.headers.get("Idempotency-Key"))).size, 1);
+  assert.match(h.paneText(), /Queued in the database/);
+});
+
+for (const changed of ["source", "project", "canceled"]) {
+  test(`batch preparation cannot submit after its ${changed} changes`, async () => {
+    let release;
+    const h = await batchAdmissionHarness({ fetchOverride: async (url, options) => {
+      if (url.endsWith("/source-context/publish") && JSON.parse(options.body).source_bundle.targetKey === "queued_target") {
+        return new Promise(resolve => { release = () => resolve(admissionResponse({ source_context_ref: "frozen-target" })); });
+      }
+    } });
+    h.clickButtonText("Formalize all (1)");
+    await flushPromises();
+    if (changed === "source") h.window.postMessage({ type: "OL_LEAN_TARGETS_VISIBLE", targets: [h.target], activeTex: "Changed source", activePath: "main.tex" });
+    if (changed === "project") h.window.location.pathname = "/project/another-document";
+    if (changed === "canceled") h.clickButtonText("Cancel request");
+    release();
+    await flushPromises();
+    assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 0);
+    if (changed === "source") assert.match(h.paneText(), /document changed before this request was queued/);
+    if (changed === "canceled") assert.equal(h.countSelector(".ol-lean-batch-admission"), 0);
+  });
+}
+
+test("a stale preparation cancel control cannot discard an accepted SQL command", async () => {
+  let release;
+  const h = await batchAdmissionHarness({ fetchOverride: async (url, options) => {
+    if (url.endsWith("/source-context/publish") && JSON.parse(options.body).source_bundle.targetKey === "queued_target") {
+      return new Promise(resolve => { release = () => resolve(admissionResponse({ source_context_ref: "frozen-target" })); });
+    }
+    if (url.endsWith("/formalize/all")) return admissionResponse(queuedAdmission, 202);
+  } });
+  h.clickButtonText("Formalize all (1)");
+  await flushPromises();
+  const cancel = h.document.body.querySelector(".ol-lean-batch-admission").querySelector("button");
+  release();
+  await flushPromises();
+  assert.match(h.paneText(), /Queued in the database/);
+  cancel.click();
+  assert.match(h.paneText(), /Queued in the database/);
+  assert.equal(h.hasButtonText("Formalize all (1)"), false);
+});
+
+test("a timed-out source publication retains the click until publication can reconnect", async () => {
+  let stalled = true;
+  const h = await batchAdmissionHarness({ fetchOverride: async (url, options) => {
+    if (stalled && url.endsWith("/source-context/publish") && JSON.parse(options.body).source_bundle.targetKey === "queued_target") {
+      return new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("Publication timed out")), { once: true }));
+    }
+  } });
+  h.clickButtonText("Formalize all (1)");
+  await flushPromises();
+  await h.runTimersAt(10000);
+  assert.match(h.paneText(), /Waiting for a connection.*pending in this tab/);
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 0);
+  stalled = false;
+  h.clickButtonText("Retry connection now");
+  await flushPromises();
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 1);
+});
+
+for (const status of [429, 422]) {
+  test(`queue admission HTTP ${status} retains or rejects the request explicitly`, async () => {
+    const h = await batchAdmissionHarness({ fetchOverride: async url => {
+      if (url.endsWith("/formalize/all")) return admissionResponse({ message: "Admission rejected" }, status);
+    } });
+    h.clickButtonText("Formalize all (1)");
+    await flushPromises();
+    if (status === 429) {
+      assert.match(h.paneText(), /Lea is busy.*pending in this tab.*retry automatically/);
+      assert.equal(h.hasButtonText("Cancel request"), true, "a capacity rejection can still be withdrawn before admission");
+      h.clickButtonText("Retry connection now");
+      await flushPromises();
+      const posts = h.fetchCalls.filter(call => call.url.endsWith("/formalize/all"));
+      assert.equal(posts.length, 2);
+      assert.equal(posts[0].options.headers.get("Idempotency-Key"), posts[1].options.headers.get("Idempotency-Key"));
+      assert.equal(posts[0].options.body, posts[1].options.body);
+    } else {
+      assert.match(h.paneText(), /Admission rejected/);
+      assert.equal(h.hasButtonText("Retry connection now"), false);
+      assert.equal(h.hasButtonText("Dismiss request"), true);
+    }
+  });
+}
+
+test("a terminal queued-command failure is visible and does not auto-resubmit", async () => {
+  const h = await batchAdmissionHarness({ fetchOverride: async url => {
+    if (url.endsWith("/formalize/all")) return admissionResponse({ workspace_command: true, command: {
+      id: "failed-command", state: "failed", error_status: 503, error: "Worker requires reconciliation" } }, 202);
+  } });
+  h.clickButtonText("Formalize all (1)");
+  await flushPromises();
+  assert.match(h.paneText(), /Worker requires reconciliation/);
+  assert.equal(h.hasButtonText("Retry connection now"), false);
+  await h.runTimersAt(1000);
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 1);
+  h.clickButtonText("Dismiss request");
+  assert.equal(h.hasButtonText("Formalize all (1)"), true);
 });
 
 function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
@@ -4022,7 +4715,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
             return options.repairAll || { ok: true, batchId: "batch-1", done: false, pausedOn: null, items: [] };
           }
           if (String(url).includes("/lean-pane/repair/status")) {
-            return options.repairStatus || options.repairAll || { ok: true, batchId: "batch-1", done: true, pausedOn: null, items: [] };
+            return options.repairStatus || options.repairAll || options.targetBatch || { ok: true, batchId: "batch-1", done: true, pausedOn: null, items: [] };
           }
           return { statuses: { [`${target.targetKind}:${target.targetLabel}`]: statusInfo } };
         }
@@ -4112,10 +4805,10 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
     async loadStatusForVisibleTheorem() {
       await this.loadVisibleTheorems();
     },
-    async loadVisibleTheorems({ diagnostics = [], activeTex } = {}) {
+    async loadVisibleTheorems({ diagnostics = [], activeTex, targets = [target] } = {}) {
       window.postMessage({
         type: "OL_LEAN_TARGETS_VISIBLE",
-        targets: [target],
+        targets,
         diagnostics,
         // A caller-supplied activeTex marks the source as changed, which is
         // what schedules a Lean-pane manifest refresh (content.js only

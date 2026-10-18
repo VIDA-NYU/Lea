@@ -24,7 +24,9 @@ export function LeanCheckRuntimeStatus({ sessionId, active, refreshKey }: {
       controller = request;
       let next: LeanCheckRuntime;
       try { next = await fetchLeanCheckRuntime(sessionId!, request.signal); }
-      catch { next = { state: 'unavailable' }; }
+      catch { next = { state: 'unavailable', observation: {
+        state: 'unavailable', message: 'Could not reach the runtime status API. Retrying automatically.',
+      } }; }
       if (disposed || request.signal.aborted || controller !== request) return;
       setRuntime(next);
       if (runtimeNeedsPolling(next, checking)) timer = setTimeout(refresh, 5000);
@@ -36,5 +38,5 @@ export function LeanCheckRuntimeStatus({ sessionId, active, refreshKey }: {
   }, [sessionId, checking, refreshKey]);
   const message = runtimeStatusMessage(runtime);
   if (!message) return null;
-  return <div className="reconnect-chip" role="status" title={runtime?.last_failure?.message || undefined}>{message}</div>;
+  return <div className="reconnect-chip" data-runtime-observation={runtime?.observation?.state} role="status" title={runtime?.observation?.message || runtime?.last_failure?.message || undefined}>{message}</div>;
 }

@@ -548,12 +548,25 @@ def update_formalization(
         current = _formalization_from_conn(conn, formalization_id)
         if not current:
             return None
-        if declaration_name is not None and declaration_name != current.get("declaration_name"):
-            artifact = conn.execute(
-                "select 1 from artifacts where formalization_id = ? limit 1",
-                (formalization_id,),
-            ).fetchone()
-            if artifact:
+        values = {
+            'display_title': (
+                str(display_title).strip()[:160] if display_title is not None else current["display_title"]
+            ) or current["display_title"],
+            'declaration_name': (
+                str(declaration_name).strip() or None if declaration_name is not None else current["declaration_name"]
+            ),
+            'statement': statement if statement is not None else current["statement"],
+            'kind': _normalize_formalization_kind(kind) if kind is not None else current["kind"],
+            'source_hash': (
+                str(source_hash).strip() or None if source_hash is not None else current["source_hash"]
+            ),
+        }
+        # Inventory refreshes must not invalidate current proof projections or
+        # restart an in-progress backfill when the target is unchanged.
+        if all(current[key] == value for key, value in values.items()):
+            return current
+        if values['declaration_name'] != current['declaration_name']:
+            if conn.execute('select 1 from artifacts where formalization_id=? limit 1',(formalization_id,)).fetchone():
                 raise ValueError("a checked formalization's declaration cannot be renamed here")
         conn.execute(
             """
@@ -562,27 +575,7 @@ def update_formalization(
                 source_hash = ?, updated_at = ?
             where id = ?
             """,
-            (
-                (
-                    str(display_title).strip()[:160]
-                    if display_title is not None
-                    else current["display_title"]
-                ) or current["display_title"],
-                (
-                    str(declaration_name).strip() or None
-                    if declaration_name is not None
-                    else current["declaration_name"]
-                ),
-                statement if statement is not None else current["statement"],
-                _normalize_formalization_kind(kind) if kind is not None else current["kind"],
-                (
-                    str(source_hash).strip() or None
-                    if source_hash is not None
-                    else current["source_hash"]
-                ),
-                utc_now(),
-                formalization_id,
-            ),
+            (*values.values(), utc_now(), formalization_id),
         )
         return _formalization_from_conn(conn, formalization_id)
 

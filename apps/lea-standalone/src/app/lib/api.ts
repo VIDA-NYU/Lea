@@ -1067,7 +1067,14 @@ export async function writeSessionFile(
 
 export async function fetchLeanCheckRuntime(sessionId: string, signal?: AbortSignal): Promise<LeanCheckRuntime> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/lean-check-runtime`, { signal });
-  if (!response.ok) return { state: 'unavailable' };
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const detail = body.detail;
+    return { state: 'unavailable', observation: {
+      state: response.status === 503 && detail?.error === 'projection_unavailable' ? 'pending' : 'unavailable',
+      message: typeof detail === 'string' ? detail : detail?.message || body.message || `Could not read Lean runtime status (HTTP ${response.status}).`,
+    } };
+  }
   return readWorkspaceResponse(response);
 }
 

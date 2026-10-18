@@ -1,0 +1,45 @@
+\demotitle{LEA DEMO / 03}{One supporting result, two consumers}
+\section{A shifted square}
+
+\begin{definition}[Shifted square]\label{def:demo-shifted-square}
+% lea: define label=demo_shifted_square
+% lea: context={Use a computational definition named demo_shifted_square with explicit arguments (a x : Real) in that order, result Real, and body (x - a) ^ 2. The notation Q_a(x) denotes this definition.}
+For $a,x\in\mathbb{R}$, set $Q_a(x)=(x-a)^2$.
+\end{definition}
+
+% Intentionally unmarked: this is supporting source mathematics, not an item.
+% Do not add its LaTeX label to uses. The consumers request a shared helper.
+\begin{lemma}[Shift identity]\label{lem:demo-shift-identity}
+For all $a,t\in\mathbb{R}$,
+\[
+  Q_a(a+t)=t^2.
+\]
+\end{lemma}
+\begin{proof}
+Substitute the definition and simplify $(a+t)-a=t$.
+\end{proof}
+
+\begin{theorem}[One unit from the center]\label{thm:demo-shift-one}
+% lea: formalize label=demo_shift_one uses={demo_shifted_square}
+% lea: context={Follow the author's proof using the unmarked Shift identity. Search the project library and Mathlib first. If this exact result for the custom definition is absent, call request_project_dependency with mode deferred, name demo_shift_identity, kind theorem, and signature (a t : Real) : demo_shifted_square a (a + t) = t ^ 2 using the existing definition's canonical name and import. Deferred mode is intentional for this sharing demonstration even though the proof is short. Use the host-assigned module and declaration. Do not replace the shared result with a private helper or directly expand this consumer.}
+For every $a\in\mathbb{R}$, $Q_a(a+1)=1$.
+\end{theorem}
+\begin{proof}
+% lea: proof-for=demo_shift_one
+Apply the Shift identity with $t=1$, then simplify $1^2=1$.
+\end{proof}
+
+\begin{theorem}[Two units from the center]\label{thm:demo-shift-two}
+% lea: formalize label=demo_shift_two uses={demo_shifted_square}
+% lea: context={Apply the same unrestricted Shift identity as the first consumer. Search for the checked shared helper demo_shift_identity and register reuse through request_project_dependency with kind theorem and signature (a t : Real) : demo_shifted_square a (a + t) = t ^ 2 using the existing definition's canonical name and import. Request mode deferred only if it is not already available. Use the host-assigned import and declaration. Do not reprove the identity independently or reserve a specialized version.}
+For every $a\in\mathbb{R}$, $Q_a(a+2)=4$.
+\end{theorem}
+\begin{proof}
+% lea: proof-for=demo_shift_two
+Apply the same Shift identity with $t=2$, then simplify $2^2=4$.
+\end{proof}
+
+\vfill
+{\small\color{leagreen}The unmarked identity supplies source context.
+The shared-results view shows whether a formal helper was actually created
+and reused.}

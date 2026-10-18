@@ -361,7 +361,7 @@
       "authority": "Database",
       "target": "database-query",
       "stage": 6,
-      "compatibility": "Mutating actions pass the original idempotency key through regulated queue intake; immutable source and preferences use SQL-only publication."
+      "compatibility": "Mutating actions pass the original idempotency key through regulated queue intake; immutable source and preferences use SQL-only publication. Batch and compatibility inventory/status clients may request immediate SQL receipts with Prefer: respond-async and observe them through database reads while the worker completes the accepted request. Runtime status retains the legacy runtime/message envelope using a fresh SQL GET, distinguishes missing or expired observations from compiler failures, and never admits a check. Project identity GETs retain the UI identity envelope, forward exact SQL namespaces and rename revisions, and distinguish missing projects from read failures."
     },
     "workspace-command": {
       "caller": "Standalone or Overleaf UI",
@@ -668,5 +668,5 @@
     "adapter GET /api/editor/requests/{command_id}": "editor_query",
     "adapter DELETE /api/editor/clients/current": "editor_buffer"
   },
-  "companion_dispatch_sha256": "376c9496b8f53ea30d41a25add502d8b38e153b57496be3b80b9ad822bf1fff4"
+  "companion_dispatch_sha256": "74ae548f54420378bd430e023504ed964d29c3100f37c0202d07886ddf9ff749"
 }

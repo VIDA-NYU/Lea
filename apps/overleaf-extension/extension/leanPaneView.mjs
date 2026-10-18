@@ -97,6 +97,7 @@ const PANE_STATUS_LABELS = {
   invalid: "invalid",
   stale: "out of date",
   error: "error",
+  synchronizing: "updating status",
   mixed: "mixed",
   unknown: "unknown"
 };
@@ -177,6 +178,8 @@ const PROGRESS_SEGMENT_DEFS = [
   { id: "sorry-stubbed", label: "Sorry-stubbed", countKey: "sorryStubbed" },
   { id: "failed", label: "Failed", countKey: "failed" },
   { id: "out-of-date", label: "Out of date", countKey: "outOfDate" },
+  { id: "running", label: "Running", countKey: "inProgress" },
+  { id: "unconfirmed", label: "Awaiting status", countKey: "unconfirmed" },
   { id: "unformalized", label: "Unformalized", countKey: "unformalized" }
 ];
 
@@ -410,6 +413,7 @@ export function aggregatePaneStatus(items) {
   if (statuses.includes("error")) return "error";
   if (statuses.includes("invalid")) return "invalid";
   if (statuses.includes("stale")) return "stale";
+  if (hasPendingPaneObservations(items)) return "synchronizing";
   if (statuses.includes("missing-stub")) return "missing-stub";
   if (statuses.includes("stub-generated")) return "stub-generated";
   if (statuses.every((status) => SUCCESS_PANE_STATUSES.has(status))) {
@@ -422,6 +426,9 @@ export function aggregatePaneStatus(items) {
 
 export function paneProgressBucketForItem(item) {
   const status = String(item?.status || item?.effectiveStatus || "unknown").toLowerCase();
+  if (PROGRESS_IN_PROGRESS_STATUSES.has(status)) return "inProgress";
+  if (hasPendingPaneObservations([item]) || ["unknown", "unavailable", "offline"].includes(status)) return "unconfirmed";
+  if (item?.inProgress) return "inProgress";
   if (PROGRESS_SUCCESS_STATUSES.has(status)) return "success";
   if (status === "disproved") return "disproved";
   if (PROGRESS_STUB_STATUSES.has(status)) return "sorryStubbed";
@@ -439,17 +446,26 @@ export function summarizePaneProgress(items) {
     failed: 0,
     outOfDate: 0,
     unformalized: 0,
+    unconfirmed: 0,
     inProgress: 0
   };
   for (const item of Array.isArray(items) ? items : []) {
     summary.total += 1;
     summary[paneProgressBucketForItem(item)] += 1;
-    const status = String(item?.status || "").toLowerCase();
-    if (item?.inProgress || PROGRESS_IN_PROGRESS_STATUSES.has(status)) {
-      summary.inProgress += 1;
-    }
   }
   return summary;
+}
+
+export function formatPaneProgressSummary(summary) {
+  const parts = [`${Number(summary?.success || 0)} verified`];
+  appendProgressLabelPart(parts, summary?.disproved, "disproved");
+  appendProgressLabelPart(parts, summary?.inProgress, "running");
+  appendProgressLabelPart(parts, summary?.unconfirmed, "awaiting SQL status");
+  appendProgressLabelPart(parts, summary?.sorryStubbed, "sorry-stubbed");
+  appendProgressLabelPart(parts, summary?.failed, "failed");
+  appendProgressLabelPart(parts, summary?.outOfDate, "out of date");
+  appendProgressLabelPart(parts, summary?.unformalized, "unformalized");
+  return parts.join(" · ");
 }
 
 export function paneProgressSegments(summary) {
@@ -480,6 +496,7 @@ export function formatPaneProgressLabel(path, summary) {
   appendProgressLabelPart(parts, summary?.failed, "failed");
   appendProgressLabelPart(parts, summary?.outOfDate, "out of date");
   appendProgressLabelPart(parts, summary?.unformalized, "unformalized");
+  appendProgressLabelPart(parts, summary?.unconfirmed, "awaiting status");
   appendProgressLabelPart(parts, summary?.inProgress, "in progress");
   return `${parts.join(", ")}.`;
 }
@@ -526,6 +543,13 @@ export function hasInProgressItems(items) {
   return Array.isArray(items) && items.some((item) => item && item.inProgress);
 }
 
+// Observation work continues after the solver finishes. It does not imply a
+// compiler error, a missing proof, or current verification of an earlier result.
+export function hasPendingPaneObservations(items) {
+  return Array.isArray(items) && items.some(item => item && (item.status === "synchronizing"
+    || item.projection && item.projection.state !== "observed"));
+}
+
 // Pane statuses included by the project-level "Formalize all" action. Completed
 // work stays out of a batch even though its per-item Re-formalize action remains
 // available.
@@ -537,7 +561,7 @@ const BATCH_FORMALIZABLE_PANE_STATUSES = new Set([
 // Any valid marker target can be rerun, including a settled valid, defined, or
 // disproved item; only an active run suppresses the action.
 export function canFormalizePaneItem(item) {
-  if (!item || !item.formalizable || item.inProgress) return false;
+  if (!item || !item.formalizable || item.inProgress || hasPendingPaneObservations([item])) return false;
   return item.status !== "in-progress";
 }
 
@@ -561,7 +585,7 @@ export function canContinueBestEffort(item) {
 // artifact yet — definitions always get a full body, and once a stub or proof
 // exists, Formalize / Re-formalize is the right action.
 export function canStubPaneItem(item) {
-  if (!item || !item.formalizable || item.inProgress) return false;
+  if (!item || !item.formalizable || item.inProgress || hasPendingPaneObservations([item])) return false;
   if (item.leanKind === "def") return false;
   return item.status === "missing-stub";
 }

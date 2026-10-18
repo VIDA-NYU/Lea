@@ -94,6 +94,17 @@ def metadata(scope):
             'environment_revision':value['environment_revision'] if value else None}
 
 
+def recorded_fact(scope,kind,entity_id):
+    """Display history only. Never use this as current proof or review evidence."""
+    with db.connect() as conn:
+        row=conn.execute('''select v.payload from core_projection_enrollment e
+            join core_observations o on o.id=e.observation_id and o.scope=e.scope
+            join core_projection_values v on v.observation_id=o.id and v.scope=o.scope
+            where e.scope=? and e.enabled=1 and o.state='observed' and v.kind=? and v.entity_id=?''',
+            (scope,kind,str(entity_id))).fetchone()
+    return json.loads(row[0]) if row else None
+
+
 def apply_step(step,scope=None):
     scope=scope or scope_for(session_id=step['session_id'])
     current=fact(scope,'step',step['id']) or {}

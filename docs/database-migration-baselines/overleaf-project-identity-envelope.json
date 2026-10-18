@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T03:23:57.057525+00:00",
+  "scope": "Correct the public transport project identity response; read-only live SQL/HTTP observation and isolated tests. No project, namespace, workspace, proof or run mutation.",
+  "diagnosis": {
+    "before": {
+      "http_status": 200,
+      "identity_envelope_present": false,
+      "sql_namespace": "Lea.FailInduce1OnlineLaTeXEditorOverleaf"
+    },
+    "cause": "SQL API returns the identity object directly. The public transport forwarded it unchanged while content.js consumes payload.identity, yielding null and the missing-namespace placeholder."
+  },
+  "changes": [
+    "Restore {ok:true,identity} for the SQL-backed public GET. Preserve exact namespace, project ID, namespace revision and rename state.",
+    "Represent a real 404 as exists=false without inventing a namespace. Preserve all other API failures as errors.",
+    "Browser fixture now consumes the correct envelope; a browser integration case passes through the actual public transport before and after SQL project creation."
+  ],
+  "after": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "identity": {
+        "namespaceRevision": 1,
+        "renameInProgress": false,
+        "projectId": "6e77cfd0-094a-44a2-a50a-e2739d139a67",
+        "overleafProjectId": "6ad188c333723b9dbc0bb6fe",
+        "slug": "6ad188c333723b9dbc0bb6fe",
+        "projectName": "FailInduce1 - Online LaTeX Editor Overleaf",
+        "nameSource": "overleaf",
+        "namespace": "Lea.FailInduce1OnlineLaTeXEditorOverleaf",
+        "namespaceEditable": true,
+        "repoPath": "proofs/Lea/FailInduce1OnlineLaTeXEditorOverleaf",
+        "hasRecordedProofs": true,
+        "exists": true
+      }
+    }
+  },
+  "validation": {
+    "overleaf_tests": 832,
+    "browser_cases": 5,
+    "browser_checks": [
+      "A genuinely absent project shows the placeholder.",
+      "A subsequent SQL project creation becomes visible on header refresh through the real public transport.",
+      "Project title and exact namespace reach the rendered header.",
+      "Tree DOM and selected source stay unchanged.",
+      "Long namespace header visually inspected at narrow width."
+    ],
+    "transport_checks": [
+      "Existing SQL namespace and revision returned without alteration.",
+      "Rename-in-progress state preserved.",
+      "A 503 cannot be represented as a nonexistent project.",
+      "All identity upstream calls are GETs; no command admission."
+    ],
+    "boundary_audit": {
+      "api_routes": 179,
+      "companion_branches": 27,
+      "result": "pass"
+    },
+    "whitespace": "pass"
+  },
+  "activation": {
+    "previous_transport_pid": 68256,
+    "new_transport_pid": 72235,
+    "api_pid_unchanged": true,
+    "worker_identity_unchanged": true,
+    "worker_ready": true,
+    "transport_only": true
+  },
+  "source_sha256": {
+    "apps/overleaf-extension/companion/server.mjs": "66e51bfba2b06120cc2010cb25e3f0347c6bcdfb70b37c2497e7d52c28183d65",
+    "apps/overleaf-extension/tests/databaseTransport.test.mjs": "4d26e2ccd9775454197d37ace0b1676c81272c21fe52d562c9eeb9ebb5f26122",
+    "tests/browser/overleaf-admission.spec.mjs": "94bb907e676073f82010cdf27339da13e91e10181a1b670cbc9523286404a886"
+  }
+}

@@ -107,16 +107,13 @@ def start():
         _threads.append(worker);worker.start()
         while not _stop.wait(5):
             try:
-                from .command_execution import heartbeat_solvers
                 from .run_commands import adopt_pending
-                if not commands.heartbeat_worker(OWNER,_epoch):
+                if not commands.heartbeat_execution(OWNER,_epoch):
                     logging.getLogger(__name__).error('Command worker lease expired; restart and reconcile before execution resumes')
-                heartbeat_solvers(OWNER,_epoch)
-                from .workspace_commands import heartbeat
-                heartbeat(OWNER,_epoch)
-                with db.connect() as conn:
-                    tokens=[dict(r) for r in conn.execute("select * from commands where owner=? and worker_epoch=? and state='claimed' and kind like 'companion.%'",(OWNER,_epoch))]
-                for token in tokens:commands.heartbeat(token)
+                    from . import runtime, worker_diagnostics
+                    worker_diagnostics.event('worker.command_lease_lost', severity='error')
+                    runtime.begin_drain(force=True, restart=True)
+                    return
                 commands.recover()
                 adopt_pending()
             except Exception:logging.getLogger(__name__).exception('Command recovery failed')

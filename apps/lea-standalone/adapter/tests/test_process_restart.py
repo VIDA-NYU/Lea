@@ -91,9 +91,11 @@ def _launch(database: Path, port: int, root: Path, mode="idle"):
              LEA_MODEL_CATALOG_OFFLINE='true',LITELLM_LOCAL_MODEL_COST_MAP='True')
     worker=subprocess.Popen(
         [sys.executable, "-u", "-c", SERVER, str(database), str(port), str(root), mode],
+        cwd=Path(__file__).resolve().parents[1],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,env={**env,'LEA_PROCESS_ROLE':'worker'},
     )
     api=subprocess.Popen([sys.executable,'run_api.py','--port',str(port),'--log-level','error'],
+        cwd=Path(__file__).resolve().parents[1],
         env={**env,'LEA_PROCESS_ROLE':'api'},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     return SplitFixture(worker,api)
 

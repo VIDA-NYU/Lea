@@ -76,7 +76,7 @@ def test_read_only_library_search_does_not_resolve_every_environment(project, mo
         (repo / (name + '.lean')).write_text('theorem ' + name + ' : True := by trivial\n')
     monkeypatch.setattr(library, 'environment_hash', lambda *_: pytest.fail('Search inventory must not resolve environments'))
     monkeypatch.setattr(library, 'validate_module', lambda *_: pytest.fail('Read-only search must not validate'))
-    result = library.search(p, 'Needle', validate=False)
+    result = library.search(p, 'Needle')
     assert [d['path'] for d in result['declarations']] == ['Needle.lean']
     assert not result['declarations'][0]['reusable']
 
@@ -94,14 +94,14 @@ def test_library_search_validates_only_returned_modules_and_keeps_freshness_chec
     monkeypatch.setattr(library, 'inspect_module', lambda *args: [{**library._lexical((repo / args[-1]).read_text())[0],
         'axioms': [], 'type_expr': 'True', 'body_expr': None}])
     monkeypatch.setattr(library, 'verify', lambda path: (audits.append(path) or VerifyResult('ok')))
-    result = library.search(p, 'Needle')
+    result = library.search(p, 'Needle', validate=True)
     assert hashes and set(hashes) == {'Needle.lean'}
     assert len(audits) == 1 and result['declarations'][0]['reusable']
     hashes.clear()
-    library.search(p, 'Needle')
+    library.search(p, 'Needle', validate=True)
     assert set(hashes) == {'Needle.lean'} and len(audits) == 1
     (repo / 'Needle.lean').write_text('theorem Needle : True := by exact True.intro\n')
-    library.search(p, 'Needle')
+    library.search(p, 'Needle', validate=True)
     assert len(audits) == 2
 
 

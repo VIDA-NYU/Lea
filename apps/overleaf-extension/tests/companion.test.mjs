@@ -18,6 +18,9 @@ import {
   handleReview,
   handleFormalize,
   handleFormalizeAll,
+  handleBatchCancel,
+  handleFormalizeBatchReportSave,
+  handleLeanPaneRepairStatus,
   handleDependencyRetry,
   handleDependencyWaitControl,
   admitDependencyContinuation,
@@ -48,6 +51,9 @@ import {
   handleUpdateLeaSettings,
   recoverFormalizedStatusFromTargetPath,
   recoverInterruptedJobs,
+  reconcileRecoveredBatches,
+  resolveTheoremUses,
+  setWorkerDatabase,
   resolveProofOutcome,
   validateLeaRepo
 } from "../companion/workerService.mjs";
@@ -1131,6 +1137,55 @@ test("manifest preserves batch explanations and honors newer authoritative compl
   assert.equal(newerWork.lastBatchOutcome, undefined);
 });
 
+test("batch report acceptance and completed synthesis survive persisted state reload", async () => {
+  const bodies = [];
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options = {}) => {
+    if (options.method === 'POST') {
+      bodies.push(JSON.parse(options.body));
+      return jsonResponse(200, { batch_id: 'retained', state: 'synthesizing' });
+    }
+    return jsonResponse(200, { batch_id: 'retained', state: 'ready', narrative: 'Run interrupted.' });
+  } });
+  state.repairBatchesPath = path.join(path.dirname(state.jobsPath), 'batches.json');
+  state.repairBatches = { retained: { batchId: 'retained', operation: 'formalize', overleafProjectId: 'project-1',
+    done: true, createdAt: '2026-10-17T23:00:00Z', items: [{ targetKind: 'theorem', targetLabel: 'child',
+      state: 'incomplete', reason: 'command_fenced', detail: 'Worker ownership was lost.', recoverable: true }] } };
+  assert.equal((await handleFormalizeBatchReportSave({ overleafProjectId: 'project-1', batchId: 'retained' }, state)).statusCode, 200);
+  assert.equal(bodies[0].items[0].reason, 'command_fenced');
+  let saved = JSON.parse(await fs.readFile(state.repairBatchesPath, 'utf8'));
+  assert.equal(saved.retained.reportState, 'synthesizing');
+  assert.equal(saved.retained.reportId, 'retained');
+  assert.equal(saved.retained.reportSubmission, undefined);
+  // Rehydrate only durable values: no promise or former process can finish it.
+  state.repairBatches = saved;
+  const ready = await handleLeanPaneRepairStatus({ batchId: 'retained' }, state);
+  assert.equal(ready.body.reportState, 'ready');
+  saved = JSON.parse(await fs.readFile(state.repairBatchesPath, 'utf8'));
+  assert.equal(saved.retained.reportState, 'ready');
+  assert.equal(saved.retained.report.state, 'ready');
+});
+
+test("a failed background report state write is observed without an unhandled rejection", async (t) => {
+  const state = await makeState({ leaRepoPath: await makeLeaRepo() });
+  const directory = path.dirname(state.jobsPath);
+  const blocked = path.join(directory, 'blocked');
+  await fs.mkdir(blocked);
+  state.repairBatchesPath = path.join(directory, 'batches.json');
+  state.fetchImpl = async () => {
+    state.repairBatchesPath = blocked;
+    return jsonResponse(200, { batch_id: 'cancelled', state: 'ready' });
+  };
+  const errors = t.mock.method(console, 'error', () => {});
+  const batch = { batchId: 'cancelled', operation: 'formalize', overleafProjectId: 'project-1',
+    done: false, running: false, createdAt: '2026-10-17T23:00:00Z', items: [] };
+  state.repairBatches = { cancelled: batch };
+  assert.equal((await handleBatchCancel({ batchId: batch.batchId }, state)).statusCode, 200);
+  await assert.rejects(batch.reportSubmission);
+  await new Promise(setImmediate);
+  assert.equal(errors.mock.callCount(), 1);
+  assert.match(errors.mock.calls[0].arguments[0], /report bookkeeping failed/);
+});
+
 test('review transport refreshes source and never admits a prover run or rewrites jobs', async () => {
   const calls = [];
   const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
@@ -2211,6 +2266,56 @@ test("lean pane manifest degrades when Lea lookup is unavailable", async () => {
   assert.equal(res.body.items[0].status, "unknown");
   assert.equal(res.body.diagnostics.at(-1).code, "lea_unconfigured");
 });
+
+test("finished formalizations awaiting fresh SQL evidence remain synchronizing in the manifest", async () => {
+  const calls = [];
+  let fresh = false;
+  const fallback = makeAdapterApiFetch(calls);
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+    if (String(url).includes('/target-status?')) return jsonResponse(200, { targets: [ledgerEntry('pending_target', {
+      projection: { state: fresh ? 'observed' : 'inputs_changed' }
+    })] });
+    return fallback(url, options);
+  } });
+  const payload = { overleafProjectId: 'project-1', files: [{ path: 'main.tex', content:
+    '\\begin{theorem}\n% lea: formalize label=pending_target\nTrue.\n\\end{theorem}' }] };
+  const pending = await handleLeanPaneManifest(payload, state);
+  assert.equal(pending.statusCode, 200);
+  assert.equal(pending.body.items[0].status, 'synchronizing');
+  assert.equal(pending.body.items[0].leanCheck.status, 'synchronizing');
+  assert.equal(pending.body.items[0].projection.state, 'inputs_changed');
+  fresh = true;
+  const current = await handleLeanPaneManifest(payload, state);
+  assert.equal(current.body.items[0].status, 'valid');
+  assert.equal(current.body.items[0].leanCheck.status, 'checked');
+});
+
+for (const [status, code, deferred] of [[409, 'project_busy', true], [503, 'database_busy', true],
+  [503, 'retry_database_busy', true], [403, 'access_denied', false]]) {
+  test(`inventory sync ${code} preserves proof results and ${deferred ? 'retries as pending' : 'shows a real error'}`, async () => {
+    const calls = [], fallback = makeAdapterApiFetch(calls, { targetStatus: { main: ledgerEntry('main') } });
+    let busy = true;
+    const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+      if (String(url).endsWith('/identity')) return jsonResponse(200, { exists: true, projectId: 'p1',
+        namespace: 'Lea.Project1', namespaceRevision: 'r1', slug: 'project-1' });
+      if (String(url).endsWith('/formalizations/sync')) return busy
+        ? jsonResponse(status, { detail: { error: code } }) : jsonResponse(200, { targets: [] });
+      return fallback(url, options);
+    } });
+    const payload = { overleafProjectId: 'project-1', files: [{ path: 'main.tex', content:
+      '\\begin{theorem}\n% lea: formalize label=main\nTrue.\n\\end{theorem}' }] };
+    const delayed = await handleLeanPaneManifest(payload, state);
+    assert.equal(delayed.statusCode, 200);
+    assert.equal(delayed.body.items[0].status, 'valid');
+    assert.equal(delayed.body.inventorySync?.state === 'pending', deferred);
+    assert.equal(delayed.body.diagnostics.some(d => d.code === 'target_sync_failed'), !deferred);
+    busy = false;
+    const recovered = await handleLeanPaneManifest(payload, state);
+    assert.equal(recovered.body.inventorySync, null);
+    assert.equal(recovered.body.items[0].status, 'valid');
+    assert.equal(recovered.body.diagnostics.length, 0);
+  });
+}
 
 test("records targetSyntax on the job for telemetry, defaulting to comment", async () => {
   const leaRepo = await makeLeaRepo();
@@ -3683,6 +3788,100 @@ test("formalize blocks unresolved theorem uses", async () => {
   assert.equal(result.body.error, "unresolved_uses");
   assert.match(result.body.message, /missing_support/);
   assert.equal(calls.length, 0);
+});
+
+test('dependency admission waits for a fresh SQL definition in a single snapshot per poll', async () => {
+  let reads=0, ready=false;
+  const waits=[], requests=[], fallback=makeAdapterApiFetch([]);
+  const state=await makeState({leaRepoPath:await makeLeaRepo(),fetchImpl:async (url,options={})=>{
+    requests.push({url:String(url),method:options.method});
+    if(String(url).includes('/target-status?')) {
+      reads++;
+      return jsonResponse(200,{project_namespace:'Lea.Project1',targets:[ledgerEntry('support',{
+        kind:'definition',validity_status:'defined',projection:{state:ready?'observed':'inputs_changed'}
+      })]});
+    }
+    return fallback(url,options);
+  }});
+  const result=await resolveTheoremUses({state,leaRepoPath:state.settings.leaRepoPath,overleafProjectId:'project-1',
+    projectNamespace:'Lea.Project1',targetUses:['support'],jobs:{},pollMs:1,
+    onWait(labels){waits.push(labels);if(labels)ready=true;}});
+  assert.equal(result.ok,true);
+  assert.equal(result.resolvedUses[0].targetKind,'definition');
+  assert.equal(reads,2);
+  assert.deepEqual(waits,[['support'],null]);
+  assert.ok(requests.every(r=>r.method==='GET'));
+});
+
+for(const mode of ['timeout','stale','cancel','offline','forbidden']) test(`dependency SQL wait handles ${mode} without admitting a solver`,async ()=>{
+  let reads=0,cancelled=false;
+  const state=await makeState({leaRepoPath:await makeLeaRepo(),fetchImpl:async (url,options={})=>{
+    assert.ok(String(url).includes('/target-status?'));assert.equal(options.method,'GET');reads++;
+    if(mode==='offline')return jsonResponse(503,{detail:'SQL temporarily unavailable'});
+    if(mode==='forbidden')return jsonResponse(403,{detail:'Owner rejected'});
+    return jsonResponse(200,{targets:[ledgerEntry('support',{
+      projection:{state:reads===1?'reconciling':'observed'},
+      ...(mode==='stale'&&reads>1?{validity_status:'stale',check_current:false}:{})
+    })]});
+  }});
+  const result=await resolveTheoremUses({state,leaRepoPath:state.settings.leaRepoPath,overleafProjectId:'project-1',
+    targetUses:['support'],jobs:{},pollMs:1,timeoutMs:['timeout','offline'].includes(mode)?0:1000,
+    onWait(labels){if(labels&&mode==='cancel')cancelled=true;},shouldCancel:()=>cancelled});
+  assert.equal(result.ok,false);
+  assert.equal(result.error,mode==='cancel'?'batch_cancelled':mode==='stale'?'unresolved_uses':mode==='forbidden'?'dependency_lookup_rejected':'dependency_projection_pending');
+  if(['timeout','offline'].includes(mode))assert.equal(result.status,503);
+  assert.equal(Object.keys(state.jobs).length,0);
+});
+
+test('a projection wait stops when its worker epoch is fenced',async t=>{
+  let fenced=false,reads=0;
+  const state=await makeState({leaRepoPath:await makeLeaRepo(),fetchImpl:async()=>{
+    reads++;return jsonResponse(200,{targets:[ledgerEntry('support',{projection:{state:'inputs_changed'}})]});
+  }});
+  setWorkerDatabase({fence(){if(fenced)throw new Error('worker epoch expired');}});
+  t.after(()=>setWorkerDatabase(null));
+  await assert.rejects(resolveTheoremUses({state,leaRepoPath:state.settings.leaRepoPath,overleafProjectId:'project-1',
+    targetUses:['support'],jobs:{},pollMs:1,onWait(){fenced=true;}}),/worker epoch expired/);
+  assert.equal(reads,1);
+});
+
+test('cancelling a persisted batch projection wait never launches its target',async ()=>{
+  const calls=[],fallback=makeAdapterApiFetch(calls);
+  const state=await makeState({leaRepoPath:await makeLeaRepo(),env:{OPENAI_API_KEY:'test-key'},fetchImpl:async(url,options)=>{
+    const requested=new URL(String(url)).searchParams.get('declarations');
+    if(String(url).includes('/target-status?')&&requested?.includes('support'))return jsonResponse(200,{
+      targets:[ledgerEntry('support',{projection:{state:'inputs_changed'}})]});
+    return fallback(url,options);
+  }});
+  state.repairBatchesPath=path.join(path.dirname(state.jobsPath),'batches.json');
+  const accepted=await handleFormalizeAll({overleafProjectId:'project-1',items:[{
+    targetKind:'theorem',targetLabel:'child',targetText:'True.',targetUses:['support']}]},state);
+  const batch=state.repairBatches[accepted.body.batchId];
+  await waitFor(()=>batch.items[0].waitingForProjection);
+  const saved=JSON.parse(await fs.readFile(state.repairBatchesPath,'utf8'));
+  assert.equal(saved[batch.batchId].items[0].waitingForProjection,true);
+  assert.equal((await handleLeanPaneRepairStatus({batchId:batch.batchId},state)).body.items[0].state,'waiting');
+  await handleBatchCancel({batchId:batch.batchId},state);
+  await waitFor(()=>batch.done);
+  assert.equal(batch.canceled,true);
+  assert.ok(!calls.some(c=>String(c.url).endsWith('/api/runs')));
+  await batch.reportSubmission;
+});
+
+test('a recovered pre-admission projection wait resumes from durable batch state',async ()=>{
+  const calls=[],fallback=makeAdapterApiFetch(calls,{targetStatus:{support:ledgerEntry('support')}});
+  const state=await makeState({leaRepoPath:await makeLeaRepo(),env:{OPENAI_API_KEY:'test-key'},fetchImpl:fallback});
+  const entry={state:'running',waitingForProjection:true,targetKind:'theorem',targetLabel:'child',runJobId:null,
+    payload:{overleafProjectId:'project-1',targetKind:'theorem',targetLabel:'child',targetText:'True.',targetUses:['support']}};
+  const batch={batchId:'retained-projection',operation:'formalize',overleafProjectId:'project-1',done:false,running:false,
+    createdAt:new Date().toISOString(),items:[entry],usesByLabel:new Map([['child',['support']]])};
+  state.repairBatches={[batch.batchId]:batch};
+  await reconcileRecoveredBatches(state);
+  await waitFor(()=>batch.done);
+  assert.equal(entry.state,'formalized');
+  assert.equal(entry.waitingForProjection,false);
+  assert.equal(calls.filter(c=>String(c.url).endsWith('/api/runs')).length,1);
+  await batch.reportSubmission;
 });
 
 test("formalize rejects invalid theorem uses labels", async () => {
@@ -6159,6 +6358,23 @@ for (const scenario of [
   assert.equal(run.body.purpose, "overleaf_solver");
 });
 
+test("recoverable interruptions retain recovery reasons without inventing a turn cap", async () => {
+  for (const [exit, reason] of [
+    [{ recoverable:true, resultKind:"interrupted", recoveryState:"review", recoveryReason:"Automatic recovery was already attempted for this run." }, "recovery_review"],
+    [{ recoverable:true, resultKind:"interrupted" }, "interrupted"],
+    [{ recoverable:true, resultKind:"interrupted", stopReason:"command_fenced" }, "command_fenced"],
+    [{ recoverable:true, resultKind:"max_turns" }, "turn_cap"],
+    [{ recoverable:true, resultKind:"max_spend" }, "global_spend_cap"],
+    [{ recoverable:true, timedOut:true }, "timeout"]
+  ]) {
+    const outcome = await resolveProofOutcome({ job:{}, localStatus:{status:"unformalized"}, exit });
+    assert.equal(outcome.jobStatus,"paused");
+    assert.equal(outcome.stopReason,reason);
+    assert.equal(outcome.resultDetail,exit.recoveryReason || null);
+    assert.equal(outcome.recoverable,true);
+  }
+});
+
 test("resolveProofOutcome does not certify a bare successful stream outcome", async () => {
   const job = { targetKind: "theorem", targetLabel: "t1", leaWorkspacePath: "/tmp/does-not-matter" };
   const outcome = await resolveProofOutcome({
@@ -7620,6 +7836,32 @@ test("ledger engine: recorded + clean check reads formalized with the lean state
   assert.equal(info.resultKind, "proved");
   assert.equal(info.recordedProofPath, "workspace/proofs/Lea/Project1/ledger_ok.lean");
   assert.match(info.leanStatement || "", /theorem ledger_ok/);
+});
+
+test("ledger engine: SQL display history survives synchronization without current verification or approval", async () => {
+  const last = { validity_status: 'proved', source_hash: 'source-a', observed_at: '2026-10-18T15:12:00Z' };
+  const { state } = await makeLedgerState({ retained: ledgerEntry('retained', {
+    projection: { state: 'inputs_changed' }, last_observed_result: last, check_current: false
+  }) });
+  const info = await ledgerStatusFor(state, 'retained');
+  assert.equal(info.status, 'unknown');
+  assert.deepEqual(info.lastObservedResult, last);
+  assert.equal(info.projection.state, 'inputs_changed');
+  assert.equal(info.approvalEligible, false);
+  assert.notEqual(info.leanCheckPassed, true);
+});
+
+for(const validity of ['planned','draft'])test(`ledger engine: known ${validity} state survives SQL refresh without implying work started`,async()=>{
+  const last={validity_status:validity,source_hash:'source-a',observed_at:'2026-10-18T15:12:00Z'};
+  const {state}=await makeLedgerState({untouched:ledgerEntry('untouched',{
+    recorded:false,exists:null,check_current:false,validity_status:validity,
+    projection:{state:'observation_expired'},last_observed_result:last
+  })});
+  const info=await ledgerStatusFor(state,'untouched');
+  assert.equal(info.status,'unknown','proof freshness remains separate from the known domain state');
+  assert.deepEqual(info.lastObservedResult,last);
+  assert.equal(info.approvalEligible,false);
+  assert.notEqual(info.leanCheckPassed,true);
 });
 
 test("ledger engine: only a later successful target run supersedes a paused job", async () => {

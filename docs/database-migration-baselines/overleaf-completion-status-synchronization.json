@@ -1,0 +1,749 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T14:42:14.693415+00:00",
+  "assessment": {
+    "batch_id": "formalize-batch-1792332639260-1",
+    "solver_outcomes": {
+      "defined": 2,
+      "proved": 7
+    },
+    "report": {
+      "batch_id": "formalize-batch-1792332639260-1",
+      "state": "ready",
+      "attempts": 1,
+      "error": null,
+      "created_at": "2026-10-18T14:29:37.503129+00:00",
+      "updated_at": "2026-10-18T14:29:43.795613+00:00"
+    },
+    "runs": [
+      {
+        "id": "7baf5621-22cb-475d-b7dc-7cdfed87fcf1",
+        "status": "proved",
+        "result_kind": "defined",
+        "stop_reason": null,
+        "created_at": "2026-10-18T14:10:40.139232+00:00",
+        "updated_at": "2026-10-18T14:12:40.637808+00:00"
+      },
+      {
+        "id": "1ca1cb1d-7e9d-417d-8941-7de4b0c92a6d",
+        "status": "proved",
+        "result_kind": "defined",
+        "stop_reason": null,
+        "created_at": "2026-10-18T14:12:52.440561+00:00",
+        "updated_at": "2026-10-18T14:14:07.266772+00:00"
+      },
+      {
+        "id": "42bc493e-e668-4f07-9581-06a311474563",
+        "status": "proved",
+        "result_kind": "proved",
+        "stop_reason": null,
+        "created_at": "2026-10-18T14:14:24.934367+00:00",
+        "updated_at": "2026-10-18T14:16:20.706582+00:00"
+      },
+      {
+        "id": "a99d010d-103e-47f5-9142-811e948c79d4",
+        "status": "proved",
+        "result_kind": "proved",
+        "stop_reason": null,
+        "created_at": "2026-10-18T14:16:50.658152+00:00",
+        "updated_at": "2026-10-18T14:18:01.622216+00:00"
+      },
+      {
+        "id": "20a9635c-3e39-4263-8d6c-71d8486ca584",
+        "status": "proved",
+        "result_kind": "proved",
+        "stop_reason": null,
+        "created_at": "2026-10-18T14:18:29.449624+00:00",
+        "updated_at": "2026-10-18T14:20:38.694766+00:00"
+      },
+      {
+        "id": "c1cc547d-1a5d-47c5-971c-de99d8e11267",
+        "status": "proved",
+        "result_kind": "proved",
+        "stop_reason": null,
+        "created_at": "2026-10-18T14:21:07.501680+00:00",
+        "updated_at": "2026-10-18T14:22:21.027690+00:00"
+      },
+      {
+        "id": "0f487443-e9fd-4d49-8b95-399e439c1e41",
+        "status": "proved",
+        "result_kind": "proved",
+        "stop_reason": null,
+        "created_at": "2026-10-18T14:22:47.306897+00:00",
+        "updated_at": "2026-10-18T14:25:22.884259+00:00"
+      },
+      {
+        "id": "925cbcaf-de99-4e9c-b750-0dac7debcbf6",
+        "status": "proved",
+        "result_kind": "proved",
+        "stop_reason": null,
+        "created_at": "2026-10-18T14:25:52.288515+00:00",
+        "updated_at": "2026-10-18T14:26:55.705571+00:00"
+      },
+      {
+        "id": "8a4f101d-01f6-4546-90a2-5cdedb29082f",
+        "status": "proved",
+        "result_kind": "proved",
+        "stop_reason": null,
+        "created_at": "2026-10-18T14:27:23.661782+00:00",
+        "updated_at": "2026-10-18T14:29:11.136806+00:00"
+      }
+    ],
+    "saved_inventory_responses": [
+      {
+        "requested_at": "2026-10-18T14:29:13.559200+00:00",
+        "generated_at": "2026-10-18T14:29:13.888Z",
+        "status_counts": {
+          "unknown": 8,
+          "in-progress": 1
+        },
+        "lean_check_counts": {
+          "error": 8,
+          "in-progress": 1
+        },
+        "diagnostics": []
+      },
+      {
+        "requested_at": "2026-10-18T14:29:17.575075+00:00",
+        "generated_at": "2026-10-18T14:29:17.944Z",
+        "status_counts": {
+          "unknown": 8,
+          "in-progress": 1
+        },
+        "lean_check_counts": {
+          "error": 8,
+          "in-progress": 1
+        },
+        "diagnostics": []
+      },
+      {
+        "requested_at": "2026-10-18T14:29:22.194111+00:00",
+        "generated_at": "2026-10-18T14:29:22.516Z",
+        "status_counts": {
+          "unknown": 8,
+          "in-progress": 1
+        },
+        "lean_check_counts": {
+          "error": 8,
+          "in-progress": 1
+        },
+        "diagnostics": []
+      },
+      {
+        "requested_at": "2026-10-18T14:29:30.409775+00:00",
+        "generated_at": "2026-10-18T14:29:30.642Z",
+        "status_counts": {
+          "unknown": 8,
+          "in-progress": 1
+        },
+        "lean_check_counts": {
+          "error": 8,
+          "in-progress": 1
+        },
+        "diagnostics": []
+      },
+      {
+        "requested_at": "2026-10-18T14:29:36.665944+00:00",
+        "generated_at": "2026-10-18T14:29:37.651Z",
+        "status_counts": {
+          "unknown": 9
+        },
+        "lean_check_counts": {
+          "error": 9
+        },
+        "diagnostics": [
+          {
+            "code": "target_sync_failed",
+            "message": "{\"error\":\"project_busy\"}"
+          }
+        ]
+      },
+      {
+        "requested_at": "2026-10-18T14:29:44.052678+00:00",
+        "generated_at": "2026-10-18T14:29:44.294Z",
+        "status_counts": {
+          "unknown": 9
+        },
+        "lean_check_counts": {
+          "error": 9
+        },
+        "diagnostics": []
+      },
+      {
+        "requested_at": "2026-10-18T14:29:48.707151+00:00",
+        "generated_at": "2026-10-18T14:29:48.802Z",
+        "status_counts": {
+          "unknown": 9
+        },
+        "lean_check_counts": {
+          "error": 9
+        },
+        "diagnostics": []
+      },
+      {
+        "requested_at": "2026-10-18T14:29:53.456953+00:00",
+        "generated_at": "2026-10-18T14:29:53.887Z",
+        "status_counts": {
+          "unknown": 9
+        },
+        "lean_check_counts": {
+          "error": 9
+        },
+        "diagnostics": []
+      },
+      {
+        "requested_at": "2026-10-18T14:30:01.666699+00:00",
+        "generated_at": "2026-10-18T14:30:02.000Z",
+        "status_counts": {
+          "unknown": 9
+        },
+        "lean_check_counts": {
+          "error": 9
+        },
+        "diagnostics": []
+      },
+      {
+        "requested_at": "2026-10-18T14:30:08.802468+00:00",
+        "generated_at": "2026-10-18T14:30:09.180Z",
+        "status_counts": {
+          "defined": 2,
+          "valid": 7
+        },
+        "lean_check_counts": {
+          "checked": 9
+        },
+        "diagnostics": []
+      }
+    ],
+    "confirmed_causes": [
+      "At 14:29:36.665944 UTC the accepted inventory returned target_sync_failed with project_busy; it was a metadata synchronization conflict, not a failed proof.",
+      "Non-observed SQL proof projections became status unknown; projectLeanCheck mapped unknown to compiler error, and file progress counted unknown as unformalized.",
+      "The pane dropped projection metadata and stopped its regular polling when all solver activity finished."
+    ],
+    "uncertainty": "The exact banner wording reported by the user is not retained. Saved metadata proves project_busy at completion; it does not establish a SQLite BUSY exception during this batch."
+  },
+  "fixes": {
+    "optional_sync": "Transient project/database busy and temporary transport failures retain proof results, publish inventorySync pending, and retry through normal bounded/coalesced inventory polling. Permanent rejection remains an error.",
+    "freshness": "Manifest preserves SQL projection metadata. Non-observed evidence displays synchronizing; generic unknown checks display unconfirmed. Neither represents a compiler failure, missing proof, or current verification.",
+    "summary": "Collapsed file progress has an Awaiting status bucket; uncertainty cannot count as unformalized or verified.",
+    "polling": "Pending observations and target sync keep the existing five-second polling loop alive after runs finish.",
+    "actions": "Pending projection items cannot be formalized or stubbed from the pane until refreshed.",
+    "boundary": "No public route, schema, direct worker access or compiler invocation was added. No paid solver work was replayed."
+  },
+  "qualification": {
+    "overleaf_suite": {
+      "passed": 853,
+      "failed": 0,
+      "seconds": 30.282,
+      "local_loopback_enabled_for_transport_tests": true
+    },
+    "chromium": {
+      "passed": 1,
+      "seconds": 6.3,
+      "viewports": [
+        [
+          1280,
+          900
+        ],
+        [
+          480,
+          740
+        ]
+      ],
+      "nine_settled_targets": true,
+      "collapsed_and_expanded_verified": true,
+      "automatic_update_to_checked": true,
+      "formalize_submissions": 0,
+      "providers_used": false,
+      "screenshots_inspected": true
+    },
+    "boundary_register": {
+      "adapter_routes": 179,
+      "companion_dispatch_branches": 27,
+      "passed": true
+    }
+  },
+  "activation": {
+    "captured_at": "2026-10-18T14:41:24.202185+00:00",
+    "before": {
+      "runtime_id": "16706dcb751942b79b6444723be6180f",
+      "generation": 1,
+      "ready": true,
+      "lifecycle_state": "ready",
+      "active_runs": 0,
+      "active_operations": 0,
+      "queued_runs": 0,
+      "worker_heartbeat_at": "2026-10-18T14:41:24.122818+00:00",
+      "worker_observation": "observed",
+      "release": {
+        "version": 1,
+        "source": "development",
+        "schema": "0048_process_boundary"
+      },
+      "database_boundary": {
+        "version": 1,
+        "ui_access": "database",
+        "command_direction": "ui_to_worker",
+        "processes": "separate",
+        "queries": 1,
+        "changes": 1,
+        "commands": 1,
+        "source_publications": 1,
+        "editor": 1
+      },
+      "last_failure": {
+        "at": "2026-10-18T14:09:52.521Z",
+        "event": "service.exited",
+        "severity": "error",
+        "service": "adapter",
+        "pid": 22105,
+        "code": null,
+        "signal": "SIGTERM"
+      }
+    },
+    "retained_before": {
+      "runs": {
+        "count": 9,
+        "sha256": "7d530dc78407f412836de593887abc8a19670dd25a43bb6293a2d8112f7aa78b"
+      },
+      "run_attempts": {
+        "count": 9,
+        "sha256": "c2c9ad4058dc5717a5ea8c1ff849f0c0a4cea62f2c71923b03e43bf008fc97c3"
+      },
+      "run_checkpoints": {
+        "count": 18,
+        "sha256": "e4c06eb3b9d3a3238be60e134b5b619d4dc5c75b8cf44357af396847e42fa864"
+      },
+      "proof_check_evidence": {
+        "count": 15,
+        "sha256": "3f2ac298fdc1fa5be4c3ef77afd4dd980bc488d5c94d8e4d9023c649de4b5761"
+      },
+      "artifact_blobs": {
+        "count": 64,
+        "sha256": "924f70f8e28291a424ef5d2921b57ab3d1a803d3f96cf4cd8e940791df8d7425"
+      },
+      "formalize_batch_reports": {
+        "count": 1,
+        "sha256": "8942765672b514c24e501fbb3761a56c08828da9d4274c2280da3447f84379c1"
+      }
+    },
+    "health_samples": [
+      {
+        "runtime_id": "16706dcb751942b79b6444723be6180f",
+        "generation": 1,
+        "ready": true,
+        "lifecycle_state": "ready",
+        "active_runs": 0,
+        "active_operations": 0,
+        "queued_runs": 0,
+        "worker_heartbeat_at": "2026-10-18T14:41:24.122818+00:00",
+        "worker_observation": "observed",
+        "release": {
+          "version": 1,
+          "source": "development",
+          "schema": "0048_process_boundary"
+        },
+        "database_boundary": {
+          "version": 1,
+          "ui_access": "database",
+          "command_direction": "ui_to_worker",
+          "processes": "separate",
+          "queries": 1,
+          "changes": 1,
+          "commands": 1,
+          "source_publications": 1,
+          "editor": 1
+        },
+        "last_failure": {
+          "at": "2026-10-18T14:09:52.521Z",
+          "event": "service.exited",
+          "severity": "error",
+          "service": "adapter",
+          "pid": 22105,
+          "code": null,
+          "signal": "SIGTERM"
+        }
+      },
+      {
+        "runtime_id": "16706dcb751942b79b6444723be6180f",
+        "generation": 1,
+        "ready": false,
+        "lifecycle_state": "stopping",
+        "active_runs": 0,
+        "active_operations": 0,
+        "queued_runs": 0,
+        "worker_heartbeat_at": "2026-10-18T14:41:25.168909+00:00",
+        "worker_observation": "observed",
+        "release": {
+          "version": 1,
+          "source": "development",
+          "schema": "0048_process_boundary"
+        },
+        "database_boundary": {
+          "version": 1,
+          "ui_access": "database",
+          "command_direction": "ui_to_worker",
+          "processes": "separate",
+          "queries": 1,
+          "changes": 1,
+          "commands": 1,
+          "source_publications": 1,
+          "editor": 1
+        },
+        "last_failure": {
+          "at": "2026-10-18T14:09:52.521Z",
+          "event": "service.exited",
+          "severity": "error",
+          "service": "adapter",
+          "pid": 22105,
+          "code": null,
+          "signal": "SIGTERM"
+        }
+      },
+      {
+        "runtime_id": "16706dcb751942b79b6444723be6180f",
+        "generation": 1,
+        "ready": false,
+        "lifecycle_state": "stopping",
+        "active_runs": 0,
+        "active_operations": 0,
+        "queued_runs": 0,
+        "worker_heartbeat_at": "2026-10-18T14:41:25.168909+00:00",
+        "worker_observation": "observed",
+        "release": {
+          "version": 1,
+          "source": "development",
+          "schema": "0048_process_boundary"
+        },
+        "database_boundary": {
+          "version": 1,
+          "ui_access": "database",
+          "command_direction": "ui_to_worker",
+          "processes": "separate",
+          "queries": 1,
+          "changes": 1,
+          "commands": 1,
+          "source_publications": 1,
+          "editor": 1
+        },
+        "last_failure": {
+          "at": "2026-10-18T14:09:52.521Z",
+          "event": "service.exited",
+          "severity": "error",
+          "service": "adapter",
+          "pid": 22105,
+          "code": null,
+          "signal": "SIGTERM"
+        }
+      },
+      {
+        "runtime_id": "16706dcb751942b79b6444723be6180f",
+        "generation": 1,
+        "ready": false,
+        "lifecycle_state": "stopping",
+        "active_runs": 0,
+        "active_operations": 0,
+        "queued_runs": 0,
+        "worker_heartbeat_at": "2026-10-18T14:41:25.168909+00:00",
+        "worker_observation": "observed",
+        "release": {
+          "version": 1,
+          "source": "development",
+          "schema": "0048_process_boundary"
+        },
+        "database_boundary": {
+          "version": 1,
+          "ui_access": "database",
+          "command_direction": "ui_to_worker",
+          "processes": "separate",
+          "queries": 1,
+          "changes": 1,
+          "commands": 1,
+          "source_publications": 1,
+          "editor": 1
+        },
+        "last_failure": {
+          "at": "2026-10-18T14:09:52.521Z",
+          "event": "service.exited",
+          "severity": "error",
+          "service": "adapter",
+          "pid": 22105,
+          "code": null,
+          "signal": "SIGTERM"
+        }
+      },
+      {
+        "runtime_id": "16706dcb751942b79b6444723be6180f",
+        "generation": 1,
+        "ready": false,
+        "lifecycle_state": "stopping",
+        "active_runs": 0,
+        "active_operations": 0,
+        "queued_runs": 0,
+        "worker_heartbeat_at": "2026-10-18T14:41:25.168909+00:00",
+        "worker_observation": "observed",
+        "release": {
+          "version": 1,
+          "source": "development",
+          "schema": "0048_process_boundary"
+        },
+        "database_boundary": {
+          "version": 1,
+          "ui_access": "database",
+          "command_direction": "ui_to_worker",
+          "processes": "separate",
+          "queries": 1,
+          "changes": 1,
+          "commands": 1,
+          "source_publications": 1,
+          "editor": 1
+        },
+        "last_failure": {
+          "at": "2026-10-18T14:09:52.521Z",
+          "event": "service.exited",
+          "severity": "error",
+          "service": "adapter",
+          "pid": 22105,
+          "code": null,
+          "signal": "SIGTERM"
+        }
+      },
+      {
+        "runtime_id": "16706dcb751942b79b6444723be6180f",
+        "generation": 1,
+        "ready": false,
+        "lifecycle_state": "stopping",
+        "active_runs": 0,
+        "active_operations": 0,
+        "queued_runs": 0,
+        "worker_heartbeat_at": "2026-10-18T14:41:25.168909+00:00",
+        "worker_observation": "observed",
+        "release": {
+          "version": 1,
+          "source": "development",
+          "schema": "0048_process_boundary"
+        },
+        "database_boundary": {
+          "version": 1,
+          "ui_access": "database",
+          "command_direction": "ui_to_worker",
+          "processes": "separate",
+          "queries": 1,
+          "changes": 1,
+          "commands": 1,
+          "source_publications": 1,
+          "editor": 1
+        },
+        "last_failure": {
+          "at": "2026-10-18T14:09:52.521Z",
+          "event": "service.exited",
+          "severity": "error",
+          "service": "adapter",
+          "pid": 22105,
+          "code": null,
+          "signal": "SIGTERM"
+        }
+      },
+      {
+        "runtime_id": "16706dcb751942b79b6444723be6180f",
+        "generation": 1,
+        "ready": false,
+        "lifecycle_state": "stopping",
+        "active_runs": 0,
+        "active_operations": 0,
+        "queued_runs": 0,
+        "worker_heartbeat_at": "2026-10-18T14:41:25.168909+00:00",
+        "worker_observation": "observed",
+        "release": {
+          "version": 1,
+          "source": "development",
+          "schema": "0048_process_boundary"
+        },
+        "database_boundary": {
+          "version": 1,
+          "ui_access": "database",
+          "command_direction": "ui_to_worker",
+          "processes": "separate",
+          "queries": 1,
+          "changes": 1,
+          "commands": 1,
+          "source_publications": 1,
+          "editor": 1
+        },
+        "last_failure": {
+          "at": "2026-10-18T14:09:52.521Z",
+          "event": "service.exited",
+          "severity": "error",
+          "service": "adapter",
+          "pid": 22105,
+          "code": null,
+          "signal": "SIGTERM"
+        }
+      },
+      {
+        "runtime_id": "ddd83061f5ea411c80018b90102fc794",
+        "generation": 2,
+        "ready": false,
+        "lifecycle_state": "recovering",
+        "active_runs": null,
+        "active_operations": null,
+        "queued_runs": 0,
+        "worker_heartbeat_at": "2026-10-18T14:41:31.706937+00:00",
+        "worker_observation": "observed",
+        "release": {
+          "version": 1,
+          "source": "development",
+          "schema": "0048_process_boundary"
+        },
+        "database_boundary": {
+          "version": 1,
+          "ui_access": "database",
+          "command_direction": "ui_to_worker",
+          "processes": "separate",
+          "queries": 1,
+          "changes": 1,
+          "commands": 1,
+          "source_publications": 1,
+          "editor": 1
+        },
+        "last_failure": null
+      },
+      {
+        "runtime_id": "ddd83061f5ea411c80018b90102fc794",
+        "generation": 2,
+        "ready": true,
+        "lifecycle_state": "ready",
+        "active_runs": 0,
+        "active_operations": 0,
+        "queued_runs": 0,
+        "worker_heartbeat_at": "2026-10-18T14:41:32.488524+00:00",
+        "worker_observation": "observed",
+        "release": {
+          "version": 1,
+          "source": "development",
+          "schema": "0048_process_boundary"
+        },
+        "database_boundary": {
+          "version": 1,
+          "ui_access": "database",
+          "command_direction": "ui_to_worker",
+          "processes": "separate",
+          "queries": 1,
+          "changes": 1,
+          "commands": 1,
+          "source_publications": 1,
+          "editor": 1
+        },
+        "last_failure": {
+          "at": "2026-10-18T14:09:52.521Z",
+          "event": "service.exited",
+          "severity": "error",
+          "service": "adapter",
+          "pid": 22105,
+          "code": null,
+          "signal": "SIGTERM"
+        }
+      }
+    ],
+    "command": {
+      "id": "0550f9135a17405787748fe8d7b54666",
+      "admission_id": 872,
+      "producer_id": "compatibility:local",
+      "kind": "runtime.control",
+      "version": 1,
+      "lane": "control",
+      "state": "queued",
+      "project_id": null,
+      "session_id": null,
+      "formalization_id": null,
+      "generation": 0,
+      "attempt_id": null,
+      "created_at": "2026-10-18T14:41:24.870999+00:00",
+      "deadline": "2026-10-19T14:41:24.870999+00:00",
+      "error": null,
+      "result": null
+    },
+    "after": {
+      "runtime_id": "ddd83061f5ea411c80018b90102fc794",
+      "generation": 2,
+      "ready": true,
+      "lifecycle_state": "ready",
+      "active_runs": 0,
+      "active_operations": 0,
+      "queued_runs": 0,
+      "worker_heartbeat_at": "2026-10-18T14:41:32.488524+00:00",
+      "worker_observation": "observed",
+      "release": {
+        "version": 1,
+        "source": "development",
+        "schema": "0048_process_boundary"
+      },
+      "database_boundary": {
+        "version": 1,
+        "ui_access": "database",
+        "command_direction": "ui_to_worker",
+        "processes": "separate",
+        "queries": 1,
+        "changes": 1,
+        "commands": 1,
+        "source_publications": 1,
+        "editor": 1
+      },
+      "last_failure": {
+        "at": "2026-10-18T14:09:52.521Z",
+        "event": "service.exited",
+        "severity": "error",
+        "service": "adapter",
+        "pid": 22105,
+        "code": null,
+        "signal": "SIGTERM"
+      }
+    },
+    "retained_after": {
+      "runs": {
+        "count": 9,
+        "sha256": "7d530dc78407f412836de593887abc8a19670dd25a43bb6293a2d8112f7aa78b"
+      },
+      "run_attempts": {
+        "count": 9,
+        "sha256": "c2c9ad4058dc5717a5ea8c1ff849f0c0a4cea62f2c71923b03e43bf008fc97c3"
+      },
+      "run_checkpoints": {
+        "count": 18,
+        "sha256": "e4c06eb3b9d3a3238be60e134b5b619d4dc5c75b8cf44357af396847e42fa864"
+      },
+      "proof_check_evidence": {
+        "count": 15,
+        "sha256": "3f2ac298fdc1fa5be4c3ef77afd4dd980bc488d5c94d8e4d9023c649de4b5761"
+      },
+      "artifact_blobs": {
+        "count": 64,
+        "sha256": "924f70f8e28291a424ef5d2921b57ab3d1a803d3f96cf4cd8e940791df8d7425"
+      },
+      "formalize_batch_reports": {
+        "count": 1,
+        "sha256": "8942765672b514c24e501fbb3761a56c08828da9d4274c2280da3447f84379c1"
+      }
+    },
+    "retained_unchanged": true
+  },
+  "control_receipt": {
+    "id": "0550f9135a17405787748fe8d7b54666",
+    "kind": "runtime.control",
+    "state": "succeeded",
+    "error": null
+  },
+  "user_activation": "Reload the unpacked extension and refresh the Overleaf tab to load the updated content script, modules and styles. Worker fixes have been activated through the queued restart.",
+  "source_sha256": {
+    "apps/overleaf-extension/companion/workerService.mjs": "8a7bd2bfeb605c2084b942d03a516b16de1a074fa1c059350ca7d4d43ec94111",
+    "apps/overleaf-extension/shared/checkState.mjs": "c34c255bb459dca845937fb05b24aeafa53f88fc72b19252259565c9e6f4bb9f",
+    "apps/overleaf-extension/extension/leanPaneView.mjs": "23fcb17d7f86da4b511ed3ed0e95b6d32896419d0539f672e8ca5fa214c42014",
+    "apps/overleaf-extension/extension/content.js": "bd88a1c2bca51d3227c06c7ed9cd2894c0553efb27272e3bf968a8840bf0e397",
+    "apps/overleaf-extension/extension/content.css": "080bf3b5e04930474466f5203a710a9e3aa1999a4aec717554a117448a93239a",
+    "apps/overleaf-extension/tests/checkState.test.mjs": "fef3550c263456ba9ae32470a0b92c88b0b593008c87dabcb630555eb4161743",
+    "apps/overleaf-extension/tests/leanPaneView.test.mjs": "b4a2cc667a8688f6fa8a948e131612940fc97e2111db1e7ad73a2d7f2048b006",
+    "apps/overleaf-extension/tests/companion.test.mjs": "9e1a2dc997aa341cbbbe195a36d2ff9eb4489d470ca317a97bd12c0ba178a8c2",
+    "apps/overleaf-extension/tests/contentActions.test.mjs": "e8c08e0b7575c2ec69d3acf904a419797b1431156f3a0e333a341db1b8c69e07",
+    "tests/browser/overleaf-admission.spec.mjs": "5da27e173bcf8efe93d91c3eb2da28d3fee50c3cf73fe8f404abbe1940ccdddc"
+  }
+}

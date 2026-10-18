@@ -8,6 +8,7 @@ import { loadRootEnv } from "./env.mjs";
 import { assertServicesAvailable } from "./dev-stack-preflight.mjs";
 import { createProcessSupervisor } from "./process-supervisor.mjs";
 import { serviceEnvironment } from "./service-env.mjs";
+import { createServiceDiagnostics } from "./service-diagnostics.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv();
@@ -38,12 +39,18 @@ const owner = createProcessSupervisor({ prefix: "[supervisor]", onUnexpectedExit
 const crashes = new Map();
 const delays = [1000, 2000, 5000];
 let stopping = false;
+const dataDir = process.env.LEA_DATABASE_FILE ? path.dirname(path.resolve(process.env.LEA_DATABASE_FILE))
+  : path.resolve(root, process.env.LEA_SHARED_DATA_DIR || 'apps/lea-standalone/data');
+const diagnostics = createServiceDiagnostics(path.join(dataDir, 'worker-diagnostics'), {
+  secrets: Object.entries(process.env).filter(([key]) => /API_KEY|AUTH_TOKEN|GITHUB_TOKEN|PASSWORD|SECRET/i.test(key)).map(([, value]) => value),
+});
 
 function start(label, command, args, cwd, { restart = false } = {}) {
   if (stopping || owner.stopping) return null;
   const child = owner.spawn(label, command, args, {
-    cwd, env: serviceEnvironment(label), stdio: "inherit", detached: true,
+    cwd, env: serviceEnvironment(label), stdio: label === 'worker' ? ['inherit', 'inherit', 'pipe'] : "inherit", detached: true,
   });
+  diagnostics.attach(label, child);
   owned.set(label, child);
   child.on("exit", async (code, signal) => {
     if (owned.get(label) !== child) return;
@@ -61,11 +68,13 @@ function start(label, command, args, cwd, { restart = false } = {}) {
       history.push(now);
       while (history.length && history[0] < now - 300000) history.shift();
       if (history.length > 3) {
+        diagnostics.event('service.restart_limit', { service: label, pid: child.pid, code, signal });
         console.error(`[supervisor] ${label} crash loop: automatic restart stopped; other services remain available.`);
         process.exitCode = 1;
         return;
       }
       const delay = delays[history.length - 1];
+      diagnostics.event('service.restart_scheduled', { service: label, delay_ms: delay, code, signal });
       console.error(`[supervisor] ${label} exited (${signal || code}); restarting in ${delay / 1000}s.`);
       setTimeout(() => startService(label), delay);
     } else if (!stopping && !owner.stopping && restart) {

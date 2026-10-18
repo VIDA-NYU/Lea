@@ -151,12 +151,16 @@ export function openWorkerDatabase({filename,owner,epoch,baseUrl,leaRoot,fetchIm
       if(!row||row.document_id!==document||row.bundle_hash!==sourceContext.sourceBundle?.bundleHash)return {ok:false,error:'published_source_required',message:'Publish this target from the current Overleaf tab before submitting.'};
       const owner=db.prepare('select * from source_publishers where document_id=?').get(document);
       const source=JSON.parse(row.bundle_json);
-      const head=db.prepare('select p.bundle_hash,p.files_json from source_heads h join source_publications p on p.id=h.publication_id where h.document_id=? and h.target_kind=? and h.target_key=?').get(document,source.targetKind,source.targetKey);
-      const archive=db.prepare('select coverage,files_json from source_publications where document_id=? and generation=? order by sequence desc limit 1').get(document,row.generation);
+      const head=db.prepare('select p.bundle_hash,p.coverage,p.files_json from source_heads h join source_publications p on p.id=h.publication_id where h.document_id=? and h.target_kind=? and h.target_key=?').get(document,source.targetKind,source.targetKey);
+      const archive=db.prepare('select coverage,files_json from source_publications where document_id=? order by generation desc,sequence desc limit 1').get(document);
       if(archive?.coverage==='complete'&&row.coverage==='complete'&&archive.files_json!==row.files_json)return {ok:false,error:'published_source_changed',message:'The document archive changed. Publish this target from its current archive.'};
-      const pinned=db.prepare('select 1 from companion_source_bindings where command_id=? and publication_id=?').get(context.getStore()?.commandId||'',row.id);
-      if(!owner||owner.client_id!==row.client_id||owner.generation!==row.generation||(!pinned&&Date.parse(owner.lease_until)<=Date.now()))return {ok:false,error:'publisher_conflict',message:'The source publisher changed or expired. Publish from the current tab again.'};
-      if(head?.bundle_hash!==row.bundle_hash||head.files_json!==row.files_json)return {ok:false,error:'published_source_changed',message:'Source changed before submission. Publish its current revision again.'};
+      const parent=context.getStore()?.commandId||'';
+      const pinned=db.prepare("select 1 from companion_source_bindings b join commands c on c.id=b.command_id where b.command_id=? and b.publication_id=? and c.kind='companion.dispatch' and c.state in ('claimed','succeeded')").get(parent,row.id);
+      if(parent&&db.prepare('select kind from commands where id=?').get(parent)?.kind==='companion.dispatch'&&!pinned)return {ok:false,error:'published_source_required',message:'This source was not frozen by the accepted business operation.'};
+      // An accepted command owns immutable input beyond its browser's lease.
+      // Publisher ownership still fences every new submission and publication.
+      if(!pinned&&(!owner||owner.client_id!==row.client_id||owner.generation!==row.generation||Date.parse(owner.lease_until)<=Date.now()))return {ok:false,error:'publisher_conflict',message:'The source publisher changed or expired. Publish from the current tab again.'};
+      if(head?.bundle_hash!==row.bundle_hash||head.coverage!==row.coverage||head.files_json!==row.files_json)return {ok:false,error:'published_source_changed',message:'Source changed before submission. Publish its current revision again.'};
       return {ok:true,mirrorRevision:sourceContext.sourceBundle?.mirror?.revision||null};
     },
     publishedBundle(reference) {fence();const row=reference?db.prepare('select bundle_json from source_publications where id=?').get(reference):null;return row?JSON.parse(row.bundle_json):null;},

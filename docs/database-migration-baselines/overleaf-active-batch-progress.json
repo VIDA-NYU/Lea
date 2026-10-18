@@ -1,0 +1,187 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T14:58:40.219325+00:00",
+  "request": "Distinguish awaiting SQL evidence from completed work, synchronize active batch and inventory, preserve SQL-only UI access, and leave the current run uninterrupted.",
+  "changes": {
+    "file_status": {
+      "visible_example": "1 verified \u00b7 1 running \u00b7 7 awaiting SQL status",
+      "pending_appearance": "Hollow segment with dashed boundary; no completion fill or whole-bar stripes.",
+      "running_count": "Mutually exclusive primary bucket; active work cannot also count as unformalized or verified.",
+      "verified_source": "Existing current SQL proof projection; no promotion from batch completion or cached outcomes."
+    },
+    "batch_refresh": {
+      "active_interval_ms": 5000,
+      "connected_sse_does_not_slow_polling": true,
+      "trigger": "Every inventory refresh joins a coalesced observation of the currently selected batch; jobs-changed pushes also trigger the paired refresh.",
+      "bounded_requests": "Existing browser metadata HTTP deadlines and receipt observation; no new route or queue contract.",
+      "sql_failure": "Retain the last loaded queue, label it delayed and retry on the next inventory cycle.",
+      "response_guards": [
+        "project",
+        "batch identity",
+        "display generation"
+      ],
+      "project_switch": "Clear the old displayed queue and reject obsolete responses; never cancel the worker batch."
+    },
+    "boundary": {
+      "production_scope": "Extension content script, presentation module and styles only.",
+      "api_routes_changed": false,
+      "worker_files_changed": false,
+      "schema_changed": false,
+      "new_executor_access": false,
+      "read_path": "Existing public companion query admission and SQL receipts. No private worker endpoint, workspace access or Lean compiler request."
+    }
+  },
+  "regressions": {
+    "extension_suite": {
+      "passed": 858,
+      "failed": 0,
+      "seconds": 31.666
+    },
+    "specific_refresh_cases": [
+      "Connected SSE with missed batch pushes still advances panel and inventory together at five seconds.",
+      "Twenty-five overlapping pushes share a slow SQL read rather than creating duplicate observers.",
+      "Batch read outage preserves its queue, visibly marks it delayed, and catches up with the next inventory refresh.",
+      "An obsolete SQL response cannot repopulate the queue after a project switch.",
+      "Settled solver work with pending SQL observations remains unconfirmed and continues refreshing."
+    ],
+    "chromium": {
+      "passed": 2,
+      "seconds": 12.6,
+      "viewports": [
+        [
+          1280,
+          1700
+        ],
+        [
+          480,
+          740
+        ]
+      ],
+      "paired_refresh_without_batch_push": true,
+      "pending_hollow_style_asserted": true,
+      "horizontal_overflow": false,
+      "screenshots_inspected": true,
+      "providers_used": false,
+      "live_stack_contacted": false,
+      "fixture_formalization_submissions": 1,
+      "cancel_restart_interrupt_submissions": 0
+    },
+    "boundary_register": {
+      "passed": true,
+      "adapter_routes": 179,
+      "companion_dispatch_branches": 27
+    },
+    "diff_whitespace_check_passed": true
+  },
+  "live_continuity": {
+    "before": {
+      "observed_at": "2026-10-18T14:49:09.561486+00:00",
+      "runtime_id": "cfff46b2d262405e9c98b1ddd4caab6d",
+      "generation": 1,
+      "pid": 85114,
+      "active_run_id": "ab7762b4-d1f4-4f20-8e42-996282d1ec0b"
+    },
+    "after": {
+      "captured_at": "2026-10-18T14:57:30.020722+00:00",
+      "worker": {
+        "runtime_id": "cfff46b2d262405e9c98b1ddd4caab6d",
+        "generation": 1,
+        "pid": 85114,
+        "lifecycle_state": "ready",
+        "started_at": "2026-10-18T14:43:39.463407+00:00",
+        "heartbeat_at": "2026-10-18T14:57:29.670292+00:00"
+      },
+      "runs": [
+        {
+          "id": "c1fdbbd0-2a95-485f-b145-ee1bb08824da",
+          "status": "proved",
+          "result_kind": "defined",
+          "stop_reason": null,
+          "created_at": "2026-10-18T14:43:58.468434+00:00",
+          "updated_at": "2026-10-18T14:45:48.493551+00:00"
+        },
+        {
+          "id": "277ada7a-a567-47ed-a92b-877da2e5c255",
+          "status": "proved",
+          "result_kind": "defined",
+          "stop_reason": null,
+          "created_at": "2026-10-18T14:45:58.944876+00:00",
+          "updated_at": "2026-10-18T14:47:09.201570+00:00"
+        },
+        {
+          "id": "0256c5e7-4a7d-462c-aee0-cdaaa2ef36c3",
+          "status": "proved",
+          "result_kind": "proved",
+          "stop_reason": null,
+          "created_at": "2026-10-18T14:47:20.246039+00:00",
+          "updated_at": "2026-10-18T14:48:22.922253+00:00"
+        },
+        {
+          "id": "ab7762b4-d1f4-4f20-8e42-996282d1ec0b",
+          "status": "proved",
+          "result_kind": "proved",
+          "stop_reason": null,
+          "created_at": "2026-10-18T14:48:34.594949+00:00",
+          "updated_at": "2026-10-18T14:49:39.696801+00:00"
+        },
+        {
+          "id": "048292c6-269b-476c-a3a7-d2f9aa438741",
+          "status": "proved",
+          "result_kind": "proved",
+          "stop_reason": null,
+          "created_at": "2026-10-18T14:50:05.610621+00:00",
+          "updated_at": "2026-10-18T14:52:02.969032+00:00"
+        },
+        {
+          "id": "441439e4-e248-4cca-9b57-73d510d357c8",
+          "status": "proved",
+          "result_kind": "proved",
+          "stop_reason": null,
+          "created_at": "2026-10-18T14:52:21.807251+00:00",
+          "updated_at": "2026-10-18T14:53:25.840830+00:00"
+        },
+        {
+          "id": "03f901a3-5c48-45a4-b98c-ace28c541935",
+          "status": "proved",
+          "result_kind": "proved",
+          "stop_reason": null,
+          "created_at": "2026-10-18T14:53:47.575106+00:00",
+          "updated_at": "2026-10-18T14:55:52.891897+00:00"
+        },
+        {
+          "id": "bc0bb05c-97b8-4e0b-b2ad-c074a04c30c3",
+          "status": "proved",
+          "result_kind": "proved",
+          "stop_reason": null,
+          "created_at": "2026-10-18T14:56:20.548305+00:00",
+          "updated_at": "2026-10-18T14:57:17.943030+00:00"
+        }
+      ],
+      "runtime_controls_since_edits_started": [],
+      "batch": {
+        "batchId": "formalize-batch-1792334637316-1",
+        "createdAt": "2026-10-18T14:43:57.316Z",
+        "done": false,
+        "running": true,
+        "pausedOn": null
+      }
+    },
+    "same_worker_identity_pid_and_generation": true,
+    "live_commands_submitted_by_qualification": false,
+    "paid_solver_replay": false
+  },
+  "activation": "Reload the unpacked extension and refresh the Overleaf tab to load updated browser resources. No API, worker or development-stack restart is needed; accepted work continues in the worker independently of this UI.",
+  "limits": [
+    "Batch outcome and current artifact verification remain distinct facts. Awaiting SQL evidence is never treated as current verification.",
+    "Paired reads share a render cycle, not an atomic cross-request database snapshot; delays remain explicitly identified.",
+    "The current browser tab keeps its loaded content script until reloaded. No browser or worker was restarted by this change."
+  ],
+  "source_sha256": {
+    "apps/overleaf-extension/extension/content.js": "280be87ee684d27b4fc5175ec231b3bc5e3e163b5b2488922cd033042adffc3c",
+    "apps/overleaf-extension/extension/content.css": "261f239e45dc48b3abd6cc15c039ee161bfb3b182dc0a41e11cffdec69ea0ad4",
+    "apps/overleaf-extension/extension/leanPaneView.mjs": "b9e4577aac78cb9b6ddbae0c13605b40e254ce7274ab6ffa8c7e05ba2ea26e63",
+    "apps/overleaf-extension/tests/contentActions.test.mjs": "ef86bd0f366cc93ed882859b0c9d00679f2f4a4c0a5e62c495f5a7a2e9f2f7c8",
+    "apps/overleaf-extension/tests/leanPaneView.test.mjs": "fabbf527c3930ce10676345459034d3d7d79f2773bf29878d7e86e7291df578e",
+    "tests/browser/overleaf-admission.spec.mjs": "a4d6ed6996cad99f99264fad2f903bc8f70018156bfef41f96894dc1541d27ce"
+  }
+}

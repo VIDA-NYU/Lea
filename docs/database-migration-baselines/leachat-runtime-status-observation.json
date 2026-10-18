@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T02:25:21.425010+00:00",
+  "scope": "LeaChat runtime-status observation UI. The live API was read once and the live database was inspected read-only; tests use HTTP/browser fixtures. No commands, compiler checks or provider calls were started.",
+  "observed_runtime": {
+    "http_status": 200,
+    "state": "idle",
+    "last_failure": null,
+    "active_cold_checks": 0,
+    "projection_state": "observed",
+    "observed_at": "2026-10-18T02:21:20.583422+00:00",
+    "expires_at": "2026-10-18T02:23:20.583422+00:00",
+    "worker_lifecycle_state": "ready"
+  },
+  "diagnosis": [
+    "All unsuccessful runtime-status HTTP responses and transport exceptions became state=unavailable without distinguishing missing SQL observations from checker health.",
+    "Unavailable status was not eligible for polling when the selected session was idle, so a transient error could remain visible after recovery.",
+    "The inspected current response contains no runtime failure. The exact earlier browser HTTP failure is not retained in this evidence; it is not established as a compiler failure."
+  ],
+  "fix": [
+    "Retain the distinction between projection_unavailable (waiting for status), status API/network failure (reconnecting), and a successful unavailable runtime report (existing runtime warning).",
+    "Re-read unavailable observations every five seconds while visible, including idle sessions; retain abort, session-switch and visibility guards.",
+    "Show pending observations in neutral styling and preserve server explanations in the tooltip without writing them as compiler failures.",
+    "Continue using only the SQL-backed GET status endpoint; no direct Lean/LSP or worker calls."
+  ],
+  "validation": {
+    "frontend_suite": {
+      "tests": 129,
+      "pass": 129,
+      "fail": 0,
+      "skipped": 0
+    },
+    "typecheck": "pass",
+    "browser_cases": 3,
+    "browser_scenarios": [
+      "Initial SQL observation unavailable, then healthy idle response with no active run.",
+      "Initial network failure, then healthy idle response.",
+      "Successful API response reporting genuine unavailable state, then healthy idle response."
+    ],
+    "browser_observations": [
+      "All three cases retry and clear the chip after recovery.",
+      "Only GET status requests occur.",
+      "Draft content, focus and selection remain unchanged.",
+      "Pending-state desktop and narrow renders were reviewed."
+    ],
+    "boundary_audit": {
+      "adapter_routes": 179,
+      "companion_dispatch_branches": 27,
+      "result": "pass"
+    },
+    "whitespace_check": "pass"
+  },
+  "source_sha256": {
+    "apps/lea-standalone/src/app/components/LeanCheckRuntimeStatus.tsx": "a2c499e05d4dc7ba5af8c22d1e847ba7fee418ebc682ffdab373fc4a6d484778",
+    "apps/lea-standalone/src/app/lib/api.ts": "1f00a5a4b1031d98d87dff175412bdcf875bad353ca94f1db2713ab199ed363f",
+    "apps/lea-standalone/src/app/lib/types.ts": "897fe26a6de425380f729e82cdba039157ba2a0bd0ef2ac11b6f787047c6d462",
+    "apps/lea-standalone/src/app/lib/leanCheckRuntime.mjs": "7cde06a8979835b5d06de780880a0d20cc24cfecf358971767cadd1b3d5098f0",
+    "apps/lea-standalone/src/app/leanCheckRuntime.test.mjs": "e92a35b541756d7b0314fe8b765fee35cd5da49ce8f7cdaaf06448f21f1c88ee",
+    "apps/lea-standalone/src/app/apiErrors.test.mjs": "4ff4c9b886c88648891a2ee5b47ff05c5db0ddc382b9695f767d5b9ecc36c19b",
+    "apps/lea-standalone/src/styles/lea-v2.css": "5d0ee4d4054b4644dedb67d8e391700d4dc7a0d7a8d659573395fda29bf23e12",
+    "tests/browser/lean-runtime-status.spec.mjs": "7cf2a842f40fbc23326f9944b942c42bdfd6e83573cd0e8867177943664e656c"
+  }
+}

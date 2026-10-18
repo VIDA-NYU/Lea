@@ -33,6 +33,7 @@ import difflib
 import json
 import logging
 import re
+import sqlite3
 import time
 from fastapi import HTTPException
 from datetime import datetime, timezone
@@ -83,6 +84,45 @@ from lea.usage import merge_details, legacy_details
 from . import project_coordination
 
 logger = logging.getLogger("lea-interface.bridge")
+
+
+class _StopObservationUnavailable(RuntimeError):
+    pass
+
+
+def _run_stop_status(run_id, command_token):
+    """Read only stop/deadline fields and ownership in one short SQL snapshot."""
+    from . import db, commands
+    with db.read_snapshot() as conn:
+        row = conn.execute('select stop_requested_reason,deadline_at from runs where id=?', (run_id,)).fetchone()
+        owned = not command_token or bool(commands._owned(conn, command_token))
+    return (dict(row) if row else None), owned
+
+
+def _poll_stop_with_contention(poll, stop_event: Event) -> bool:
+    """Pause at the stop gate during a brief SQL outage, without replaying work.
+
+    Retry only read/stop checks, never a provider invocation or tool. Every
+    successful poll rechecks current SQL ownership, including lease expiry.
+    A prolonged outage stops execution conservatively instead of admitting the
+    next effect using stale cancellation or ownership information.
+    """
+    until = time.monotonic() + 10
+    warned = False
+    while not stop_event.is_set():
+        try:
+            return poll()
+        except sqlite3.OperationalError as exc:
+            if (getattr(exc, 'sqlite_errorcode', 0) & 0xff) not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                raise
+            if not warned:
+                logger.warning('Run stop check delayed by database contention; pausing execution at the stop gate')
+                warned = True
+            if time.monotonic() >= until:
+                logger.error('Run stopped because SQL cancellation and ownership could not be checked')
+                raise _StopObservationUnavailable('SQL cancellation and ownership could not be checked') from exc
+            stop_event.wait(.1)
+    return True
 _FORMALIZATION_CONTEXT_MARKER = "<!-- lea:formalization-context -->"
 
 
@@ -1899,6 +1939,7 @@ def _run_lea(context: RunnerContext) -> None:
             run_row.get("focus_formalization_id") if run_row else None
         )
         focus_source_hash = run_row.get("focus_source_hash") if run_row else None
+        from . import target_contexts
         focused_formalization = (
             formalization_service.get(focus_formalization_id)
             if focus_formalization_id else None
@@ -1999,6 +2040,16 @@ def _run_lea(context: RunnerContext) -> None:
                         run_id, final_status)
             return
         attempt_id = recovery.start_attempt(run_id)
+        target_context = target_contexts.prepare(run_id, token=context.command_token)
+        if target_context:
+            focused_formalization = formalization_service.get(focus_formalization_id)
+            cfg = replace(cfg, mathematical_request=target_context)
+            # A structured Lean target activates compiler result selection;
+            # prose-only/imported targets retain their established gates.
+            from .artifacts import declaration_type
+            if declaration_type(target_context.get('statement') or '') and not cfg.selected_result:
+                cfg = replace(cfg, selected_result={
+                    'declaration': target_context['declaration_name'], 'kind': target_context['kind']})
         from . import overleaf_source
         try:
             overleaf_source.validate_run(run_id, proofs_root)
@@ -2136,18 +2187,27 @@ def _run_lea(context: RunnerContext) -> None:
             # Persist the rebased seed before the next paid request or tool, so
             # subsequent automatic recovery uses this segment's own state.
             recorder("checkpoint", resume_state)
-        def should_stop_run() -> bool:
-            current = store.get_run_status(run_id)
+        stop_poll_reason = None
+        def poll_stop_run() -> bool:
+            nonlocal stop_poll_reason
+            current, owned = _run_stop_status(run_id, context.command_token)
             if current is None:
                 return True
             if current and current.get("deadline_at") and datetime.fromisoformat(current["deadline_at"]) <= datetime.now(timezone.utc):
                 request_stop(run_id, reason="timeout", source="adapter")
             if current.get('stop_requested_reason'):return True
-            if context.command_token:
-                from . import commands,db
-                with db.connect() as conn:
-                    if not commands._owned(conn,context.command_token):return True
+            if not owned:
+                stop_poll_reason = 'command_fenced'
+                return True
             return stop_event.is_set()
+
+        def should_stop_run() -> bool:
+            nonlocal stop_poll_reason
+            try:
+                return _poll_stop_with_contention(poll_stop_run, stop_event)
+            except _StopObservationUnavailable:
+                stop_poll_reason = 'database_unavailable'
+                return True
 
         import inspect
         event_options = {
@@ -2638,6 +2698,8 @@ def _run_lea(context: RunnerContext) -> None:
                             produced_clean = True
                     final_text = _final_text_for_result(ev)
                     persist_assistant(final_text)
+                    if ev.reason in {'assistant', 'completed'}:
+                        target_contexts.record_proposal(run_id, token=context.command_token)
                     current_checks = [store.latest_code_step_for_path(session_id, path) for path in step_id_by_path]
                     produced_clean = any(step and step.get('check_current') and step.get('check_status') == 'ok'
                         and 'scratch' not in step['path'].lower() for step in current_checks)
@@ -2667,10 +2729,15 @@ def _run_lea(context: RunnerContext) -> None:
                         )
                         if ev.result_kind == "needs_review" or not successful_result or match is None:
                             final_status = final_result_kind = "needs_review"
-                            final_result_detail = ev.result_detail or reason or "Lea requested review of this target."
+                            final_result_detail = reason or (
+                                ev.result_detail if ev.result_detail != 'NEEDS_REVIEW' else None
+                            ) or "Lea could not match the checked result to the confirmed request."
                         else:
                             final_status = "proved"
                             final_result_kind = "defined" if focused_formalization.get("kind") == "definition" else "proved"
+                    if ev.reason == 'completed' and not target_contexts.unchanged(target_context):
+                        final_status = final_result_kind = 'needs_review'
+                        final_result_detail = 'The confirmed target changed during this run. Confirm and check the current target.'
                     if context.purpose == "project_dependency" and ev.reason == "completed":
                         from . import project_dependencies
                         dependency_id = (store.get_run(run_id) or {}).get("dependency_id")
@@ -2704,10 +2771,12 @@ def _run_lea(context: RunnerContext) -> None:
                         stop_reason = ev.reason
                         recoverable = True
                     elif ev.reason == "interrupted":
-                        stop_reason = (store.get_run(run_id) or {}).get("stop_requested_reason") or "user_stop"
+                        stop_reason = (store.get_run(run_id) or {}).get("stop_requested_reason") or stop_poll_reason or "interrupted"
                         recoverable = True
                         if stop_reason == "timeout":
                             final_result_detail = "Time limit reached; the run stopped at a turn boundary."
+                        elif stop_reason == 'database_unavailable':
+                            final_result_detail = 'The run paused because database cancellation and ownership checks were unavailable.'
                     if ev.reason in {"stalled", "dependency_wait"}:
                         final_result_detail = ev.text
                     final_stop_reason = stop_reason

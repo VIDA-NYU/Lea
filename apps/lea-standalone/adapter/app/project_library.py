@@ -352,7 +352,13 @@ def entries(project: dict, *, repo: Path | None = None, path: str | None = None)
     return result
 
 
-def search(project: dict, query: str = "", *, limit: int = 20, offset: int = 0, validate: bool = True) -> dict:
+def search(project: dict, query: str = "", *, limit: int = 20, offset: int = 0, validate: bool = False) -> dict:
+    """Discovery never compiles candidates unless explicitly requested.
+
+    Existing evidence is still checked for freshness by entries(). Uncertified
+    declarations remain discoverable with reusable=false; explicit dependency
+    reservation/validation and the consumer's compiler own certification.
+    """
     records = refresh(project, resolve_environment=False)
     tokens = [s.casefold() for s in re.findall(r"[\w']+", query)]
     def score(d):

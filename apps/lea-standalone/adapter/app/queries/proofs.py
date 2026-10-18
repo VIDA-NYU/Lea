@@ -15,6 +15,10 @@ def decorate(rows):
         with db.connect() as conn:
             files=[dict(r) for r in conn.execute('select * from formalization_files where formalization_id=? order by case role when \'primary\' then 0 else 1 end,path',(fid,))]
             active=conn.execute("select id,status,pending_approval from runs where focus_formalization_id=? and status in ('pending','running') order by created_at desc,id desc limit 1",(fid,)).fetchone()
+            if not observed:
+                attempted=conn.execute('select 1 from runs where focus_formalization_id=? limit 1',(fid,)).fetchone()
+                registered=conn.execute('select 1 from artifacts where scope=? and declaration_name=? limit 1',
+                    (row.get('project_id') or row.get('loose_session_id'),row.get('declaration_name') or row.get('display_title'))).fetchone()
             conversations=[dict(r) for r in conn.execute('''select s.id,s.title,s.updated_at from sessions s
                 join session_formalizations sf on sf.session_id=s.id where sf.formalization_id=? and s.parent_id is null order by s.updated_at desc''',(fid,))]
         activity={'status':('queued' if active['status']=='pending' else 'waiting_for_approval' if active['pending_approval'] else 'running') if active else 'idle',
@@ -22,12 +26,24 @@ def decorate(rows):
         if observed:
             item={**observed,**row}
         else:
+            recorded=core.recorded_fact(scope,'formalization',fid) or {}
+            unformalized=(recorded.get('validity_status') in {'planned','draft'}
+                          and not recorded.get('files') and not recorded.get('artifact')
+                          and not recorded.get('latest_run') and not files and not attempted and not registered)
+            # Preserve a labelled historical result without certifying it as
+            # current while another target invalidates the shared observation.
+            last_result=({'validity_status':recorded['validity_status'],
+                          'source_hash':recorded.get('source_hash'),
+                          'observed_at':core.metadata(scope)['observed_at']}
+                         if (unformalized or recorded.get('check_current') and recorded.get('validity_status') in {'proved','defined','disproved'}
+                             and recorded.get('source_hash')==row.get('source_hash')) else None)
             item={**row,'validity_status':'unchecked' if files else 'planned' if row.get('declaration_name') else 'draft',
                 'validity_reason':'Current proof observation is unavailable: '+core.metadata(scope)['state'],
                 'check_current':False,'certification':None,'completion_run_id':None,'declaration_kind':None,
                 'review':{'eligible':False,'approval':None,'reason':'Wait for a current worker observation.','allowed_outcomes':[]},
                 'safe_verify':None,'latest_check':None,'latest_run':None,'artifact':None,'reformalization':None,
-                'primary_path':next((f['path'] for f in files if f['role']=='primary'),None)}
+                'primary_path':next((f['path'] for f in files if f['role']=='primary'),None),
+                'last_observed_result':last_result}
         item.update(files=files,activity=activity,sessions=conversations,projection=core.metadata(scope))
         result.append(item)
     return result
@@ -183,5 +199,6 @@ def target_status(project,declarations='',formalization_ids=''):
             'declaration_present':observed.get('declaration_present'),'artifact_updated_at':step.get('created_at') if step else None,
             'reformalization':form.get('reformalization'),'current_source_hash':source_hash,
             'artifact_source_hash':artifact_hash,'stale':bool(source_hash and artifact_hash and source_hash!=artifact_hash),
-            'last_batch_outcome':outcome,'projection':form['projection']})
+            'last_batch_outcome':outcome,'projection':form['projection'],
+            'last_observed_result':form.get('last_observed_result')})
     return {'project_id':project['id'],'slug':project['slug'],'project_namespace':project['namespace'],'namespace_revision':project['namespace_generation'],'targets':targets}

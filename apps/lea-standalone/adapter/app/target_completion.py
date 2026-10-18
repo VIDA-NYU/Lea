@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from .artifacts import LeanDeclaration, declaration_contains_sorry, scan_lean_declarations
+from .artifacts import (LeanDeclaration, declaration_contains_sorry, scan_lean_declarations,
+                        declaration_signature, declaration_type)
 
 
 def compiler_result(step, name, kind=None):
@@ -71,10 +72,14 @@ def checked_target(formalization: dict, steps: list[dict], *, require_current=Tr
         return None, f"The requested declaration {name} is ambiguous across artifacts."
     if candidates:
         step, code, declaration = candidates[0]
+        confirmed = declaration_type(formalization.get('statement') or '')
+        actual = declaration_type(declaration_signature(declaration) or '')
+        if confirmed and confirmed != actual:
+            return None, 'The checked declaration differs from the confirmed Lean statement.'
         if step.get("check_status") != "ok" or (require_current and not step.get("check_current")):
             return None, "The requested declaration has no passing Lean check."
         compiler = compiler_result(step, name, formalization.get('kind') or 'theorem')
-        if compiler is False:
+        if compiler is False or (confirmed and compiler is None):
             return None, 'The requested declaration has no passing compiler trust evidence.'
         if compiler is None and declaration_contains_sorry(code, declaration.full_name):
             return None, "The requested declaration still uses sorry or admit."

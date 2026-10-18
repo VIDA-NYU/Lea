@@ -25,17 +25,19 @@ def resolve(conn,reference,formalization_id=None,*,admission=True):
     latest=conn.execute('select * from source_publications where id=?',(head[0],)).fetchone() if head else None
     if not latest or latest['bundle_hash']!=row['bundle_hash'] or latest['coverage']!=row['coverage'] or latest['files_json']!=row['files_json']:
         raise ValueError('Published source changed. Select its current publication and submit again.')
-    document_head=conn.execute('select * from source_publications where document_id=? and generation=? order by sequence desc limit 1',(row['document_id'],row['generation'])).fetchone()
+    document_head=conn.execute('select * from source_publications where document_id=? order by generation desc,sequence desc limit 1',(row['document_id'],)).fetchone()
     if document_head and document_head['coverage']=='complete' and row['coverage']=='complete' and document_head['files_json']!=row['files_json']:
         raise ValueError('The published document archive changed. Publish this target from its current archive before sending.')
     owner=conn.execute('select * from source_publishers where document_id=?',(row['document_id'],)).fetchone()
-    if not owner or owner['generation']!=row['generation'] or owner['client_id']!=row['client_id']:
-        raise ValueError('The source publisher generation changed. Publish from the current tab before sending.')
     parent=db.caller_parent_command.get()
     bound=conn.execute("select 1 from companion_source_bindings b join commands c on c.id=b.command_id where b.command_id=? and b.publication_id=? and c.kind='companion.dispatch' and c.state in ('claimed','succeeded')",(parent,reference)).fetchone() if parent else None
     if parent:
         caller=conn.execute('select kind from commands where id=?',(parent,)).fetchone()
         if caller and caller[0]=='companion.dispatch' and not bound:raise ValueError('This source was not frozen by the accepted business operation')
+    # The publisher fences new input. Accepted work owns its frozen publication
+    # independently of browser lease renewal; the content checks above still apply.
+    if admission and not bound and (not owner or owner['generation']!=row['generation'] or owner['client_id']!=row['client_id']):
+        raise ValueError('The source publisher generation changed. Publish from the current tab before sending.')
     if admission and not bound and owner['lease_until']<=db.utc_now():raise ValueError('Published source is stale. Publish it again from Overleaf before sending.')
     if formalization_id:
         form=conn.execute('select * from formalizations where id=?',(formalization_id,)).fetchone()

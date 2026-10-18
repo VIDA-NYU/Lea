@@ -1,7 +1,7 @@
 """Versioned compiler inputs and workspace leases shared by all check consumers."""
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from bisect import bisect_left
 import hashlib
 import json
@@ -13,7 +13,7 @@ from . import execution as command_executor
 import threading
 
 from .check_runtime import CheckBudget, CheckFailure, stop_process
-from .imports import direct_imports, module_parts
+from .imports import direct_imports, module_parts, without_comments, IMPORT_COMMAND_RE
 
 PROTOCOL_VERSION = 1
 _guard = threading.RLock()
@@ -255,7 +255,28 @@ def _configuration(root):
         ('lean-toolchain', 'lakefile.lean', 'lakefile.toml', 'lake-manifest.json')}
 
 
+def _dependency_header(code):
+    """Compiler import resolution is independent of edits after the header.
+
+    Preserve modifiers, module and prelude commands. Unrecognized import syntax
+    falls back to the complete input rather than dropping a dependency.
+    """
+    header = []
+    for line in without_comments(code).splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped in {'module', 'prelude'} or IMPORT_COMMAND_RE.fullmatch(line):
+            header.append(line)
+        else:
+            if any(word in stripped.split() for word in ('import', 'prelude', 'module')):
+                return code
+            break
+    return '\n'.join(header) + '\n'
+
+
 def _resolve(path, code, root, budget, configuration):
+    code = _dependency_header(code)
     key = (str(root), str(path), digest(code.encode()), digest(configuration))
     with _guard:
         cached = _resolutions.get(key)
@@ -264,8 +285,9 @@ def _resolve(path, code, root, budget, configuration):
     values = []
     for option in ('--src-deps', '--deps'):
         command = ['lake', 'env', 'lean'] if root else ['lean']
-        status, output, error = _command([*command, option, '--stdin', str(path)],
-            root or path.parent, budget, code)
+        with budget.measure('dependency_resolution'):
+            status, output, error = _command([*command, option, '--stdin', str(path)],
+                root or path.parent, budget, code)
         if status:
             raise CheckFailure('dependency_resolution', error or output, phase='dependencies', retryable=False)
         values.append([Path(line.strip()).absolute() for line in output.splitlines() if line.strip()])
@@ -279,11 +301,14 @@ def _resolve(path, code, root, budget, configuration):
 
 
 def _identity(path, root):
-    if root and path.is_relative_to(root):
-        return 'workspace:' + path.relative_to(root).as_posix()
+    text = path.as_posix()
+    if root:
+        prefix = root.as_posix().rstrip('/') + '/'
+        if text.startswith(prefix):
+            return 'workspace:' + text[len(prefix):]
     for marker in ('src/lean/', 'lib/lean/'):
-        if marker in path.as_posix():
-            return 'toolchain:' + marker + path.as_posix().split(marker, 1)[1]
+        if marker in text:
+            return 'toolchain:' + marker + text.split(marker, 1)[1]
     return 'external:' + str(path)
 
 
@@ -306,13 +331,17 @@ def manifest(path, content, root, budget=None):
     configuration = {name: value[0] for name, value in configuration_observations.items()}
     files, roots, seen = {}, {}, set()
     directories, recorded = {}, set()
+    root_prefix = root.as_posix().rstrip('/') + '/' if root else ''
+    packages_prefix = root_prefix + '.lake/packages/' if root else ''
     last_poll = time.monotonic()
     def poll():
         nonlocal last_poll
         now = time.monotonic()
         if now - last_poll >= .05:
             budget.remaining('dependencies')
-            last_poll = now
+            # A SQL stop poll can itself exceed this interval under load. Start
+            # the next interval after it returns, or every file polls SQL again.
+            last_poll = time.monotonic()
     def record(candidate, kind):
         poll()
         if (candidate, kind) in recorded:
@@ -332,30 +361,33 @@ def manifest(path, content, root, budget=None):
         if pair in seen:
             return
         seen.add(pair)
+        source_key = _identity(source, root)
+        source_text = source.as_posix()
+        toolchain_source = source_key.startswith('toolchain:')
         for kind, candidate in [('source', source), ('compiled', compiled)]:
             record(candidate, kind)
             if kind == 'compiled':
                 for companion in _artifact_family(candidate, directories):
                     record(Path(companion), kind)
         # Pin the actual compiler installation as well as the toolchain selector.
-        if _identity(source, root).startswith('toolchain:'):
+        if toolchain_source:
             installation = Path(source.as_posix().split('/src/lean/', 1)[0])
             record(installation / 'bin/lean', 'compiler')
-        elif root and source.is_relative_to(root / '.lake/packages'):
-            package = root / '.lake/packages' / source.relative_to(root / '.lake/packages').parts[0]
+        elif packages_prefix and source_text.startswith(packages_prefix):
+            package = root / '.lake/packages' / source_text[len(packages_prefix):].split('/', 1)[0]
             for name in ('lean-toolchain', 'lakefile.lean', 'lakefile.toml', 'lake-manifest.json'):
                 candidate = package / name
                 if candidate.is_file():
                     record(candidate, 'configuration')
         # Built-in libraries are an immutable installation, identified by its
         # toolchain and the resolved source/artifact hashes, not writable projects.
-        if _identity(source, root).startswith('toolchain:'):
+        if toolchain_source:
             return
         try:
-            imports = _imports_for_source(source, files[_identity(source, root)])
+            imports = _imports_for_source(source, files[source_key])
         except (OSError, UnicodeError):
             raise CheckFailure('dependency_resolution', f'Cannot read imported module {source}', retryable=False)
-        if root and source.is_relative_to(root) and '.lake' not in source.relative_to(root).parts:
+        if root_prefix and source_text.startswith(root_prefix) and '.lake' not in source_text[len(root_prefix):].split('/'):
             local = _resolve(source, source.read_text(), root, budget, configuration)
             for dep_source, dep_compiled in local:
                 inferred = next((name for name in imports if dep_source.as_posix().endswith('/'.join(module_parts(name)) + '.lean')), 'Init')
@@ -464,10 +496,11 @@ def _observed_changed(root, current):
         return True
     if previous.get('invalidated'):
         return False  # Retirement is already scheduled before the next admission.
+    admitted = _runtime_files(current) if current is not None else {}
     if current is not None:
         if previous['configuration'] != current['configuration']:
             return True
-        for name, record in _runtime_files(current).items():
+        for name, record in admitted.items():
             old = previous['files'].get(name)
             if old and _runtime_record_changed(old, record):
                 return True
@@ -477,7 +510,14 @@ def _observed_changed(root, current):
             return True
         if snapshot.observation(Path(root) / name)[0] != hashed:
             return True
-    for record in previous['files'].values():
+    for name, record in previous['files'].items():
+        newer = admitted.get(name)
+        if newer and not _runtime_record_changed(record, newer) and newer['sha256'] is not None:
+            # The current manifest has already resolved and hashed these bytes.
+            # Revalidate their identities at the end instead of resolving and
+            # hashing the same overlapping closure a second time.
+            snapshot.files[record['path']] = (newer['sha256'], newer['version'])
+            continue
         path = Path(record['path'])
         if str(path.resolve()) != record['resolved_path']:
             return True
@@ -533,7 +573,8 @@ def prepared_environment(path, content, root, budget):
                 if not targets:
                     raise
                 try:
-                    status, output, error = _command(['lake', 'build', *targets], root, budget)
+                    with budget.measure('dependency_build'):
+                        status, output, error = _command(['lake', 'build', *targets], root, budget)
                 finally:
                     reconcile_daemon(root)
                 if status:
@@ -542,25 +583,32 @@ def prepared_environment(path, content, root, budget):
                 current = manifest(path, content, root, budget)
                 _prepared[(str(root), tuple(direct_imports(content)))] = environment_hash(current)
             continue
-        with lock.lease(exclusive=True, budget=budget):
-            current = manifest(path, content, root, budget)
-            if _prepared.get(key) != environment_hash(current) or observed_changed(root, current):
-                before_sources = {k: v['sha256'] for k, v in current['files'].items() if v['kind'] == 'source'}
-                # Lake follows exactly these roots and their transitive dependencies.
-                targets = [name for name in direct_imports(content) if name.split('.')[0] not in {'Init', 'Lean', 'Std'}]
-                if targets and _prepared.get(key) != environment_hash(current):
-                    try:
-                        status, output, error = _command(['lake', 'build', *targets], root, budget)
-                    finally:
-                        reconcile_daemon(root)
-                    if status:
-                        raise CheckFailure('dependency_build', (output + '\n' + error).strip(),
-                            phase='dependencies', retryable=False)
+        with ExitStack() as prepared_reader:
+            with lock.lease(exclusive=True, budget=budget):
                 current = manifest(path, content, root, budget)
-                reconcile_daemon(root, current)
-                if before_sources != {k: v['sha256'] for k, v in current['files'].items() if v['kind'] == 'source'}:
-                    raise CheckFailure('source_changed', 'Imported source changed during its build', retryable=False)
-                _prepared[key] = environment_hash(current)
+                if _prepared.get(key) != environment_hash(current) or observed_changed(root, current):
+                    before_sources = {k: v['sha256'] for k, v in current['files'].items() if v['kind'] == 'source'}
+                    # Lake follows exactly these roots and their transitive dependencies.
+                    targets = [name for name in direct_imports(content) if name.split('.')[0] not in {'Init', 'Lean', 'Std'}]
+                    if targets and _prepared.get(key) != environment_hash(current):
+                        try:
+                            with budget.measure('dependency_build'):
+                                status, output, error = _command(['lake', 'build', *targets], root, budget)
+                        finally:
+                            reconcile_daemon(root)
+                        if status:
+                            raise CheckFailure('dependency_build', (output + '\n' + error).strip(),
+                                phase='dependencies', retryable=False)
+                    current = manifest(path, content, root, budget)
+                    reconcile_daemon(root, current)
+                    if before_sources != {k: v['sha256'] for k, v in current['files'].items() if v['kind'] == 'source'}:
+                        raise CheckFailure('source_changed', 'Imported source changed during its build', retryable=False)
+                    _prepared[key] = environment_hash(current)
+                # Acquire the shared lease before releasing the writer. No
+                # coordinated mutation can slip between build and compilation.
+                prepared_reader.enter_context(lock.lease(budget=budget))
+            yield current
+            return
 
 
 def source_identity(path):

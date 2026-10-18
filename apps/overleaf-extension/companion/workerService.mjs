@@ -1,6 +1,6 @@
 import { usageProjection } from "./usageProjection.mjs";
 import { mergeUsageDetails } from "../shared/usageDetails.mjs";
-import { runtimeNeedsPolling, runtimeStatusMessage, checkExecutionMessage } from "../../lea-standalone/src/app/lib/leanCheckRuntime.mjs";
+import { runtimeObservation, runtimeNeedsPolling, runtimeStatusMessage, checkExecutionMessage } from "../../lea-standalone/src/app/lib/leanCheckRuntime.mjs";
 import { acceptStatusEvent } from "./leaStatus.mjs";
 import { resolveSharedDependencies, mergeDependencyProgress } from "./dependencyCoordinator.mjs";
 import { normalizeLeaStatus } from "../shared/leaStatus.mjs";
@@ -301,6 +301,15 @@ export async function reconcileRecoveredBatches(state) {
   for (const batch of Object.values(state.repairBatches || {})) {
     if(batch.migrationBlocked)continue;
     if (!batch || batch.done || batch.running) continue;
+    if (batch.pausedOn?.reason === 'dependency_projection_pending') batch.pausedOn = null;
+    // A projection wait precedes solver admission, so it is safe to resume
+    // after restart. An unknown solver admission still requires reconciliation.
+    for (const entry of batch.items || []) {
+      if (entry.state === 'running' && entry.waitingForProjection && !entry.runJobId) {
+        entry.state = 'pending';
+        batch.pausedOn = null;
+      }
+    }
     // Restart recovery may continue independent queued work, but resuming a
     // saved paused run requires a new user action.
     if (batch.operation === "formalize") {
@@ -354,11 +363,13 @@ export async function reconcileRecoveredBatches(state) {
       await persistRepairBatches(state);
     }
     if (!batch.pausedOn && !batch.cancelRequested && batch.items?.some((item) => item.state === "pending")) {
-      void resumeBatch(state, batch);
+      void resumeBatch(state, batch).catch(() => {
+        console.warn('[companion] Retained batch reconciliation failed; review the accepted intent.');
+      });
     } else if (!batch.pausedOn && batch.items?.every((item) => !["pending", "running"].includes(item.state))) {
       batch.done = true;
       await persistRepairBatches(state);
-      if (batch.operation === "formalize") void submitFormalizeBatchReport(state, batch);
+      if (batch.operation === "formalize") startFormalizeBatchReport(state, batch);
     }
   }
 }
@@ -595,19 +606,19 @@ async function getStatusesSnapshot(payload, state, identity) {
   } };
 }
 
-export async function handleFormalize(payload, state, { batch = false } = {}) {
+export async function handleFormalize(payload, state, { batch = false, dependencyWait } = {}) {
   // Serialize admission for a target; two clicks can otherwise both pass the
   // active-job check while source/settings lookups are awaiting the adapter.
   state.formalizationStarts ||= new Map();
   const key = `${payload?.overleafProjectId}:${payload?.targetKind}:${payload?.targetLabel}`;
   const previous = state.formalizationStarts.get(key) || Promise.resolve();
-  const request = previous.catch(() => {}).then(() => handleFormalizeUnlocked(payload, state, { batch }));
+  const request = previous.catch(() => {}).then(() => handleFormalizeUnlocked(payload, state, { batch, dependencyWait }));
   state.formalizationStarts.set(key, request);
   try { return await request; }
   finally { if (state.formalizationStarts.get(key) === request) state.formalizationStarts.delete(key); }
 }
 
-async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
+async function handleFormalizeUnlocked(payload, state, { batch = false, dependencyWait } = {}) {
   const validation = validateTargetPayload(payload);
   if (!validation.ok) {
     return errorResponse(400, validation.error, validation.message);
@@ -739,10 +750,11 @@ async function handleFormalizeUnlocked(payload, state, { batch = false } = {}) {
     projectName: target.projectName,
     projectNamespace: target.projectNamespace,
     targetUses,
-    jobs: state.jobs || {}
+    jobs: state.jobs || {},
+    ...dependencyWait
   });
   if (!usesResolution.ok) {
-    return errorResponse(400, usesResolution.error, usesResolution.message);
+    return errorResponse(usesResolution.status || 400, usesResolution.error, usesResolution.message);
   }
 
   if (resume) {
@@ -1011,7 +1023,7 @@ export async function handleStub(payload, state) {
     jobs: state.jobs || {}
   });
   if (!usesResolution.ok) {
-    return errorResponse(400, usesResolution.error, usesResolution.message);
+    return errorResponse(usesResolution.status || 400, usesResolution.error, usesResolution.message);
   }
 
   const job = await createLeaJob({
@@ -1703,10 +1715,11 @@ export async function handleLeanCheckRuntime(sessionId, state) {
       fetchImpl: state.fetchImpl || fetch, baseUrl: chatBaseUrls(state).baseUrl,
       apiKey: state.env?.LEA_API_KEY, sessionId
     });
-    const runtime = result.ok ? result.body : { state: "unavailable" };
+    const runtime = runtimeObservation(result);
     return { statusCode: 200, body: { runtime, message: runtimeStatusMessage(runtime) } };
-  } catch {
-    return { statusCode: 200, body: { runtime: { state: "unavailable" }, message: "Lean check runtime unavailable" } };
+  } catch (error) {
+    const runtime = runtimeObservation({ error: error.message });
+    return { statusCode: 200, body: { runtime, message: runtimeStatusMessage(runtime) } };
   }
 }
 
@@ -1767,6 +1780,7 @@ async function leanPaneManifestSnapshot(payload, state, identity) {
   }
 
   let targetSyncWarning = null;
+  let targetSyncPending = null;
   if (identity.exists !== false && manifest.items.length) {
     const target = resolveShareTarget({ overleafProjectId }, state);
     if (!target.error) {
@@ -1789,7 +1803,14 @@ async function leanPaneManifestSnapshot(payload, state, identity) {
         ),
       });
       throwIfProjectRenaming(sync);
-      if (!sync.ok) targetSyncWarning = adapterDetail(sync, "Imported declarations could not be synchronized.");
+      if (!sync.ok) {
+        const code = adapterErrorCode(sync, "");
+        if (["project_busy", "database_busy", "retry_database_busy"].includes(code)
+            || [408, 429, 502, 503, 504].includes(sync.status)) {
+          targetSyncPending = { state: "pending", reason: code || "status_connection_delayed",
+            message: "Inventory synchronization is waiting for the project. Retrying automatically; saved formalizations are retained." };
+        } else targetSyncWarning = adapterDetail(sync, "Imported declarations could not be synchronized.");
+      }
     }
   }
   const jobsBeforeEnrichment = new Set(Object.keys(state.jobs || {}));
@@ -1845,8 +1866,8 @@ async function leanPaneManifestSnapshot(payload, state, identity) {
         apiKey: state.env?.LEA_API_KEY,
         sessionId: runtimeSession
       });
-      leanCheckRuntime = result.ok ? result.body : { state: "unavailable" };
-    } catch { leanCheckRuntime = { state: "unavailable" }; }
+      leanCheckRuntime = runtimeObservation(result);
+    } catch (error) { leanCheckRuntime = runtimeObservation({ error: error.message }); }
   }
 
 
@@ -1857,6 +1878,7 @@ async function leanPaneManifestSnapshot(payload, state, identity) {
       leanCheckRuntime,
       leanCheckRuntimeMessage: runtimeStatusMessage(leanCheckRuntime),
       leanCheckRuntimePolling: runtimeNeedsPolling(leanCheckRuntime),
+      inventorySync: targetSyncPending,
       diagnostics: targetSyncWarning
         ? [...manifest.diagnostics, { code: "target_sync_failed", message: targetSyncWarning }]
         : manifest.diagnostics,
@@ -3505,8 +3527,8 @@ function repairBatchSnapshot(batch) {
       reportError: batch.reportError || null,
       report: batch.report || null
     } : {}),
-    items: batch.items.map(({ targetKind, targetLabel, state: itemState, reason, detail, recoverable, runJobId }) => ({
-      targetKind, targetLabel, state: itemState === "running" && batch.waitingJobs?.includes(runJobId) ? "waiting" : itemState,
+    items: batch.items.map(({ targetKind, targetLabel, state: itemState, reason, detail, recoverable, runJobId, waitingForProjection }) => ({
+      targetKind, targetLabel, state: itemState === "running" && (waitingForProjection || batch.waitingJobs?.includes(runJobId)) ? "waiting" : itemState,
       reason: reason || null, detail: detail || null, recoverable, runJobId: runJobId || null
     }))
   };
@@ -3621,7 +3643,7 @@ export async function handleBatchCancel(payload, state) {
   await interruptBatchActiveRun(state, batch);
   if (!batch.running) {
     finalizeCanceledBatch(batch);
-    if (batch.operation === "formalize") void submitFormalizeBatchReport(state, batch);
+    if (batch.operation === "formalize") startFormalizeBatchReport(state, batch);
     publishEvent(state, "repair-batch-updated", {
       overleafProjectId: batch.overleafProjectId,
       batchId: batch.batchId
@@ -3766,7 +3788,7 @@ async function startTargetBatch(payload, state, operation) {
         }
       }
       batch.done = true;
-      void submitFormalizeBatchReport(state, batch);
+      startFormalizeBatchReport(state, batch);
     } else {
       batch.pausedOn = { targetLabel: null, reason: "batch_error", detail };
     }
@@ -3841,11 +3863,24 @@ function dependencySkipReason(state) {
 async function runFormalizeBatchItem(state, entry, batch) {
   let result;
   try {
-    result = await handleFormalize(entry.payload, state, { batch: true });
+    result = await handleFormalize(entry.payload, state, { batch: true, dependencyWait: {
+      shouldCancel() {
+        databaseState?.checkBatchCancellation(batch);
+        return batch.cancelRequested;
+      },
+      async onWait(labels) {
+        if (!labels && !entry.waitingForProjection) return;
+        entry.waitingForProjection = Boolean(labels);
+        entry.reason = labels ? 'dependency_projection_pending' : null;
+        entry.detail = labels ? `Waiting for current SQL proof observations: ${labels.join(', ')}.` : null;
+        await persistRepairBatches(state);
+      }
+    } });
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   }
   const body = result?.body || {};
+  if (body.error === 'dependency_projection_pending') return { waiting: true, reason: body.error };
   if (result?.statusCode === 402 || body.error === "max_spend_reached") return { paused: true };
   if (result?.statusCode === 200 && body.status === "existing_proof") {
     return { ok: true, state: "skipped", reason: "existing_proof" };
@@ -3916,6 +3951,14 @@ async function runTargetBatch(state, batch) {
         break;
       }
 
+      if (outcome.waiting) {
+        entry.state = 'pending';
+        entry.reason = outcome.reason;
+        batch.pausedOn = { targetLabel: entry.targetLabel, reason: 'dependency_projection_pending' };
+        await publishBatch();
+        break; // The worker's existing reconciler resumes this durable wait.
+      }
+
       // Stub batches retain their resumable cap; formalize-all finishes incomplete.
       if (outcome.paused) {
         if (batch.operation === "formalize") {
@@ -3971,7 +4014,7 @@ async function runTargetBatch(state, batch) {
     } else {
       batch.done = batch.items.every((entry) => entry.state !== "pending" && entry.state !== "running") && !batch.pausedOn;
     }
-    if (batch.operation === "formalize" && batch.done) void submitFormalizeBatchReport(state, batch);
+    if (batch.operation === "formalize" && batch.done) startFormalizeBatchReport(state, batch);
     await publishBatch();
   }
 }
@@ -3981,7 +4024,11 @@ export async function handleLeanPaneRepairStatus(payload, state) {
   if (!batch) return errorResponse(404, "unknown_batch", "No such repair batch (batches do not survive a companion restart).");
   if (batch.operation === "formalize" && batch.reportId && batch.report?.state === "synthesizing") {
     const result = await fetchBatchReport(state, batch.overleafProjectId, batch.reportId);
-    if (result.ok) batch.report = result.body;
+    if (result.ok) {
+      batch.report = result.body;
+      batch.reportState = result.body.state;
+      await persistRepairBatches(state);
+    }
   }
   return { statusCode: 200, body: repairBatchSnapshot(batch) };
 }
@@ -4221,9 +4268,18 @@ async function submitFormalizeBatchReport(state, batch) {
       batch.reportState = "save_failed";
       batch.reportError = result?.error || "Could not save the report.";
     }
+    await persistRepairBatches(state);
     publishEvent(state, "repair-batch-updated", { overleafProjectId: batch.overleafProjectId, batchId: batch.batchId });
   })();
   return batch.reportSubmission;
+}
+
+function startFormalizeBatchReport(state, batch) {
+  // Background callers must observe failed/fenced bookkeeping writes. Explicit
+  // save callers still await submitFormalizeBatchReport and receive its failure.
+  void submitFormalizeBatchReport(state, batch).catch(() => {
+    console.error('[companion] Batch report bookkeeping failed; reconciliation from the saved report is required.');
+  });
 }
 
 export async function handleFormalizeBatchReports(payload, state) {
@@ -6049,9 +6105,54 @@ async function pruneAndPersistJobs(state) {
   }
 }
 
-async function resolveTheoremUses({ state, leaRepoPath, overleafProjectId, projectName = "", projectNamespace = "", targetUses, jobs }) {
+export async function resolveTheoremUses({ state, leaRepoPath, overleafProjectId, projectName = "", projectNamespace = "", targetUses, jobs,
+  timeoutMs = 30000, pollMs = 500, onWait, shouldCancel }) {
+  if (!targetUses.length) return { ok: true, resolvedUses: [] };
+  const deadline = Date.now() + timeoutMs;
+  let waiting = false;
+  for (;;) {
+    databaseState?.fence();
+    if (shouldCancel?.()) return { ok: false, status: 409, error: 'batch_cancelled', message: 'Batch cancelled before dependency admission.' };
+    const result = await resolveTheoremUsesOnce({ state, leaRepoPath, overleafProjectId, projectName, projectNamespace, targetUses,
+      jobs: state.jobs || jobs });
+    if (!result.pendingUses?.length) {
+      await onWait?.(null);
+      return result;
+    }
+    if (!waiting) { waiting = true; await onWait?.(result.pendingUses); }
+    if (Date.now() >= deadline) return { ok: false, status: 503, error: 'dependency_projection_pending',
+      message: `Waiting for current SQL proof observations: ${result.pendingUses.join(', ')}.` };
+    await new Promise(resolve => setTimeout(resolve, Math.min(pollMs, Math.max(0, deadline - Date.now()))));
+  }
+}
+
+async function resolveTheoremUsesOnce({ state, leaRepoPath, overleafProjectId, projectName, projectNamespace, targetUses, jobs }) {
   const resolvedUses = [];
   const unresolvedUses = [];
+  const pendingUses = [];
+  // One SQL snapshot for all declarations and both target kinds. A GET never
+  // asks the API to refresh, compile, inspect a file or contact the worker.
+  const target = buildLeaTarget({ leaRepoPath, overleafProjectId, projectName, projectNamespace,
+    targetKind: 'theorem', targetLabel: targetUses[0] });
+  const declarations = new Set(targetUses), formalizationIds = new Set();
+  for (const label of targetUses) for (const kind of ['theorem', 'definition']) {
+    const job = findLatestJobWithLeaSession(jobs, `${target.projectSlug}:${kind}:${label}`);
+    if (job?.declarationName) declarations.add(job.declarationName);
+    if (job?.formalizationId) formalizationIds.add(job.formalizationId);
+  }
+  const response = await fetchProjectTargetStatusBySlug({ fetchImpl: state.fetchImpl || fetch,
+    baseUrl: normalizeLeaApiBaseUrl(state.settings?.leaApiBaseUrl || DEFAULT_LEA_API_BASE_URL),
+    slug: target.projectSlug, declarations: [...declarations], formalizationIds: [...formalizationIds] });
+  throwIfProjectRenaming(response);
+  if (!response.ok && response.status >= 400 && response.status < 500 && ![404,408,429].includes(response.status)) {
+    return { ok: false, status: response.status, error: 'dependency_lookup_rejected',
+      message: 'The dependency status request was rejected; resolve its access or request error before admission.' };
+  }
+  if (!response.ok && response.status !== 404 || response.ok && !Array.isArray(response.body?.targets)) {
+    return { ok: false, pendingUses: targetUses };
+  }
+  const ledgerSnapshot = Object.fromEntries((response.body?.targets || []).map(entry => [entry.declaration_name,
+    { ...entry, project_namespace: response.body.project_namespace, namespace_revision: response.body.namespace_revision }]));
 
   for (const theoremLabel of targetUses) {
     const status = await resolveTargetUseStatus({
@@ -6061,10 +6162,15 @@ async function resolveTheoremUses({ state, leaRepoPath, overleafProjectId, proje
       projectName,
       projectNamespace,
       targetLabel: theoremLabel,
-      jobs
+      jobs,
+      ledgerSnapshot
     });
 
     const equivalentStatus = getEquivalentTheoremStatus(status);
+    if (equivalentStatus.projection && equivalentStatus.projection.state !== 'observed') {
+      pendingUses.push(theoremLabel);
+      continue;
+    }
     if (!["formalized", "sorry_stub"].includes(equivalentStatus.status) || !equivalentStatus.absolutePath || !equivalentStatus.declarationName) {
       unresolvedUses.push(theoremLabel);
       continue;
@@ -6080,6 +6186,8 @@ async function resolveTheoremUses({ state, leaRepoPath, overleafProjectId, proje
       status: equivalentStatus.status
     });
   }
+
+  if (pendingUses.length && !unresolvedUses.length) return { ok: false, pendingUses };
 
   if (unresolvedUses.length > 0) {
     return {
@@ -6723,14 +6831,17 @@ export async function resolveProofOutcome({ job, localStatus, exit }) {
   const resultKind = String(exit.resultKind || exit.doneStatus || "").toLowerCase();
 
   if (exit.recoverable === true || exit.timedOut === true || ["max_spend", "max_turns"].includes(resultKind)) {
-    const stopReason = exit.stopReason || (exit.timedOut ? "timeout" : resultKind === "max_spend" ? "global_spend_cap" : "turn_cap");
+    const stopReason = exit.stopReason || (exit.timedOut ? "timeout"
+      : resultKind === "max_spend" ? "global_spend_cap"
+      : resultKind === "max_turns" ? "turn_cap"
+      : exit.recoveryState === "review" ? "recovery_review" : "interrupted");
     return {
       jobStatus: "paused",
       finalStatus: stopReason === "global_spend_cap" ? "max_spend" : "paused",
       effectiveStatus: local,
       leanCheck: null,
       resultKind,
-      resultDetail: exit.resultDetail || null,
+      resultDetail: exit.resultDetail || exit.recoveryReason || null,
       stopReason,
       recoverable: true,
       error: null
@@ -8523,6 +8634,7 @@ async function enrichLeanPaneItem({
   return {
     ...item,
     status: stale ? "stale" : paneStatus,
+    projection: statusInfo?.projection,
     // Drives the pane's live polling: it keeps refreshing while any item is still
     // being formalized, then stops once everything settles.
     inProgress: inProgress || statusRunActive,
@@ -8633,6 +8745,7 @@ function deriveItemBreakage({ state, overleafProjectId, statusInfo, targetLabel 
 function mapLeanPaneStatus(statusInfo, item) {
   const status = String(statusInfo?.status || "").toLowerCase();
   const effective = String(statusInfo?.effectiveStatus || "").toLowerCase();
+  if (statusInfo?.projection && statusInfo.projection.state !== "observed") return "synchronizing";
   if (status === "unformalized" || status === "unavailable") return "missing-stub";
   if (status === "sorry_stub" || effective === "sorry_stub") return "stub-generated";
   if (status === "formalized") return item?.leanKind === "def" ? "defined" : "valid";
@@ -8723,15 +8836,18 @@ async function resolveTargetUseStatus({
   projectName = "",
   projectNamespace = "",
   targetLabel,
+  ledgerSnapshot,
   jobs = {}
 }) {
-  for (const targetKind of ["theorem", "definition"]) {
-    const status = await getTargetStatus({ state, leaRepoPath, overleafProjectId, projectName, projectNamespace, targetKind, targetLabel, jobs });
+  const kinds = ledgerSnapshot?.[targetLabel]?.kind === 'definition' ? ['definition', 'theorem'] : ['theorem', 'definition'];
+  for (const targetKind of kinds) {
+    const status = await getTargetStatus({ state, leaRepoPath, overleafProjectId, projectName, projectNamespace, targetKind, targetLabel, jobs, ledgerSnapshot });
+    if (status.projection && status.projection.state !== 'observed') return status;
     if (["formalized", "sorry_stub"].includes(getEquivalentTheoremStatus(status).status)) {
       return status;
     }
   }
-  return getTargetStatus({ state, leaRepoPath, overleafProjectId, projectName, projectNamespace, targetKind: "theorem", targetLabel, jobs });
+  return getTargetStatus({ state, leaRepoPath, overleafProjectId, projectName, projectNamespace, targetKind: "theorem", targetLabel, jobs, ledgerSnapshot });
 }
 
 // The ledger engine is the ONLY status engine (PLAN-system-hardening 4.4,
@@ -8895,6 +9011,7 @@ async function getTheoremStatus({
     return withLeaSession({status:evidence.stale?'stale':'unknown',effectiveStatus:evidence.stale?'stale':'unknown',
       formalizationId:evidence.formalization_id,artifactRecorded:Boolean(evidence.recorded),artifactExists:null,
       projection:evidence.projection,leaSessionId:evidence.session_id,
+      lastObservedResult:evidence.last_observed_result||null,
       message:'Current proof evidence is synchronizing. The recorded history is retained.'});
   }
   const artifactEvidence = evidence

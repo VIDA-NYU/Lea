@@ -83,7 +83,34 @@ class LeanDeclaration:
     span: str
 
 
-def scrub_lean_source(code: str) -> str:
+def declaration_signature(declaration: LeanDeclaration) -> str | None:
+    """Source header through its top-level body delimiter, including binders.
+
+    Binder defaults may themselves contain ':='. Comments and strings must not
+    create a delimiter, and declaration names are indexed separately from types.
+    """
+    source = declaration.span
+    clean = scrub_lean_source(source)
+    depth = 0
+    for index, char in enumerate(clean):
+        if char in '([{':
+            depth += 1
+        elif char in ')]}':
+            depth -= 1
+        elif depth == 0 and clean[index:index + 2] == ':=':
+            return source[:index].strip()
+    return None
+
+
+def declaration_type(signature: str) -> str:
+    clean = scrub_lean_source(signature, preserve_strings=True)
+    match = _DECLARATION_RE.match(clean)
+    # Keep adjacent identifiers distinct: `f x` and `fx` may both elaborate,
+    # while whitespace around punctuation and comments may freely change.
+    return ' '.join(re.findall(r'"(?:\\.|[^"\\])*"|[\w\']+|\S', clean[match.end():], re.S)) if match else ''
+
+
+def scrub_lean_source(code: str, *, preserve_strings=False) -> str:
     """Blank comments and strings while preserving line/column positions.
 
     Unlike the old regex helper this handles nested Lean block comments. Keeping
@@ -112,14 +139,14 @@ def scrub_lean_source(code: str) -> str:
             continue
         if in_string:
             if char == "\\" and nxt:
-                out.extend((" ", "\n" if nxt == "\n" else " "))
+                out.extend((char, nxt) if preserve_strings else (" ", "\n" if nxt == "\n" else " "))
                 index += 2
             elif char == '"':
                 in_string = False
-                out.append(" ")
+                out.append(char if preserve_strings else " ")
                 index += 1
             else:
-                out.append("\n" if char == "\n" else " ")
+                out.append(char if preserve_strings else "\n" if char == "\n" else " ")
                 index += 1
             continue
         if char == "/" and nxt == "-":
@@ -134,7 +161,7 @@ def scrub_lean_source(code: str) -> str:
                 index += 1
         elif char == '"':
             in_string = True
-            out.append(" ")
+            out.append(char if preserve_strings else " ")
             index += 1
         else:
             out.append(char)

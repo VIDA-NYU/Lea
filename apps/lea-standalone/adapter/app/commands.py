@@ -224,6 +224,27 @@ def heartbeat_worker(owner,epoch):
             ((now+timedelta(seconds=limits.CLAIM_LEASE_SECONDS)).isoformat(),now.isoformat(),owner,epoch,now.isoformat())).rowcount)
 
 
+def heartbeat_execution(owner, epoch):
+    """Renew this lifetime and its live execution claims in one short write.
+
+    Never revive expired leases. Synthetic uncertain-effect fixtures deliberately
+    expire and are not execution heartbeats.
+    """
+    with db.write() as conn:
+        stamp = _now()
+        now = stamp.isoformat()
+        end = (stamp + timedelta(seconds=limits.CLAIM_LEASE_SECONDS)).isoformat()
+        if not conn.execute('''update command_workers set lease_until=?,heartbeat_at=?
+            where id=? and epoch=? and lease_until>?''', (end, now, owner, epoch, now)).rowcount:
+            return False
+        conn.execute('''update commands set lease_until=min(deadline,?)
+            where owner=? and worker_epoch=? and state='claimed' and lease_until>? and deadline>?
+            and exists(select 1 from command_producers p where p.id=commands.producer_id and p.enabled=1)
+            and (kind in ('run.execute','operation.dispatch','workspace.execute') or kind like 'companion.%')''',
+            (end, owner, epoch, now, now))
+    return True
+
+
 def has_ready(lane,*,kinds=None):
     if kinds is not None and not kinds:return False
     extra=' and c.kind in ('+','.join('?' for _ in kinds)+')' if kinds is not None else ''

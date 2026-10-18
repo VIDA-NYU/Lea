@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T02:49:36.797672+00:00",
+  "scope": "Read-only live SQL and GET observations; isolated HTTP/browser test fixtures. No new proof runs, compiler checks or provider calls. Existing run and private worker left running.",
+  "live_evidence": {
+    "recent_inventory_receipts": [
+      {
+        "created_at": "2026-10-18T02:41:21.811935+00:00",
+        "finished_at": "2026-10-18T02:41:27.318308+00:00",
+        "message": "Lean check runtime unavailable"
+      },
+      {
+        "created_at": "2026-10-18T02:41:10.768990+00:00",
+        "finished_at": "2026-10-18T02:41:18.971113+00:00",
+        "message": "Lean check runtime unavailable"
+      },
+      {
+        "created_at": "2026-10-18T02:40:59.402940+00:00",
+        "finished_at": "2026-10-18T02:41:04.645639+00:00",
+        "message": "Lean check runtime unavailable"
+      },
+      {
+        "created_at": "2026-10-18T02:40:46.752557+00:00",
+        "finished_at": "2026-10-18T02:40:53.776013+00:00",
+        "message": "Lean check runtime unavailable"
+      }
+    ],
+    "first_runtime_projection_published_at": "2026-10-18T02:41:39.313Z",
+    "current_runtime": {
+      "payload": {
+        "active_cold_checks": 0,
+        "episode_id": null,
+        "generation": "6ef89c2b0817465991534d602d1f4844",
+        "last_failure": null,
+        "retry_after_ms": 0,
+        "runtime_id": "833d9e5cdfd349718214f8568a9d8f4a",
+        "state": "ready"
+      },
+      "observed_at": "2026-10-18T02:49:06.455721+00:00",
+      "expires_at": "2026-10-18T02:51:06.455721+00:00"
+    }
+  },
+  "diagnosis": [
+    "Every queued inventory poll inserted a pending notice, then removed it on success, causing repeated layout flashing.",
+    "The four retained inventory responses reported unavailable before the first runtime view was published. The worker collapsed the missing-view 503 into a compiler-runtime outage. Current SQL/API observations report idle/ready with no last_failure.",
+    "The public runtime GET returned raw SQL data, while its existing manual-check UI expected the legacy runtime/message envelope."
+  ],
+  "changes": [
+    "Suppress pending notices during routine polling after inventory is loaded; show initial-load, >30 second pending, and actual failure states. Keep approval guards and accepted-receipt coalescing.",
+    "Read current runtime SQL status after inventory receipts, preserving generation, project and view guards. Restore the public runtime/message envelope and include polling.",
+    "Distinguish missing, expired, malformed and unreachable observations from a successfully reported unavailable runtime; retain explanations and neutral styling.",
+    "Preserve red styling for actual unavailable/degraded runtime reports, and selection/draft/scroll preservation."
+  ],
+  "validation": {
+    "overleaf_tests": 831,
+    "frontend_tests": 130,
+    "content_and_runtime_targeted_tests": 173,
+    "browser_cases": 4,
+    "typecheck": "pass",
+    "boundary_audit": {
+      "api_routes": 179,
+      "companion_branches": 27,
+      "result": "pass"
+    },
+    "browser_checks": [
+      "Quiet >10 second queued refresh under repeated clicks/change events; one pending query.",
+      "Pending runtime SQL view replaces older inventory alarm, healthy recovery clears it, and actual unavailable runtime remains visible.",
+      "Selected tree DOM and source selection survive background refresh.",
+      "Desktop and narrow pending-runtime renders and quiet-refresh pane visually inspected."
+    ],
+    "whitespace": "pass"
+  },
+  "activation": {
+    "previous_transport_pid": 35325,
+    "new_transport_pid": 44750,
+    "api_pid_unchanged": true,
+    "worker_identity_unchanged": true,
+    "worker_ready": true,
+    "transport_only": true
+  },
+  "source_sha256": {
+    "apps/lea-standalone/src/app/lib/leanCheckRuntime.mjs": "d981b5ed209087460debeb83c8936b579915eccbe6b79f8565077b099844bf91",
+    "apps/lea-standalone/src/app/leanCheckRuntime.test.mjs": "0d80ba42d70c9c4929b0734e6fb8fb604edfa50943b5165cf698a5f5b32ac221",
+    "apps/overleaf-extension/companion/server.mjs": "eee855befcef2238c36f669c93200b80e0ad50a580c9152709f7b1a652b5c105",
+    "apps/overleaf-extension/companion/workerService.mjs": "5e05bacf3f5f111151ed46144c9b1b5fd8812b43a03ffd5db5984e6a473abce0",
+    "apps/overleaf-extension/extension/content.js": "d5b68416a652e8f908dde85513ca9b43008a7595003034ed9daf2b3931582be9",
+    "apps/overleaf-extension/extension/content.css": "b7a522b715ff45cdcfec1c23ec603a697fda13337a19bbf7f72e8d5939028f8e",
+    "apps/overleaf-extension/tests/contentActions.test.mjs": "08d7e26fed9bf4ac62bd4977aa93304f8dc37821a1ba2a7580ad998664eeb668",
+    "apps/overleaf-extension/tests/databaseTransport.test.mjs": "561b228c287862adf2f05c1ab216e3519839bb3f184eef40b8f4fd941b8dff9f",
+    "apps/overleaf-extension/tests/leanCheckRuntime.test.mjs": "133b1600dbed2a0e56e71a8af614faaf945ed224ee5797925f870829de583fd5",
+    "tests/browser/overleaf-admission.spec.mjs": "6892401c9d8db5757616725567a10f19cad2bc5a32b5261a63fe2b3dd6635c79"
+  }
+}

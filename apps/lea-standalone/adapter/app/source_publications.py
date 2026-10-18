@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+from math import ceil
 from uuid import uuid4
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
@@ -45,7 +46,9 @@ def publisher(request):
             generation=old['generation']
         else:
             if old and (old['lease_until']>now.isoformat() or request.expected_generation!=old['generation']):
+                remaining = ceil((datetime.fromisoformat(old['lease_until'])-now).total_seconds()*1000) if old['lease_until']>now.isoformat() else 0
                 raise HTTPException(409,detail={'code':'publisher_conflict','generation':old['generation'],
+                    'lease_until':old['lease_until'],'retry_after_ms':max(0,remaining),
                     'message':'Another tab owns this document publication. Close it and wait for its lease to expire before claiming this generation.'})
             if not old and request.expected_generation!=0:raise HTTPException(409,'Publisher generation changed')
             generation=(old['generation'] if old else 0)+1
@@ -152,21 +155,21 @@ def file_inventory(conn,row):
 
 def materialize_run(run_id,proofs_root):
     """Worker-only materialization of precisely the admitted immutable inventory."""
-    from . import store,uploads,workspace_commands
+    from . import store,uploads,workspace_commands,run_commands
     with db.connect() as conn:
         run=conn.execute('select * from runs where id=?',(run_id,)).fetchone()
         row=conn.execute('select * from source_publications where id=?',(run['source_context_ref'],)).fetchone() if run and run['source_context_ref'] else None
         if not row:return False
+        # HTTP parent context ends at admission. The durable run command, rather
+        # than a browser lease or that request context, owns the queued input now.
+        token=run_commands.current_token()
+        if not token or not run_commands.owns(conn,run_id,token):
+            raise ValueError('Source materialization requires an owned worker command')
         resolve(conn,row['id'],run['focus_formalization_id'],admission=False)
         files=file_inventory(conn,row)
     if files or row['coverage']=='complete':
         project=store.get_project(run['project_id'])
         if not project:raise ValueError('The published source project is unavailable')
-        from . import run_commands
-        token=run_commands.current_token()
-        with db.connect() as conn:
-            if token and not run_commands.owns(conn,run_id,token):raise ValueError('Source materialization lost command ownership')
-        if not token:raise ValueError('Source materialization requires an owned worker command')
         _materialize(token,project,proofs_root,files,row['coverage'])
     return True
 

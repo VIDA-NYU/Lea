@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T15:52:44.026332+00:00",
+  "scope": "Read-only runtime observations and isolated SQL, extension and Chromium qualification. No live control command, restart, run replay or history rewrite.",
+  "root_cause": "The source tag used project-wide proof observation freshness as the target state. Unrelated project revisions and observation expiry made an established unformalized state appear unknown. Prior fixes only retained successful results and changed their text during refresh.",
+  "fix": {
+    "semantic_state": "Preserve the last established state label and color through scope refresh, expiry and read failure. First-time unknown targets still await their first observation.",
+    "sql_negative_state": "Retain an observed planned/draft state only if the target has no file bindings, registered artifact or run. Real target work blocks that fallback; a source edit by itself does not formalize a target.",
+    "browser_retention": "Retain only a presentation state from preceding SQL responses when a pending observation lacks display history. Never retain in_progress over an unresolved finished operation.",
+    "proof_guards": "Pending observations still withhold current check evidence, certification and review eligibility. Read failures clear those fields and disable approval. No prior evidence is copied when retaining presentation.",
+    "actual_changes": "New activity, canonical results and source-staleness observations supersede the retained display state.",
+    "boundary": "SQL-only API fallback and browser display retention; no schema, route, worker callback or workspace bypass.",
+    "activation": "Reload the unpacked extension and refresh Overleaf for browser retention. The additional SQL fallback loads at the next ordinary stack restart; no interruption of active work is required."
+  },
+  "validation": {
+    "overleaf_tests": 876,
+    "content_script_cases": 186,
+    "sql_history_cases": 13,
+    "core_projection_cases": 15,
+    "inventory_stability_cases": 4,
+    "stage6_boundary_cases": 35,
+    "adapter_total": 67,
+    "chromium_cases": 2,
+    "failed": 0,
+    "cases": [
+      "planned/draft through inputs_changed, expiry and an edited source",
+      "run creation, file linking and artifact registration supersede the empty-state fallback",
+      "seven existing semantic labels survive a pending response with no display history",
+      "repeated established unformalized to pending to expired to refreshed cycles",
+      "HTTP and network failures retain a known label while disabling approvals",
+      "run start and completion update the label",
+      "completed states remain stable through later expiry",
+      "initial unknown and actual source staleness retain distinct behavior",
+      "desktop and narrow source badges fit and source selection is preserved"
+    ],
+    "isolated_live_sql_replay": "A temporary SQLite backup advanced only its copied project revision. Eight completed targets retained successful display history while current check evidence stayed false; the in-flight target had no invented completion.",
+    "visual_review": "Reviewed desktop 1280x900 and narrow 480x740 screenshots. The tag remained unformalized and text selection remained intact through the expiry/read-failure sequence.",
+    "boundary_audit": {
+      "adapter_routes": 179,
+      "companion_dispatch_branches": 27,
+      "result": "pass"
+    },
+    "whitespace_check": "pass",
+    "release_scope": "Development source qualification only; production images were not requalified."
+  },
+  "runtime_before": {
+    "runtime_id": "274873f6667847618724f110f279fe9e",
+    "generation": 1,
+    "pid": 36275
+  },
+  "runtime_after": {
+    "runtime_id": "274873f6667847618724f110f279fe9e",
+    "generation": 1,
+    "pid": 36275,
+    "lifecycle_state": "ready",
+    "heartbeat_at": "2026-10-18T15:52:43.071747+00:00"
+  },
+  "source_sha256": {
+    "apps/lea-standalone/adapter/app/queries/proofs.py": "a51d5afd1f8b4768b4877260cc304178a8858f209d6d64dce66c692e5a2e25b6",
+    "apps/lea-standalone/adapter/tests/test_projection_history_display.py": "00716535b388ee562124fdf2268d444359a2584e34f2b89e8b01172a901ee18b",
+    "apps/overleaf-extension/extension/content.js": "530ef48ffaae0ffbce19a24ca2e12812f5c0ddcd0f5102fb2218f38dc957aa65",
+    "apps/overleaf-extension/tests/contentActions.test.mjs": "2693fd564da11edfce226072e2672e52b9b9abdcf9062a4128a612fa1368f496",
+    "apps/overleaf-extension/tests/companion.test.mjs": "093b93edcb1a852cf0f5ddd0d12dca03e782921cf26765c1b76230383f30235c",
+    "tests/browser/overleaf-admission.spec.mjs": "d15feb1f500c9977d3fa496cee5a876396819f5ca345b8d72e13703b0b27ffa0"
+  }
+}

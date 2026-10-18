@@ -1,10 +1,9 @@
 import { workspaceResult, submitWithRecovery } from '../../../packages/lea-workspace-client/index.mjs';
 // Lea standalone adapter client for the Overleaf companion.
 //
-// The adapter (apps/lea-standalone/adapter, :8001) drives the prover in-process.
-// A run is started with POST /api/runs, then driven and observed by opening its
-// SSE event stream. Per-run config lives in config/lea.local.toml; the companion
-// passes the prompt, provenance, and optional session/project metadata.
+// The API (:8001) admits commands and serves SQL projections/receipts. A separate
+// worker executes accepted work; observing a receipt or SSE stream never drives
+// execution. The companion submits prompts, provenance and session/project scope.
 
 const TOOL_APPROVAL_DECISION = "always_session";
 
@@ -77,6 +76,26 @@ function buildHeaders(apiKey, extra = {}) {
 const ADAPTER_METADATA_TIMEOUT_MS = 5000;
 
 async function fetchJson(fetchImpl, url, options, { timeoutMs } = {}) {
+  const result = await fetchResponseJson(fetchImpl, url, options, {timeoutMs});
+  if (!result.ok || url.includes('/api/workspace/commands/')) return result;
+  try {
+    // The HTTP deadline bounds each exchange, not the accepted worker operation.
+    // Poll only its retained SQL receipt; a slow/restarted API never resubmits it.
+    const body = await workspaceResult(result.body, async id => {
+      const receiptUrl = `${String(url).split('/api/')[0]}/api/workspace/commands/${encodeURIComponent(id)}`;
+      const receipt = await fetchResponseJson(fetchImpl, receiptUrl,
+        {method: 'GET', headers: options?.headers}, {timeoutMs});
+      if (!receipt.ok) throw Object.assign(new Error(receipt.error), {status: receipt.status});
+      return receipt.body;
+    });
+    return {...result, body};
+  } catch (error) {
+    return {ok: false, status: error.status || 409, error: error.message,
+      body: {detail: error.detail, command_id: error.commandId}};
+  }
+}
+
+async function fetchResponseJson(fetchImpl, url, options, {timeoutMs} = {}) {
   if (!(timeoutMs > 0)) return readJson(fetchImpl, url, options);
   const controller = new AbortController();
   let timer;
@@ -118,16 +137,6 @@ async function readJson(fetchImpl, url, options) {
         ? rawDetail.message || JSON.stringify(rawDetail)
         : rawDetail;
     return { ok: false, status: response.status, error: `HTTP ${response.status}: ${detail}`, body };
-  }
-  try {
-    if (!url.includes('/api/workspace/commands/')) body = await workspaceResult(body, async id => {
-      const receiptUrl = `${String(url).split('/api/')[0]}/api/workspace/commands/${encodeURIComponent(id)}`;
-      const result = await readJson(fetchImpl, receiptUrl, {method:'GET', headers: options?.headers});
-      if (!result.ok) throw Object.assign(new Error(result.error), {status:result.status});
-      return result.body;
-    });
-  } catch (error) {
-    return {ok:false, status:error.status || 409, error:error.message, body:{detail:error.detail, command_id:error.commandId}};
   }
   return { ok: true, status: response.status, body };
 }

@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T15:35:47.700473+00:00",
+  "scope": "Read-only live diagnosis and isolated extension/browser fixtures; no live service restart or execution command.",
+  "health": {
+    "api_http_status": 200,
+    "companion_http_status": 200,
+    "ready": true,
+    "runtime_id": "7c5239f1d30f49c4af7f739a288ac806"
+  },
+  "root_cause": "Document status refresh reused the publishing action source builder. A publication error, including another tab holding the source lease, prevented the status read and the generic handler rendered every target offline. HTTP failures and network failures had the same label.",
+  "fix": {
+    "reads": "Compute the canonical version-2 source identity locally, with publication disabled, before reading the SQL-backed statuses.",
+    "actions": "Formalize, Stub and batch actions retain publication and current-publisher fencing.",
+    "errors": "HTTP errors render unavailable with their reason; transport errors render offline. Retry after five seconds or a longer server retry interval.",
+    "boundary": "No worker, workspace or editor callback bypass; no API, schema or process change.",
+    "activation": "Reload the unpacked extension and refresh the Overleaf tab. No stack restart is needed."
+  },
+  "validation": {
+    "overleaf_tests": 865,
+    "content_script_cases": 177,
+    "chromium_cases": 2,
+    "failed": 0,
+    "cases": [
+      "Opening a document under another tab live publisher lease still reads statuses without publisher/publication calls",
+      "Version-2 source identity remains present in status requests",
+      "HTTP errors retain their reason and do not claim the service is offline",
+      "Network errors remain offline and recover after the next five-second retry",
+      "Explicit formalization still publishes immutable source with mirroring enabled or disabled",
+      "Concurrent batch preparation shares one publisher identity and ordered sequence",
+      "Chromium status polling preserves text selection and existing publisher ownership",
+      "Nine-target batch still waits for the active lease and submits one accepted operation"
+    ],
+    "boundary_audit": {
+      "adapter_routes": 179,
+      "companion_dispatch_branches": 27,
+      "result": "pass"
+    },
+    "whitespace_check": "pass",
+    "release_scope": "Development extension source qualification; no new production image qualification."
+  },
+  "runtime_after": {
+    "runtime_id": "7c5239f1d30f49c4af7f739a288ac806",
+    "generation": 1,
+    "pid": 29001,
+    "lifecycle_state": "ready",
+    "heartbeat_at": "2026-10-18T15:35:47.386180+00:00"
+  },
+  "runtime_before": {
+    "runtime_id": "7c5239f1d30f49c4af7f739a288ac806",
+    "generation": 1,
+    "pid": 29001
+  },
+  "source_sha256": {
+    "apps/overleaf-extension/extension/content.js": "c9c0bb603ed45c567e0c2d932a6fd1a1b41e2bc47ea9556aaab221fe89e4ef63",
+    "apps/overleaf-extension/tests/contentActions.test.mjs": "6e0451265728d863249744a6dfb58bb51de4a98d6ae9b20e2aaaf150421f9a0e",
+    "tests/browser/overleaf-admission.spec.mjs": "c8e5927bf016739f3f9dc61773218b09f79b4ec1becc5cbacda2ab9ffe90e656"
+  }
+}

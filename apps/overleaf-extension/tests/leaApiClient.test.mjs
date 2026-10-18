@@ -71,6 +71,78 @@ function jsonResponse(obj, ok = true, status = 200) {
   return { ok, status, async text() { return JSON.stringify(obj); } };
 }
 
+test('accepted target sync outlives its HTTP deadline while observing the same receipt', async () => {
+  const calls = [];
+  let polls = 0;
+  const result = await syncProjectFormalizationTargetsBySlug({
+    baseUrl: 'http://adapter.test', slug: 'paper', timeoutMs: 25,
+    targets: [{declaration_name: 'target'}],
+    fetchImpl: async (url, options) => {
+      calls.push({url, options});
+      if (options.method === 'POST') {
+        return jsonResponse({workspace_command: true, command: {id: 'sync-original', state: 'queued'}}, true, 202);
+      }
+      assert.equal(url, 'http://adapter.test/api/workspace/commands/sync-original');
+      assert.equal(options.method, 'GET');
+      return jsonResponse({workspace_command: true, command: {id: 'sync-original',
+        state: ++polls === 1 ? 'claimed' : 'succeeded', result: {targets: ['target']}}});
+    }
+  });
+  assert.equal(result.ok, true, result.error);
+  assert.deepEqual(result.body, {targets: ['target']});
+  assert.equal(calls.filter(c => c.options.method === 'POST').length, 1);
+  assert.equal(polls, 2);
+  assert.equal(calls[0].options.signal.aborted, false);
+});
+
+for (const stalledBody of [false, true]) {
+  test(`target sync bounds a stalled receipt ${stalledBody ? 'body' : 'header'} and resumes observation`, async () => {
+    let posts = 0;
+    let polls = 0;
+    let stalledSignal;
+    const result = await syncProjectFormalizationTargetsBySlug({
+      baseUrl: 'http://adapter.test', slug: 'paper', timeoutMs: 25,
+      fetchImpl: async (_url, options) => {
+        if (options.method === 'POST') {
+          posts++;
+          return jsonResponse({workspace_command: true, command: {id: 'sync-retained', state: 'queued'}}, true, 202);
+        }
+        if (++polls === 1) {
+          stalledSignal = options.signal;
+          return stalledBody ? {ok: true, text: () => new Promise(() => {})} : new Promise(() => {});
+        }
+        return jsonResponse({workspace_command: true, command: {id: 'sync-retained', state: 'succeeded', result: {retained: true}}});
+      }
+    });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.body.retained, true);
+    assert.equal(stalledSignal.aborted, true);
+    assert.equal(posts, 1);
+    assert.equal(polls, 2);
+  });
+}
+
+test('target sync preserves terminal worker rejection and its receipt without resubmitting', async () => {
+  let posts = 0;
+  const result = await syncProjectFormalizationTargetsBySlug({
+    baseUrl: 'http://adapter.test', slug: 'paper', timeoutMs: 25,
+    fetchImpl: async (_url, options) => {
+      if (options.method === 'POST') {
+        posts++;
+        return jsonResponse({workspace_command: true, command: {id: 'sync-conflict', state: 'queued'}}, true, 202);
+      }
+      return jsonResponse({workspace_command: true, command: {id: 'sync-conflict', state: 'failed',
+        error_status: 409, result: {detail: {code: 'project_busy', message: 'Project ownership changed.'}}}});
+    }
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 409);
+  assert.equal(result.body.command_id, 'sync-conflict');
+  assert.equal(result.body.detail.code, 'project_busy');
+  assert.match(result.error, /Project ownership changed/);
+  assert.equal(posts, 1);
+});
+
 // A streaming SSE response whose body is an async iterable of byte chunks.
 function sseResponse(frames, { chunkSize = null } = {}) {
   const text = frames.map((f) => `${f}\n\n`).join("");

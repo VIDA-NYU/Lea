@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import os
+import re
 
 from . import execution
 
@@ -25,23 +26,47 @@ def inspect_file(path: str | Path, *, allow_errors=False) -> dict:
     with tempfile.TemporaryDirectory(dir=scratch) as temp:
         source = Path(temp) / "Inspect.lean"
         module = None
+        standalone_artifact = None
+        inspection_env = None
         if path.is_relative_to(root / 'proofs'):
             from .tools import rebuild_module, _lean_check_has_error
             built = rebuild_module(str(path))
             if not _lean_check_has_error(built):
                 module = '.'.join(path.relative_to(root / 'proofs').with_suffix('').parts)
             elif not allow_errors:
-                raise ValueError('The actual selected module did not build: ' + built[-5000:])
+                if 'unknown target' not in built:
+                    raise ValueError('The actual selected module did not build: ' + built[-5000:])
+                # Loose chat files live below a session UUID, outside Lake's
+                # registered lean_lib roots. Compile the original file unchanged,
+                # then import its actual artifact into the inspector. Adding
+                # `import Lean` to the submission would change its environment.
+                parts = path.relative_to(root).with_suffix('').parts
+                if any('«' in p or '»' in p for p in parts):
+                    raise ValueError('Unsupported module path for result inspection')
+                module = '.'.join(parts)
+                compiled = Path(temp) / 'compiled'
+                standalone_artifact = compiled.joinpath(*parts[:-1], parts[-1] + '.olean')
+                standalone_artifact.parent.mkdir(parents=True)
+                built_proc = execution.run(['lake','env','lean','-o',str(standalone_artifact),str(path)],
+                    cwd=root,capture_output=True,text=True,timeout=120)
+                if built_proc.returncode:
+                    raise ValueError('Original file compilation failed: ' + (built_proc.stdout + built_proc.stderr)[-5000:])
+                inspection_env = {**os.environ, 'LEAN_PATH':str(compiled) + os.pathsep + os.environ.get('LEAN_PATH','')}
         if module:
             # Inspect the actual compiled module. Recompiling altered source with
             # an extra `import Lean` could change metaprogram behavior and private
             # names, and is not evidence about the real result.
-            source.write_text('import Lean\nimport ' + module + '\n' +
+            import_name = '.'.join('«' + p + '»' for p in parts) if standalone_artifact else module
+            display_module = ('.'.join(p if re.fullmatch(r"[^\W\d][\w']*", p) else '«' + p + '»'
+                                      for p in parts) if standalone_artifact else module)
+            source.write_text('import Lean\nimport ' + import_name + '\n' +
                 INSPECTOR.read_text().removeprefix('import Lean\n') +
-                '\n#lea_inspect_module ' + json.dumps(module) + '\n')
+                '\n#lea_inspect_module ' + json.dumps(display_module) + '\n')
             from .check_evidence import ReadSnapshot, _artifact_family
             artifacts = ReadSnapshot()
             compiled_artifacts = {}
+            if standalone_artifact:
+                compiled_artifacts[str(standalone_artifact)] = artifacts.observation(str(standalone_artifact))[0]
             for directory in ('lib/lean', 'ir'):
                 stem = root / '.lake/build' / directory / Path(*module.split('.'))
                 family = _artifact_family(stem, {})
@@ -54,7 +79,7 @@ def inspect_file(path: str | Path, *, allow_errors=False) -> dict:
         proc = execution.run(["lake", "env", "lean", str(source)] if root != path.parent
                              or (root / "lakefile.lean").exists() or (root / "lakefile.toml").exists()
                              else ["lean", str(source)], cwd=root,
-                             capture_output=True, text=True, timeout=120)
+                             capture_output=True, text=True, timeout=120, **({'env':inspection_env} if inspection_env else {}))
         if module and (not compiled_artifacts or not artifacts.unchanged()):
             raise ValueError('Compiled module changed during result inspection')
     output = proc.stdout + "\n" + proc.stderr
@@ -75,7 +100,7 @@ def inspect_file(path: str | Path, *, allow_errors=False) -> dict:
     if path.read_bytes().decode('utf-8') != code:
         raise ValueError("Source changed during result inspection")
     return {"declarations": declarations, "complete": proc.returncode == 0,
-            'inspection': 'compiled_module' if module else 'source',
+            'inspection': 'compiled_file' if standalone_artifact else 'compiled_module' if module else 'source',
             'compiled_artifacts': compiled_artifacts if module else {},
             "content_sha256": hashlib.sha256(code.encode()).hexdigest(), "diagnostic": output[-5000:]}
 

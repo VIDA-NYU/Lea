@@ -1,0 +1,118 @@
+LEA OVERLEAF DEMO -- COPY/PASTE CUES
+==================================
+Use these in the indicated source block or Lean-pane editor.
+Keep this file outside the Overleaf project. Do not upload the presenter source.
+Names and namespaces in agent-generated Lean may vary: preserve the generated
+imports and namespace, and inspect the actual declaration before editing it.
+
+A. LIVE MARKER
+In main.tex, inside the Doubling zero lemma, immediately below
+the DEMO LIVE INSERT comment, paste exactly this ONE line:
+
+% lea: formalize label=demo_double_zero uses={demo_double}
+
+Expected inventory: 9 marked items before insertion, 10 afterwards.
+Do not add a second marker to an already tagged block.
+
+B. CHAT -- EXPLANATION ONLY
+Open Chat on demo_double_add; paste:
+
+Explain how the Lean statement matches the LaTeX claim and how the proof
+rearranges addition. Do not change any files.
+
+C. SAFE MANUAL PROOF EDIT
+On demo_double_add, retain its declaration header and replace only the text
+after := with the following. This assumes the generated definition really is
+called demo_double in the current namespace; qualify that name if necessary.
+
+by
+  simp only [demo_double]
+  ring
+
+D. CORRECT THE FALSE CLAIM -- WHOLE BLOCK REPLACEMENT
+In sections/02-source-review.tex, replace the theorem AND its following proof
+with this block, keeping the same stable Lea label. Leave the surrounding
+page note in place during the demo; it describes the original draft exercise.
+
+\begin{theorem}[Square versus the original number]\label{thm:demo-square-bound}
+% lea: formalize label=demo_square_bound
+% lea: context={Read the current statement literally over Real and follow the associated factorization proof. Name the theorem demo_square_bound with explicit (x : Real) and hypothesis (hx : 1 <= x).}
+For every real number $x\in\mathbb{R}$ with $x\ge1$,
+\[
+  x^2\ge x.
+\]
+\end{theorem}
+\begin{proof}
+% lea: proof-for=demo_square_bound
+Since $x\ge1$, both $x$ and $x-1$ are nonnegative. Hence
+$x^2-x=x(x-1)\ge0$, which gives $x^2\ge x$.
+\end{proof}
+
+The original is false at x = 1/2: its square is 1/4 < 1/2.
+Resume only when there is a real compatible paused checkpoint; a completed
+disproof must instead be followed by Re-formalize on the corrected source.
+
+E. OPTIONAL SECOND SOURCE REVISION
+Once D is checked, change just its displayed inequality to:
+
+  x^2-x\ge0.
+
+Keep the hypothesis x >= 1, the same label, and the factorization proof.
+Wait for Overleaf to save, then observe outdated status and Re-formalize.
+The revised Lean conclusion should express 0 <= x ^ 2 - x (or an equivalent
+orientation). It should retain the assumption x >= 1.
+
+F. PREPARE A REAL DEPENDENT BEFORE THE OPTIONAL REPAIR EXERCISE
+Inspect demo_double_two after formalization. It must actually use the generated
+demo_double_add declaration. If needed, use Edit and replace only its proof
+body with the following, adapting qualified names to the generated namespace:
+
+by
+  calc
+    demo_double (n + 2) = demo_double n + demo_double 2 := demo_double_add n 2
+    _ = demo_double n + 4 := by rfl
+
+Both arguments of demo_double_add must currently be explicit, ordered m then n.
+Save and require a checked result BEFORE making the next edit.
+
+G. TRIGGER A REPAIRABLE LEAN INTERFACE CHANGE
+In the demo_double_add declaration only, change:
+
+  (m n : Nat)
+
+to:
+
+  {m n : Nat}
+
+Keep the declaration name, mathematical proposition, proof body, imports, and
+namespace unchanged. Save. The old explicit call in F should now fail; the
+source mathematical claim has not changed. Proceed only after this exact
+calling-convention change and resulting dependent failure were rehearsed.
+
+H. MANUAL FALLBACK IF REPAIR WITH LEA IS SLOW
+In the dependent proof from F, change the lemma application from:
+
+  demo_double_add n 2
+
+to:
+
+  demo_double_add (m := n) (n := 2)
+
+Then Save and inspect the new Lean Check. Keep the theorem's own (n : Nat)
+argument explicit. Repair with Lea may also choose another valid proof.
+
+I. OPTIONAL BEST-EFFORT MENU EXPLANATION
+Only show this on an actual eligible author-input pause with no associated
+author proof. This demo's flawed claim HAS an author proof, so that example
+does not demonstrate Continue best effort. Do not promise the action there.
+Suggested narration: "For an eligible source issue without an author proof,
+Lea can offer best-effort continuation with disclosed inferred context."
+
+J. SHARED MATHEMATICS REHEARSAL ORDER
+Formalize demo_shifted_square, then demo_shift_one, then demo_shift_two.
+The consumers request an unmarked shared Shift identity. The helper must be
+visible in Shared mathematics and imported by both consumer artifacts to
+demonstrate actual sharing. A direct proof of each consumer does not show it.
+Existing verified helper: immediate reuse is expected. New helper: dependency
+wait and automatic continuation may be visible. Never assume a fresh wait
+will last long enough for an unscripted pause click.

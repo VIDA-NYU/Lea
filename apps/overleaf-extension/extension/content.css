@@ -1156,6 +1156,23 @@ body.ol-lean-pane-resizing {
   line-height: 1.5;
 }
 
+.ol-lean-project-pane-refresh-warning.is-pending {
+  color: var(--ol-ink-2);
+  background: var(--ol-panel-2);
+  border-color: var(--ol-line);
+}
+
+.ol-lean-project-pane-runtime {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  color: var(--ol-ink-2);
+  background: var(--ol-panel-2);
+  border: 1px solid var(--ol-line);
+  border-radius: var(--ol-radius-sm);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .ol-lean-project-pane-diagnostics p {
   margin: 0;
 }
@@ -1254,18 +1271,10 @@ body.ol-lean-pane-resizing {
   grid-column: auto;
 }
 
-.ol-lean-project-progress-outcomes {
+.ol-lean-project-progress-summary {
   grid-column: 2 / -1;
-  font: 550 11px/1.4 var(--ol-sans);
-}
-
-.ol-lean-project-progress-outcome-verified {
   color: var(--ol-ink-2);
-}
-
-.ol-lean-project-progress-outcome-disproved {
-  color: var(--ol-ink);
-  font-weight: 650;
+  font: 550 11px/1.5 var(--ol-sans);
 }
 
 .ol-lean-project-progress {
@@ -1280,25 +1289,6 @@ body.ol-lean-pane-resizing {
   border: 1px solid var(--ol-line);
   border-radius: 999px;
   background: var(--ol-line-2);
-}
-
-.ol-lean-project-progress-in-progress::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.22) 0,
-    rgba(255, 255, 255, 0.22) 25%,
-    transparent 25%,
-    transparent 50%,
-    rgba(255, 255, 255, 0.22) 50%,
-    rgba(255, 255, 255, 0.22) 75%,
-    transparent 75%,
-    transparent 100%
-  );
-  background-size: 12px 12px;
-  pointer-events: none;
 }
 
 .ol-lean-project-progress-segment {
@@ -1325,6 +1315,16 @@ body.ol-lean-pane-resizing {
 
 .ol-lean-project-progress-segment-unformalized {
   background: var(--ol-line-2);
+}
+
+.ol-lean-project-progress-segment-unconfirmed {
+  box-sizing: border-box;
+  border: 1px dashed var(--ol-line-2);
+  background: var(--ol-panel);
+}
+
+.ol-lean-project-progress-segment-running {
+  background: var(--ol-accent);
 }
 
 .ol-lean-project-progress-segment-out-of-date {
@@ -2198,6 +2198,13 @@ button.ol-lean-project-relationship-chip {
   overflow: hidden;
   border-radius: 999px;
   background: var(--ol-line-2);
+}
+
+.ol-lean-batch-queue-processed,
+.ol-lean-batch-queue-status-delayed {
+  margin: 6px 0 0;
+  color: var(--ol-ink-2);
+  font: 550 12px/1.5 var(--ol-sans);
 }
 
 .ol-lean-batch-queue-progress-segment {

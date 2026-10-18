@@ -509,6 +509,17 @@ def test_completion_reuses_only_current_saved_verification(paused, monkeypatch, 
     assert finished["cost_usd"] == pytest.approx(0.01)
 
 
+@pytest.fixture
+def reviewed_runtime(monkeypatch):
+    """Exercise historical release pairs without certifying this new runtime."""
+    releases = json.loads(Path(recovery.__file__).with_name('checkpoint_compatibility.json').read_text())
+    destination = releases[0]['destination']
+    original = recovery.manifest
+    def historical_manifest(**kwargs):
+        return {**original(**kwargs), 'tool_code_digests': destination}
+    monkeypatch.setattr(recovery, 'manifest', historical_manifest)
+
+
 def install_supported_predecessor(old, cfg, repo, release_index=0):
     release = json.loads(Path(recovery.__file__).with_name("checkpoint_compatibility.json").read_text())[release_index]
     current = recovery.manifest(run=old, config=cfg, repo=repo)
@@ -524,7 +535,7 @@ def install_supported_predecessor(old, cfg, repo, release_index=0):
 
 @pytest.mark.parametrize("release_index", range(1, len(json.loads(
     Path(recovery.__file__).with_name("checkpoint_compatibility.json").read_text()))))
-def test_reviewed_provider_change_requires_a_settled_exact_runtime(paused, release_index):
+def test_reviewed_provider_change_requires_a_settled_exact_runtime(paused, reviewed_runtime, release_index):
     old, cfg, repo, _ = paused
     state, manifest, _ = install_supported_predecessor(old, cfg, repo, release_index)
     current = recovery.manifest(run=old, config=cfg, repo=repo)
@@ -536,7 +547,7 @@ def test_reviewed_provider_change_requires_a_settled_exact_runtime(paused, relea
     assert not recovery.compatible_runtime(manifest, changed, state)
 
 
-def test_known_settled_predecessor_migrates_without_replay_or_recount(paused, monkeypatch):
+def test_known_settled_predecessor_migrates_without_replay_or_recount(paused, reviewed_runtime, monkeypatch):
     old, cfg, repo, original = paused
     saved, manifest, _ = install_supported_predecessor(old, cfg, repo)
     result = runs.continue_run(old["id"], request())
@@ -578,7 +589,7 @@ def test_known_settled_predecessor_migrates_without_replay_or_recount(paused, mo
     assert (repo / "Target.lean").read_text() == "theorem target : True := by sorry\n"
 
 
-def test_compatible_crash_migration_preserves_stall_state_and_accounting(paused):
+def test_compatible_crash_migration_preserves_stall_state_and_accounting(paused, reviewed_runtime):
     old, cfg, repo, _ = paused
     state, old_manifest, _ = install_supported_predecessor(old, cfg, repo)
     current = recovery.manifest(run=old, config=cfg, repo=repo)
@@ -592,7 +603,7 @@ def test_compatible_crash_migration_preserves_stall_state_and_accounting(paused)
 
 
 @pytest.mark.parametrize("problem", ["unknown_predecessor", "different_tool", "uncertain", "corrupt_stall", "corrupt_usage"])
-def test_migration_rejects_unreviewed_or_uncertain_state(paused, problem):
+def test_migration_rejects_unreviewed_or_uncertain_state(paused, reviewed_runtime, problem):
     old, cfg, repo, _ = paused
     state, manifest, checkpoint_id = install_supported_predecessor(old, cfg, repo)
     if problem == "unknown_predecessor":

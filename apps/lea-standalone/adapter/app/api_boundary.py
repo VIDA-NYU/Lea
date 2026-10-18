@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import sys
 
-PRIVATE={'worker','runtime','bridge','command_host','command_execution','editor_worker','companion_worker',
+PRIVATE={'worker','worker_diagnostics','runtime','bridge','target_contexts','command_host','command_execution','editor_worker','companion_worker',
     'recovery','workspace_effects','workspace_files','proof_files','proof_evidence','project_library','project_dependencies',
     'reformalizations','reformalization_apply','gitstore','filesystem','uploads','projects','settings','catalog_service',
     'runbroker','runregistry','observation_maintenance','core_observer','workspace_observer','artifact_snapshots','target_completion','github_import_service','formalize_batch_reports','formalizations','lea_status'}
@@ -39,7 +39,7 @@ def install():
     root=application.parents[1] if application.parent.name=='apps' else application
     data=db.DB_PATH.parent.resolve()
     static=Path(os.environ['LEA_WEB_DIST']).resolve() if os.environ.get('LEA_WEB_DIST') else None
-    private_roots=[application/'prover',application/'config',root/'apps/overleaf-extension/.overleaf-lean-stub',data/'owned-processes']
+    private_roots=[application/'prover',application/'config',root/'apps/overleaf-extension/.overleaf-lean-stub',data/'owned-processes',data/'worker-diagnostics']
     if os.environ.get('LEA_API_DENY_PATHS'):
         private_roots.extend(Path(p).resolve() for p in os.environ['LEA_API_DENY_PATHS'].split(os.pathsep) if p)
     library_roots=[Path(sys.prefix).resolve(),Path(sys.base_prefix).resolve(),adapter,

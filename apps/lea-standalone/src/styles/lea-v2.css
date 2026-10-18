@@ -316,6 +316,7 @@
 /* v2.3 item 14: transient SSE-reattach backoff notice (a dropped stream or a 409
    the browser can only surface as onerror), distinct from the red error banner. */
 .reconnect-chip { max-width: 720px; margin: 0 auto 14px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--amber-soft); background: var(--amber-soft); color: var(--amber); border-radius: 10px; padding: 8px 13px; font-size: 12.5px; }
+.reconnect-chip[data-runtime-observation="pending"] { border-color: var(--line); background: var(--panel-2); color: var(--ink-2); }
 .reconnect-spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--amber-soft); border-top-color: var(--amber); animation: reconnect-spin 0.7s linear infinite; }
 @keyframes reconnect-spin { to { transform: rotate(360deg); } }
 /* ── v2.4 · diagnostics ────────────────────────────────────────────────────────

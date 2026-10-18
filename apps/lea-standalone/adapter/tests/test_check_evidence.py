@@ -64,6 +64,11 @@ def test_unchanged_warm_check_reuses_environment(workspace, monkeypatch):
     assert second.status == 'ok'
     assert second.execution['daemon_generation'] == first.execution['daemon_generation']
     assert not calls
+    target.write_text(target.read_text().replace(':= base', ':= by exact base'))
+    edited = interface.check(str(target))
+    assert edited.status == 'ok', edited.detail
+    assert edited.execution['daemon_generation'] == first.execution['daemon_generation']
+    assert not calls, 'A proof-body edit must not rediscover unchanged imports with compiler subprocesses'
 
 
 def test_reordered_imports_new_module_and_noop_rebuild_keep_real_daemon(workspace):
@@ -254,3 +259,25 @@ def test_import_all_resolves_the_module_instead_of_the_modifier():
     from lea.imports import direct_imports
     assert direct_imports("import all Init.Data.Array.Basic\npublic import Mathlib.Data.Nat.Prime.Basic\n") == [
         "Init.Data.Array.Basic", "Mathlib.Data.Nat.Prime.Basic"]
+
+
+def test_dependency_resolution_keys_include_header_and_configuration(tmp_path, monkeypatch):
+    from lea import check_evidence as evidence
+    calls = []
+    def command(args, root, budget, content):
+        calls.append(content)
+        return 0, str(tmp_path / ('Base.lean' if '--src-deps' in args else 'Base.olean')), ''
+    monkeypatch.setattr(evidence, '_command', command)
+    path = tmp_path / 'Target.lean'
+    first = 'module\nprelude\npublic import all Fixture.Base\nnamespace Fixture\ntheorem target : True := by trivial\n'
+    evidence._resolve(path, first, tmp_path, CheckBudget(), {})
+    evidence._resolve(path, first.replace('by trivial', 'True.intro'), tmp_path, CheckBudget(), {})
+    assert len(calls) == 2
+    assert all(text.startswith('module\nprelude\npublic import all Fixture.Base') for text in calls)
+    evidence._resolve(path, first.replace('Fixture.Base', 'Fixture.Other'), tmp_path, CheckBudget(), {})
+    assert len(calls) == 4
+    evidence._resolve(path, first, tmp_path, CheckBudget(), {'lean-toolchain':'new'})
+    assert len(calls) == 6
+    evidence._resolve(path, first.replace('prelude\n', ''), tmp_path, CheckBudget(), {})
+    assert len(calls) == 8
+    assert evidence._dependency_header('import\n  Fixture.Base\n') == 'import\n  Fixture.Base\n'

@@ -24,7 +24,7 @@ def _unsupported(_):
 
 register(Tool(TOOL_NAMES[0], {
     "name": TOOL_NAMES[0],
-    "description": "Search this project's mathematics before proving a supporting result. Returns full Lean types, imports, visibility and current verification evidence. A Claim definition or theorem assuming a claim does not prove that claim. Use existing search_mathlib afterward.",
+    "description": "Search this project's mathematics before proving a supporting result. Discovery does not build candidate modules. Returns Lean types, imports, visibility and existing verification evidence; reusable=false is unverified, never proof. Explicit dependency requests validate a selected result. A Claim definition or theorem assuming a claim does not prove that claim. Use existing search_mathlib afterward.",
     "input_schema": {"type": "object", "properties": {
         "query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100},
         "offset": {"type": "integer", "minimum": 0}}, "required": ["query"], "additionalProperties": False},

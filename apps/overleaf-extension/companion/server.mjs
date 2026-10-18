@@ -8,6 +8,7 @@ import { isAllowedHost } from './netguard.mjs';
 import { workspaceResult,submitWithRecovery,assertDatabaseBoundary } from '../../../packages/lea-workspace-client/index.mjs';
 import { toChatSessionResponse } from './chatPrompt.mjs';
 import { usageProjection } from './usageProjection.mjs';
+import { runtimeObservation, runtimeStatusMessage, runtimeNeedsPolling } from '../../lea-standalone/src/app/lib/leanCheckRuntime.mjs';
 
 export function companionListenHost(env=process.env){return env.LEA_COMPANION_HOST||'127.0.0.1';}
 function allowedOrigin(value){return !value||value==='https://www.overleaf.com'||/^(chrome|moz)-extension:\/\//.test(value);}
@@ -31,7 +32,7 @@ export async function createServer({env=process.env,fetchImpl=fetch}={}) {
     try {
       if(!isAllowedHost(request.headers.host,env))return send(response,400,{error:'invalid_host'});
       if(!allowedOrigin(request.headers.origin))return send(response,403,{error:'forbidden_origin'});
-      if(request.headers.origin){response.setHeader('Access-Control-Allow-Origin',request.headers.origin);response.setHeader('Vary','Origin');response.setHeader('Access-Control-Allow-Headers','Content-Type,Idempotency-Key');response.setHeader('Access-Control-Allow-Methods','GET,POST,PUT,OPTIONS');}
+      if(request.headers.origin){response.setHeader('Access-Control-Allow-Origin',request.headers.origin);response.setHeader('Vary','Origin');response.setHeader('Access-Control-Allow-Headers','Content-Type,Idempotency-Key,Prefer');response.setHeader('Access-Control-Allow-Methods','GET,POST,PUT,OPTIONS');}
       if(request.method==='OPTIONS'){response.writeHead(204);response.end();return;}
       const url=new URL(request.url,'http://localhost');const pathname=url.pathname;
       if(pathname==='/events'&&request.method==='GET') {
@@ -65,10 +66,25 @@ export async function createServer({env=process.env,fetchImpl=fetch}={}) {
         if(pathname==='/usage'){const stats=await api('/api/stats'),settings=await api('/api/companion/settings');const value=usageProjection(stats,slug(url.searchParams.get('overleafProjectId')));return send(response,200,{...value,leaMaxSpendUsd:settings.leaMaxSpendUsd,leaCurrentSpendUsd:value.allTime.costUsd,leaSpendLimitReached:settings.leaMaxSpendUsd!=null&&value.allTime.costUsd>=settings.leaMaxSpendUsd});}
         if(pathname==='/settings/models')return send(response,200,await api('/api/models'));
         if(pathname==='/settings/models/requirements')return send(response,200,await api('/api/models/requirements?'+url.searchParams));
-        if(pathname.startsWith('/lean-pane/check-runtime/'))return send(response,200,await api('/api/sessions/'+encodeURIComponent(decodeURIComponent(pathname.split('/').at(-1)))+'/lean-check-runtime'));
+        if(pathname.startsWith('/lean-pane/check-runtime/')) {
+          let runtime;
+          try { runtime=runtimeObservation({ok:true,body:await api('/api/sessions/'+encodeURIComponent(decodeURIComponent(pathname.split('/').at(-1)))+'/lean-check-runtime')}); }
+          catch(error) { runtime=runtimeObservation({status:error.status,body:{detail:error.detail},error:error.message}); }
+          // Keep the legacy view envelope; this is a SQL read, never a check.
+          return send(response,200,{runtime,message:runtimeStatusMessage(runtime),polling:runtimeNeedsPolling(runtime)});
+        }
         if(pathname.startsWith('/lean-pane/chat/session/')){const sid=decodeURIComponent(pathname.split('/').at(-1));return send(response,200,toChatSessionResponse(await api('/api/sessions/'+encodeURIComponent(sid)),{leaSessionId:sid}));}
         const project=slug(url.searchParams.get('overleafProjectId')||url.searchParams.get('projectId'));
-        const paths={'/project/identity':'/identity','/project/graph':'/graph','/share/github':'/share','/project/github-import/status':'/github-imports/'+encodeURIComponent(url.searchParams.get('importId')||''),'/formalize/all/reports':'/formalize-batch-reports'};
+        if(pathname==='/project/identity') {
+          try { return send(response,200,{ok:true,identity:await api('/api/projects/by-slug/'+encodeURIComponent(project)+'/identity')}); }
+          catch(error) {
+            if(error.status!==404)throw error;
+            return send(response,200,{ok:true,identity:{exists:false,projectId:null,slug:project,
+              overleafProjectId:url.searchParams.get('overleafProjectId')||url.searchParams.get('projectId')||project,
+              namespace:null,namespaceEditable:true,hasRecordedProofs:false}});
+          }
+        }
+        const paths={'/project/graph':'/graph','/share/github':'/share','/project/github-import/status':'/github-imports/'+encodeURIComponent(url.searchParams.get('importId')||''),'/formalize/all/reports':'/formalize-batch-reports'};
         if(paths[pathname])return send(response,200,await api('/api/projects/by-slug/'+encodeURIComponent(project)+paths[pathname]));
         if(pathname.startsWith('/formalize/all/reports/'))return send(response,200,await api('/api/projects/by-slug/'+encodeURIComponent(project)+'/formalize-batch-reports/'+encodeURIComponent(decodeURIComponent(pathname.slice(23)))));
         if(pathname==='/project-export'){const upstream=await fetchImpl(base+'/api/projects/by-slug/'+encodeURIComponent(project)+'/export');response.writeHead(upstream.status,Object.fromEntries([...upstream.headers].filter(([k])=>['content-type','content-disposition'].includes(k))));for await(const bytes of upstream.body)response.write(bytes);response.end();return;}
@@ -104,6 +120,9 @@ export async function createServer({env=process.env,fetchImpl=fetch}={}) {
       }
       const key=request.headers['idempotency-key']||randomUUID();const submission={path:pathname,method:request.method,idempotency_key:key,payload};
       const accepted=await submitWithRecovery(()=>api('/api/companion/commands',submission,'POST'),()=>api('/api/companion/receipts?idempotency_key='+encodeURIComponent(key)));
+      // A queued refresh or batch can observe SQL acceptance before the worker
+      // finishes. Older clients retain the synchronous domain response below.
+      if(['/formalize/all','/stub/all','/lean-pane/manifest','/statuses'].includes(pathname)&&request.headers.prefer==='respond-async')return send(response,202,accepted);
       const result=await observe(accepted);return send(response,result.statusCode,result.body);
     }catch(error){if(!response.headersSent)send(response,error.status||502,{error:'adapter_operation_failed',message:error.message,detail:error.detail});else response.end();}
   });

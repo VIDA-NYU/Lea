@@ -6,6 +6,7 @@ import subprocess
 from . import execution as command_executor
 import tempfile
 import threading
+import time
 from functools import wraps
 from pathlib import Path
 
@@ -109,7 +110,7 @@ TOOLS_SCHEMA = [
     },
     {
         "name": "search_mathlib",
-        "description": "Search Mathlib for lemmas/theorems matching a query. Greps Mathlib source files for the query string. If you are proving in a specific Lake project (e.g., miniF2F, FormalQualBench), pass `path` so the search uses THAT project's Mathlib version — different projects pin different Mathlib versions, and a hit in the wrong version is worse than no hit.",
+        "description": "Find Mathlib declarations and their import modules before guessing an import. Identifier queries match whole identifiers (Even excludes Eventually); 'def Even' also finds generated declarations. Exact module basenames and declaration sites rank first. Other queries support grep extended patterns. Pass path to use the active Lake project's pinned Mathlib version. Search hints still require Lean checking.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -133,9 +134,10 @@ TOOLS_SCHEMA = [
     {
         "name": "suggest_imports",
         "description": (
-            "Analyze a compiling .lean file with Mathlib's min-imports linter and "
-            "return a targeted replacement import block. Read-only: it checks a "
-            "disposable copy and never modifies the proof file."
+            "Optional import advice for a compiling .lean file, with a 10-second "
+            "analysis budget. Never required for completion. Uses targeted imports "
+            "in a disposable copy; if skipped, keep current imports and finish "
+            "using the passing lean_check. Never modifies the proof file."
         ),
         "input_schema": {
             "type": "object",
@@ -154,7 +156,8 @@ TOOLS_SCHEMA = [
 def _find_lake_root(path: str) -> str | None:
     """Walk up from path looking for lakefile.lean or lakefile.toml."""
     p = Path(path).resolve()
-    for parent in [p.parent, *p.parent.parents]:
+    start = p if p.is_dir() else p.parent
+    for parent in [start, *start.parents]:
         if (parent / "lakefile.lean").exists() or (parent / "lakefile.toml").exists():
             return str(parent)
     return None
@@ -386,7 +389,7 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
     return CheckText("OK", captured_content=updated, snapshot_path=str(p.resolve()))
 
 
-def lean_check(path: str, *, use_lsp: bool = True, allow_cold: bool = True) -> str:
+def lean_check(path: str, *, use_lsp: bool = True, allow_cold: bool = True, budget=None) -> str:
     p = _run_relative_path(path)
     roots = _readable_roots()
     if roots is not None and not _within(p, roots):
@@ -398,7 +401,7 @@ def lean_check(path: str, *, use_lsp: bool = True, allow_cold: bool = True) -> s
         return f"Error: {p} does not exist."
     from .lean_checks import check_file
     return check_file(p, _find_lake_root(str(p)), use_lsp=use_lsp,
-                      allow_cold=allow_cold).text()
+                      allow_cold=allow_cold, budget=budget).text()
 
 
 def lean_check_cold(path: str) -> str:
@@ -424,6 +427,7 @@ def _generated_lean_check(path: str) -> str:
     barrel import through `bash` cannot bypass the write/edit gate and receive a
     successful final verdict.
     """
+    started = time.monotonic()
     p = _run_relative_path(path)
     if p.exists():
         try:
@@ -437,13 +441,26 @@ def _generated_lean_check(path: str) -> str:
     if selection and (not selection.get("path") or p == _run_relative_path(selection["path"])) and not _lean_check_has_error(result):
         from .result_selection import inspect_selected
         from .check_runtime import CheckText
+        inspection_started = time.monotonic()
         try:
             evidence = inspect_selected(p, selection["declaration"], selection.get("kind"))
             if evidence["content_sha256"] != (getattr(result, "execution", None) or {}).get("content_sha256"):
                 raise ValueError("Source changed after the selected result check")
             result.selected_result = evidence
+            result.execution['selected_result'] = evidence
         except (ValueError, OSError) as exc:
+            result = CheckText('Error: selected result did not pass compiler inspection: ' + str(exc),
+                getattr(result, 'execution', None), getattr(result, 'captured_content', None),
+                getattr(result, 'snapshot_path', None))
+            result.selected_result = None
             result.selected_result_error = str(exc)
+            if result.execution is not None:
+                result.execution['selected_result'] = None
+        finally:
+            if getattr(result, 'execution', None) is not None:
+                timing = result.execution.setdefault('timings_ms', {})
+                timing['result_inspection'] = round((time.monotonic() - inspection_started) * 1000, 2)
+                timing['total'] = round((time.monotonic() - started) * 1000, 2)
     return result
 
 
@@ -617,11 +634,23 @@ def _mathlib_for_lake_root(lake_root: Path) -> Path | None:
 
 
 def search_mathlib(query: str, max_results: int = 10, path: str | None = None) -> str:
+    query = query.strip()
+    if not query or len(query) > 256:
+        return 'Error: provide a nonempty Mathlib query of at most 256 characters.'
+    max_results = max(1, min(50, int(max_results)))
+    symbol = re.sub(r'^(?:def|theorem|lemma|abbrev|class|structure)\s+', '', query)
+    identifier = re.fullmatch(r"[^\W\d][\w'.]*", symbol)
+    pattern = (r"(^|[^[:alnum:]_'])" + re.escape(symbol) + r"([^[:alnum:]_']|$)"
+               if identifier else query)
     search_dir = None
     project_label = "default workspace"
 
     if path:
-        lake_root_str = _find_lake_root(path)
+        resolved = _run_relative_path(path)
+        roots = _readable_roots()
+        if roots is not None and not _within(resolved, roots):
+            return 'Error: Mathlib search path is outside the allowed read roots.'
+        lake_root_str = _find_lake_root(str(resolved))
         if lake_root_str:
             mathlib = _mathlib_for_lake_root(Path(lake_root_str))
             if mathlib:
@@ -644,42 +673,72 @@ def search_mathlib(query: str, max_results: int = 10, path: str | None = None) -
     if not search_dir:
         return "Error: Mathlib source not found. Ensure Mathlib is a Lake dependency."
 
+    if identifier and symbol.startswith('Mathlib.'):
+        parts = symbol.split('.')[1:]
+        candidate = Path(search_dir).joinpath(*parts).with_suffix('.lean')
+        if all(parts) and candidate.is_file():
+            return f'Module found in {project_label}:\n  {candidate}\n  import {symbol}'
+        return f'No Mathlib module named {symbol} in {project_label}; search its declaration before choosing an import.'
+
     try:
         result = command_executor.run(
-            ["grep", "-r", "-n", "--include=*.lean", "-l", query, search_dir],
+            ["grep", "-r", "--include=*.lean", "-l", "-E", "-e", pattern, "--", search_dir],
             capture_output=True,
             text=True,
             timeout=30,
         )
         files = result.stdout.strip().split("\n")
-        files = [f for f in files if f][:max_results]
+        if result.returncode not in (0, 1):
+            return 'Error: invalid Mathlib search pattern or unreadable source: ' + result.stderr[:300]
+        files = [f for f in files if f]
+        leaf = symbol.rsplit('.', 1)[-1].casefold() if identifier else ''
+        files.sort(key=lambda f: (Path(f).stem.casefold() != leaf, len(Path(f).parts), f))
+        files = files[:max_results]
         if not files:
             return f"No Mathlib results for '{query}' in {project_label}."
 
-        # Get matching lines from each file
+        # Bound each subprocess response, then rank declarations/derived names
+        # ahead of prose. Preserve the existing confined subprocess boundary.
         lines = []
+        imports = []
         for f in files[:max_results]:
             grep_result = command_executor.run(
-                ["grep", "-n", query, f],
+                ["grep", "-n", "-m", "80", "-E", "-e", pattern, "--", f],
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
-            for line in grep_result.stdout.strip().split("\n")[:2]:
+            matches = grep_result.stdout.strip().splitlines()
+            def rank(line):
+                text = line.partition(':')[2].strip()
+                found = re.match(r'(?:protected\s+)?(?:def|theorem|lemma|abbrev|class|structure)\s+([\w\'.]+)', text)
+                declaration = bool(found and identifier and found[1].rsplit('.',1)[-1] == symbol.rsplit('.',1)[-1])
+                priority = 0 if declaration else 1 if 'to_additive' in text else 2
+                return (priority, int(line.partition(':')[0]))
+            matches.sort(key=rank)
+            for line in matches[:2]:
                 short_path = f.split("Mathlib/")[-1] if "Mathlib/" in f else f
                 lines.append(f"  Mathlib/{short_path}:{line}")
+                module = 'Mathlib.' + short_path.removesuffix('.lean').replace('/', '.')
+                if module not in imports:
+                    imports.append(module)
                 if len(lines) >= max_results:
                     break
             if len(lines) >= max_results:
                 break
 
-        return f"Found {len(lines)} matches in {project_label}:\n" + "\n".join(lines)
+        return (f"Found {len(lines)} matches in {project_label}:\n" + "\n".join(lines)
+                + '\nImport candidates (ranked):\n' + '\n'.join('  import ' + name for name in imports))
     except subprocess.TimeoutExpired:
         return "Error: search timed out."
 
 
+_IMPORT_ANALYSIS_MODULE = 'Mathlib.Tactic.Linter.MinImports'
+IMPORT_ANALYSIS_TIMEOUT_SECONDS = 10
+
+
 def _import_analysis_source(code: str) -> str:
-    """Add a broad analysis import + `#import_bumps` to a disposable source copy."""
+    """Enable the linter without importing the entire Mathlib library."""
     lines = code.splitlines(keepends=True)
     clean_lines = without_comments(code).splitlines(keepends=True)
     import_lines = [
@@ -687,14 +746,14 @@ def _import_analysis_source(code: str) -> str:
         if IMPORT_COMMAND_RE.fullmatch(line.rstrip("\r\n"))
     ]
 
-    if "Mathlib" not in direct_imports(code):
+    if _IMPORT_ANALYSIS_MODULE not in direct_imports(code):
         insert_at = import_lines[0] if import_lines else 0
         if not import_lines:
             for i, line in enumerate(lines):
                 if re.fullmatch(r"[ \t]*module(?:[ \t].*)?[ \t]*(?://.*)?\r?\n?", line):
                     insert_at = i + 1
                     break
-        lines.insert(insert_at, "import Mathlib\n")
+        lines.insert(insert_at, f"import {_IMPORT_ANALYSIS_MODULE}\n")
         import_lines = [i + (1 if i >= insert_at else 0) for i in import_lines]
         import_lines.append(insert_at)
 
@@ -712,8 +771,8 @@ def suggest_imports(path: str) -> str:
 
     Mathlib's incremental min-imports linter needs to read its own file at EOF, so
     the analysis runs on a short-lived sibling file rather than a purely virtual
-    LSP document. The persistent daemon still handles the check, keeping its broad
-    analysis import warm; the temporary document is explicitly closed afterward.
+    LSP document. Advice has an independent short budget and is never proof
+    evidence or a completion requirement. The temporary document is closed.
     """
     p = _run_relative_path(path)
     roots = _readable_roots()
@@ -730,14 +789,22 @@ def suggest_imports(path: str) -> str:
         return f"Error: no Lake project (lakefile.lean/lakefile.toml) found above {p}."
 
     code = p.read_text()
+    if 'Mathlib' in direct_imports(code):
+        return ('Import analysis skipped: replace the umbrella Mathlib import with targeted modules '
+                'found using search_mathlib. Advice cannot certify a broad-import proof.')
     analysis = _import_analysis_source(code)
     output = ""
+    from .check_runtime import CheckBudget
+    from .runctx import current_should_stop
+    budget = CheckBudget(timeout=IMPORT_ANALYSIS_TIMEOUT_SECONDS, should_stop=current_should_stop())
     with tempfile.TemporaryDirectory(dir=p.parent, prefix=".lea-imports-") as td:
         scratch_dir = Path(td)
         scratch = scratch_dir / p.name
         scratch.write_text(analysis)
         try:
-            output = lean_check(str(scratch))
+            # Advice owns a separate compiler process. A timeout must not retire
+            # the warm proof server or cancel another run's LSP document.
+            output = lean_check(str(scratch), budget=budget, use_lsp=False, allow_cold=False)
         finally:
             try:
                 from .lsp_daemon import close_documents_under
@@ -748,10 +815,12 @@ def suggest_imports(path: str) -> str:
 
     if _import_analysis_has_error(output):
         return (
-            "Error: import analysis could not elaborate the disposable copy. "
-            "Make sure the original proof compiles before calling `suggest_imports`.\n"
-            + output
+            "Import analysis skipped: the optional analysis did not finish within its budget or could not elaborate. "
+            "Keep the current targeted imports. A passing lean_check remains valid for its checked inputs; "
+            "proceed to completion without retrying import advice.\n" + str(output)[:1500]
         )
+    if p.read_text() != code:
+        return 'Import analysis skipped: the proof changed. Check the current revision before completion.'
 
     unneeded = set(re.findall(r"unneeded import '([A-Za-z_][A-Za-z0-9_'.]*)'", output))
     reported = re.findall(
@@ -763,15 +832,13 @@ def suggest_imports(path: str) -> str:
         module for module in current
         if module != "Mathlib" and module not in unneeded
     ]
-    suggested.extend(module for module in reported if module not in suggested)
+    suggested.extend(module for module in reported if module not in suggested
+        and (module != _IMPORT_ANALYSIS_MODULE or module in current))
 
-    # A broad analysis of even a core-only theorem should report Mathlib as
-    # unneeded. If it did not, avoid returning a dangerously empty block merely
-    # because a future Mathlib diagnostic format stopped matching our parser.
-    if not suggested and "Mathlib" not in unneeded:
+    if not suggested and not unneeded:
         return (
-            "Error: Mathlib import analysis completed but its suggestions could "
-            "not be parsed. Keep the current targeted imports and run `lean_check`."
+            "Import analysis skipped: no reliable replacement was reported. "
+            "Keep the current targeted imports and complete using the passing lean_check."
         )
 
     if suggested:

@@ -269,9 +269,11 @@ def _content_text(content) -> str:
 
 
 def _latest_user_request(messages: list) -> str:
+    # A follow-up such as "yes" must not shadow a retained mathematical target.
     for msg in reversed(messages):
-        if msg.get("mathematical_request"):
-            return json.dumps(msg["mathematical_request"], ensure_ascii=False)
+        if msg.get('mathematical_request'):
+            return json.dumps(msg['mathematical_request'], ensure_ascii=False)
+    for msg in reversed(messages):
         if msg.get("role") != "user" or msg.get("lea_status_context"):
             continue
         if msg.get("lea_continuation_context") or (isinstance(msg.get("content"), list)
@@ -311,7 +313,7 @@ def _classify_final_result(
     non-conforming answer become needs_review, not proof success.
     """
     source = config.status_context.get("source_bundle") if config.status_reporting else None
-    request = json.dumps(source, ensure_ascii=False) if source else _latest_user_request(messages)
+    request = json.dumps(source or config.mathematical_request, ensure_ascii=False) if source or config.mathematical_request else _latest_user_request(messages)
     classifier_messages = [{
         "role": "user",
         "content": (
@@ -804,6 +806,7 @@ def _run_events_inner(
     turn = (int(resume_state.get("turn", 0)) - (1 if resuming_model else 0)) if resume_state else 0
     last_input_tokens = int(resume_state.get("last_input_tokens", 0)) if resume_state else 0
     surfaced_domains: set[str] = set(resume_state.get("surfaced_domains", [])) if resume_state else set()
+    import_advice_attempted = bool(resume_state.get('import_advice_attempted')) if resume_state else False
 
     def save_position(stage: str, *, assistant_parts=None, tool_calls=None,
                       completed_tools=None, final_result=None,
@@ -824,6 +827,7 @@ def _run_events_inner(
             "last_status_wall": time.time() - max(0.0, time.monotonic() - last_status_at),
             "tools_since_status": tools_since_status,
             "reporting_stop": reporting_stop,
+            "import_advice_attempted": import_advice_attempted,
         }
         if assistant_parts is not None:
             state["assistant_parts"] = assistant_parts
@@ -1444,7 +1448,12 @@ def _run_events_inner(
                     # Checkers can recover or compile for minutes. Drain their
                     # human-facing events while they run, preserving serial tool
                     # order and the invocation's ContextVars on the worker.
-                    if tc["name"] in {"lean_check", "suggest_imports"}:
+                    if tc['name'] == 'suggest_imports' and import_advice_attempted:
+                        result = ('Import analysis already attempted for this activation. Keep the targeted imports '
+                                  'and complete using the passing lean_check; do not retry import advice.')
+                    elif tc["name"] in {"lean_check", "suggest_imports"}:
+                        if tc['name'] == 'suggest_imports':
+                            import_advice_attempted = True
                         pending = {}
                         ctx = contextvars.copy_context()
                         def check_work(call=tc):

@@ -1,0 +1,5034 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T04:11:34.652461+00:00",
+  "scope": "Worker stability, persistent restart diagnostics, check/search overhead, and interruption/report bookkeeping. Qualification uses disposable databases/workspaces and scripted model events only; no paid provider jobs or production run/history writes.",
+  "original_incident": "overleaf-formalize-all-2026-10-17.json",
+  "causality_limit": "The historical worker exit trigger was not retained. The SQLite status-publication fatal exit and stop-poll run failure were reproduced independently; neither is asserted to be the historical trigger.",
+  "qualified_fixes": [
+    "Busy/locked worker status publication retries on the next loop without replacing its runtime; other errors and obsolete identity still fail closed.",
+    "Stop polling pauses at the execution gate during contention, rechecks ownership after recovery, and conservatively stops after a bounded outage. It never replays a model/tool effect.",
+    "One atomic SQL heartbeat renews live execution claims and their worker lease; expired claims, deadlines and owners are not revived. Expired worker ownership triggers restart/reconciliation.",
+    "Cleanup is attempted independently of final status publication.",
+    "Worker Python exceptions, lifetime events, native faults and supervisor exit codes/signals are persisted in bounded, private diagnostics. Only a bounded SQL snapshot reaches the API.",
+    "Library search defaults to inventory/evidence discovery without compiling returned sibling drafts; unverified entries remain non-reusable.",
+    "Dependency resolution caches the import/module/prelude header with configuration; proof-only changes reuse resolution. Preparation avoids redundant closure observations while preserving final identity checks and an uninterrupted build-to-reader lease.",
+    "Generic recoverable interruptions do not become turn caps. Recovery details and explicit reasons are preserved; generic bridge interruption is not mislabeled as a user stop.",
+    "Report acceptance/synthesis state is persisted; a failed background persistence promise is observed without an unhandled process-level rejection."
+  ],
+  "diagnostics": {
+    "directory": "<database-directory>/worker-diagnostics",
+    "permissions": {
+      "directory": "0700 on creation",
+      "files": "0600"
+    },
+    "rotation": {
+      "worker.log": {
+        "max_bytes": 2097152,
+        "backups": 2
+      },
+      "worker-events.jsonl": {
+        "max_bytes": 524288,
+        "backups": 2
+      },
+      "supervisor-events.jsonl": {
+        "max_bytes": 2097152,
+        "backups": 2
+      },
+      "worker.stderr.log": {
+        "max_bytes": 2097152,
+        "backups": 2
+      },
+      "native_fault_files": 4
+    },
+    "sql_projection": {
+      "endpoint": "GET /api/health",
+      "field": "diagnostics",
+      "max_recent_events": 20
+    },
+    "boundary": "API import of app.worker_diagnostics and reads of worker-diagnostics files are denied. Public transport unchanged by this patch."
+  },
+  "validation": {
+    "process_boundary_runtime_solver_stability": {
+      "passed": 44,
+      "skipped": 1,
+      "qualification": "43 cases passed together, plus the in-flight contention case rerun after correcting its fixture assertion to require the normal needs-review proof-evidence gate. No production evidence guard was relaxed.",
+      "skip": "Native editor transport test is opt-in and was not requested in this run."
+    },
+    "process_restart": {
+      "passed": 5,
+      "qualification": "Restart tests passed after subprocess cwd was made explicit; executed alongside five earlier stability cases."
+    },
+    "lean_recovery_evidence_library_commands_continuations": {
+      "passed": 154,
+      "subtests_passed": 5,
+      "seconds": 182.61,
+      "warnings": [
+        "Existing unknown asyncio_mode pytest configuration option",
+        "Existing Starlette/httpx deprecation"
+      ]
+    },
+    "overleaf_suite": {
+      "passed": 835,
+      "failed": 0,
+      "seconds": 17.23
+    },
+    "supervisor_diagnostics_environment": {
+      "passed": 11,
+      "failed": 0,
+      "seconds": 4.15,
+      "qualification": "Granted native process inspection; a sandboxed attempt could not discover a detached descendant. The owned fixture child was cleaned up."
+    },
+    "inflight_contention": {
+      "seconds": 14.04,
+      "blocked_reader_seconds": 7,
+      "sqlite_busy_timeout_seconds": 5,
+      "assertions": [
+        "Same runtime identity and generation",
+        "Same solver attempt",
+        "No automatic recovery/replay",
+        "Normal evidence-based needs-review result for the fixture without Lean evidence",
+        "Retained SQL diagnostics"
+      ]
+    },
+    "boundary_audit": {
+      "adapter_routes": 179,
+      "companion_dispatch_branches": 27,
+      "result": "pass"
+    },
+    "whitespace": "pass"
+  },
+  "activation": {
+    "state": "Source changes qualified; existing development stack not restarted by this task.",
+    "last_observed_active_runs": 0,
+    "last_observed_active_operations": 0,
+    "last_observed_queued_runs": 0,
+    "required": "Restart start-dev.sh once to load supervisor/worker changes. Use Re-formalize for old interrupted attempts if executable/tool checkpoint contracts no longer match. Existing drafts/history and compatibility fencing are retained."
+  },
+  "limits": [
+    "Isolated macOS ARM64 measurements are not a production latency distribution.",
+    "First-time compiler dependency discovery and selected-result inspection remain material costs.",
+    "Historical failed-batch facts/reports were not rewritten and paid formalizations were not rerun.",
+    "This follow-up does not republish/requalify production container images or relax checkpoint compatibility."
+  ],
+  "profiles": {
+    "before": {
+      "version": 1,
+      "scenario": "quadratic",
+      "captured_at": "2026-10-18T03:55:34.614160+00:00",
+      "system": "Darwin",
+      "architecture": "arm64",
+      "isolation": "macOS Seatbelt; all writes confined to disposable project, shared packages read-only; network denied",
+      "timing_semantics": "Inclusive phase times; preparation contains dependency resolution/build. Queue and cleanup may overlap other phase times. cProfile cumulative times are nested.",
+      "source_sha256": {
+        "apps/lea-standalone/prover/lea/check_evidence.py": "33a76b589b2319d355d20b86cc0377e749453c48d1b8b6ebf06293c47b3303ed",
+        "apps/lea-standalone/prover/lea/lean_checks.py": "37579130a5b22c74c644bb3f0ae4d48de1302cde5f8ccc848ee68ea2d69e37a5",
+        "apps/lea-standalone/prover/lea/check_runtime.py": "144f8247d3ec89227c260a1507ce23b9899fb2a0924803d26f314b08407b0ee6",
+        "apps/lea-standalone/prover/lea/tools.py": "fac9fd81e96f02bf7e8f07c981ee0eca2b4372da6ac800574bfba27fc40ce776",
+        "apps/lea-standalone/prover/lea/result_selection.py": "968d6f576b7ccb973c36ab59d50ab100ca54790faf7fdc8f472231fc9255b724",
+        "apps/lea-standalone/prover/lea/LibraryInspect.lean": "248a1a7e458db0e4c33b41e307611341384881704929aef33b71fad42800758c",
+        "scripts/profile-lean-checks.py": "61c872c24a2de23de60d827c0d710b780b7092ed1cf914e53172430dd5fe896c"
+      },
+      "cases": [
+        {
+          "case": "definition_draft",
+          "status": "error",
+          "wall_ms": 30271.14,
+          "execution": {
+            "check_id": "6eb16561588540d09a6fbbfafa8fbb3f",
+            "daemon_generation": "c936d294470549fc87ffacbf343b0776",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 0.31,
+              "initialization": 739.9,
+              "lsp": 2282.9,
+              "cold": 0.0,
+              "total": 30264.7,
+              "source": 0.53,
+              "dependency_resolution": 14969.93,
+              "dependency_build": 955.17,
+              "preparation": 26009.83,
+              "evidence_hash": 4.91,
+              "guard_setup": 219.97,
+              "validation": 352.92,
+              "cleanup": 131.12
+            },
+            "content_sha256": "46438c6f4832f9fb0118ecd3a359c9acfd741579f32cc5716fe313f2dcd2f08e",
+            "evidence_version": 1,
+            "environment_sha256": "0124965a6b0aee320a586019a7686d801d6da3cf998e0efdf6f86827a109fb5b"
+          },
+          "detail": "/private/var/folders/7v/bwwzmh557fq01rdzwhsyys2h0000gn/T/lea-check-profile-dktj22lk/proofs/session-with-hyphen/Lea/Misc/Main.lean:3:5: error: failed to compile definition, consider marking it as 'noncomputable' because it depends on 'Real.instDivInvMonoid', which is 'noncomputable'",
+          "environment_files": 5916,
+          "evidence_json_bytes": 2537095,
+          "profile": [
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "line": 0,
+              "calls": 178,
+              "self_seconds": 0.0002,
+              "cumulative_seconds": 26.3619
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "line": 60,
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 26.3609
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "line": 136,
+              "calls": 83,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 26.2304
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "line": 514,
+              "calls": 2,
+              "self_seconds": 0.002,
+              "cumulative_seconds": 26.0098
+            },
+            {
+              "function": "manifest",
+              "file": "check_evidence.py",
+              "line": 291,
+              "calls": 4,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 25.0266
+            },
+            {
+              "function": "add",
+              "file": "check_evidence.py",
+              "line": 325,
+              "calls": 9424,
+              "self_seconds": 0.1212,
+              "cumulative_seconds": 23.3839
+            },
+            {
+              "function": "_command",
+              "file": "check_evidence.py",
+              "line": 229,
+              "calls": 21,
+              "self_seconds": 0.0025,
+              "cumulative_seconds": 15.9244
+            },
+            {
+              "function": "communicate",
+              "file": "subprocess.py",
+              "line": 1177,
+              "calls": 171,
+              "self_seconds": 0.0006,
+              "cumulative_seconds": 15.8094
+            },
+            {
+              "function": "_communicate",
+              "file": "subprocess.py",
+              "line": 2093,
+              "calls": 171,
+              "self_seconds": 0.0041,
+              "cumulative_seconds": 15.8088
+            },
+            {
+              "function": "select",
+              "file": "selectors.py",
+              "line": 385,
+              "calls": 212,
+              "self_seconds": 0.0013,
+              "cumulative_seconds": 15.7962
+            },
+            {
+              "function": "<method 'poll' of 'select.poll' objects>",
+              "file": "~",
+              "line": 0,
+              "calls": 212,
+              "self_seconds": 15.7948,
+              "cumulative_seconds": 15.7948
+            },
+            {
+              "function": "_resolve",
+              "file": "check_evidence.py",
+              "line": 258,
+              "calls": 40,
+              "self_seconds": 0.001,
+              "cumulative_seconds": 14.9726
+            },
+            {
+              "function": "is_relative_to",
+              "file": "__init__.py",
+              "line": 498,
+              "calls": 39988,
+              "self_seconds": 0.0361,
+              "cumulative_seconds": 4.2833
+            },
+            {
+              "function": "record",
+              "file": "check_evidence.py",
+              "line": 317,
+              "calls": 24332,
+              "self_seconds": 0.0625,
+              "cumulative_seconds": 4.2182
+            },
+            {
+              "function": "__contains__",
+              "file": "<frozen _collections_abc>",
+              "line": 1021,
+              "calls": 39991,
+              "self_seconds": 0.2251,
+              "cumulative_seconds": 4.1495
+            },
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "line": 23,
+              "calls": 2,
+              "self_seconds": 0.0011,
+              "cumulative_seconds": 4.0219
+            },
+            {
+              "function": "_identity",
+              "file": "check_evidence.py",
+              "line": 282,
+              "calls": 33996,
+              "self_seconds": 0.0436,
+              "cumulative_seconds": 3.7793
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "line": 712,
+              "calls": 2,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 3.5372
+            },
+            {
+              "function": "_imports_for_source",
+              "file": "check_evidence.py",
+              "line": 52,
+              "calls": 2996,
+              "self_seconds": 0.007,
+              "cumulative_seconds": 3.2632
+            },
+            {
+              "function": "direct_imports",
+              "file": "imports.py",
+              "line": 67,
+              "calls": 756,
+              "self_seconds": 0.108,
+              "cumulative_seconds": 3.2116
+            }
+          ]
+        },
+        {
+          "case": "missing_real_import",
+          "status": "error",
+          "wall_ms": 16530.37,
+          "execution": {
+            "check_id": "31dd62bb8f444b6eb87c6187acec2511",
+            "daemon_generation": "c936d294470549fc87ffacbf343b0776",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 0.13,
+              "initialization": 0.0,
+              "lsp": 2827.15,
+              "cold": 0.0,
+              "total": 16528.32,
+              "source": 0.6,
+              "dependency_resolution": 3091.76,
+              "dependency_build": 992.06,
+              "preparation": 12542.04,
+              "evidence_hash": 4.68,
+              "guard_setup": 204.29,
+              "validation": 363.53,
+              "cleanup": 117.84
+            },
+            "content_sha256": "8d6295768910ed51c6f03217f0ce7c2427c95b6e8c78529b459333fd5a02e389",
+            "evidence_version": 1,
+            "environment_sha256": "126b932617eeb7bb4405ade0d9f64e5b85be11202a53170e3295ebe1b7443c94"
+          },
+          "detail": "/private/var/folders/7v/bwwzmh557fq01rdzwhsyys2h0000gn/T/lea-check-profile-dktj22lk/proofs/session-with-hyphen/Lea/Misc/Main.lean:3:35: error: Unknown identifier `\u211d`\n\nNote: It is not possible to treat `\u211d` as an implicitly bound variable here because the `autoImplicit` option is set to `false`.\n/private/var/folders/7v/bwwzmh557fq01rdzwhsyys2h0000gn/T/lea-check-profile-dktj22lk/proofs/session-with-hyphen/Lea/Misc/Main.lean:3:35: error: Unknown identifier `\u211d`\n\nNote: It is not possible to treat `\u211d` as an implicitly bound variable here because the `autoImplicit` option is set to `false`.\n/private/var/folders/7v/bwwzmh557fq01rdzwhsyys2h0000gn/T/lea-check-profile-dktj22lk/proofs/session-with-hyphen/Lea/Misc/Main.lean:4:46: error: unsolved goals\nx : sorry\ny : sorry\n\u22a2 sorry",
+          "environment_files": 5356,
+          "evidence_json_bytes": 2284440,
+          "profile": [
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "line": 23,
+              "calls": 1,
+              "self_seconds": 0.001,
+              "cumulative_seconds": 16.5284
+            },
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "line": 0,
+              "calls": 142,
+              "self_seconds": 0.0002,
+              "cumulative_seconds": 12.8649
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "line": 60,
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 12.8642
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "line": 136,
+              "calls": 65,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 12.7467
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "line": 514,
+              "calls": 2,
+              "self_seconds": 0.0015,
+              "cumulative_seconds": 12.542
+            },
+            {
+              "function": "manifest",
+              "file": "check_evidence.py",
+              "line": 291,
+              "calls": 4,
+              "self_seconds": 0.0002,
+              "cumulative_seconds": 8.5949
+            },
+            {
+              "function": "add",
+              "file": "check_evidence.py",
+              "line": 325,
+              "calls": 8296,
+              "self_seconds": 0.1026,
+              "cumulative_seconds": 7.0467
+            },
+            {
+              "function": "_command",
+              "file": "check_evidence.py",
+              "line": 229,
+              "calls": 5,
+              "self_seconds": 0.0009,
+              "cumulative_seconds": 4.0837
+            },
+            {
+              "function": "communicate",
+              "file": "subprocess.py",
+              "line": 1177,
+              "calls": 42,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 4.0529
+            },
+            {
+              "function": "_communicate",
+              "file": "subprocess.py",
+              "line": 2093,
+              "calls": 42,
+              "self_seconds": 0.0011,
+              "cumulative_seconds": 4.0527
+            },
+            {
+              "function": "select",
+              "file": "selectors.py",
+              "line": 385,
+              "calls": 52,
+              "self_seconds": 0.0159,
+              "cumulative_seconds": 4.0494
+            },
+            {
+              "function": "is_relative_to",
+              "file": "__init__.py",
+              "line": 498,
+              "calls": 36148,
+              "self_seconds": 0.0322,
+              "cumulative_seconds": 3.8591
+            },
+            {
+              "function": "<method 'poll' of 'select.poll' objects>",
+              "file": "~",
+              "line": 0,
+              "calls": 52,
+              "self_seconds": 3.8087,
+              "cumulative_seconds": 3.8087
+            },
+            {
+              "function": "__contains__",
+              "file": "<frozen _collections_abc>",
+              "line": 1021,
+              "calls": 36151,
+              "self_seconds": 0.202,
+              "cumulative_seconds": 3.7387
+            },
+            {
+              "function": "_identity",
+              "file": "check_evidence.py",
+              "line": 282,
+              "calls": 30796,
+              "self_seconds": 0.0388,
+              "cumulative_seconds": 3.4136
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "line": 712,
+              "calls": 1,
+              "self_seconds": 0.001,
+              "cumulative_seconds": 3.2948
+            },
+            {
+              "function": "_resolve",
+              "file": "check_evidence.py",
+              "line": 258,
+              "calls": 40,
+              "self_seconds": 0.0003,
+              "cumulative_seconds": 3.0935
+            },
+            {
+              "function": "record",
+              "file": "check_evidence.py",
+              "line": 317,
+              "calls": 22092,
+              "self_seconds": 0.0517,
+              "cumulative_seconds": 3.0917
+            },
+            {
+              "function": "observed_changed",
+              "file": "check_evidence.py",
+              "line": 446,
+              "calls": 3,
+              "self_seconds": 0.002,
+              "cumulative_seconds": 2.9283
+            },
+            {
+              "function": "_observed_changed",
+              "file": "check_evidence.py",
+              "line": 457,
+              "calls": 3,
+              "self_seconds": 0.0524,
+              "cumulative_seconds": 2.9263
+            }
+          ]
+        },
+        {
+          "case": "corrected_quadratic",
+          "status": "ok",
+          "wall_ms": 14954.17,
+          "execution": {
+            "check_id": "734fcdef7e894be8bbe61c32467b3d2e",
+            "daemon_generation": "c936d294470549fc87ffacbf343b0776",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 0.13,
+              "initialization": 0.0,
+              "lsp": 2524.22,
+              "cold": 0.0,
+              "total": 14952.26,
+              "source": 0.51,
+              "dependency_resolution": 1778.21,
+              "dependency_build": 973.13,
+              "preparation": 11361.64,
+              "evidence_hash": 5.54,
+              "guard_setup": 202.64,
+              "validation": 330.13,
+              "cleanup": 115.22
+            },
+            "content_sha256": "797443600e4aaf6495cb656374b141d9e254d723b0d05848793434f7db516597",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b"
+          },
+          "detail": "OK \u2014 no errors, no warnings.",
+          "environment_files": 5979,
+          "evidence_json_bytes": 2564685,
+          "profile": [
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "line": 23,
+              "calls": 1,
+              "self_seconds": 0.001,
+              "cumulative_seconds": 14.9523
+            },
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "line": 0,
+              "calls": 138,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 11.6802
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "line": 60,
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 11.6795
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "line": 136,
+              "calls": 61,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 11.5646
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "line": 514,
+              "calls": 2,
+              "self_seconds": 0.0032,
+              "cumulative_seconds": 11.3616
+            },
+            {
+              "function": "manifest",
+              "file": "check_evidence.py",
+              "line": 291,
+              "calls": 4,
+              "self_seconds": 0.0002,
+              "cumulative_seconds": 7.9158
+            },
+            {
+              "function": "add",
+              "file": "check_evidence.py",
+              "line": 325,
+              "calls": 9532,
+              "self_seconds": 0.1192,
+              "cumulative_seconds": 6.1355
+            },
+            {
+              "function": "is_relative_to",
+              "file": "__init__.py",
+              "line": 498,
+              "calls": 40420,
+              "self_seconds": 0.0359,
+              "cumulative_seconds": 4.3908
+            },
+            {
+              "function": "__contains__",
+              "file": "<frozen _collections_abc>",
+              "line": 1021,
+              "calls": 40423,
+              "self_seconds": 0.2312,
+              "cumulative_seconds": 4.2558
+            },
+            {
+              "function": "_identity",
+              "file": "check_evidence.py",
+              "line": 282,
+              "calls": 34356,
+              "self_seconds": 0.0439,
+              "cumulative_seconds": 3.8773
+            },
+            {
+              "function": "record",
+              "file": "check_evidence.py",
+              "line": 317,
+              "calls": 24584,
+              "self_seconds": 0.0605,
+              "cumulative_seconds": 3.4596
+            },
+            {
+              "function": "__iter__",
+              "file": "<frozen _collections_abc>",
+              "line": 1011,
+              "calls": 726746,
+              "self_seconds": 0.1575,
+              "cumulative_seconds": 3.16
+            },
+            {
+              "function": "__getitem__",
+              "file": "__init__.py",
+              "line": 63,
+              "calls": 745805,
+              "self_seconds": 0.4933,
+              "cumulative_seconds": 3.0937
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "line": 712,
+              "calls": 1,
+              "self_seconds": 0.0012,
+              "cumulative_seconds": 2.9362
+            },
+            {
+              "function": "_command",
+              "file": "check_evidence.py",
+              "line": 229,
+              "calls": 3,
+              "self_seconds": 0.0005,
+              "cumulative_seconds": 2.7512
+            },
+            {
+              "function": "communicate",
+              "file": "subprocess.py",
+              "line": 1177,
+              "calls": 28,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 2.7321
+            },
+            {
+              "function": "_communicate",
+              "file": "subprocess.py",
+              "line": 2093,
+              "calls": 28,
+              "self_seconds": 0.0007,
+              "cumulative_seconds": 2.732
+            },
+            {
+              "function": "select",
+              "file": "selectors.py",
+              "line": 385,
+              "calls": 33,
+              "self_seconds": 0.0482,
+              "cumulative_seconds": 2.7298
+            },
+            {
+              "function": "check",
+              "file": "lsp_daemon.py",
+              "line": 343,
+              "calls": 1,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 2.5245
+            },
+            {
+              "function": "_request",
+              "file": "lsp_daemon.py",
+              "line": 458,
+              "calls": 1,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 2.5239
+            }
+          ]
+        },
+        {
+          "case": "same_imports_edit",
+          "status": "ok",
+          "wall_ms": 7544.52,
+          "execution": {
+            "check_id": "c4e1d232330440f5a1292e2bc79e884c",
+            "daemon_generation": "c936d294470549fc87ffacbf343b0776",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 0.14,
+              "initialization": 0.0,
+              "lsp": 2542.05,
+              "cold": 0.0,
+              "total": 7542.68,
+              "source": 0.54,
+              "dependency_resolution": 1472.03,
+              "preparation": 3909.66,
+              "evidence_hash": 5.54,
+              "guard_setup": 204.76,
+              "validation": 361.3,
+              "cleanup": 103.67
+            },
+            "content_sha256": "be36c9a70786aa689f4de9a6a94d9365f5028271fc7938ff317041c027e8dd28",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b"
+          },
+          "detail": "OK \u2014 no errors, no warnings.",
+          "environment_files": 5979,
+          "evidence_json_bytes": 2564654,
+          "profile": [
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "line": 23,
+              "calls": 1,
+              "self_seconds": 0.0011,
+              "cumulative_seconds": 7.5427
+            },
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "line": 0,
+              "calls": 105,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 4.2188
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "line": 60,
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 4.2181
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "line": 136,
+              "calls": 49,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 4.1148
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "line": 514,
+              "calls": 2,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 3.9097
+            },
+            {
+              "function": "manifest",
+              "file": "check_evidence.py",
+              "line": 291,
+              "calls": 1,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 2.975
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "line": 712,
+              "calls": 1,
+              "self_seconds": 0.0013,
+              "cumulative_seconds": 2.9568
+            },
+            {
+              "function": "check",
+              "file": "lsp_daemon.py",
+              "line": 343,
+              "calls": 1,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 2.5424
+            },
+            {
+              "function": "_request",
+              "file": "lsp_daemon.py",
+              "line": 458,
+              "calls": 1,
+              "self_seconds": 0.0002,
+              "cumulative_seconds": 2.5417
+            },
+            {
+              "function": "get",
+              "file": "queue.py",
+              "line": 177,
+              "calls": 56,
+              "self_seconds": 0.0003,
+              "cumulative_seconds": 2.5389
+            },
+            {
+              "function": "wait",
+              "file": "threading.py",
+              "line": 337,
+              "calls": 25,
+              "self_seconds": 0.0007,
+              "cumulative_seconds": 2.5384
+            },
+            {
+              "function": "<method 'acquire' of '_thread.lock' objects>",
+              "file": "~",
+              "line": 0,
+              "calls": 180,
+              "self_seconds": 1.9368,
+              "cumulative_seconds": 1.9368
+            },
+            {
+              "function": "add",
+              "file": "check_evidence.py",
+              "line": 325,
+              "calls": 2383,
+              "self_seconds": 0.0296,
+              "cumulative_seconds": 1.5023
+            },
+            {
+              "function": "_resolve",
+              "file": "check_evidence.py",
+              "line": 258,
+              "calls": 10,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 1.4726
+            },
+            {
+              "function": "_command",
+              "file": "check_evidence.py",
+              "line": 229,
+              "calls": 2,
+              "self_seconds": 0.0003,
+              "cumulative_seconds": 1.472
+            },
+            {
+              "function": "communicate",
+              "file": "subprocess.py",
+              "line": 1177,
+              "calls": 16,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 1.4597
+            },
+            {
+              "function": "_communicate",
+              "file": "subprocess.py",
+              "line": 2093,
+              "calls": 16,
+              "self_seconds": 0.0004,
+              "cumulative_seconds": 1.4596
+            },
+            {
+              "function": "select",
+              "file": "selectors.py",
+              "line": 385,
+              "calls": 20,
+              "self_seconds": 0.078,
+              "cumulative_seconds": 1.4582
+            },
+            {
+              "function": "<method 'poll' of 'select.poll' objects>",
+              "file": "~",
+              "line": 0,
+              "calls": 20,
+              "self_seconds": 1.2626,
+              "cumulative_seconds": 1.2626
+            },
+            {
+              "function": "is_relative_to",
+              "file": "__init__.py",
+              "line": 498,
+              "calls": 10105,
+              "self_seconds": 0.0089,
+              "cumulative_seconds": 1.0869
+            }
+          ]
+        },
+        {
+          "case": "unchanged_warm",
+          "status": "ok",
+          "wall_ms": 3904.74,
+          "execution": {
+            "check_id": "6366d7f2b65c4f96a5b4e9c6db83255c",
+            "daemon_generation": "c936d294470549fc87ffacbf343b0776",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 0.12,
+              "initialization": 0.0,
+              "lsp": 206.91,
+              "cold": 0.0,
+              "total": 3901.28,
+              "source": 0.54,
+              "preparation": 2477.55,
+              "evidence_hash": 5.37,
+              "guard_setup": 279.6,
+              "validation": 306.51,
+              "cleanup": 109.3
+            },
+            "content_sha256": "be36c9a70786aa689f4de9a6a94d9365f5028271fc7938ff317041c027e8dd28",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b"
+          },
+          "detail": "OK \u2014 no errors, no warnings.",
+          "environment_files": 5979,
+          "evidence_json_bytes": 2564618,
+          "profile": [
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "line": 23,
+              "calls": 1,
+              "self_seconds": 0.0011,
+              "cumulative_seconds": 3.9013
+            },
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "line": 0,
+              "calls": 73,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 2.8671
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "line": 60,
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 2.8665
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "line": 136,
+              "calls": 33,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 2.7574
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "line": 514,
+              "calls": 2,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 2.4776
+            },
+            {
+              "function": "manifest",
+              "file": "check_evidence.py",
+              "line": 291,
+              "calls": 1,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 1.4961
+            },
+            {
+              "function": "add",
+              "file": "check_evidence.py",
+              "line": 325,
+              "calls": 2383,
+              "self_seconds": 0.0299,
+              "cumulative_seconds": 1.4957
+            },
+            {
+              "function": "is_relative_to",
+              "file": "__init__.py",
+              "line": 498,
+              "calls": 10105,
+              "self_seconds": 0.0089,
+              "cumulative_seconds": 1.0846
+            },
+            {
+              "function": "resolve",
+              "file": "__init__.py",
+              "line": 932,
+              "calls": 18007,
+              "self_seconds": 0.0099,
+              "cumulative_seconds": 1.0768
+            },
+            {
+              "function": "__contains__",
+              "file": "<frozen _collections_abc>",
+              "line": 1021,
+              "calls": 10108,
+              "self_seconds": 0.0567,
+              "cumulative_seconds": 1.0513
+            },
+            {
+              "function": "realpath",
+              "file": "<frozen posixpath>",
+              "line": 388,
+              "calls": 18007,
+              "self_seconds": 0.2167,
+              "cumulative_seconds": 1.0286
+            },
+            {
+              "function": "observed_changed",
+              "file": "check_evidence.py",
+              "line": 446,
+              "calls": 1,
+              "self_seconds": 0.001,
+              "cumulative_seconds": 0.9751
+            },
+            {
+              "function": "_observed_changed",
+              "file": "check_evidence.py",
+              "line": 457,
+              "calls": 1,
+              "self_seconds": 0.0177,
+              "cumulative_seconds": 0.9741
+            },
+            {
+              "function": "_identity",
+              "file": "check_evidence.py",
+              "line": 282,
+              "calls": 8589,
+              "self_seconds": 0.0108,
+              "cumulative_seconds": 0.9573
+            },
+            {
+              "function": "record",
+              "file": "check_evidence.py",
+              "line": 317,
+              "calls": 6146,
+              "self_seconds": 0.0157,
+              "cumulative_seconds": 0.8461
+            },
+            {
+              "function": "_runtime_files",
+              "file": "check_evidence.py",
+              "line": 391,
+              "calls": 2,
+              "self_seconds": 0.0261,
+              "cumulative_seconds": 0.8407
+            },
+            {
+              "function": "__iter__",
+              "file": "<frozen _collections_abc>",
+              "line": 1011,
+              "calls": 181748,
+              "self_seconds": 0.039,
+              "cumulative_seconds": 0.7814
+            },
+            {
+              "function": "__getitem__",
+              "file": "__init__.py",
+              "line": 63,
+              "calls": 186509,
+              "self_seconds": 0.1223,
+              "cumulative_seconds": 0.7649
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "line": 712,
+              "calls": 1,
+              "self_seconds": 0.0007,
+              "cumulative_seconds": 0.722
+            },
+            {
+              "function": "<built-in method posix.lstat>",
+              "file": "~",
+              "line": 0,
+              "calls": 324856,
+              "self_seconds": 0.606,
+              "cumulative_seconds": 0.606
+            }
+          ]
+        },
+        {
+          "case": "compiler_selected_result",
+          "status": "ok",
+          "execution": {
+            "check_id": "ec34afa8f7f94ebd8c928d5bbba2f540",
+            "daemon_generation": "c936d294470549fc87ffacbf343b0776",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 0.07,
+              "initialization": 0.0,
+              "lsp": 206.81,
+              "cold": 0.0,
+              "total": 7706.46,
+              "source": 0.24,
+              "preparation": 1097.68,
+              "evidence_hash": 5.22,
+              "guard_setup": 128.12,
+              "validation": 166.43,
+              "cleanup": 61.15,
+              "result_inspection": 5760.26
+            },
+            "content_sha256": "be36c9a70786aa689f4de9a6a94d9365f5028271fc7938ff317041c027e8dd28",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b",
+            "selected_result": {
+              "axioms": [
+                "propext",
+                "Quot.sound",
+                "Classical.choice"
+              ],
+              "body_expr": null,
+              "dependencies": [
+                "Real",
+                "Eq",
+                "HAdd.hAdd",
+                "instHAdd",
+                "Real.instAdd",
+                "HPow.hPow",
+                "Nat",
+                "instHPow",
+                "Monoid.toPow",
+                "Real.instMonoid",
+                "OfNat.ofNat",
+                "instOfNatNat",
+                "HSub.hSub",
+                "instHSub",
+                "Real.instSub",
+                "HMul.hMul",
+                "instHMul",
+                "Real.instMul",
+                "instOfNatAtLeastTwo",
+                "Real.instNatCast",
+                "Nat.instAtLeastTwoHAddOfNat",
+                "Nat.instNeZeroSucc",
+                "Real",
+                "Mathlib.Tactic.Ring.of_eq",
+                "HAdd.hAdd",
+                "instHAdd",
+                "Real.instAdd",
+                "HPow.hPow",
+                "Nat",
+                "instHPow",
+                "Monoid.toPow",
+                "Real.instMonoid",
+                "OfNat.ofNat",
+                "instOfNatNat",
+                "HSub.hSub",
+                "instHSub",
+                "Real.instSub",
+                "HMul.hMul",
+                "instHMul",
+                "Real.instMul",
+                "instOfNatAtLeastTwo",
+                "Real.instNatCast",
+                "Nat.instAtLeastTwoHAddOfNat",
+                "Nat.instNeZeroSucc",
+                "Distrib.toAdd",
+                "NonUnitalNonAssocSemiring.toDistrib",
+                "NonAssocSemiring.toNonUnitalNonAssocSemiring",
+                "Semiring.toNonAssocSemiring",
+                "CommSemiring.toSemiring",
+                "Real.instCommSemiring",
+                "Distrib.toMul",
+                "MonoidWithZero.toMonoid",
+                "Semiring.toMonoidWithZero",
+                "Nat.rawCast",
+                "AddCommMonoidWithOne.toAddMonoidWithOne",
+                "NonAssocSemiring.toAddCommMonoidWithOne",
+                "Nat.instCommSemiring",
+                "Zero.toOfNat0",
+                "MulZeroClass.toZero",
+                "NonUnitalNonAssocSemiring.toMulZeroClass",
+                "Mathlib.Tactic.Ring.add_congr",
+                "Int.rawCast",
+                "CommRing.toRing",
+                "Real.commRing",
+                "Int.negOfNat",
+                "Mathlib.Tactic.Ring.pow_congr",
+                "Mathlib.Tactic.Ring.atom_pf",
+                "Mathlib.Tactic.Ring.add_pf_add_lt",
+                "Mathlib.Tactic.Ring.add_pf_zero_add",
+                "Mathlib.Tactic.Ring.cast_pos",
+                "Mathlib.Meta.NormNum.isNat_ofNat",
+                "Nat.instAddMonoidWithOne",
+                "Eq.refl",
+                "Mathlib.Tactic.Ring.pow_add",
+                "Mathlib.Tactic.Ring.pow_nat",
+                "Mathlib.Tactic.Ring.coeff_one",
+                "Mathlib.Tactic.Ring.pow_one_cast",
+                "Mathlib.Tactic.Ring.pow_bit0",
+                "Mathlib.Tactic.Ring.pow_one",
+                "Mathlib.Tactic.Ring.add_mul",
+                "Mathlib.Tactic.Ring.mul_add",
+                "Mathlib.Tactic.Ring.mul_pp_pf_overlap",
+                "Mathlib.Meta.NormNum.IsNat.to_raw_eq",
+                "Mathlib.Meta.NormNum.isNat_add",
+                "Mathlib.Meta.NormNum.IsNat.of_raw",
+                "Mathlib.Tactic.Ring.one_mul",
+                "Mathlib.Tactic.Ring.mul_pf_left",
+                "Mathlib.Tactic.Ring.mul_pf_right",
+                "Mathlib.Tactic.Ring.mul_zero",
+                "Mathlib.Tactic.Ring.add_pf_add_zero",
+                "Mathlib.Tactic.Ring.add_pf_add_gt",
+                "Mathlib.Tactic.Ring.zero_mul",
+                "Mathlib.Tactic.Ring.add_pf_add_overlap",
+                "Mathlib.Tactic.Ring.add_overlap_pf",
+                "Mathlib.Tactic.Ring.pow_zero",
+                "Mathlib.Tactic.Ring.mul_one",
+                "Mathlib.Tactic.Ring.sub_congr",
+                "Mathlib.Tactic.Ring.sub_pf",
+                "Mathlib.Tactic.Ring.neg_add",
+                "Mathlib.Tactic.Ring.neg_mul",
+                "Mathlib.Tactic.Ring.neg_one_mul",
+                "Mathlib.Meta.NormNum.IsInt.to_raw_eq",
+                "Mathlib.Meta.NormNum.isInt_mul",
+                "NonUnitalNonAssocRing.toNonUnitalNonAssocSemiring",
+                "NonAssocRing.toNonUnitalNonAssocRing",
+                "Ring.toNonAssocRing",
+                "Int.ofNat",
+                "Mathlib.Meta.NormNum.IsInt.of_raw",
+                "Mathlib.Meta.NormNum.IsNat.to_isInt",
+                "Int",
+                "Mathlib.Tactic.Ring.neg_zero",
+                "Mathlib.Meta.NormNum.instAddMonoidWithOne",
+                "Mathlib.Meta.NormNum.IsInt.to_isNat",
+                "Mathlib.Meta.NormNum.isInt_add",
+                "Mathlib.Tactic.Ring.add_pf_add_overlap_zero",
+                "Mathlib.Tactic.Ring.add_overlap_pf_zero",
+                "Mathlib.Tactic.Ring.mul_congr",
+                "AddGroupWithOne.toAddMonoidWithOne",
+                "Ring.toAddGroupWithOne",
+                "Real.instRing",
+                "AddMonoidWithOne.toNatCast",
+                "Mathlib.Meta.NormNum.instAtLeastTwo",
+                "Mathlib.Tactic.Ring.single_pow",
+                "Mathlib.Tactic.Ring.mul_pow",
+                "Mathlib.Tactic.Ring.one_pow"
+              ],
+              "full_name": "Lea.Misc.independent_square",
+              "kind": "theorem",
+              "level_params": [],
+              "range": {
+                "end_column": 52,
+                "end_line": 6,
+                "start_column": 0,
+                "start_line": 5
+              },
+              "type": "\u2200 (x y : Real),\n  Eq.{1}\n    (HAdd.hAdd.{0, 0, 0} (HPow.hPow.{0, 0, 0} (HAdd.hAdd.{0, 0, 0} x y) 2)\n      (HPow.hPow.{0, 0, 0} (HSub.hSub.{0, 0, 0} x y) 2))\n    (HAdd.hAdd.{0, 0, 0} (HMul.hMul.{0, 0, 0} 2 (HPow.hPow.{0, 0, 0} x 2))\n      (HMul.hMul.{0, 0, 0} 2 (HPow.hPow.{0, 0, 0} y 2)))",
+              "type_expr": [
+                "forall",
+                "Lean.BinderInfo.default",
+                [
+                  "constant",
+                  "Real",
+                  []
+                ],
+                [
+                  "forall",
+                  "Lean.BinderInfo.default",
+                  [
+                    "constant",
+                    "Real",
+                    []
+                  ],
+                  [
+                    "apply",
+                    [
+                      "apply",
+                      [
+                        "apply",
+                        [
+                          "constant",
+                          "Eq",
+                          [
+                            [
+                              "succ",
+                              "zero"
+                            ]
+                          ]
+                        ],
+                        [
+                          "constant",
+                          "Real",
+                          []
+                        ]
+                      ],
+                      [
+                        "apply",
+                        [
+                          "apply",
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "HAdd.hAdd",
+                                    [
+                                      "zero",
+                                      "zero",
+                                      "zero"
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "constant",
+                                "Real",
+                                []
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "instHAdd",
+                                  [
+                                    "zero"
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "constant",
+                                "Real.instAdd",
+                                []
+                              ]
+                            ]
+                          ],
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "HPow.hPow",
+                                        [
+                                          "zero",
+                                          "zero",
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Nat",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "instHPow",
+                                        [
+                                          "zero",
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Nat",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "Monoid.toPow",
+                                        [
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real.instMonoid",
+                                      []
+                                    ]
+                                  ]
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "apply",
+                                        [
+                                          "apply",
+                                          [
+                                            "constant",
+                                            "HAdd.hAdd",
+                                            [
+                                              "zero",
+                                              "zero",
+                                              "zero"
+                                            ]
+                                          ],
+                                          [
+                                            "constant",
+                                            "Real",
+                                            []
+                                          ]
+                                        ],
+                                        [
+                                          "constant",
+                                          "Real",
+                                          []
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "apply",
+                                      [
+                                        "apply",
+                                        [
+                                          "constant",
+                                          "instHAdd",
+                                          [
+                                            "zero"
+                                          ]
+                                        ],
+                                        [
+                                          "constant",
+                                          "Real",
+                                          []
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real.instAdd",
+                                        []
+                                      ]
+                                    ]
+                                  ],
+                                  [
+                                    "bound",
+                                    1
+                                  ]
+                                ],
+                                [
+                                  "bound",
+                                  0
+                                ]
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "OfNat.ofNat",
+                                    [
+                                      "zero"
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Nat",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "nat",
+                                  2
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "instOfNatNat",
+                                  []
+                                ],
+                                [
+                                  "nat",
+                                  2
+                                ]
+                              ]
+                            ]
+                          ]
+                        ],
+                        [
+                          "apply",
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "HPow.hPow",
+                                      [
+                                        "zero",
+                                        "zero",
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Nat",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "instHPow",
+                                      [
+                                        "zero",
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Nat",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "Monoid.toPow",
+                                      [
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real.instMonoid",
+                                    []
+                                  ]
+                                ]
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "apply",
+                                        [
+                                          "constant",
+                                          "HSub.hSub",
+                                          [
+                                            "zero",
+                                            "zero",
+                                            "zero"
+                                          ]
+                                        ],
+                                        [
+                                          "constant",
+                                          "Real",
+                                          []
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "instHSub",
+                                        [
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real.instSub",
+                                      []
+                                    ]
+                                  ]
+                                ],
+                                [
+                                  "bound",
+                                  1
+                                ]
+                              ],
+                              [
+                                "bound",
+                                0
+                              ]
+                            ]
+                          ],
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "OfNat.ofNat",
+                                  [
+                                    "zero"
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Nat",
+                                  []
+                                ]
+                              ],
+                              [
+                                "nat",
+                                2
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "constant",
+                                "instOfNatNat",
+                                []
+                              ],
+                              [
+                                "nat",
+                                2
+                              ]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ],
+                    [
+                      "apply",
+                      [
+                        "apply",
+                        [
+                          "apply",
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "HAdd.hAdd",
+                                  [
+                                    "zero",
+                                    "zero",
+                                    "zero"
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "constant",
+                                "Real",
+                                []
+                              ]
+                            ],
+                            [
+                              "constant",
+                              "Real",
+                              []
+                            ]
+                          ],
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "constant",
+                                "instHAdd",
+                                [
+                                  "zero"
+                                ]
+                              ],
+                              [
+                                "constant",
+                                "Real",
+                                []
+                              ]
+                            ],
+                            [
+                              "constant",
+                              "Real.instAdd",
+                              []
+                            ]
+                          ]
+                        ],
+                        [
+                          "apply",
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "HMul.hMul",
+                                      [
+                                        "zero",
+                                        "zero",
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "instHMul",
+                                    [
+                                      "zero"
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real.instMul",
+                                  []
+                                ]
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "OfNat.ofNat",
+                                    [
+                                      "zero"
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "nat",
+                                  2
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "instOfNatAtLeastTwo",
+                                        [
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "nat",
+                                      2
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real.instNatCast",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "Nat.instAtLeastTwoHAddOfNat",
+                                      []
+                                    ],
+                                    [
+                                      "apply",
+                                      [
+                                        "apply",
+                                        [
+                                          "apply",
+                                          [
+                                            "constant",
+                                            "OfNat.ofNat",
+                                            [
+                                              "zero"
+                                            ]
+                                          ],
+                                          [
+                                            "constant",
+                                            "Nat",
+                                            []
+                                          ]
+                                        ],
+                                        [
+                                          "nat",
+                                          1
+                                        ]
+                                      ],
+                                      [
+                                        "apply",
+                                        [
+                                          "constant",
+                                          "instOfNatNat",
+                                          []
+                                        ],
+                                        [
+                                          "nat",
+                                          1
+                                        ]
+                                      ]
+                                    ]
+                                  ],
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "Nat.instNeZeroSucc",
+                                      []
+                                    ],
+                                    [
+                                      "apply",
+                                      [
+                                        "apply",
+                                        [
+                                          "apply",
+                                          [
+                                            "constant",
+                                            "OfNat.ofNat",
+                                            [
+                                              "zero"
+                                            ]
+                                          ],
+                                          [
+                                            "constant",
+                                            "Nat",
+                                            []
+                                          ]
+                                        ],
+                                        [
+                                          "nat",
+                                          0
+                                        ]
+                                      ],
+                                      [
+                                        "apply",
+                                        [
+                                          "constant",
+                                          "instOfNatNat",
+                                          []
+                                        ],
+                                        [
+                                          "nat",
+                                          0
+                                        ]
+                                      ]
+                                    ]
+                                  ]
+                                ]
+                              ]
+                            ]
+                          ],
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "HPow.hPow",
+                                        [
+                                          "zero",
+                                          "zero",
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Nat",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "instHPow",
+                                        [
+                                          "zero",
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Nat",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "Monoid.toPow",
+                                        [
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real.instMonoid",
+                                      []
+                                    ]
+                                  ]
+                                ]
+                              ],
+                              [
+                                "bound",
+                                1
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "OfNat.ofNat",
+                                    [
+                                      "zero"
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Nat",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "nat",
+                                  2
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "instOfNatNat",
+                                  []
+                                ],
+                                [
+                                  "nat",
+                                  2
+                                ]
+                              ]
+                            ]
+                          ]
+                        ]
+                      ],
+                      [
+                        "apply",
+                        [
+                          "apply",
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "HMul.hMul",
+                                    [
+                                      "zero",
+                                      "zero",
+                                      "zero"
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "constant",
+                                "Real",
+                                []
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "instHMul",
+                                  [
+                                    "zero"
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "constant",
+                                "Real.instMul",
+                                []
+                              ]
+                            ]
+                          ],
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "OfNat.ofNat",
+                                  [
+                                    "zero"
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "nat",
+                                2
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "instOfNatAtLeastTwo",
+                                      [
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "nat",
+                                    2
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real.instNatCast",
+                                  []
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "Nat.instAtLeastTwoHAddOfNat",
+                                    []
+                                  ],
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "apply",
+                                        [
+                                          "constant",
+                                          "OfNat.ofNat",
+                                          [
+                                            "zero"
+                                          ]
+                                        ],
+                                        [
+                                          "constant",
+                                          "Nat",
+                                          []
+                                        ]
+                                      ],
+                                      [
+                                        "nat",
+                                        1
+                                      ]
+                                    ],
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "instOfNatNat",
+                                        []
+                                      ],
+                                      [
+                                        "nat",
+                                        1
+                                      ]
+                                    ]
+                                  ]
+                                ],
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "Nat.instNeZeroSucc",
+                                    []
+                                  ],
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "apply",
+                                        [
+                                          "constant",
+                                          "OfNat.ofNat",
+                                          [
+                                            "zero"
+                                          ]
+                                        ],
+                                        [
+                                          "constant",
+                                          "Nat",
+                                          []
+                                        ]
+                                      ],
+                                      [
+                                        "nat",
+                                        0
+                                      ]
+                                    ],
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "instOfNatNat",
+                                        []
+                                      ],
+                                      [
+                                        "nat",
+                                        0
+                                      ]
+                                    ]
+                                  ]
+                                ]
+                              ]
+                            ]
+                          ]
+                        ],
+                        [
+                          "apply",
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "HPow.hPow",
+                                      [
+                                        "zero",
+                                        "zero",
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Nat",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "instHPow",
+                                      [
+                                        "zero",
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Nat",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "Monoid.toPow",
+                                      [
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real.instMonoid",
+                                    []
+                                  ]
+                                ]
+                              ]
+                            ],
+                            [
+                              "bound",
+                              0
+                            ]
+                          ],
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "OfNat.ofNat",
+                                  [
+                                    "zero"
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Nat",
+                                  []
+                                ]
+                              ],
+                              [
+                                "nat",
+                                2
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "constant",
+                                "instOfNatNat",
+                                []
+                              ],
+                              [
+                                "nat",
+                                2
+                              ]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+                ]
+              ],
+              "user_name": "Lea.Misc.independent_square",
+              "visibility": "public",
+              "content_sha256": "be36c9a70786aa689f4de9a6a94d9365f5028271fc7938ff317041c027e8dd28",
+              "signature": "Lea.Misc.independent_square : \u2200 (x y : Real),\n  Eq.{1}\n    (HAdd.hAdd.{0, 0, 0} (HPow.hPow.{0, 0, 0} (HAdd.hAdd.{0, 0, 0} x y) 2)\n      (HPow.hPow.{0, 0, 0} (HSub.hSub.{0, 0, 0} x y) 2))\n    (HAdd.hAdd.{0, 0, 0} (HMul.hMul.{0, 0, 0} 2 (HPow.hPow.{0, 0, 0} x 2))\n      (HMul.hMul.{0, 0, 0} 2 (HPow.hPow.{0, 0, 0} y 2)))"
+            }
+          }
+        }
+      ]
+    },
+    "after": {
+      "version": 1,
+      "scenario": "quadratic",
+      "captured_at": "2026-10-18T03:59:55.940464+00:00",
+      "system": "Darwin",
+      "architecture": "arm64",
+      "isolation": "macOS Seatbelt; all writes confined to disposable project, shared packages read-only; network denied",
+      "timing_semantics": "Inclusive phase times; preparation contains dependency resolution/build. Queue and cleanup may overlap other phase times. cProfile cumulative times are nested.",
+      "source_sha256": {
+        "apps/lea-standalone/prover/lea/check_evidence.py": "c77db0a08702f6f2148f7b654aaddffdb33de515eae379fdd472a3e847d672a3",
+        "apps/lea-standalone/prover/lea/lean_checks.py": "37579130a5b22c74c644bb3f0ae4d48de1302cde5f8ccc848ee68ea2d69e37a5",
+        "apps/lea-standalone/prover/lea/check_runtime.py": "144f8247d3ec89227c260a1507ce23b9899fb2a0924803d26f314b08407b0ee6",
+        "apps/lea-standalone/prover/lea/tools.py": "fac9fd81e96f02bf7e8f07c981ee0eca2b4372da6ac800574bfba27fc40ce776",
+        "apps/lea-standalone/prover/lea/result_selection.py": "968d6f576b7ccb973c36ab59d50ab100ca54790faf7fdc8f472231fc9255b724",
+        "apps/lea-standalone/prover/lea/LibraryInspect.lean": "248a1a7e458db0e4c33b41e307611341384881704929aef33b71fad42800758c",
+        "scripts/profile-lean-checks.py": "61c872c24a2de23de60d827c0d710b780b7092ed1cf914e53172430dd5fe896c"
+      },
+      "cases": [
+        {
+          "case": "definition_draft",
+          "status": "error",
+          "wall_ms": 26134.73,
+          "execution": {
+            "check_id": "a658de55f5dc40e8a1b7e323b028cb41",
+            "daemon_generation": "3c8645aa5e0842ec931ae0b41a2e211c",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 0.31,
+              "initialization": 753.08,
+              "lsp": 2311.67,
+              "cold": 0.0,
+              "total": 26132.28,
+              "source": 0.76,
+              "dependency_resolution": 15482.7,
+              "dependency_build": 957.57,
+              "preparation": 21752.18,
+              "evidence_hash": 6.42,
+              "guard_setup": 211.01,
+              "validation": 356.97,
+              "cleanup": 132.14
+            },
+            "content_sha256": "46438c6f4832f9fb0118ecd3a359c9acfd741579f32cc5716fe313f2dcd2f08e",
+            "evidence_version": 1,
+            "environment_sha256": "0124965a6b0aee320a586019a7686d801d6da3cf998e0efdf6f86827a109fb5b"
+          },
+          "detail": "/private/var/folders/7v/bwwzmh557fq01rdzwhsyys2h0000gn/T/lea-check-profile-orw4ibw0/proofs/session-with-hyphen/Lea/Misc/Main.lean:3:5: error: failed to compile definition, consider marking it as 'noncomputable' because it depends on 'Real.instDivInvMonoid', which is 'noncomputable'",
+          "environment_files": 5916,
+          "evidence_json_bytes": 2537097,
+          "profile": [
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "line": 0,
+              "calls": 176,
+              "self_seconds": 0.0003,
+              "cumulative_seconds": 22.0964
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "line": 60,
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 22.0954
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "line": 136,
+              "calls": 83,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 21.9639
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "line": 551,
+              "calls": 2,
+              "self_seconds": 0.0028,
+              "cumulative_seconds": 21.7522
+            },
+            {
+              "function": "manifest",
+              "file": "check_evidence.py",
+              "line": 315,
+              "calls": 3,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 20.7682
+            },
+            {
+              "function": "add",
+              "file": "check_evidence.py",
+              "line": 351,
+              "calls": 7068,
+              "self_seconds": 0.086,
+              "cumulative_seconds": 19.056
+            },
+            {
+              "function": "_command",
+              "file": "check_evidence.py",
+              "line": 229,
+              "calls": 21,
+              "self_seconds": 0.0026,
+              "cumulative_seconds": 16.4396
+            },
+            {
+              "function": "communicate",
+              "file": "subprocess.py",
+              "line": 1177,
+              "calls": 173,
+              "self_seconds": 0.0006,
+              "cumulative_seconds": 16.3149
+            },
+            {
+              "function": "_communicate",
+              "file": "subprocess.py",
+              "line": 2093,
+              "calls": 173,
+              "self_seconds": 0.0044,
+              "cumulative_seconds": 16.3143
+            },
+            {
+              "function": "select",
+              "file": "selectors.py",
+              "line": 385,
+              "calls": 214,
+              "self_seconds": 0.0013,
+              "cumulative_seconds": 16.301
+            },
+            {
+              "function": "<method 'poll' of 'select.poll' objects>",
+              "file": "~",
+              "line": 0,
+              "calls": 214,
+              "self_seconds": 16.2995,
+              "cumulative_seconds": 16.2995
+            },
+            {
+              "function": "_resolve",
+              "file": "check_evidence.py",
+              "line": 278,
+              "calls": 30,
+              "self_seconds": 0.0011,
+              "cumulative_seconds": 15.4859
+            },
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "line": 23,
+              "calls": 2,
+              "self_seconds": 0.0012,
+              "cumulative_seconds": 4.1545
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "line": 712,
+              "calls": 2,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 3.6648
+            },
+            {
+              "function": "_imports_for_source",
+              "file": "check_evidence.py",
+              "line": 52,
+              "calls": 2247,
+              "self_seconds": 0.0051,
+              "cumulative_seconds": 3.2912
+            },
+            {
+              "function": "direct_imports",
+              "file": "imports.py",
+              "line": 67,
+              "calls": 754,
+              "self_seconds": 0.1097,
+              "cumulative_seconds": 3.2475
+            },
+            {
+              "function": "without_comments",
+              "file": "imports.py",
+              "line": 13,
+              "calls": 784,
+              "self_seconds": 2.0298,
+              "cumulative_seconds": 3.1314
+            },
+            {
+              "function": "_request",
+              "file": "lsp_daemon.py",
+              "line": 458,
+              "calls": 2,
+              "self_seconds": 0.0002,
+              "cumulative_seconds": 3.057
+            },
+            {
+              "function": "get",
+              "file": "queue.py",
+              "line": 177,
+              "calls": 56,
+              "self_seconds": 0.0003,
+              "cumulative_seconds": 3.0538
+            },
+            {
+              "function": "wait",
+              "file": "threading.py",
+              "line": 337,
+              "calls": 34,
+              "self_seconds": 0.0008,
+              "cumulative_seconds": 3.0533
+            }
+          ]
+        },
+        {
+          "case": "missing_real_import",
+          "status": "error",
+          "wall_ms": 10452.94,
+          "execution": {
+            "check_id": "29470caf141348168755daeb2b87a9d8",
+            "daemon_generation": "3c8645aa5e0842ec931ae0b41a2e211c",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 0.13,
+              "initialization": 0.0,
+              "lsp": 2573.1,
+              "cold": 0.0,
+              "total": 10451.19,
+              "source": 0.55,
+              "dependency_resolution": 3133.34,
+              "dependency_build": 1043.43,
+              "preparation": 6752.06,
+              "evidence_hash": 4.45,
+              "guard_setup": 202.39,
+              "validation": 309.78,
+              "cleanup": 128.31
+            },
+            "content_sha256": "8d6295768910ed51c6f03217f0ce7c2427c95b6e8c78529b459333fd5a02e389",
+            "evidence_version": 1,
+            "environment_sha256": "126b932617eeb7bb4405ade0d9f64e5b85be11202a53170e3295ebe1b7443c94"
+          },
+          "detail": "/private/var/folders/7v/bwwzmh557fq01rdzwhsyys2h0000gn/T/lea-check-profile-orw4ibw0/proofs/session-with-hyphen/Lea/Misc/Main.lean:3:35: error: Unknown identifier `\u211d`\n\nNote: It is not possible to treat `\u211d` as an implicitly bound variable here because the `autoImplicit` option is set to `false`.\n/private/var/folders/7v/bwwzmh557fq01rdzwhsyys2h0000gn/T/lea-check-profile-orw4ibw0/proofs/session-with-hyphen/Lea/Misc/Main.lean:3:35: error: Unknown identifier `\u211d`\n\nNote: It is not possible to treat `\u211d` as an implicitly bound variable here because the `autoImplicit` option is set to `false`.\n/private/var/folders/7v/bwwzmh557fq01rdzwhsyys2h0000gn/T/lea-check-profile-orw4ibw0/proofs/session-with-hyphen/Lea/Misc/Main.lean:4:46: error: unsolved goals\nx : sorry\ny : sorry\n\u22a2 sorry",
+          "environment_files": 5356,
+          "evidence_json_bytes": 2284440,
+          "profile": [
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "line": 23,
+              "calls": 1,
+              "self_seconds": 0.0009,
+              "cumulative_seconds": 10.4512
+            },
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "line": 0,
+              "calls": 132,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 7.0834
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "line": 60,
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 7.0828
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "line": 136,
+              "calls": 61,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 6.9548
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "line": 551,
+              "calls": 2,
+              "self_seconds": 0.0013,
+              "cumulative_seconds": 6.7521
+            },
+            {
+              "function": "manifest",
+              "file": "check_evidence.py",
+              "line": 315,
+              "calls": 3,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 4.3478
+            },
+            {
+              "function": "_command",
+              "file": "check_evidence.py",
+              "line": 229,
+              "calls": 5,
+              "self_seconds": 0.0007,
+              "cumulative_seconds": 4.1766
+            },
+            {
+              "function": "communicate",
+              "file": "subprocess.py",
+              "line": 1177,
+              "calls": 43,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 4.1464
+            },
+            {
+              "function": "_communicate",
+              "file": "subprocess.py",
+              "line": 2093,
+              "calls": 43,
+              "self_seconds": 0.001,
+              "cumulative_seconds": 4.1462
+            },
+            {
+              "function": "select",
+              "file": "selectors.py",
+              "line": 385,
+              "calls": 52,
+              "self_seconds": 0.0875,
+              "cumulative_seconds": 4.1429
+            },
+            {
+              "function": "<method 'poll' of 'select.poll' objects>",
+              "file": "~",
+              "line": 0,
+              "calls": 52,
+              "self_seconds": 3.8582,
+              "cumulative_seconds": 3.8582
+            },
+            {
+              "function": "_resolve",
+              "file": "check_evidence.py",
+              "line": 278,
+              "calls": 30,
+              "self_seconds": 0.0002,
+              "cumulative_seconds": 3.1356
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "line": 712,
+              "calls": 1,
+              "self_seconds": 0.0014,
+              "cumulative_seconds": 3.0532
+            },
+            {
+              "function": "add",
+              "file": "check_evidence.py",
+              "line": 351,
+              "calls": 6222,
+              "self_seconds": 0.0704,
+              "cumulative_seconds": 2.7926
+            },
+            {
+              "function": "check",
+              "file": "lsp_daemon.py",
+              "line": 343,
+              "calls": 1,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 2.5734
+            },
+            {
+              "function": "_request",
+              "file": "lsp_daemon.py",
+              "line": 458,
+              "calls": 1,
+              "self_seconds": 0.0002,
+              "cumulative_seconds": 2.5728
+            },
+            {
+              "function": "get",
+              "file": "queue.py",
+              "line": 177,
+              "calls": 51,
+              "self_seconds": 0.0003,
+              "cumulative_seconds": 2.5704
+            },
+            {
+              "function": "wait",
+              "file": "threading.py",
+              "line": 337,
+              "calls": 25,
+              "self_seconds": 0.0008,
+              "cumulative_seconds": 2.57
+            },
+            {
+              "function": "<method 'acquire' of '_thread.lock' objects>",
+              "file": "~",
+              "line": 0,
+              "calls": 175,
+              "self_seconds": 2.0265,
+              "cumulative_seconds": 2.0265
+            },
+            {
+              "function": "reconcile_daemon",
+              "file": "check_evidence.py",
+              "line": 535,
+              "calls": 2,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 1.3404
+            }
+          ]
+        },
+        {
+          "case": "corrected_quadratic",
+          "status": "ok",
+          "wall_ms": 9086.0,
+          "execution": {
+            "check_id": "ccc64295e90d467181a0022c7a527ad8",
+            "daemon_generation": "3c8645aa5e0842ec931ae0b41a2e211c",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 0.14,
+              "initialization": 0.0,
+              "lsp": 2643.19,
+              "cold": 0.0,
+              "total": 9076.24,
+              "source": 0.5,
+              "dependency_resolution": 1616.6,
+              "dependency_build": 947.68,
+              "preparation": 5124.11,
+              "evidence_hash": 5.65,
+              "guard_setup": 249.22,
+              "validation": 364.3,
+              "cleanup": 131.74
+            },
+            "content_sha256": "797443600e4aaf6495cb656374b141d9e254d723b0d05848793434f7db516597",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b"
+          },
+          "detail": "OK \u2014 no errors, no warnings.",
+          "environment_files": 5979,
+          "evidence_json_bytes": 2564680,
+          "profile": [
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "line": 23,
+              "calls": 1,
+              "self_seconds": 0.0011,
+              "cumulative_seconds": 9.0763
+            },
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "line": 0,
+              "calls": 123,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 5.5058
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "line": 60,
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 5.5051
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "line": 136,
+              "calls": 55,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 5.3737
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "line": 551,
+              "calls": 2,
+              "self_seconds": 0.0024,
+              "cumulative_seconds": 5.1241
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "line": 712,
+              "calls": 1,
+              "self_seconds": 0.0012,
+              "cumulative_seconds": 3.2003
+            },
+            {
+              "function": "manifest",
+              "file": "check_evidence.py",
+              "line": 315,
+              "calls": 3,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 2.8028
+            },
+            {
+              "function": "check",
+              "file": "lsp_daemon.py",
+              "line": 343,
+              "calls": 1,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 2.6436
+            },
+            {
+              "function": "_request",
+              "file": "lsp_daemon.py",
+              "line": 458,
+              "calls": 1,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 2.6429
+            },
+            {
+              "function": "get",
+              "file": "queue.py",
+              "line": 177,
+              "calls": 56,
+              "self_seconds": 0.0003,
+              "cumulative_seconds": 2.6403
+            },
+            {
+              "function": "wait",
+              "file": "threading.py",
+              "line": 337,
+              "calls": 26,
+              "self_seconds": 0.0008,
+              "cumulative_seconds": 2.6399
+            },
+            {
+              "function": "_command",
+              "file": "check_evidence.py",
+              "line": 229,
+              "calls": 3,
+              "self_seconds": 0.0005,
+              "cumulative_seconds": 2.5642
+            },
+            {
+              "function": "communicate",
+              "file": "subprocess.py",
+              "line": 1177,
+              "calls": 27,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 2.5449
+            },
+            {
+              "function": "_communicate",
+              "file": "subprocess.py",
+              "line": 2093,
+              "calls": 27,
+              "self_seconds": 0.0007,
+              "cumulative_seconds": 2.5448
+            },
+            {
+              "function": "select",
+              "file": "selectors.py",
+              "line": 385,
+              "calls": 32,
+              "self_seconds": 0.0299,
+              "cumulative_seconds": 2.5425
+            },
+            {
+              "function": "<method 'poll' of 'select.poll' objects>",
+              "file": "~",
+              "line": 0,
+              "calls": 32,
+              "self_seconds": 2.4151,
+              "cumulative_seconds": 2.4151
+            },
+            {
+              "function": "<method 'acquire' of '_thread.lock' objects>",
+              "file": "~",
+              "line": 0,
+              "calls": 184,
+              "self_seconds": 1.975,
+              "cumulative_seconds": 1.975
+            },
+            {
+              "function": "_resolve",
+              "file": "check_evidence.py",
+              "line": 278,
+              "calls": 30,
+              "self_seconds": 0.0002,
+              "cumulative_seconds": 1.6187
+            },
+            {
+              "function": "reconcile_daemon",
+              "file": "check_evidence.py",
+              "line": 535,
+              "calls": 2,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 1.3498
+            },
+            {
+              "function": "observed_changed",
+              "file": "check_evidence.py",
+              "line": 475,
+              "calls": 2,
+              "self_seconds": 0.0022,
+              "cumulative_seconds": 1.3498
+            }
+          ]
+        },
+        {
+          "case": "same_imports_edit",
+          "status": "ok",
+          "wall_ms": 4832.27,
+          "execution": {
+            "check_id": "d1215951b2434585af0075b966603ac6",
+            "daemon_generation": "3c8645aa5e0842ec931ae0b41a2e211c",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 0.13,
+              "initialization": 0.0,
+              "lsp": 2672.15,
+              "cold": 0.0,
+              "total": 4828.94,
+              "source": 0.6,
+              "preparation": 1023.05,
+              "evidence_hash": 5.84,
+              "guard_setup": 209.69,
+              "validation": 335.97,
+              "cleanup": 132.46
+            },
+            "content_sha256": "be36c9a70786aa689f4de9a6a94d9365f5028271fc7938ff317041c027e8dd28",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b"
+          },
+          "detail": "OK \u2014 no errors, no warnings.",
+          "environment_files": 5979,
+          "evidence_json_bytes": 2564620,
+          "profile": [
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "line": 23,
+              "calls": 1,
+              "self_seconds": 0.001,
+              "cumulative_seconds": 4.829
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "line": 712,
+              "calls": 1,
+              "self_seconds": 0.0009,
+              "cumulative_seconds": 3.1209
+            },
+            {
+              "function": "check",
+              "file": "lsp_daemon.py",
+              "line": 343,
+              "calls": 1,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 2.6725
+            },
+            {
+              "function": "_request",
+              "file": "lsp_daemon.py",
+              "line": 458,
+              "calls": 1,
+              "self_seconds": 0.0002,
+              "cumulative_seconds": 2.6718
+            },
+            {
+              "function": "get",
+              "file": "queue.py",
+              "line": 177,
+              "calls": 56,
+              "self_seconds": 0.0003,
+              "cumulative_seconds": 2.669
+            },
+            {
+              "function": "wait",
+              "file": "threading.py",
+              "line": 337,
+              "calls": 26,
+              "self_seconds": 0.0007,
+              "cumulative_seconds": 2.6686
+            },
+            {
+              "function": "<method 'acquire' of '_thread.lock' objects>",
+              "file": "~",
+              "line": 0,
+              "calls": 178,
+              "self_seconds": 2.1331,
+              "cumulative_seconds": 2.133
+            },
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "line": 0,
+              "calls": 89,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 1.3659
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "line": 60,
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 1.3652
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "line": 136,
+              "calls": 41,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 1.2331
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "line": 551,
+              "calls": 2,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 1.0231
+            },
+            {
+              "function": "_runtime_files",
+              "file": "check_evidence.py",
+              "line": 420,
+              "calls": 2,
+              "self_seconds": 0.0223,
+              "cumulative_seconds": 0.8253
+            },
+            {
+              "function": "resolve",
+              "file": "__init__.py",
+              "line": 932,
+              "calls": 12031,
+              "self_seconds": 0.0063,
+              "cumulative_seconds": 0.7334
+            },
+            {
+              "function": "realpath",
+              "file": "<frozen posixpath>",
+              "line": 388,
+              "calls": 12031,
+              "self_seconds": 0.1359,
+              "cumulative_seconds": 0.7031
+            },
+            {
+              "function": "observed_changed",
+              "file": "check_evidence.py",
+              "line": 475,
+              "calls": 1,
+              "self_seconds": 0.0012,
+              "cumulative_seconds": 0.5969
+            },
+            {
+              "function": "_observed_changed",
+              "file": "check_evidence.py",
+              "line": 486,
+              "calls": 1,
+              "self_seconds": 0.0079,
+              "cumulative_seconds": 0.5957
+            },
+            {
+              "function": "<built-in method posix.stat>",
+              "file": "~",
+              "line": 0,
+              "calls": 51493,
+              "self_seconds": 0.2777,
+              "cumulative_seconds": 0.5361
+            },
+            {
+              "function": "<method 'readline' of '_io._IOBase' objects>",
+              "file": "~",
+              "line": 0,
+              "calls": 81,
+              "self_seconds": 0.5334,
+              "cumulative_seconds": 0.5334
+            },
+            {
+              "function": "unchanged",
+              "file": "check_evidence.py",
+              "line": 148,
+              "calls": 5,
+              "self_seconds": 0.0052,
+              "cumulative_seconds": 0.5314
+            },
+            {
+              "function": "stat",
+              "file": "__init__.py",
+              "line": 649,
+              "calls": 49083,
+              "self_seconds": 0.0091,
+              "cumulative_seconds": 0.5157
+            }
+          ]
+        },
+        {
+          "case": "unchanged_warm",
+          "status": "ok",
+          "wall_ms": 2268.48,
+          "execution": {
+            "check_id": "2073c7175a28405cac257671a7344547",
+            "daemon_generation": "3c8645aa5e0842ec931ae0b41a2e211c",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 0.13,
+              "initialization": 0.0,
+              "lsp": 206.73,
+              "cold": 0.0,
+              "total": 2266.6,
+              "source": 0.76,
+              "preparation": 990.3,
+              "evidence_hash": 6.19,
+              "guard_setup": 206.4,
+              "validation": 279.75,
+              "cleanup": 109.68
+            },
+            "content_sha256": "be36c9a70786aa689f4de9a6a94d9365f5028271fc7938ff317041c027e8dd28",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b"
+          },
+          "detail": "OK \u2014 no errors, no warnings.",
+          "environment_files": 5979,
+          "evidence_json_bytes": 2564616,
+          "profile": [
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "line": 23,
+              "calls": 1,
+              "self_seconds": 0.0009,
+              "cumulative_seconds": 2.2666
+            },
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "line": 0,
+              "calls": 65,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 1.307
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "line": 60,
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 1.3064
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "line": 136,
+              "calls": 29,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 1.197
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "line": 551,
+              "calls": 2,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 0.9903
+            },
+            {
+              "function": "_runtime_files",
+              "file": "check_evidence.py",
+              "line": 420,
+              "calls": 2,
+              "self_seconds": 0.0225,
+              "cumulative_seconds": 0.843
+            },
+            {
+              "function": "resolve",
+              "file": "__init__.py",
+              "line": 932,
+              "calls": 12007,
+              "self_seconds": 0.0061,
+              "cumulative_seconds": 0.7498
+            },
+            {
+              "function": "realpath",
+              "file": "<frozen posixpath>",
+              "line": 388,
+              "calls": 12007,
+              "self_seconds": 0.1355,
+              "cumulative_seconds": 0.7199
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "line": 712,
+              "calls": 1,
+              "self_seconds": 0.0009,
+              "cumulative_seconds": 0.6732
+            },
+            {
+              "function": "observed_changed",
+              "file": "check_evidence.py",
+              "line": 475,
+              "calls": 1,
+              "self_seconds": 0.0012,
+              "cumulative_seconds": 0.5949
+            },
+            {
+              "function": "_observed_changed",
+              "file": "check_evidence.py",
+              "line": 486,
+              "calls": 1,
+              "self_seconds": 0.0079,
+              "cumulative_seconds": 0.5937
+            },
+            {
+              "function": "<built-in method posix.lstat>",
+              "file": "~",
+              "line": 0,
+              "calls": 216608,
+              "self_seconds": 0.4765,
+              "cumulative_seconds": 0.4765
+            },
+            {
+              "function": "unchanged",
+              "file": "check_evidence.py",
+              "line": 148,
+              "calls": 5,
+              "self_seconds": 0.0054,
+              "cumulative_seconds": 0.4683
+            },
+            {
+              "function": "observe",
+              "file": "check_evidence.py",
+              "line": 443,
+              "calls": 1,
+              "self_seconds": 0.0019,
+              "cumulative_seconds": 0.465
+            },
+            {
+              "function": "<built-in method posix.stat>",
+              "file": "~",
+              "line": 0,
+              "calls": 51493,
+              "self_seconds": 0.2123,
+              "cumulative_seconds": 0.4631
+            },
+            {
+              "function": "stat",
+              "file": "__init__.py",
+              "line": 649,
+              "calls": 49083,
+              "self_seconds": 0.0087,
+              "cumulative_seconds": 0.4414
+            },
+            {
+              "function": "__str__",
+              "file": "__init__.py",
+              "line": 251,
+              "calls": 136939,
+              "self_seconds": 0.0972,
+              "cumulative_seconds": 0.3959
+            },
+            {
+              "function": "manifest",
+              "file": "check_evidence.py",
+              "line": 315,
+              "calls": 1,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 0.3895
+            },
+            {
+              "function": "add",
+              "file": "check_evidence.py",
+              "line": 351,
+              "calls": 2383,
+              "self_seconds": 0.0256,
+              "cumulative_seconds": 0.3889
+            },
+            {
+              "function": "<genexpr>",
+              "file": "check_evidence.py",
+              "line": 149,
+              "calls": 29924,
+              "self_seconds": 0.017,
+              "cumulative_seconds": 0.3367
+            }
+          ]
+        },
+        {
+          "case": "compiler_selected_result",
+          "status": "ok",
+          "execution": {
+            "check_id": "982fbd72141045248222e9272f97d4d1",
+            "daemon_generation": "3c8645aa5e0842ec931ae0b41a2e211c",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 0.07,
+              "initialization": 0.0,
+              "lsp": 204.36,
+              "cold": 0.0,
+              "total": 7497.06,
+              "source": 0.31,
+              "preparation": 585.46,
+              "evidence_hash": 4.92,
+              "guard_setup": 123.61,
+              "validation": 180.72,
+              "cleanup": 62.27,
+              "result_inspection": 6006.99
+            },
+            "content_sha256": "be36c9a70786aa689f4de9a6a94d9365f5028271fc7938ff317041c027e8dd28",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b",
+            "selected_result": {
+              "axioms": [
+                "propext",
+                "Quot.sound",
+                "Classical.choice"
+              ],
+              "body_expr": null,
+              "dependencies": [
+                "Real",
+                "Eq",
+                "HAdd.hAdd",
+                "instHAdd",
+                "Real.instAdd",
+                "HPow.hPow",
+                "Nat",
+                "instHPow",
+                "Monoid.toPow",
+                "Real.instMonoid",
+                "OfNat.ofNat",
+                "instOfNatNat",
+                "HSub.hSub",
+                "instHSub",
+                "Real.instSub",
+                "HMul.hMul",
+                "instHMul",
+                "Real.instMul",
+                "instOfNatAtLeastTwo",
+                "Real.instNatCast",
+                "Nat.instAtLeastTwoHAddOfNat",
+                "Nat.instNeZeroSucc",
+                "Real",
+                "Mathlib.Tactic.Ring.of_eq",
+                "HAdd.hAdd",
+                "instHAdd",
+                "Real.instAdd",
+                "HPow.hPow",
+                "Nat",
+                "instHPow",
+                "Monoid.toPow",
+                "Real.instMonoid",
+                "OfNat.ofNat",
+                "instOfNatNat",
+                "HSub.hSub",
+                "instHSub",
+                "Real.instSub",
+                "HMul.hMul",
+                "instHMul",
+                "Real.instMul",
+                "instOfNatAtLeastTwo",
+                "Real.instNatCast",
+                "Nat.instAtLeastTwoHAddOfNat",
+                "Nat.instNeZeroSucc",
+                "Distrib.toAdd",
+                "NonUnitalNonAssocSemiring.toDistrib",
+                "NonAssocSemiring.toNonUnitalNonAssocSemiring",
+                "Semiring.toNonAssocSemiring",
+                "CommSemiring.toSemiring",
+                "Real.instCommSemiring",
+                "Distrib.toMul",
+                "MonoidWithZero.toMonoid",
+                "Semiring.toMonoidWithZero",
+                "Nat.rawCast",
+                "AddCommMonoidWithOne.toAddMonoidWithOne",
+                "NonAssocSemiring.toAddCommMonoidWithOne",
+                "Nat.instCommSemiring",
+                "Zero.toOfNat0",
+                "MulZeroClass.toZero",
+                "NonUnitalNonAssocSemiring.toMulZeroClass",
+                "Mathlib.Tactic.Ring.add_congr",
+                "Int.rawCast",
+                "CommRing.toRing",
+                "Real.commRing",
+                "Int.negOfNat",
+                "Mathlib.Tactic.Ring.pow_congr",
+                "Mathlib.Tactic.Ring.atom_pf",
+                "Mathlib.Tactic.Ring.add_pf_add_lt",
+                "Mathlib.Tactic.Ring.add_pf_zero_add",
+                "Mathlib.Tactic.Ring.cast_pos",
+                "Mathlib.Meta.NormNum.isNat_ofNat",
+                "Nat.instAddMonoidWithOne",
+                "Eq.refl",
+                "Mathlib.Tactic.Ring.pow_add",
+                "Mathlib.Tactic.Ring.pow_nat",
+                "Mathlib.Tactic.Ring.coeff_one",
+                "Mathlib.Tactic.Ring.pow_one_cast",
+                "Mathlib.Tactic.Ring.pow_bit0",
+                "Mathlib.Tactic.Ring.pow_one",
+                "Mathlib.Tactic.Ring.add_mul",
+                "Mathlib.Tactic.Ring.mul_add",
+                "Mathlib.Tactic.Ring.mul_pp_pf_overlap",
+                "Mathlib.Meta.NormNum.IsNat.to_raw_eq",
+                "Mathlib.Meta.NormNum.isNat_add",
+                "Mathlib.Meta.NormNum.IsNat.of_raw",
+                "Mathlib.Tactic.Ring.one_mul",
+                "Mathlib.Tactic.Ring.mul_pf_left",
+                "Mathlib.Tactic.Ring.mul_pf_right",
+                "Mathlib.Tactic.Ring.mul_zero",
+                "Mathlib.Tactic.Ring.add_pf_add_zero",
+                "Mathlib.Tactic.Ring.add_pf_add_gt",
+                "Mathlib.Tactic.Ring.zero_mul",
+                "Mathlib.Tactic.Ring.add_pf_add_overlap",
+                "Mathlib.Tactic.Ring.add_overlap_pf",
+                "Mathlib.Tactic.Ring.pow_zero",
+                "Mathlib.Tactic.Ring.mul_one",
+                "Mathlib.Tactic.Ring.sub_congr",
+                "Mathlib.Tactic.Ring.sub_pf",
+                "Mathlib.Tactic.Ring.neg_add",
+                "Mathlib.Tactic.Ring.neg_mul",
+                "Mathlib.Tactic.Ring.neg_one_mul",
+                "Mathlib.Meta.NormNum.IsInt.to_raw_eq",
+                "Mathlib.Meta.NormNum.isInt_mul",
+                "NonUnitalNonAssocRing.toNonUnitalNonAssocSemiring",
+                "NonAssocRing.toNonUnitalNonAssocRing",
+                "Ring.toNonAssocRing",
+                "Int.ofNat",
+                "Mathlib.Meta.NormNum.IsInt.of_raw",
+                "Mathlib.Meta.NormNum.IsNat.to_isInt",
+                "Int",
+                "Mathlib.Tactic.Ring.neg_zero",
+                "Mathlib.Meta.NormNum.instAddMonoidWithOne",
+                "Mathlib.Meta.NormNum.IsInt.to_isNat",
+                "Mathlib.Meta.NormNum.isInt_add",
+                "Mathlib.Tactic.Ring.add_pf_add_overlap_zero",
+                "Mathlib.Tactic.Ring.add_overlap_pf_zero",
+                "Mathlib.Tactic.Ring.mul_congr",
+                "AddGroupWithOne.toAddMonoidWithOne",
+                "Ring.toAddGroupWithOne",
+                "Real.instRing",
+                "AddMonoidWithOne.toNatCast",
+                "Mathlib.Meta.NormNum.instAtLeastTwo",
+                "Mathlib.Tactic.Ring.single_pow",
+                "Mathlib.Tactic.Ring.mul_pow",
+                "Mathlib.Tactic.Ring.one_pow"
+              ],
+              "full_name": "Lea.Misc.independent_square",
+              "kind": "theorem",
+              "level_params": [],
+              "range": {
+                "end_column": 52,
+                "end_line": 6,
+                "start_column": 0,
+                "start_line": 5
+              },
+              "type": "\u2200 (x y : Real),\n  Eq.{1}\n    (HAdd.hAdd.{0, 0, 0} (HPow.hPow.{0, 0, 0} (HAdd.hAdd.{0, 0, 0} x y) 2)\n      (HPow.hPow.{0, 0, 0} (HSub.hSub.{0, 0, 0} x y) 2))\n    (HAdd.hAdd.{0, 0, 0} (HMul.hMul.{0, 0, 0} 2 (HPow.hPow.{0, 0, 0} x 2))\n      (HMul.hMul.{0, 0, 0} 2 (HPow.hPow.{0, 0, 0} y 2)))",
+              "type_expr": [
+                "forall",
+                "Lean.BinderInfo.default",
+                [
+                  "constant",
+                  "Real",
+                  []
+                ],
+                [
+                  "forall",
+                  "Lean.BinderInfo.default",
+                  [
+                    "constant",
+                    "Real",
+                    []
+                  ],
+                  [
+                    "apply",
+                    [
+                      "apply",
+                      [
+                        "apply",
+                        [
+                          "constant",
+                          "Eq",
+                          [
+                            [
+                              "succ",
+                              "zero"
+                            ]
+                          ]
+                        ],
+                        [
+                          "constant",
+                          "Real",
+                          []
+                        ]
+                      ],
+                      [
+                        "apply",
+                        [
+                          "apply",
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "HAdd.hAdd",
+                                    [
+                                      "zero",
+                                      "zero",
+                                      "zero"
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "constant",
+                                "Real",
+                                []
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "instHAdd",
+                                  [
+                                    "zero"
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "constant",
+                                "Real.instAdd",
+                                []
+                              ]
+                            ]
+                          ],
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "HPow.hPow",
+                                        [
+                                          "zero",
+                                          "zero",
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Nat",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "instHPow",
+                                        [
+                                          "zero",
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Nat",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "Monoid.toPow",
+                                        [
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real.instMonoid",
+                                      []
+                                    ]
+                                  ]
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "apply",
+                                        [
+                                          "apply",
+                                          [
+                                            "constant",
+                                            "HAdd.hAdd",
+                                            [
+                                              "zero",
+                                              "zero",
+                                              "zero"
+                                            ]
+                                          ],
+                                          [
+                                            "constant",
+                                            "Real",
+                                            []
+                                          ]
+                                        ],
+                                        [
+                                          "constant",
+                                          "Real",
+                                          []
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "apply",
+                                      [
+                                        "apply",
+                                        [
+                                          "constant",
+                                          "instHAdd",
+                                          [
+                                            "zero"
+                                          ]
+                                        ],
+                                        [
+                                          "constant",
+                                          "Real",
+                                          []
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real.instAdd",
+                                        []
+                                      ]
+                                    ]
+                                  ],
+                                  [
+                                    "bound",
+                                    1
+                                  ]
+                                ],
+                                [
+                                  "bound",
+                                  0
+                                ]
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "OfNat.ofNat",
+                                    [
+                                      "zero"
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Nat",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "nat",
+                                  2
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "instOfNatNat",
+                                  []
+                                ],
+                                [
+                                  "nat",
+                                  2
+                                ]
+                              ]
+                            ]
+                          ]
+                        ],
+                        [
+                          "apply",
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "HPow.hPow",
+                                      [
+                                        "zero",
+                                        "zero",
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Nat",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "instHPow",
+                                      [
+                                        "zero",
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Nat",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "Monoid.toPow",
+                                      [
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real.instMonoid",
+                                    []
+                                  ]
+                                ]
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "apply",
+                                        [
+                                          "constant",
+                                          "HSub.hSub",
+                                          [
+                                            "zero",
+                                            "zero",
+                                            "zero"
+                                          ]
+                                        ],
+                                        [
+                                          "constant",
+                                          "Real",
+                                          []
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "instHSub",
+                                        [
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real.instSub",
+                                      []
+                                    ]
+                                  ]
+                                ],
+                                [
+                                  "bound",
+                                  1
+                                ]
+                              ],
+                              [
+                                "bound",
+                                0
+                              ]
+                            ]
+                          ],
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "OfNat.ofNat",
+                                  [
+                                    "zero"
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Nat",
+                                  []
+                                ]
+                              ],
+                              [
+                                "nat",
+                                2
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "constant",
+                                "instOfNatNat",
+                                []
+                              ],
+                              [
+                                "nat",
+                                2
+                              ]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ],
+                    [
+                      "apply",
+                      [
+                        "apply",
+                        [
+                          "apply",
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "HAdd.hAdd",
+                                  [
+                                    "zero",
+                                    "zero",
+                                    "zero"
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "constant",
+                                "Real",
+                                []
+                              ]
+                            ],
+                            [
+                              "constant",
+                              "Real",
+                              []
+                            ]
+                          ],
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "constant",
+                                "instHAdd",
+                                [
+                                  "zero"
+                                ]
+                              ],
+                              [
+                                "constant",
+                                "Real",
+                                []
+                              ]
+                            ],
+                            [
+                              "constant",
+                              "Real.instAdd",
+                              []
+                            ]
+                          ]
+                        ],
+                        [
+                          "apply",
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "HMul.hMul",
+                                      [
+                                        "zero",
+                                        "zero",
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "instHMul",
+                                    [
+                                      "zero"
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real.instMul",
+                                  []
+                                ]
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "OfNat.ofNat",
+                                    [
+                                      "zero"
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "nat",
+                                  2
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "instOfNatAtLeastTwo",
+                                        [
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "nat",
+                                      2
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real.instNatCast",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "Nat.instAtLeastTwoHAddOfNat",
+                                      []
+                                    ],
+                                    [
+                                      "apply",
+                                      [
+                                        "apply",
+                                        [
+                                          "apply",
+                                          [
+                                            "constant",
+                                            "OfNat.ofNat",
+                                            [
+                                              "zero"
+                                            ]
+                                          ],
+                                          [
+                                            "constant",
+                                            "Nat",
+                                            []
+                                          ]
+                                        ],
+                                        [
+                                          "nat",
+                                          1
+                                        ]
+                                      ],
+                                      [
+                                        "apply",
+                                        [
+                                          "constant",
+                                          "instOfNatNat",
+                                          []
+                                        ],
+                                        [
+                                          "nat",
+                                          1
+                                        ]
+                                      ]
+                                    ]
+                                  ],
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "Nat.instNeZeroSucc",
+                                      []
+                                    ],
+                                    [
+                                      "apply",
+                                      [
+                                        "apply",
+                                        [
+                                          "apply",
+                                          [
+                                            "constant",
+                                            "OfNat.ofNat",
+                                            [
+                                              "zero"
+                                            ]
+                                          ],
+                                          [
+                                            "constant",
+                                            "Nat",
+                                            []
+                                          ]
+                                        ],
+                                        [
+                                          "nat",
+                                          0
+                                        ]
+                                      ],
+                                      [
+                                        "apply",
+                                        [
+                                          "constant",
+                                          "instOfNatNat",
+                                          []
+                                        ],
+                                        [
+                                          "nat",
+                                          0
+                                        ]
+                                      ]
+                                    ]
+                                  ]
+                                ]
+                              ]
+                            ]
+                          ],
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "HPow.hPow",
+                                        [
+                                          "zero",
+                                          "zero",
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Nat",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "instHPow",
+                                        [
+                                          "zero",
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Nat",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "Monoid.toPow",
+                                        [
+                                          "zero"
+                                        ]
+                                      ],
+                                      [
+                                        "constant",
+                                        "Real",
+                                        []
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real.instMonoid",
+                                      []
+                                    ]
+                                  ]
+                                ]
+                              ],
+                              [
+                                "bound",
+                                1
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "OfNat.ofNat",
+                                    [
+                                      "zero"
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Nat",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "nat",
+                                  2
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "instOfNatNat",
+                                  []
+                                ],
+                                [
+                                  "nat",
+                                  2
+                                ]
+                              ]
+                            ]
+                          ]
+                        ]
+                      ],
+                      [
+                        "apply",
+                        [
+                          "apply",
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "HMul.hMul",
+                                    [
+                                      "zero",
+                                      "zero",
+                                      "zero"
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "constant",
+                                "Real",
+                                []
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "instHMul",
+                                  [
+                                    "zero"
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "constant",
+                                "Real.instMul",
+                                []
+                              ]
+                            ]
+                          ],
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "OfNat.ofNat",
+                                  [
+                                    "zero"
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "nat",
+                                2
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "instOfNatAtLeastTwo",
+                                      [
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "nat",
+                                    2
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real.instNatCast",
+                                  []
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "Nat.instAtLeastTwoHAddOfNat",
+                                    []
+                                  ],
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "apply",
+                                        [
+                                          "constant",
+                                          "OfNat.ofNat",
+                                          [
+                                            "zero"
+                                          ]
+                                        ],
+                                        [
+                                          "constant",
+                                          "Nat",
+                                          []
+                                        ]
+                                      ],
+                                      [
+                                        "nat",
+                                        1
+                                      ]
+                                    ],
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "instOfNatNat",
+                                        []
+                                      ],
+                                      [
+                                        "nat",
+                                        1
+                                      ]
+                                    ]
+                                  ]
+                                ],
+                                [
+                                  "apply",
+                                  [
+                                    "constant",
+                                    "Nat.instNeZeroSucc",
+                                    []
+                                  ],
+                                  [
+                                    "apply",
+                                    [
+                                      "apply",
+                                      [
+                                        "apply",
+                                        [
+                                          "constant",
+                                          "OfNat.ofNat",
+                                          [
+                                            "zero"
+                                          ]
+                                        ],
+                                        [
+                                          "constant",
+                                          "Nat",
+                                          []
+                                        ]
+                                      ],
+                                      [
+                                        "nat",
+                                        0
+                                      ]
+                                    ],
+                                    [
+                                      "apply",
+                                      [
+                                        "constant",
+                                        "instOfNatNat",
+                                        []
+                                      ],
+                                      [
+                                        "nat",
+                                        0
+                                      ]
+                                    ]
+                                  ]
+                                ]
+                              ]
+                            ]
+                          ]
+                        ],
+                        [
+                          "apply",
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "HPow.hPow",
+                                      [
+                                        "zero",
+                                        "zero",
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Nat",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Real",
+                                  []
+                                ]
+                              ],
+                              [
+                                "apply",
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "instHPow",
+                                      [
+                                        "zero",
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Nat",
+                                    []
+                                  ]
+                                ],
+                                [
+                                  "apply",
+                                  [
+                                    "apply",
+                                    [
+                                      "constant",
+                                      "Monoid.toPow",
+                                      [
+                                        "zero"
+                                      ]
+                                    ],
+                                    [
+                                      "constant",
+                                      "Real",
+                                      []
+                                    ]
+                                  ],
+                                  [
+                                    "constant",
+                                    "Real.instMonoid",
+                                    []
+                                  ]
+                                ]
+                              ]
+                            ],
+                            [
+                              "bound",
+                              0
+                            ]
+                          ],
+                          [
+                            "apply",
+                            [
+                              "apply",
+                              [
+                                "apply",
+                                [
+                                  "constant",
+                                  "OfNat.ofNat",
+                                  [
+                                    "zero"
+                                  ]
+                                ],
+                                [
+                                  "constant",
+                                  "Nat",
+                                  []
+                                ]
+                              ],
+                              [
+                                "nat",
+                                2
+                              ]
+                            ],
+                            [
+                              "apply",
+                              [
+                                "constant",
+                                "instOfNatNat",
+                                []
+                              ],
+                              [
+                                "nat",
+                                2
+                              ]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+                ]
+              ],
+              "user_name": "Lea.Misc.independent_square",
+              "visibility": "public",
+              "content_sha256": "be36c9a70786aa689f4de9a6a94d9365f5028271fc7938ff317041c027e8dd28",
+              "signature": "Lea.Misc.independent_square : \u2200 (x y : Real),\n  Eq.{1}\n    (HAdd.hAdd.{0, 0, 0} (HPow.hPow.{0, 0, 0} (HAdd.hAdd.{0, 0, 0} x y) 2)\n      (HPow.hPow.{0, 0, 0} (HSub.hSub.{0, 0, 0} x y) 2))\n    (HAdd.hAdd.{0, 0, 0} (HMul.hMul.{0, 0, 0} 2 (HPow.hPow.{0, 0, 0} x 2))\n      (HMul.hMul.{0, 0, 0} 2 (HPow.hPow.{0, 0, 0} y 2)))"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "source_sha256": {
+    "apps/lea-standalone/adapter/run_worker.py": "4bf6804c08a05b5a16e6b0b7b5bd825b34238603615a4e5ec81242c216058ab6",
+    "apps/lea-standalone/adapter/app/worker_diagnostics.py": "6e458734956e0e5dbcb7469dd98293ffa7a45e1065e7f5cd4282a386656f5d3e",
+    "apps/lea-standalone/adapter/app/bridge.py": "2d8de6bf6c966fc61c3bc10ac38796aa008b005afcdb9b51f84d0135573e1f50",
+    "apps/lea-standalone/adapter/app/commands.py": "cd1d7a58522350c6a675b3835698d6dec09f4364802e1d67fe1583a0da84b429",
+    "apps/lea-standalone/adapter/app/command_host.py": "aa8e6cb283f6f3232ff8ad34c08b03be14121aa8c235bb433dd34fad13360c33",
+    "apps/lea-standalone/adapter/app/api_boundary.py": "1c7ad115cafa849246e711fba81a0fa1f1498ac8b1512bbbe8fe618d3fb8eea2",
+    "apps/lea-standalone/adapter/app/project_library.py": "782c78e5dca8393e2b52d32f050d4ebc379dc0dd7c6cba4dce26c01544e08112",
+    "apps/lea-standalone/prover/lea/check_evidence.py": "c77db0a08702f6f2148f7b654aaddffdb33de515eae379fdd472a3e847d672a3",
+    "apps/lea-standalone/prover/lea/project_library_tools.py": "5ab67ef2e859b8d95f6a1089cca2b7947c508070e8d71f7de4dc6000014f8283",
+    "apps/overleaf-extension/companion/workerService.mjs": "8f66347173aa416b5c16e9e42ade97cad5b53d9b16d41e06ba3cd49856c110a6",
+    "scripts/supervisor.mjs": "67f57089808c8828948291a9a038f16d3f2816142b4bae400f61419d7d38991f",
+    "scripts/service-diagnostics.mjs": "d6a2f045b186e9d01825295788f50123ac3ee61663eba1d732a401cc2bff86ac",
+    "scripts/profile-lean-checks.py": "61c872c24a2de23de60d827c0d710b780b7092ed1cf914e53172430dd5fe896c",
+    "apps/lea-standalone/adapter/tests/test_worker_stability.py": "c5a8be07a610d057ea613a8f68128def7dfe678be166afa5b18e89cd1349ebb7",
+    "apps/lea-standalone/adapter/tests/test_process_boundary.py": "48f0cb638e94531700c97ad06809979eb81abacdf958f2267c053ceee8cab1c3",
+    "apps/lea-standalone/adapter/tests/test_process_restart.py": "e6ad2220f83b7928c5979b109ab463b3d7a76a3c6c96543af36cc5fb797fbb3b",
+    "apps/lea-standalone/adapter/tests/test_project_library.py": "b5506975ae5cd860c024d588c4c22eaa00f48546f5dedf365dd4c221f6272c67",
+    "apps/lea-standalone/adapter/tests/test_check_evidence.py": "ed410cab10694b61ffd8dfe3bb92b060f1ffc6bd0f326c408d5ca46bbee83898",
+    "apps/overleaf-extension/tests/companion.test.mjs": "60eb15276e3beedba850ad788ea342748fe4557423c38a76d9281a331c99422d",
+    "scripts/service-diagnostics.test.mjs": "09925b89a7252abdab04559d166a8ac5a48628b1251149476eab3f699cd2bcc4"
+  }
+}

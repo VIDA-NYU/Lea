@@ -27,4 +27,15 @@ test('an older adapter yields unavailable, never inferred server health', async 
   const result = await handleLeanCheckRuntime('session', { settings: { leaApiBaseUrl: 'http://localhost:8001' },
     fetchImpl: async () => ({ ok: false, status: 404, text: async () => '{}' }) });
   assert.equal(result.body.runtime.state, 'unavailable');
+  assert.equal(result.body.runtime.observation.state, 'unavailable');
+  assert.equal(result.body.message, 'Lean runtime status unavailable · retrying');
+});
+
+test('a missing SQL observation is pending rather than a runtime outage', async () => {
+  const result = await handleLeanCheckRuntime('session', { settings: { leaApiBaseUrl: 'http://localhost:8001' },
+    fetchImpl: async () => ({ ok: false, status: 503, text: async () => JSON.stringify({ detail: {
+      error: 'projection_unavailable', message: 'Not published yet',
+    } }) }) });
+  assert.equal(result.body.runtime.observation.state, 'pending');
+  assert.equal(result.body.message, 'Waiting for Lean runtime status');
 });

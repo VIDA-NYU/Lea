@@ -629,6 +629,8 @@ export interface LeanCheckRuntime {
   retry_after_ms?: number;
   last_failure?: { kind: string; message: string; [key: string]: unknown } | null;
   episode_id?: string | null;
+  // Failure to observe runtime health is separate from a compiler failure.
+  observation?: { state: 'pending' | 'unavailable'; message?: string };
 }
 
 export interface StatusEvent {

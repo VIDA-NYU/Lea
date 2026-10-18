@@ -90,6 +90,33 @@ def test_concurrent_publisher_has_one_owner(database):
     assert sum(r is not None for r in results)==1
 
 
+def test_publisher_conflict_reports_retry_without_changing_owner(database,monkeypatch):
+    now=datetime(2026,10,18,tzinfo=timezone.utc)
+    class Clock:
+        @staticmethod
+        def now(_zone):return now
+        @staticmethod
+        def fromisoformat(value):return datetime.fromisoformat(value)
+    monkeypatch.setattr(source,'datetime',Clock)
+    source.publisher(source.PublisherRequest(document_id='doc',client_id='owner'))
+    with db.connect() as conn:original=dict(conn.execute('select * from source_publishers').fetchone())
+    now+=timedelta(seconds=20,milliseconds=250)
+    for expected in [0,1]:
+        with pytest.raises(HTTPException) as rejected:
+            source.publisher(source.PublisherRequest(document_id='doc',client_id='reloaded',expected_generation=expected))
+        assert rejected.value.status_code==409
+        assert rejected.value.detail['generation']==1
+        assert rejected.value.detail['retry_after_ms']==69750
+        assert rejected.value.detail['lease_until']==original['lease_until']
+    with db.connect() as conn:assert dict(conn.execute('select * from source_publishers').fetchone())==original
+    now+=timedelta(seconds=70)
+    with pytest.raises(HTTPException) as rejected:
+        source.publisher(source.PublisherRequest(document_id='doc',client_id='reloaded'))
+    assert rejected.value.detail['retry_after_ms']==0
+    accepted=source.publisher(source.PublisherRequest(document_id='doc',client_id='reloaded',expected_generation=1))
+    assert accepted['generation']==2 and accepted['sequence']==0
+
+
 def test_legacy_import_is_idempotent_redacted_and_does_not_certify(database):
     legacy=database/'legacy';legacy.mkdir()
     jobs={'old':{'jobId':'old','status':'formalized','apiRunId':'missing','apiKey':'sk-do-not-import-this-key'}}

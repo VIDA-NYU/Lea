@@ -1,0 +1,28 @@
+\demotitle{LEA DEMO / 02}{When the source needs attention}
+\section{A deliberately flawed draft}
+
+This exercise starts with an intentionally false claim and an invalid proof.
+The presenter notes give the replacement text to use after inspecting
+Lea's finding.
+
+\begin{theorem}[Square versus the original number]\label{thm:demo-square-bound}
+% lea: formalize label=demo_square_bound
+% lea: context={Read this current statement and its associated proof literally over Real. Do not silently add a hypothesis, weaken the conclusion, or treat the factored expression as nonnegative without justification. If there is a source obstruction, publish the finding and request author input under the enabled source-pause policy. A checked counterexample is also a valid diagnosis of the stated claim.}
+For every real number $x\in\mathbb{R}$,
+\[
+  x^2\ge x.
+\]
+\end{theorem}
+\begin{proof}
+% lea: proof-for=demo_square_bound
+We have $x^2-x=x(x-1)$. Both factors are nonnegative for every real
+number $x$, so their product is nonnegative. Therefore $x^2\ge x$.
+\end{proof}
+
+The aim is to inspect the reported issue, clarify the mathematical
+statement, and bring the formal artifact back into agreement with the
+revised source.
+
+\vfill
+{\small\color{leagreen}Read the statement, the author's proof, the Lean
+artifact, and the scope of the assessment together.}

@@ -21,6 +21,7 @@ import {
   githubImportMatchedTargets,
   githubImportMatchedTargetKeys,
   hasInProgressItems,
+  hasPendingPaneObservations,
   highlightLeanLine,
   overlayActiveTex,
   paneItemActions,
@@ -32,6 +33,7 @@ import {
   deriveShareControls,
   filenameFromContentDisposition,
   formatPaneProgressLabel,
+  formatPaneProgressSummary,
   parsePaneLatex,
   reconcileDependentsImpact,
   shouldRefetchLeanPaneFiles,
@@ -483,9 +485,24 @@ test("paneProgressBucketForItem maps pane and companion statuses to progress buc
     assert.equal(paneProgressBucketForItem({ status }), "failed");
   }
   assert.equal(paneProgressBucketForItem({ status: "stale" }), "outOfDate");
-  for (const status of ["missing-stub", "unformalized", "unknown", "in-progress", undefined, "new-weird-status"]) {
+  for (const status of ["missing-stub", "unformalized", "new-weird-status"]) {
     assert.equal(paneProgressBucketForItem({ status }), "unformalized");
   }
+  assert.equal(paneProgressBucketForItem({ status: "in-progress" }), "inProgress");
+  for (const status of ["unknown", "synchronizing", "unavailable", undefined]) {
+    assert.equal(paneProgressBucketForItem({ status }), "unconfirmed");
+  }
+});
+
+test("visible file summary separates running and SQL-waiting work from verified results", () => {
+  const summary = summarizePaneProgress([{ status: "in-progress" },
+    ...Array.from({ length: 8 }, () => ({ status: "synchronizing", projection: { state: "inputs_changed" } }))]);
+  assert.equal(formatPaneProgressSummary(summary), "0 verified · 1 running · 8 awaiting SQL status");
+  assert.equal(summary.unformalized, 0);
+  assert.equal(summary.inProgress, 1);
+  assert.equal(summary.unconfirmed, 8);
+  assert.deepEqual(paneProgressSegments(summary).map(s => [s.id, s.count]), [["running", 1], ["unconfirmed", 8]]);
+  assert.equal(formatPaneProgressSummary(summarizePaneProgress([{ status: "valid" }, { status: "defined" }])),'2 verified');
 });
 
 test("summarizePaneProgress counts representative fractional file summaries", () => {
@@ -506,6 +523,7 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
     failed: 1,
     outOfDate: 0,
     unformalized: 4,
+    unconfirmed: 0,
     inProgress: 0
   });
 
@@ -526,6 +544,7 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
     failed: 0,
     outOfDate: 0,
     unformalized: 1,
+    unconfirmed: 0,
     inProgress: 0
   });
 
@@ -540,9 +559,29 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
     sorryStubbed: 2,
     failed: 0,
     outOfDate: 0,
-    unformalized: 1,
+    unformalized: 0,
+    unconfirmed: 1,
     inProgress: 0
   });
+});
+
+test("a completed batch awaiting SQL evidence has no false failures or missing proofs and keeps polling", () => {
+  const items = Array.from({ length: 9 }, () => ({ status: "synchronizing", inProgress: false,
+    formalizable: true, projection: { state: "inputs_changed" } }));
+  const summary = summarizePaneProgress(items);
+  assert.equal(summary.unconfirmed, 9);
+  assert.equal(summary.failed + summary.unformalized + summary.success, 0);
+  assert.equal(aggregatePaneStatus(items), "synchronizing");
+  assert.equal(formatPaneStatus("synchronizing"), "updating status");
+  assert.match(formatPaneProgressLabel("main.tex", summary), /9 awaiting status/);
+  assert.deepEqual(paneProgressSegments(summary).map(s => [s.id, s.count]), [["unconfirmed", 9]]);
+  assert.equal(hasInProgressItems(items), false);
+  assert.equal(hasPendingPaneObservations(items), true);
+  assert.equal(formalizableItems(items).length, 0);
+  assert.equal(stubbableItems(items).length, 0);
+  const observed = items.map(i => ({ ...i, status: "valid", projection: { state: "observed" } }));
+  assert.equal(hasPendingPaneObservations(observed), false);
+  assert.equal(summarizePaneProgress(observed).success, 9);
 });
 
 test("paneProgressSegments returns ordered nonzero segments with percentages", () => {

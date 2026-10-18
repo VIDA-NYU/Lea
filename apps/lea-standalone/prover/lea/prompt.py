@@ -111,13 +111,20 @@ _IMPORT_POLICY = """\
   tactics the proof actually uses.
 - A `search_mathlib` hit in `Mathlib/Foo/Bar.lean` corresponds to
   `import Mathlib.Foo.Bar`.
+- Before writing a guessed module or repairing an unknown identifier, use
+  `search_mathlib` with the exact identifier (for example `Even` or `Nat.add_mul`).
+  Declaration queries such as `def Even` include generated declarations; module
+  queries such as `Mathlib.Algebra.Group.Even` check the pinned source path.
 - When Lean reports an unknown declaration, notation, or tactic, locate and add
   its defining module; do not fall back to `import Mathlib`.
-- Once a proof compiles, call `suggest_imports` on the file, replace its import
-  block with the suggested direct imports, and run `lean_check` again.
-- `suggest_imports` may analyze a disposable broad-import copy internally. Never
-  create such a scratch file yourself: `import Mathlib` is forbidden in every
-  file you write, including temporary candidates.
+- A passing `lean_check` with targeted imports is sufficient for completion.
+  `suggest_imports` is optional advice, never a prerequisite or a reason to delay
+  completion. Do not invoke it routinely on an already small targeted import set.
+- If import advice is explicitly needed, call `suggest_imports` at most once.
+  If it is skipped or times out, keep the existing imports and finish; do not
+  retry it. After changing any imports, run `lean_check` on the final file again.
+- Import analysis uses a disposable copy with the targeted linter module.
+  `import Mathlib` remains forbidden in every file you write, including scratch files.
 - The goal is a small, robust import set, not a theoretically unique minimum. Do
   not spend proof-search turns manually shaving already-targeted imports."""
 

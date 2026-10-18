@@ -1,5 +1,5 @@
 """Stage 8: real independent API/worker processes and denied UI execution."""
-import ast,json,os,signal,socket,subprocess,sys,time
+import ast,json,os,signal,socket,sqlite3,subprocess,sys,time
 from pathlib import Path
 from urllib.error import HTTPError,URLError
 from urllib.request import Request,urlopen
@@ -53,6 +53,42 @@ def stop(child):
         except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)
 
 
+def test_inflight_solver_survives_sql_reader_longer_than_busy_timeout(tmp_path, monkeypatch):
+    api_port = port(); base = f'http://127.0.0.1:{api_port}'
+    env = environment(tmp_path, monkeypatch); env['LEA_API_BASE_URL'] = base
+    children = []
+    try:
+        api = start(tmp_path, 'busy-api', [ADAPTER/'run_api.py', '--port', api_port, '--log-level', 'error'], env); children.append(api)
+        worker = start(tmp_path, 'busy-worker', [ADAPTER/'tests/process_boundary_worker.py'], env); children.append(worker)
+        first = wait(lambda: (value if (value:=request(base, '/api/health'))['ready'] else None))
+        run = request(base, '/api/runs', {'message':'Hold through read contention.', 'idempotency_key':'contention'})
+        rid = run['run_id']
+        attempt = wait(lambda:request(base, '/api/runs/'+rid).get('attempt_id'))
+        # DELETE journaling is the production baseline: this long reader blocks
+        # publication COMMIT beyond the five-second SQLite busy timeout.
+        with sqlite3.connect(db.DB_PATH, isolation_level=None) as reader:
+            reader.execute('begin')
+            reader.execute('select * from runs').fetchall()
+            time.sleep(7)
+            reader.execute('rollback')
+        current = wait(lambda: (value if (value:=request(base, '/api/health'))['ready'] else None))
+        assert current['runtime_id'] == first['runtime_id'] and current['generation'] == first['generation']
+        assert worker.poll() is None and api.poll() is None
+        assert request(base, '/api/runs/'+rid)['attempt_id'] == attempt
+        # Which writer reaches SQLite's timeout first is scheduling dependent;
+        # the publication-only test deterministically forces that exact failure.
+        assert current.get('diagnostics', {}).get('events')
+        Path(env['LEA_TEST_RELEASE']).write_text('finish')
+        settled = wait(lambda: (value if (value:=request(base, '/api/runs/'+rid))['status'] not in {'pending','running'} else None))
+        # The fixture emits no Lean evidence. Normal completion must retain the
+        # production review gate rather than certify its scripted "answered".
+        assert settled['status'] == 'needs_review', settled
+        assert 'no fresh passing Lean check' in settled['result_detail']
+        assert settled['attempt_id'] == attempt and settled['recovery_count'] == 0
+    finally:
+        for child in reversed(children): stop(child)
+
+
 def test_api_imports_queries_admission_only_and_denies_execution(tmp_path,monkeypatch):
     env=environment(tmp_path,monkeypatch)
     static=tmp_path/'static';static.mkdir();(static/'index.html').write_text('<html>SQL UI</html>')
@@ -71,11 +107,11 @@ from app.main import app,startup
 startup()
 from app import workspace_commands,peripheral_views,db
 assert not workspace_commands._actions and not peripheral_views._queries
-for name in ('lea','lea.interface','app.routes.sessions','app.worker','app.command_host','app.bridge','app.runtime','app.settings','app.project_library','app.editor_worker','app.companion_worker','litellm'):
+for name in ('lea','lea.interface','app.routes.sessions','app.worker','app.worker_diagnostics','app.command_host','app.bridge','app.target_contexts','app.runtime','app.settings','app.project_library','app.editor_worker','app.companion_worker','litellm'):
     try:importlib.import_module(name)
     except ImportError:pass
     else:raise AssertionError('Forbidden API import: '+name)
-for path in (os.environ['LEA_CONFIG_FILE'],os.environ['LEA_API_DENY_PATHS'].split(os.pathsep)[0]+'/workspace/secret.lean'):
+for path in (os.environ['LEA_CONFIG_FILE'],os.environ['LEA_API_DENY_PATHS'].split(os.pathsep)[0]+'/workspace/secret.lean',os.environ['LEA_SHARED_DATA_DIR']+'/worker-diagnostics/worker.log'):
     try:open(path)
     except PermissionError:pass
     else:raise AssertionError('Workspace/config file opened')

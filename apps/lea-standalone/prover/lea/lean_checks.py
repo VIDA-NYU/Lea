@@ -36,16 +36,18 @@ def check_file(path: Path, lake_root: str | None, *, use_lsp=True, allow_cold=Tr
     reason = "explicit" if not use_lsp else "disabled" if lsp_disabled() else "no_lake_root" if not lake_root else None
     try:
         budget.remaining()
-        content = path.read_bytes()
-        from .check_evidence import source_identity
-        evidence.update(content_sha256=hashlib.sha256(content).hexdigest(), source_path=str(path.resolve()),
-                        source_identity=source_identity(path))
+        with budget.measure('source'):
+            content = path.read_bytes()
+            from .check_evidence import source_identity
+            evidence.update(content_sha256=hashlib.sha256(content).hexdigest(), source_path=str(path.resolve()),
+                            source_identity=source_identity(path))
         from .check_evidence import prepared_environment, environment_hash, PROTOCOL_VERSION
-        with prepared_environment(path, content.decode('utf-8'), lake_root, budget) as environment, ExitStack() as cleanup:
-            evidence.update(evidence_version=PROTOCOL_VERSION, environment=environment,
-                            environment_sha256=environment_hash(environment))
+        with budget.context('preparation', prepared_environment(path, content.decode('utf-8'), lake_root, budget)) as environment, ExitStack() as cleanup:
+            with budget.measure('evidence_hash'):
+                evidence.update(evidence_version=PROTOCOL_VERSION, environment=environment,
+                                environment_sha256=environment_hash(environment))
             from .check_evidence import execution_guard
-            inputs = cleanup.enter_context(execution_guard(evidence, path, runtime_root))
+            inputs = cleanup.enter_context(budget.context('guard_setup', execution_guard(evidence, path, runtime_root)))
             if reason is not None and use_lsp and not allow_cold:
                 raise CheckFailure("cascade_unavailable", "Cascade verification requires an available Lean server",
                                    retryable=False)
@@ -117,12 +119,13 @@ def check_file(path: Path, lake_root: str | None, *, use_lsp=True, allow_cold=Tr
                                         pipe.close()
                             lsp_daemon.note_cold(lake_root or str(path.parent), -1)
             budget.remaining("lsp" if evidence["backend"] == "lsp" else "cold")
-            if path.read_bytes() != content:
-                raise CheckFailure("source_changed", "File changed during its Lean check; check the new revision",
-                                   retryable=False)
-            from .check_evidence import freshness
-            if not inputs.unchanged() or not freshness(evidence, path)[0]:
-                raise CheckFailure("source_changed", "Compiler inputs changed during the check", retryable=False)
+            with budget.measure('validation'):
+                if path.read_bytes() != content:
+                    raise CheckFailure("source_changed", "File changed during its Lean check; check the new revision",
+                                       retryable=False)
+                from .check_evidence import freshness
+                if not inputs.unchanged() or not freshness(evidence, path)[0]:
+                    raise CheckFailure("source_changed", "Compiler inputs changed during the check", retryable=False)
             from .tools import _lean_check_has_error
             status = "error" if _lean_check_has_error(output) else "ok"
     except (CheckFailure, OSError, UnicodeError) as raw:
