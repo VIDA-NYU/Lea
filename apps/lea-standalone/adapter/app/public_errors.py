@@ -3,7 +3,7 @@ import os
 import re
 from collections.abc import Iterable
 
-from .config import configured_provider_keys
+
 
 _CREDENTIAL_LIKE = re.compile(
     r"(?:sk-(?:ant-)?[A-Za-z0-9_./+\-=]{8,}|AIza[A-Za-z0-9_-]{20,}|"
@@ -14,7 +14,9 @@ _CREDENTIAL_LIKE = re.compile(
 def redact(text: str, *, secrets: Iterable[str] = ()) -> str:
     values = set(secrets)
     try:
-        values.update(configured_provider_keys().values())
+        if os.environ.get('LEA_PROCESS_ROLE') != 'api':
+            from .config import configured_provider_keys
+            values.update(configured_provider_keys().values())
     except Exception:
         pass  # A damaged config must not replace the original error.
     values.update(value for name, value in os.environ.items() if name.endswith("_API_KEY"))

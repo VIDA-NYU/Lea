@@ -21,7 +21,7 @@ def _setup(tmp_path, monkeypatch):
 
 def test_create_list_update_delete(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    created = route.create_role(RoleCreate(
+    created = route.create_role.worker(RoleCreate(
         name="Counterexample Hunter",
         description="Look for a counterexample before committing to a proof.",
         system_prompt="You hunt counterexamples.",
@@ -30,24 +30,24 @@ def test_create_list_update_delete(tmp_path, monkeypatch):
     assert created["origin"] == "user"
     assert created["effective"]["max_turns"] == 8
 
-    listed = route.list_profiles()["profiles"]
+    listed = route.list_profiles.worker()["profiles"]
     assert {p["origin"] for p in listed} == {"builtin", "user"}
     assert any(p["name"] == "counterexample-hunter" for p in listed)
 
-    updated = route.update_role(created["id"], RoleUpdate(max_turns=3))
+    updated = route.update_role.worker(created["id"], RoleUpdate(max_turns=3))
     assert updated["effective"]["max_turns"] == 3
     assert updated["effective"]["system_prompt"] == "You hunt counterexamples."  # untouched
     assert updated["name"] == "counterexample-hunter"                            # slug stable
 
     assert route.delete_role(created["id"])["deleted"] is True
-    assert all(p["origin"] == "builtin" for p in route.list_profiles()["profiles"])
+    assert all(p["origin"] == "builtin" for p in route.list_profiles.worker()["profiles"])
 
 
 def test_a_role_needs_instructions(tmp_path, monkeypatch):
     """A role with no prompt is not a role — it would spawn a generalist wearing a name."""
     _setup(tmp_path, monkeypatch)
     with pytest.raises(HTTPException) as exc:
-        route.create_role(RoleCreate(name="Empty", system_prompt="   "))
+        route.create_role.worker(RoleCreate(name="Empty", system_prompt="   "))
     assert exc.value.status_code == 400
     assert "instructions" in exc.value.detail
 
@@ -56,27 +56,27 @@ def test_a_builtin_name_is_reserved(tmp_path, monkeypatch):
     """Two roles answering to one name makes "which one ran?" unanswerable."""
     _setup(tmp_path, monkeypatch)
     with pytest.raises(HTTPException) as exc:
-        route.create_role(RoleCreate(name="proof candidate", system_prompt="x"))
+        route.create_role.worker(RoleCreate(name="proof candidate", system_prompt="x"))
     assert exc.value.status_code == 400
     assert "built-in" in exc.value.detail
 
 
 def test_duplicate_user_names_are_refused(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    route.create_role(RoleCreate(name="Scout", system_prompt="x"))
+    route.create_role.worker(RoleCreate(name="Scout", system_prompt="x"))
     with pytest.raises(HTTPException):
-        route.create_role(RoleCreate(name="Scout", system_prompt="y"))
+        route.create_role.worker(RoleCreate(name="Scout", system_prompt="y"))
 
 
 def test_bad_max_turns_is_refused(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     with pytest.raises(HTTPException):
-        route.create_role(RoleCreate(name="Zero", system_prompt="x", max_turns=0))
+        route.create_role.worker(RoleCreate(name="Zero", system_prompt="x", max_turns=0))
 
 
 def test_404s(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    for call in (lambda: route.update_role("nope", RoleUpdate(name="x")),
+    for call in (lambda: route.update_role.worker("nope", RoleUpdate(name="x")),
                  lambda: route.delete_role("nope")):
         with pytest.raises(HTTPException) as exc:
             call()
@@ -88,7 +88,7 @@ def test_materialization_writes_a_profile_the_prover_accepts(tmp_path, monkeypat
     ONLY keys it allows — an unknown key makes it refuse the whole file, turning a stray
     column into a role that silently vanishes."""
     _setup(tmp_path, monkeypatch)
-    route.create_role(RoleCreate(
+    route.create_role.worker(RoleCreate(
         name="Scout", description="Scouts.", system_prompt="You scout.",
         tools=["read_file"], max_turns=4))
     tempdir, skipped = roles_catalog.materialize_roles()
@@ -112,7 +112,7 @@ def test_a_user_role_reaches_the_coordinators_schema(tmp_path, monkeypatch):
     exists — the silent failure B1 was built to close. This walks the whole path:
     row → YAML → `agent_dirs` → discovery → the enum the model is actually offered."""
     _setup(tmp_path, monkeypatch)
-    route.create_role(RoleCreate(
+    route.create_role.worker(RoleCreate(
         name="Counterexample Hunter",
         description="Look for a counterexample first.",
         system_prompt="You hunt counterexamples."))

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from .queries.formatting import (_diagnostic_from_row, _duration_seconds, _message_from_row, _normalize_code_step, _normalize_project, _normalize_run_policy, _normalize_usage_breakdown_row, _normalize_usage_day, _normalize_usage_model, _normalize_usage_session, _optional_int)
+
 from . import usage_details as usage_metadata
 
 import hashlib
 import json
 import re
 import sqlite3
-import threading
 from contextlib import nullcontext
 from collections import Counter
 from uuid import uuid4
@@ -22,26 +23,13 @@ from .read_projections import read_projection
 
 RAW_EVENT_LOG_DIR = ROOT / "data" / "lea-api-events"
 
-# In-process "something about the session list changed" counter (AUDIT-2026-07-24 P4).
-# `/api/sessions/events` polled `sessions_digest()` — a real query — once a second per
-# connected client, forever, against the single-writer database the runs are writing
-# to. Every write that can move the list bumps this instead, so an idle client costs
-# an integer comparison. The SQL digest stays as a slow backstop: this counter only
-# sees writes from THIS process, which is all of them today, and the backstop means a
-# wrong assumption there degrades to the old latency rather than to silence.
-_change_lock = threading.Lock()
-_change_token = 0
-
-
 def _bump_sessions_changed() -> None:
-    global _change_token
-    with _change_lock:
-        _change_token += 1
+    """Compatibility hook; transactional SQL triggers publish all changes."""
 
 
 def sessions_change_token() -> int:
-    with _change_lock:
-        return _change_token
+    from .observation import watermark
+    with connect() as conn:return watermark(conn)
 PROJECT_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
 PROJECT_NAMESPACE_RE = re.compile(r"^Lea\.[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)*$")
 # A skill slug is the stable id AND the materialized filename stem the prover reads
@@ -381,8 +369,7 @@ def _list_sessions(
 
 
 def sessions_digest() -> str:
-    """A cheap fingerprint of the session-list state, for the `/api/sessions/events`
-    SSE feed to poll. Changes whenever a session is created or touched (max
+    """A legacy diagnostic fingerprint of the session-list state. Changes whenever a session is created or touched (max
     updated_at + count) or a run enters/leaves the active set (so a status flip from
     'running' → 'ok'/'error' is also detected). Deliberately avoids running the full
     `list_sessions` aggregate on every tick — that query only fires when this digest
@@ -790,6 +777,12 @@ def create_run_bundle(
                                                          (old["session_id"],)).fetchone()),
                         "run": old, "formalization": old_formalization,
                         "message": _message_from_row(old_message), "created": False}
+        from .db import caller_parent_command
+        parent=caller_parent_command.get()
+        if parent and project_id:
+            current_parent=conn.execute('select project_id from commands where id=?',(parent,)).fetchone()
+            if current_parent and current_parent[0] and current_parent[0]!=project_id:raise ValueError('Business command belongs to a different project')
+            conn.execute('update commands set project_id=? where id=? and project_id is null',(project_id,parent))
         if source_context_ref:
             from .overleaf_source import resolve
             resolved_source = resolve(conn, source_context_ref, focus_formalization_id)
@@ -961,7 +954,7 @@ def create_run_bundle(
 
         run_id = str(uuid4())
         if dependency_id:
-            from .project_dependencies import admit_worker
+            from .dependency_intake import admit_worker
             admit_worker(conn, dependency_id, project_id, run_id, resumes_run_id, initiating_run_id)
         if resumes_run_id:
             conn.execute("""update project_dependencies set owner_run_id=?,state='inline',updated_at=?
@@ -1011,7 +1004,24 @@ def create_run_bundle(
         session = row_to_dict(
             conn.execute("select * from sessions where id = ?", (session_id,)).fetchone()
         )
+        from . import run_commands, reformalization_intake as reformalizations
+        if source_context_ref and focus_formalization_id:
+            published=conn.execute('select * from source_publications where id=?',(source_context_ref,)).fetchone()
+            if published:
+                source=json.loads(published['bundle_json'])
+                from .overleaf_source import bind
+                bind(conn,dict(conn.execute('select * from formalizations where id=?',(focus_formalization_id,)).fetchone()),source)
+                conn.execute('update source_heads set formalization_id=?,project_id=? where document_id=? and target_kind=? and target_key=?',
+                    (focus_formalization_id,project_id,published['document_id'],source['targetKind'],source['targetKey']))
+        staged_owner=reformalizations.actor()
+        if staged_owner:
+            run['reformalization_id']=reformalizations.bind_run_command(conn,staged_owner,run)
+        run_commands.attach_run(conn,run)
     _bump_sessions_changed()
+    if staged_owner and __import__('os').environ.get('LEA_PROCESS_ROLE') != 'api':
+        from . import runregistry,runtime
+        if runtime.accepting_work():runregistry.registry.transfer_reservation(staged_owner,run_id)
+        else:runregistry.registry.release(staged_owner)
     return {
         "session": session,
         "formalization": formalization,
@@ -1021,9 +1031,6 @@ def create_run_bundle(
     }
 
 
-def _normalize_project(row: dict) -> dict:
-    row["overleaf_linked"] = bool(row.get("overleaf_linked"))
-    return row
 
 
 def mark_project_overleaf_linked(
@@ -1036,12 +1043,16 @@ def mark_project_overleaf_linked(
     """
     transaction = nullcontext(conn) if conn is not None else write()
     with transaction as db_conn:
+        from .workspace_commands import authorize, current as workspace_command
+        authorize(db_conn)
         changed = db_conn.execute(
             "update projects set overleaf_linked = 1, updated_at = ? "
             "where id = ? and overleaf_linked = 0",
             (utc_now(), project_id),
         ).rowcount
         row = db_conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
+        if workspace_command():
+            db_conn.execute("update workspace_effects set project_id=? where command_id=? and project_id is null and kind='operation'",(project_id,workspace_command()['id']))
     if changed and conn is None:
         _bump_sessions_changed()
     return _normalize_project(row_to_dict(row)) if row else None
@@ -1150,6 +1161,8 @@ def create_project(
     transaction = nullcontext(conn) if conn is not None else write()
     with transaction as db_conn:
         name_column = ", name_source" if name_source is not None else ""
+        from .workspace_commands import authorize, current as workspace_command
+        authorize(db_conn)
         name_placeholder = ", ?" if name_source is not None else ""
         values = (project_id, slug, project_title, description, ns, repo, remote_url, now, now)
         if name_source is not None:
@@ -1161,6 +1174,8 @@ def create_project(
             + name_column + ") values (?, ?, ?, ?, ?, ?, ?, ?, ?" + name_placeholder + ")",
             values,
         )
+        if workspace_command():
+            db_conn.execute("update workspace_effects set project_id=? where command_id=? and project_id is null and kind='operation'",(project_id,workspace_command()['id']))
         row = db_conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
     return _normalize_project(row_to_dict(row))
 
@@ -1176,6 +1191,8 @@ def update_project(
     here. Pass a field as None to leave it untouched."""
     now = utc_now()
     with write() as conn:
+        from .workspace_commands import authorize
+        authorize(conn)
         row = conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
         if not row:
             return None
@@ -1211,7 +1228,9 @@ def update_project_identity(
     reserved for the explicit namespace-migration path, not ordinary metadata edits."""
     ns = validate_project_namespace(namespace)
     now = utc_now()
-    with connect() as conn:
+    with write() as conn:
+        from .workspace_commands import authorize
+        authorize(conn)
         row = conn.execute("select * from projects where id = ?", (project_id,)).fetchone()
         if not row:
             return None
@@ -1239,7 +1258,9 @@ def create_project_file(
     `.lea/files/` (git-canonical); this row is the pointer + extraction metadata."""
     now = utc_now()
     file_id = str(uuid4())
-    with connect() as conn:
+    with write() as conn:
+        from .workspace_commands import authorize
+        authorize(conn)
         conn.execute(
             """
             insert into project_files
@@ -1300,7 +1321,9 @@ def delete_project_cascade(project_id: str) -> bool:
     project's sessions and all their dependent rows go first, then project_files,
     then the project. The on-disk repo (`rm -rf`) is the caller's job (the project
     service) — this is the index half of delete (D31). Returns False if absent."""
-    with connect() as conn:
+    with write() as conn:
+        from .workspace_commands import authorize
+        authorize(conn)
         if not conn.execute("select 1 from projects where id = ?", (project_id,)).fetchone():
             return False
         conn.execute("delete from project_library_invocations where run_id in (select id from runs where project_id=?)", (project_id,))
@@ -1398,6 +1421,14 @@ def delete_project_cascade(project_id: str) -> bool:
                 "delete from artifact_blobs where id not in "
                 "(select after_blob_id from timeline where after_blob_id is not null "
                 "union select blob_id from proof_check_evidence "
+                "union select blob_id from current_file_bindings where blob_id is not null "
+                "union select blob_id from workspace_file_revisions "
+                "union select blob_id from workspace_blob_refs "
+                "union select result_blob_id from workspace_requests where result_blob_id is not null "
+                "union select json_extract(arguments_json,'$.arguments.request.upload_blob_id') from workspace_requests where json_extract(arguments_json,'$.arguments.request.upload_blob_id') is not null "
+                "union select json_extract(value,'$.blob_id') from workspace_effects,json_each(manifest_json,'$.files') where json_extract(value,'$.blob_id') is not null "
+                "union select json_extract(manifest_json,'$.before_blob') from workspace_effects where json_extract(manifest_json,'$.before_blob') is not null "
+                "union select json_extract(manifest_json,'$.external_blob') from workspace_effects where json_extract(manifest_json,'$.external_blob') is not null "
                 "union select json_extract(value, '$.blob_id') from formalization_review_events, json_each(evidence_json) where json_extract(value, '$.blob_id') is not null "
                 "union select blob_id from verification_events where blob_id is not null)"
             )
@@ -2163,7 +2194,11 @@ def _validate_custom_tool(name: str, url: str, method: str) -> None:
         raise ValueError("The tool needs a name.")
     if method not in CUSTOM_TOOL_METHODS:
         raise ValueError(f"Method must be one of: {', '.join(CUSTOM_TOOL_METHODS)}.")
-    from lea.http_tools import UrlRefused, check_url
+    import os
+    if os.environ.get('LEA_PROCESS_ROLE')=='api':
+        from .url_policy import UrlRefused,check_url
+    else:
+        from lea.http_tools import UrlRefused,check_url
 
     # Placeholders are substituted at call time; check the template with them removed.
     probe = re.sub(r"\{[^}]*\}", "x", str(url or ""))
@@ -2448,11 +2483,24 @@ def update_run(
     recoverable: bool | None = None,
     usage_status: str | None = None,
     usage_details: dict | None = None,
-) -> None:
+    command_token: dict | None = None,
+) -> dict | None:
     now = utc_now()
     if result_detail:
         result_detail = redact(result_detail)
-    with connect() as conn:
+    with (write() if command_token else connect()) as conn:
+        if command_token:
+            from . import run_commands
+            if not conn.execute('select 1 from run_commands where run_id=? and command_id=?',(run_id,command_token['id'])).fetchone():
+                raise ValueError('Command belongs to another run')
+            if not run_commands.owns(conn,run_id,command_token):
+                prior=conn.execute('select * from runs where id=?',(run_id,)).fetchone()
+                if not prior:return None
+                if prior['status'] not in {'pending','running'}:return dict(prior)
+                status,result_kind='cancelled','interrupted'
+                result_detail='Solver ownership expired; retained results require reconciliation.'
+                stop_reason,recoverable='command_fenced',True
+                conn.execute("update runs set recovery_state='review',recovery_reason=? where id=?",(result_detail,run_id))
         conn.execute(
             """
             update runs
@@ -2478,7 +2526,9 @@ def update_run(
                 usage_status, now, now, run_id,
             ),
         )
+        result=dict(conn.execute('select * from runs where id=?',(run_id,)).fetchone()) if command_token else None
     _bump_sessions_changed()
+    return result
 
 
 def record_stop_request(run_id: str, reason: str, source: str) -> dict | None:
@@ -2523,6 +2573,8 @@ def begin_auxiliary_invocation(run_id: str, name: str, model: str) -> str:
     """Journal a tool-free auxiliary call against its existing run."""
     action, attempt, now = str(uuid4()), str(uuid4()), utc_now()
     with write() as conn:
+        from .workspace_commands import authorize
+        authorize(conn)
         conn.execute("insert into run_attempts(id,run_id,runtime_id,started_at,outcome) values (?,?,?,?,?)",
                      (attempt, run_id, "auxiliary", now, name))
         conn.execute("""insert into run_invocations(id,run_id,attempt_id,kind,name,turn,input_json,started_at)
@@ -2591,7 +2643,7 @@ def claim_pending_run(run_id: str) -> bool:
     client it was interrupted."""
     with connect() as conn:
         cursor = conn.execute(
-            "update runs set status = 'running', updated_at = ? where id = ? and status = 'pending'",
+            "update runs set status = 'running', updated_at = ? where id = ? and status = 'pending' and stop_requested_reason is null",
             (utc_now(), run_id),
         )
     _bump_sessions_changed()
@@ -2675,6 +2727,8 @@ def record_verification_event(
 ) -> dict | None:
     event_id = str(uuid4())
     with write() as conn:
+        from .workspace_commands import authorize
+        authorize(conn)
         if require_current:
             current = current_proof_step(session_id, path, conn=conn)
             if ((expected is None) != (current is None) or (expected and (
@@ -3152,6 +3206,8 @@ def rebase_project_artifact_modules(
     now = utc_now()
     changed = 0
     with write() as conn:
+        from .workspace_commands import authorize
+        authorize(conn)
         rows = conn.execute(
             "select id, module_name from artifacts where project_id = ?",
             (project_id,),
@@ -3197,7 +3253,9 @@ def set_run_transcript(run_id: str, messages: list) -> None:
     stripped). Stored as JSON; the next activation in the session replays it as the
     base. Only called on a Finished run, so an errored run leaves this NULL.
     """
-    with connect() as conn:
+    with write() as conn:
+        from .workspace_commands import authorize
+        authorize(conn)
         conn.execute(
             "update runs set transcript = ?, updated_at = ? where id = ?",
             (json.dumps(messages), utc_now(), run_id),
@@ -3330,27 +3388,6 @@ def blob_content(blob_id: str | None) -> str | None:
     return row["content"] if row else None
 
 
-def _message_from_row(row) -> dict:
-    """A timeline message row in the shape the API has always returned.
-
-    `role` is reconstructed from `author`: they were the same concept spelled
-    twice, and the old `kind` column defaulted to 'assistant' — a *role* value used
-    as a kind default — so it lied for every row nobody set explicitly. The new
-    schema keeps `kind` for what a row *is* and `author` for who made it, which is
-    the split OpenHands draws (`SourceType`) and opencode conflates.
-    """
-    d = row_to_dict(row)
-    return {
-        "id": str(d["id"]),
-        "session_id": d["session_id"],
-        "run_id": d["run_id"],
-        "formalization_id": d.get("formalization_id"),
-        "role": "user" if d["author"] == "user" else "assistant",
-        "content": d["content"],
-        "kind": d["kind"] if d["kind"] in ("edit_note", "compaction") else "assistant",
-        "seq": d["id"],
-        "created_at": d["created_at"],
-    }
 
 
 # Every read that turns timeline rows into code steps selects through this, so the
@@ -3411,6 +3448,61 @@ def _code_step_from_row(row, *, code: str | None = None) -> dict:
     record = {'evidence_json': d.get('proof_evidence_json'), 'namespace': d.get('evidence_namespace'),
               'parent_id': d.get('evidence_parent_id')} if 'proof_evidence_json' in d else None
     return project_step(result, record)
+
+
+def append_message_chunk(session_id: str, run_id: str, text: str,
+                         message_id: str | None = None) -> dict:
+    """Append a bounded UTF-8 chunk before publishing. One stable timeline row.
+
+    Attempt identity fences a stale caller; a stopped/recovered run never appends
+    text onto an earlier attempt's partial message.
+    """
+    from .migration_limits import TEXT_CHUNK_BYTES
+    if not text or len(text.encode()) > TEXT_CHUNK_BYTES:
+        raise ValueError("Invalid assistant chunk size")
+    with write() as conn:
+        run = conn.execute("select attempt_id,focus_formalization_id from runs where id=? and session_id=?",
+                           (run_id, session_id)).fetchone()
+        if run is None:
+            raise ValueError("Missing message run")
+        attempt = run["attempt_id"] or ""
+        if message_id is None:
+            message_id = conn.execute("""insert into timeline(session_id,run_id,kind,author,content,
+                formalization_id,created_at,stream_state,stream_attempt_id,stream_sequence)
+                values (?,?,'message','agent',?,?,?,'streaming',?,1)""",
+                (session_id, run_id, text, run["focus_formalization_id"], utc_now(), attempt)).lastrowid
+        else:
+            updated = conn.execute("""update timeline set content=content||?,stream_sequence=stream_sequence+1
+                where id=? and run_id=? and session_id=? and stream_attempt_id=? and stream_state='streaming'""",
+                (text, message_id, run_id, session_id, attempt))
+            if updated.rowcount != 1:
+                raise ValueError("Stale assistant message attempt")
+        conn.execute("update sessions set updated_at=? where id=?", (utc_now(), session_id))
+        row = conn.execute("select * from timeline where id=?", (message_id,)).fetchone()
+    _bump_sessions_changed()
+    return _message_from_row(row)
+
+
+def finish_message_stream(message_id: str, content: str | None = None, *, interrupted=False) -> dict:
+    with write() as conn:
+        row = conn.execute("select * from timeline where id=?", (message_id,)).fetchone()
+        if row is None or row["stream_state"] != "streaming":
+            raise ValueError("Message is not streaming")
+        conn.execute("update timeline set content=?,stream_state=?,stream_sequence=stream_sequence+1 where id=?",
+                     (row["content"] if content is None else content,
+                      "interrupted" if interrupted else "final", message_id))
+        conn.execute("update sessions set updated_at=? where id=?", (utc_now(), row["session_id"]))
+        row = conn.execute("select * from timeline where id=?", (message_id,)).fetchone()
+    _bump_sessions_changed()
+    return _message_from_row(row)
+
+
+def interrupt_message_streams(run_id: str | None = None) -> None:
+    """Settle partials on termination/recovery without deleting their identity/text."""
+    with write() as conn:
+        conn.execute("""update timeline set stream_state='interrupted',stream_sequence=stream_sequence+1
+            where stream_state='streaming'""" + (" and run_id=?" if run_id else ""),
+            (run_id,) if run_id else ())
 
 
 def add_message(
@@ -3497,32 +3589,6 @@ def add_diagnostic(
     return _diagnostic_from_row(row)
 
 
-def _diagnostic_from_row(row) -> dict:
-    """A timeline diagnostic row in the shape the API returns. The stored `data` JSON
-    IS the payload that was streamed live, so a reloaded diagnostic and the one the
-    user saw in real time cannot disagree (the same invariant the code rows hold)."""
-    import json as _json
-
-    d = row_to_dict(row)
-    try:
-        payload = _json.loads(d["data"]) if d["data"] else {}
-    except (TypeError, ValueError):
-        # A row whose JSON we can't parse still describes a real failure — degrade to
-        # the prose we stored alongside it rather than dropping the row.
-        payload = {}
-    return {
-        **payload,
-        "id": str(d["id"]),
-        "session_id": d["session_id"],
-        "run_id": d["run_id"],
-        "turn": d["turn"],
-        "seq": d["id"],
-        "message": payload.get("message") or d["content"] or "",
-        "severity": payload.get("severity") or "notice",
-        "code": payload.get("code") or "unknown",
-        "context": payload.get("context") or {},
-        "created_at": d["created_at"],
-    }
 
 
 def diagnostics_for_session(session_id: str) -> list[dict]:
@@ -4651,60 +4717,16 @@ def _origin_rollup() -> list[dict]:
     return [buckets[k] for k in ordered]
 
 
-def _normalize_usage_session(row: dict) -> dict:
-    models = [
-        model for model in str(row.get("models") or "").split(",")
-        if model
-    ]
-    row["models"] = models
-    row["primary_model"] = row.get("primary_model") or (models[0] if models else None)
-    for key in ("input_tokens", "output_tokens", "total_tokens", "message_count", "run_count", "duration_seconds"):
-        row[key] = int(row.get(key) or 0)
-    row["cost_usd"] = float(row.get("cost_usd") or 0)
-    row["incomplete_usage_runs"] = int(row.get("incomplete_usage_runs") or 0)
-    row["unconfirmed_usage_runs"] = int(row.get("unconfirmed_usage_runs") or 0)
-    row["started_at"] = row.get("started_at")
-    row["ended_at"] = row.get("ended_at")
-    return row
 
 
-def _normalize_code_step(row: dict) -> dict:
-    # v2: a code_step is a plain pointer row (commit_sha + path + verdict); there
-    # is nothing to decode. The JSON `used_project_formalizations` field was
-    # dropped with the projects feature (deferred to v2.1). Kept as the single
-    # read-side hook in case future presentation fields need shaping.
-    return row
 
 
-def _normalize_usage_day(row: dict) -> dict:
-    for key in ("input_tokens", "output_tokens", "total_tokens", "run_count", "session_count"):
-        row[key] = int(row.get(key) or 0)
-    row["cost_usd"] = float(row.get("cost_usd") or 0)
-    return row
 
 
-def _normalize_usage_model(row: dict) -> dict:
-    row["model"] = row.get("model") or "unknown"
-    for key in ("input_tokens", "output_tokens", "total_tokens", "run_count", "session_count"):
-        row[key] = int(row.get(key) or 0)
-    row["cost_usd"] = float(row.get("cost_usd") or 0)
-    return row
 
 
-def _normalize_usage_breakdown_row(row: dict) -> dict:
-    row = usage_metadata.decode(row)
-    for key in ("run_number", "ordinal", "input_tokens", "output_tokens", "event_count"):
-        row[key] = int(row.get(key) or 0)
-    row["turn"] = _optional_int(row.get("turn"))
-    row["candidate"] = _optional_int(row.get("candidate"))
-    row["cost_usd"] = float(row.get("cost_usd") or 0)
-    row["total_tokens"] = int(row["input_tokens"]) + int(row["output_tokens"])
-    return row
 
 
-def _normalize_run_policy(row: dict) -> dict:
-    row["autonomous"] = bool(row.get("autonomous"))
-    return row
 
 
 def _normalize_run(row: dict) -> dict:
@@ -4721,17 +4743,6 @@ def _normalize_run(row: dict) -> dict:
     return row
 
 
-def _duration_seconds(started_at: str | None, ended_at: str | None) -> int:
-    if not started_at or not ended_at:
-        return 0
-    from datetime import datetime
-
-    try:
-        started = datetime.fromisoformat(started_at)
-        ended = datetime.fromisoformat(ended_at)
-    except ValueError:
-        return 0
-    return max(0, int((ended - started).total_seconds()))
 
 
 def _usage_breakdown_from_raw_logs(session_id: str) -> list[dict]:
@@ -5011,8 +5022,6 @@ def _first_int(frame: dict[str, Any], key: str) -> int | None:
     return None
 
 
-def _optional_int(value: Any) -> int | None:
-    return int(value) if isinstance(value, int | float) else None
 
 
 def _walk_dicts(value: Any) -> list[dict[str, Any]]:

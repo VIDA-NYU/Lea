@@ -479,6 +479,10 @@ def publish_owned(run_id: str, relative: str, *, final: bool = False) -> dict | 
     if not match or match.get("semantic_key") != dep["semantic_key"]:
         return None
     with write() as conn:
+        from . import run_commands
+        token=run_commands.current_token()
+        if token and (not run_commands.owns(conn,run_id,token) or conn.execute('select stop_requested_reason from runs where id=?',(run_id,)).fetchone()[0]):
+            return None
         changed = conn.execute("""update project_dependencies set state='ready',owner_run_id=null,
             result_json=?,blocker_json=null,updated_at=? where id=? and owner_run_id=? and generation=?""",
             (library.dumps(match), utc_now(), dep["id"], run_id, dep["generation"])).rowcount

@@ -1,4 +1,5 @@
 """Read-only current and historical solver assessments."""
+from ..core_query_dispatch import database_query
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -23,6 +24,7 @@ class AssessmentComparisons(BaseModel):
 
 
 @router.post("/api/lea-status/compare")
+@database_query('assessments')
 @read_projection
 def compare_assessments(request: AssessmentComparisons):
     """One fresh read for inventory assessments; never starts checks or a model.
@@ -45,6 +47,7 @@ def compare_assessments(request: AssessmentComparisons):
 
 
 @router.post("/api/formalizations/{formalization_id}/lea-status/compare")
+@database_query('status_compare')
 def compare(formalization_id: str, request: SourceComparison):
     try:
         return {"lea_status": service.current(formalization_id, source_bundle=request.source_bundle,
@@ -56,6 +59,7 @@ def compare(formalization_id: str, request: SourceComparison):
 
 
 @router.get("/api/formalizations/{formalization_id}/lea-status")
+@database_query('status')
 def current(formalization_id: str, source_identity_hash: str | None = None, source_bundle_hash: str | None = None):
     try:
         return {"lea_status": service.current(formalization_id, source_identity_hash, source_bundle_hash)}
@@ -64,6 +68,7 @@ def current(formalization_id: str, source_identity_hash: str | None = None, sour
 
 
 @router.get("/api/formalizations/{formalization_id}/lea-status/updates")
+@database_query('status_history')
 def history(formalization_id: str, after: str | None = None, limit: int = 50):
     try:
         return service.history(formalization_id, after, limit)

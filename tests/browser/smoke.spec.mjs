@@ -56,6 +56,7 @@ test.afterAll(async () => {
 });
 
 test('current canvas requires recheck after an external edit and reload', async ({page}) => {
+  test.setTimeout(90000);
   await page.goto(`${base}/?session=${session}`);
   await expect(page.locator('.canvas')).toBeVisible();
   await expect(page.locator('.canvas')).toContainText('compiles');
@@ -67,6 +68,9 @@ test('current canvas requires recheck after an external edit and reload', async 
   const proof = path.join(proofRoot,matches[0]);
   expect(await fs.readFile(proof,'utf8')).toContain('trivial');
   await fs.writeFile(proof, 'theorem browser_proof : False := by bad_tactic\n');
+  // Queries report the worker's stated observation. Wait for the autonomous
+  // scan to notice the external edit; the browser cannot inspect disk itself.
+  await waitFor(async()=> (await (await fetch(`${base}/api/sessions/${session}`)).json()).code_steps.at(-1).check_current===false);
   await page.reload();
   await expect(page.locator('.canvas')).toContainText('recheck required');
   await expect(page.locator('.canvas')).not.toContainText('✓ compiles');
@@ -116,6 +120,7 @@ test('model settings preserve missing suggestions, refresh warnings and current 
 });
 
 test('Overleaf chats stay approval-free through LeaChat reloads and new project chats', async ({page}) => {
+  test.setTimeout(120000);
   const start = async (payload) => {
     const response = await fetch(`${base}/api/runs`, {
       method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(payload),
@@ -145,7 +150,10 @@ test('Overleaf chats stay approval-free through LeaChat reloads and new project 
     expect(response.ok(), JSON.stringify(run)).toBe(true);
     expect(run.autonomous).toBe(false);
     expect(run.approval_mode).toBe('none');
-    await expect.poll(async () => (await (await fetch(`${base}/api/runs/${run.run_id}`)).json()).status).toBe('proved');
+    // Admission is asynchronous; wait for durable completion independently of
+    // the journal/worker scheduling time, while retaining the policy assertions.
+    await expect.poll(async () => (await (await fetch(`${base}/api/runs/${run.run_id}`)).json()).status,
+      {timeout:30000}).toBe('proved');
     await expect(page.locator('.approval:not(.resolved)')).toHaveCount(0);
     await expect(page.getByTitle('Send', {exact:true})).toBeVisible();
     const detail = await (await fetch(`${base}/api/sessions/${run.session_id}`)).json();
@@ -167,6 +175,8 @@ test('Overleaf chats stay approval-free through LeaChat reloads and new project 
   const ordinary = await start({message:'Change a file. [stub:approvals]'});
   expect(ordinary.approval_mode).toBe('stepwise');
   await page.goto(`${base}/?session=${ordinary.session_id}`);
+  await expect.poll(async () => (await (await fetch(`${base}/api/sessions/${ordinary.session_id}`)).json()).active_run?.pending_approval?.tool_name,
+    {timeout:30000}).toBe('write_file');
   await expect(page.locator('.approval:not(.resolved)')).toBeVisible();
   const detail = await (await fetch(`${base}/api/sessions/${ordinary.session_id}`)).json();
   expect(detail.active_run.pending_approval.tool_name).toBe('write_file');

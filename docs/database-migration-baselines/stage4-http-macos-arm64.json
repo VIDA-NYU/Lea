@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-17T01:58:58.076390+00:00",
+  "workload": "synthetic history and SQLite operations; no paid solver or compiler",
+  "environment": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "release": "25.5.0",
+    "python": "3.14.4",
+    "sqlite": "3.53.1"
+  },
+  "measurements": [],
+  "http": {
+    "startup_ms": 1820.573,
+    "health": {
+      "ok": true,
+      "runtime_id": "f051ab610ff849dea86fbe5039ee6076",
+      "ready": true,
+      "restart_supported": false,
+      "lifecycle_state": "ready",
+      "active_runs": 0,
+      "active_operations": 0,
+      "queued_runs": 0,
+      "recovery_capability_version": 1,
+      "capabilities": {
+        "lea_status": {
+          "version": 1,
+          "admission_enabled": true,
+          "independent_checks": false,
+          "source_pause_policy": 1
+        },
+        "overleaf_source_refresh": {
+          "version": 1
+        },
+        "project_library": {
+          "version": 1,
+          "dependency_coordination": true
+        },
+        "reformalization": {
+          "version": 1,
+          "staging": true,
+          "serialization": "project",
+          "automatic_shared_files": true,
+          "admission_enabled": true
+        },
+        "core_projections": {
+          "version": 1,
+          "enrollment": "opt_in",
+          "observation_lifetime_seconds": 120
+        },
+        "commands": {
+          "version": 1,
+          "admission_enabled": true,
+          "synthetic_only": false,
+          "producer_kinds": [
+            "operator",
+            "compatibility"
+          ],
+          "kinds": [
+            "child.stop",
+            "operation.cancel",
+            "operation.dispatch",
+            "run.approve",
+            "run.execute",
+            "run.stop",
+            "runtime.control",
+            "synthetic.control",
+            "synthetic.echo",
+            "synthetic.editor",
+            "synthetic.uncertain"
+          ],
+          "external_kinds": [
+            "synthetic.control",
+            "synthetic.echo",
+            "synthetic.editor",
+            "synthetic.uncertain"
+          ],
+          "solver_admission": "local_compatibility_translator",
+          "solver_version": 1,
+          "controls_enabled": true
+        }
+      }
+    },
+    "health_read": {
+      "samples": 24,
+      "p50_ms": 9.047,
+      "p95_ms": 9.604,
+      "max_ms": 24.2
+    },
+    "disconnected_observer_does_not_cancel": true,
+    "reconnect_first_frame_matches": true,
+    "parked_session_detail": {
+      "samples": 24,
+      "p50_ms": 330.895,
+      "p95_ms": 657.801,
+      "max_ms": 810.565
+    },
+    "cancellation_acceptance": {
+      "samples": 8,
+      "p50_ms": 18.916,
+      "p95_ms": 45.013,
+      "max_ms": 45.013
+    },
+    "session_list": {
+      "samples": 24,
+      "p50_ms": 17.771,
+      "p95_ms": 178.43,
+      "max_ms": 271.576
+    }
+  },
+  "executor_capability": {
+    "available": true,
+    "backend": "macos-seatbelt",
+    "reason": null
+  },
+  "source_sha256": {
+    "scripts/benchmark-db-boundary.py": "ab7bd17e6560535a21bfe262773dd80e7600a334aa0224409cdcd24fef3abfec",
+    "apps/lea-standalone/adapter/app/db.py": "8adfa16d04ccd04df24291dd5e776a6ec84ad6225b494dd557694325188d4b99",
+    "apps/lea-standalone/adapter/app/store.py": "c8159c5d62f2be2b9fb3bbb85473de92d881a1220e5a8a7c3eb91c3a9bfd8077",
+    "apps/lea-standalone/adapter/app/bridge.py": "3ef574ce09acf0d396da28571f2e13ff3a8f83e234171229c97e26f46bc5f8db",
+    "apps/lea-standalone/adapter/app/commands.py": "e5ea37bd9f9863db0dfa7b7d4f90980a0e0f6258dcb474f9768556e4151c0e0d",
+    "apps/lea-standalone/adapter/app/command_host.py": "ba97ab6685cf2ff6cb54ea60f43eac920fbeb27ea1f56230c4fb8f1c66bc39df",
+    "apps/lea-standalone/adapter/app/run_commands.py": "7021a1b354f52ca4f53277b95311bc109e258beebd5c452ceeaf8fe12e2f0dff",
+    "apps/lea-standalone/adapter/app/command_execution.py": "e5d56a45ef4be96d21ebf6db2520fe292e1a6487707b840c3366f53dce80cc0e"
+  },
+  "peak_rss_platform_units": 56754176,
+  "limitations": [
+    "Synthetic fixtures do not measure provider/Lean latency or production project throughput.",
+    "Queue storage sweeps do not measure provider or solver service throughput.",
+    "WAL trial changes only the temporary database; current application journal policy is unchanged."
+  ]
+}

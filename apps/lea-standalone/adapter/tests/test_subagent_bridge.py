@@ -467,12 +467,16 @@ def test_run_lea_streams_child_progress_and_registers_stop(tmp_path, monkeypatch
     assert kids[0]["id"] not in bridge._child_session_to_result
 
 
-def test_forward_to_child_broker_translates_events():
+def test_forward_to_child_broker_translates_events(tmp_path, monkeypatch):
     # E1 first-class: a child's inner events are re-emitted onto its own run broker in the
     # normal SSE vocab, so its session view renders them with the same listeners as any run.
     from app import runbroker
-    b = runbroker.RunBroker("child-x")
-    started = {"child_id": "cs-1", "run_id": "child-x"}
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    child = store.create_session("Child")
+    run = store.create_run(child["id"], "fixture", None, 3)
+    b = runbroker.RunBroker(run["id"])
+    started = {"child_id": child["id"], "run_id": run["id"]}
     bridge._forward_to_child_broker(b, AssistantTextDelta("hi from child"), started)
     bridge._forward_to_child_broker(b, ToolCalled("lean_check", {"path": "C.lean"}), started)
     bridge._forward_to_child_broker(b, CheckResult("C.lean", "ok", None), started)
@@ -483,12 +487,16 @@ def test_forward_to_child_broker_translates_events():
                for t, p in items)
 
 
-def test_child_narration_commits_a_message_per_turn():
+def test_child_narration_commits_a_message_per_turn(tmp_path, monkeypatch):
     # The readability fix: each turn's narration is COMMITTED as a discrete message (on the
     # next turn / a tool call), so turns don't run together into one blob.
     from app import runbroker
-    b = runbroker.RunBroker("child-y")
-    started = {"child_id": "cs-2", "run_id": "child-y"}
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
+    db.init_db()
+    child = store.create_session("Child")
+    run = store.create_run(child["id"], "fixture", None, 3)
+    b = runbroker.RunBroker(run["id"])
+    started = {"child_id": child["id"], "run_id": run["id"]}
     # turn 1 narration, then a tool call flushes it as a message
     bridge._forward_to_child_broker(b, AssistantTextDelta("First I examine the files."), started)
     bridge._forward_to_child_broker(b, ToolCalled("read_file", {}), started)
@@ -500,7 +508,8 @@ def test_child_narration_commits_a_message_per_turn():
     assert msgs[0]["content"] == "First I examine the files."
     assert msgs[1]["content"] == "Now I write the proof."
     assert msgs[0]["id"] != msgs[1]["id"]           # distinct ids so the frontend keeps both
-    assert all(m["role"] == "assistant" and m["session_id"] == "cs-2" for m in msgs)
+    assert all(m["role"] == "assistant" and m["session_id"] == child["id"] for m in msgs)
+    assert [m["id"] for m in store.session_detail(child["id"])["messages"]] == [m["id"] for m in msgs]
 
 
 def test_run_lea_gives_child_a_first_class_broker_stream(tmp_path, monkeypatch):

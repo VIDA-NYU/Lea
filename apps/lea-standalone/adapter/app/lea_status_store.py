@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json
 from uuid import uuid4
-from lea.status_reporting import merge_assessment, validate_payload
+
 from .db import connect, write, utc_now
 
 
@@ -59,6 +59,7 @@ def invocation(run_id, invocation_key):
 
 
 def append(run_id, invocation_key, payload, snapshot, dependency_hash):
+    from lea.status_reporting import merge_assessment, validate_payload
     payload = validate_payload(payload)
     with write() as conn:
         prior_call = unpack(conn.execute("select * from lea_status_updates where run_id = ? and invocation_key = ?", (run_id, invocation_key)).fetchone())

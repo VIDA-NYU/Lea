@@ -41,7 +41,10 @@ def backfill_artifacts_from_registry(project: dict, proofs_root: Path, registry_
     if store.list_artifacts_for_scope(project["id"]):
         return 0
     try:
-        markdown = registry_path.read_text()
+        if registry_path.is_symlink():return 0
+        with registry_path.open('rb') as source:raw=source.read(4*1024*1024+1)
+        if len(raw)>4*1024*1024:return 0
+        markdown=raw.decode('utf8')
     except OSError:
         return 0
 
@@ -63,7 +66,9 @@ def backfill_artifacts_from_registry(project: dict, proofs_root: Path, registry_
         candidate = repo / rel
         if candidate.is_file():
             try:
-                content = candidate.read_text()
+                with candidate.open('rb') as source:raw=source.read(4*1024*1024+1)
+                if len(raw)>4*1024*1024:continue
+                content=raw.decode('utf8')
             except OSError:
                 content = ""
         store.upsert_artifact(

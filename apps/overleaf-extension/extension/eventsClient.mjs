@@ -10,7 +10,7 @@
 
 export const EVENTS_RECONNECT_MIN_MS = 1000;
 export const EVENTS_RECONNECT_MAX_MS = 60000;
-export const EVENT_TYPES = ["jobs-changed", "chat-updated", "repair-batch-updated", "source-refresh-requested", "project-identity-changed"];
+export const EVENT_TYPES = ["jobs-changed", "chat-updated", "repair-batch-updated", "resync", "project-identity-changed"];
 
 export function createEventsClient({
   url,

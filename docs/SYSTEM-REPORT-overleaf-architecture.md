@@ -1,5 +1,12 @@
 # LeaEcosystem system report — with focus on the Overleaf extension
 
+> Historical snapshot, superseded by the
+> [database boundary specification](FEATURE-database-mediated-lea.md) and
+> [Stage 8 runtime guide](STAGE8-process-boundary.md). The descriptions below of
+> in-process web execution, companion JSON ownership, filesystem-backed UI views
+> and Git-only proof content no longer describe the implementation. The API is
+> SQL/admission only; a separate worker owns execution and workspace publication.
+
 > Snapshot as of 2026-07-10 (main @ `15edcd1`). This documents the *current*
 > in-process architecture. (Correction, same day: the root `README.md` and
 > `apps/lea-standalone/README.md` were verified current — the earlier

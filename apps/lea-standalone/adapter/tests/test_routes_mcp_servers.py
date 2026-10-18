@@ -151,7 +151,7 @@ def test_test_endpoint_reports_the_real_failure(tmp_path, monkeypatch):
     """E0b: a bad command must come back as an actionable answer, not a 500 — and it
     must carry the child's real reason (A3), not the SDK's generic wording."""
     _setup(tmp_path, monkeypatch)
-    result = route.test_server(ServerTest(command="definitely-not-a-real-binary-xyz"))
+    result = route.test_server.worker(ServerTest(command="definitely-not-a-real-binary-xyz"))
     assert result["ok"] is False
     assert result["tool_count"] == 0
     # `reason` is the headline the form shows; it must name the thing that is wrong.
@@ -165,9 +165,9 @@ def test_test_endpoint_reports_the_real_failure(tmp_path, monkeypatch):
 def test_test_endpoint_validates_before_spawning(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     with pytest.raises(HTTPException):
-        route.test_server(ServerTest(transport="stdio", command=""))
+        route.test_server.worker(ServerTest(transport="stdio", command=""))
     with pytest.raises(HTTPException):
-        route.test_server(ServerTest(transport="http", url=""))
+        route.test_server.worker(ServerTest(transport="http", url=""))
 
 
 def test_preflight_answers_before_spawning(tmp_path, monkeypatch):
@@ -175,17 +175,17 @@ def test_preflight_answers_before_spawning(tmp_path, monkeypatch):
     instant and in plain language — not a traceback five seconds later."""
     _setup(tmp_path, monkeypatch)
 
-    missing = route.test_server(ServerTest(command="definitely-not-a-real-binary-xyz"))
+    missing = route.test_server.worker(ServerTest(command="definitely-not-a-real-binary-xyz"))
     assert missing["ok"] is False
     assert "can't find" in missing["reason"]
     assert missing["detail"] == ""          # nothing was spawned, so there is no stderr
 
-    not_a_project = route.test_server(ServerTest(
+    not_a_project = route.test_server.worker(ServerTest(
         command="sh", env={"LEAN_PROJECT_PATH": str(tmp_path)}))
     assert not_a_project["ok"] is False
     assert "lean-toolchain" in not_a_project["reason"]
 
-    nowhere = route.test_server(ServerTest(
+    nowhere = route.test_server.worker(ServerTest(
         command="sh", env={"LEAN_PROJECT_PATH": "/no/such/place"}))
     assert nowhere["ok"] is False
     assert "no folder" in nowhere["reason"]
@@ -194,7 +194,7 @@ def test_preflight_answers_before_spawning(tmp_path, monkeypatch):
 def test_defaults_offers_the_lean_workspace(tmp_path, monkeypatch):
     """A4: the one field a mathematician cannot supply — the adapter has always known it."""
     _setup(tmp_path, monkeypatch)
-    path = route.server_defaults()["lean_project_path"]
+    path = route.server_defaults.worker()["lean_project_path"]
     assert path is None or path.endswith("workspace")
 
 
@@ -206,7 +206,7 @@ def test_key_requirements_reports_what_is_missing(tmp_path, monkeypatch):
                                       env_from=["WOLFRAM_API_KEY"]))
     route.create_server(ServerPayload(name="Remote", transport="http",
                                       url="https://x.example", api_key_name="X_API_KEY"))
-    reqs = {r["env"]: r for r in route.key_requirements()["requirements"]}
+    reqs = {r["env"]: r for r in route.key_requirements.worker()["requirements"]}
     assert reqs["WOLFRAM_API_KEY"]["servers"] == ["wolfram"]
     assert reqs["X_API_KEY"]["servers"] == ["remote"]
     # Nothing is saved in a scratch config, so both read as missing — which is the
@@ -256,6 +256,8 @@ def test_static_routes_are_reachable_over_http(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     # `base_url` matters — netguard rejects TestClient's default `testserver` host
     # as a DNS-rebinding guard (see test_netguard.py).
+    from app import peripheral_views
+    for kind in ('server_defaults','key_requirements'):peripheral_views.capture(kind,{})
     client = TestClient(app, base_url="http://localhost:8001")
     for path in ("/api/mcp-servers/defaults", "/api/mcp-servers/key-requirements"):
         response = client.get(path)
@@ -267,23 +269,23 @@ def test_catalog_entry_is_pinned_and_installs(tmp_path, monkeypatch):
     """E2/A6. `uvx <pkg>` unpinned executes whatever PyPI serves that day — that, not
     privilege escalation, is the real exposure. A curated entry must be a fixed thing."""
     _setup(tmp_path, monkeypatch)
-    entries = route.list_catalog()["entries"]
+    entries = route.list_catalog.worker()["entries"]
     assert entries and entries[0]["id"] == "lean-lsp"
     assert entries[0]["installed"] is False
     args = entries[0]["server"]["args"]
     assert any("==" in a for a in args), f"catalog entry is not pinned: {args}"
 
-    installed = route.install_catalog_entry("lean-lsp")
+    installed = route.install_catalog_entry.worker("lean-lsp")
     assert installed["enabled"] is True
     assert any("==" in a for a in installed["args"])
     # The recommended SUBSET is what stops the overlap problem: `lean_goal` adds
     # something Lea lacks; `lean_leansearch` duplicates `search_mathlib`.
     assert "lean_goal" in installed["recommended_tools"]
     assert "lean_leansearch" not in installed["recommended_tools"]
-    assert route.list_catalog()["entries"][0]["installed"] is True
+    assert route.list_catalog.worker()["entries"][0]["installed"] is True
 
     with pytest.raises(HTTPException) as exc:
-        route.install_catalog_entry("nope")
+        route.install_catalog_entry.worker("nope")
     assert exc.value.status_code == 404
 
 
@@ -295,5 +297,7 @@ def test_catalog_route_is_reachable_over_http(tmp_path, monkeypatch):
     from app.main import app
 
     _setup(tmp_path, monkeypatch)
+    from app import peripheral_views
+    peripheral_views.capture('list_catalog',{})
     client = TestClient(app, base_url="http://localhost:8001")
     assert client.get("/api/mcp-servers/catalog").status_code == 200

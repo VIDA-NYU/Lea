@@ -49,6 +49,7 @@ class ToolApprovalRequested:
     policy (run_events just asks via the `gate` hook)."""
     tool_name: str
     args: dict
+    invocation_id: str | None = None
 
 
 @dataclass(frozen=True)

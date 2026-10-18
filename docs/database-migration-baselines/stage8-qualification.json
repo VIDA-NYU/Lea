@@ -1,0 +1,267 @@
+{
+  "version": 1,
+  "stage": 8,
+  "status": "development_snapshot_superseded_by_production_release_qualification",
+  "captured_at": "2026-10-17T23:07:48.367877+00:00",
+  "schema_head": "0048_process_boundary",
+  "native_environment": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "python": "3.14.4",
+    "sqlite": "3.53.1",
+    "lean": "Lean (version 4.29.0, arm64-apple-darwin24.6.0, commit 98dc76e3c0a9b856c9b98726b713fb04fab16740, Release)"
+  },
+  "boundary": {
+    "version": 1,
+    "ui_access": "database",
+    "command_direction": "ui_to_worker",
+    "processes": "separate",
+    "queries": 1,
+    "changes": 1,
+    "commands": 1,
+    "source_publications": 1,
+    "editor": 1
+  },
+  "gates": {
+    "native_selected_adapter": {
+      "passed": 163,
+      "skipped": 1,
+      "result": "163 passed, 1 skipped, 5 warnings in 197.32s (0:03:17)"
+    },
+    "native_final_lifetime_and_fencing": {
+      "passed": 17,
+      "result": "17 passed in 64.14s (0:01:04)"
+    },
+    "native_checkpoint_compatibility": {
+      "passed": 55,
+      "result": "55 passed in 39.45s"
+    },
+    "native_separate_process_editor": {
+      "passed": 1,
+      "result": "1 passed in 8.68s",
+      "report": "stage8-editor-macos-arm64.json"
+    },
+    "adapter_regression_file_ranges": {
+      "status": "completed_with_incremental_repairs_and_reruns",
+      "method": "Sorted test_*.py modules; after each first failure, repair and restart at that module. Prefixes overlap; these are not a single uninterrupted full-suite pass or additive unique counts.",
+      "segments": [
+        {
+          "local_log": "lea-stage8-full-gate.log",
+          "result": "222 passed, 1 warning in 174.27s (0:02:54)",
+          "first_failure_fixed": "checkpoint compatibility pin; exact documentation-only predecessor added"
+        },
+        {
+          "local_log": "lea-stage8-remaining-gate.log",
+          "result": "80 passed, 5 warnings in 45.40s",
+          "first_failure_fixed": "pure SQL report import; removed broad store dependency"
+        },
+        {
+          "local_log": "lea-stage8-remaining-final-gate.log",
+          "result": "180 passed, 1 skipped, 5 warnings in 95.61s (0:01:35)",
+          "first_failure_fixed": "report HTTP fixture; explicit private executor startup"
+        },
+        {
+          "local_log": "lea-stage8-remaining-reports-gate.log",
+          "result": "238 passed, 5 warnings, 1 error in 49.65s",
+          "first_failure_fixed": "netguard fixture; removed obsolete health capture"
+        },
+        {
+          "local_log": "lea-stage8-remaining-netguard-gate.log",
+          "result": "31 passed, 5 warnings in 3.39s",
+          "first_failure_fixed": "worker_process trigger classification; migration DOMAIN_TABLES added"
+        },
+        {
+          "local_log": "lea-stage8-remaining-observation-gate.log",
+          "result": "175 passed, 1 warning in 239.04s (0:03:59)",
+          "first_failure_fixed": "recovery assertion; worker lock diagnostic updated"
+        },
+        {
+          "local_log": "lea-stage8-remaining-recovery-gate.log",
+          "result": "21 passed, 1 warning in 6.92s",
+          "first_failure_fixed": "held unverifiable ownership lease; assert fail-closed takeover"
+        },
+        {
+          "local_log": "lea-stage8-remaining-recovery-final.log",
+          "result": "592 passed, 10 warnings in 756.35s (0:12:36)",
+          "exit_code": 0,
+          "passed": 592
+        }
+      ]
+    },
+    "linux_arm64_final_lifecycle_recovery": {
+      "passed": 42,
+      "skipped": 1,
+      "result": "42 passed, 1 skipped, 2 warnings in 104.24s (0:01:44)",
+      "skip": "Opt-in macOS native confined editor; Linux executor unsupported",
+      "source_mount": "read-only"
+    },
+    "javascript": {
+      "launcher_scripts": 18,
+      "extension_and_companion": 798,
+      "frontend": 126,
+      "failed": 0,
+      "total": 942
+    },
+    "browser": {
+      "distinct_cases_passed": 13,
+      "method": "Eight editor/selection cases passed in the initial full run; all five smoke cases passed after the static MIME-path correction. Counts overlap across runs."
+    },
+    "cross_layer_integration": {
+      "passed": 14,
+      "failed": 0,
+      "transport": "Separate API and scripted worker, stateless companion, real HTTP/SSE and SQLite; native confined manual repair included"
+    },
+    "container": {
+      "passed": true,
+      "report": "stage8-container.json",
+      "api_image_id": "sha256:a7790714d5c3f958b0c7ca920147c292d379ff2ac18bde9946814264355aafa3 linux/arm64",
+      "worker_image_id": "sha256:9264f3ae5ec63f793b1152ad9c2750bdb746d90b690feb43d928f3d30b8aa950 linux/arm64"
+    },
+    "frontend_typecheck": "passed",
+    "frontend_production_build": "passed; existing bundle-size advisory",
+    "boundary_inventory": "179 public adapter routes, 27 public companion dispatch branches; private worker branches inventoried separately",
+    "boundary_register_tests": {
+      "passed": 2,
+      "failed": 0
+    },
+    "compose_config": "validated",
+    "entrypoint_shell_syntax": "passed",
+    "git_diff_check": "passed"
+  },
+  "implementation_evidence": [
+    "API startup imports query/admission contracts only; fresh-process probes deny workspace/config I/O, prover/private imports, subprocesses and outgoing network.",
+    "API restart retains an active attempt and reuses its lost-acknowledgement receipt; worker crash retains API database reads.",
+    "Exclusive DB/workspace locks, private root binding, verifiable child leases, reaping before journal recovery, generation/epoch fencing and exact-target runtime controls prevent unsafe takeover.",
+    "Worker incompatibility and heartbeat expiry close execution admission; queued unsupported versions fail before attempts/effects.",
+    "Native editor diagnostics, goals, hover, completion and term goals return via SQL; the workspace is unchanged and results survive worker stop."
+  ],
+  "limitations": [
+    "Counts overlap across targeted suites, incremental broad reruns and browser reruns. They must not be summed into a unique test count.",
+    "Qualification uses temporary databases/workspaces and disposable local containers; no production database migration, deployed stack change, paid model request, image push or Git push was performed.",
+    "The API audit guard prevents accidental architectural violations and is not a malicious-code sandbox; deployment isolation additionally removes workspace/config mounts and uses a read-only API root.",
+    "Container qualification copies current API code into the cached runtime and removes the workspace. It is not a full production Dockerfile build or published multi-architecture release qualification.",
+    "Linux ARM64 SQL/process behavior is qualified. Native Linux proof execution remains unavailable without a supported confined executor; no unconfined fallback was added.",
+    "Native editor timings cover five small-file requests with prepared Lean/Lake caches; no production latency distribution, Mathlib throughput or paid inference capacity is claimed.",
+    "Checkpoint compatibility was expanded only for the exact executable-AST-identical LSP module documentation change; settled-turn and all other validation remain enforced."
+  ],
+  "source_sha256": {
+    ".github/workflows/publish-image.yml": "bd39508b47c6ceeb19d16299e80d85946880f3327d5efbdc73ecf82afda7ed71",
+    "apps/lea-standalone/Dockerfile": "df0b4551e9e8b1c839a792b556bb6300f01853bd51b649b79e65b45b929dbb6e",
+    "apps/lea-standalone/adapter/app/admission_policy.py": "c909926ed2d388d98a76f3c1ffb9c310d9cffcc65f78b12e19b0502731ba56e0",
+    "apps/lea-standalone/adapter/app/api_boundary.py": "7e4873479e4f70d0ac0f8d437d9ca7505e1bdb3c594a534462280975a2c6947e",
+    "apps/lea-standalone/adapter/app/api_contracts.py": "578ffa3407c42b650eccd5c1bbe21360d894ecbaae95f4c7f4b2a9993011ec40",
+    "apps/lea-standalone/adapter/app/api_routes/__init__.py": "f96393ca27d546b49de7a8bac79f3431997dcfc0ca5d7624869f57d3cc513525",
+    "apps/lea-standalone/adapter/app/api_routes/alignment_checks.py": "0a573db3f46eac4a469959088093ffd64e35eb5fd398d9425ce0dab957d90979",
+    "apps/lea-standalone/adapter/app/api_routes/commands.py": "12f81041af8f5834556311a477a2e09654e5fdfea9c59257d0614b50b15ed115",
+    "apps/lea-standalone/adapter/app/api_routes/companion.py": "7e91a998a37eeccb938df2cd1819f29d317122219856dc1dada0b558293a6acd",
+    "apps/lea-standalone/adapter/app/api_routes/custom_tools.py": "a2826a188fb123382db6ed1dc2847bed6e1adb812a0ff23905b467c0641b9f92",
+    "apps/lea-standalone/adapter/app/api_routes/editor.py": "64927cebc63de3f23e7076ef9faa4296cc67406a5d7000721829816dc18ef86d",
+    "apps/lea-standalone/adapter/app/api_routes/formalizations.py": "e8e0c4e782f5f12446115278cc2588259a98cc5049035cfd83ebffb60ad28355",
+    "apps/lea-standalone/adapter/app/api_routes/formalize_batch_reports.py": "56c0b9f6585b441a722be62be2d5e1b648f426aae77ab84d15744450b1743ab3",
+    "apps/lea-standalone/adapter/app/api_routes/lea_status.py": "c2d885322f8a841287d981e32df3de4def373c0a3b8d3c47e81835c96e785ef1",
+    "apps/lea-standalone/adapter/app/api_routes/mcp_servers.py": "e5d85c7acb9d1f6ea9b176c7d7798939dd3e8e3c6aa1ca4a201a1425ef5dbbab",
+    "apps/lea-standalone/adapter/app/api_routes/observation.py": "b0c920a6350b80145ae7fca3ca0b793f29a6c91c93ea9aef6dacc28f72ce2a1f",
+    "apps/lea-standalone/adapter/app/api_routes/overleaf_source.py": "e9b97d5ff0c6b063712b30a7ff68b5ddce966cbc3acd4929aa3e747d54b220d5",
+    "apps/lea-standalone/adapter/app/api_routes/project_library.py": "2482bfe7b143c9097227576c4fe68cbb87a57dda669098a3b1729bb7aa776c58",
+    "apps/lea-standalone/adapter/app/api_routes/projects.py": "7e51a94b0c8ae2269e477b19597a6fb9e59b3563104b662c685d4343e2f8c80c",
+    "apps/lea-standalone/adapter/app/api_routes/runs.py": "2caba46f71b7cf83126dcf2c73d9834b5b5ca2840da2b36f2103fdf58725a6b3",
+    "apps/lea-standalone/adapter/app/api_routes/search.py": "1664595dc3971a1c8f2e1032b07b923109834bfbc4403270d6a92fdc80902905",
+    "apps/lea-standalone/adapter/app/api_routes/sessions.py": "5e23e17ae6348c822e6c370b2cde84b11bb62cc4439ed77ece8097f0aa3843e8",
+    "apps/lea-standalone/adapter/app/api_routes/settings.py": "f10db4d605e03e0d2d4ac7ab8735a653a84fe54ca00832668d843f05a7b2f726",
+    "apps/lea-standalone/adapter/app/api_routes/skills.py": "7fd89755f0110f8417620eba7a6686b48836a114d16a4cd967fabaccb67b608b",
+    "apps/lea-standalone/adapter/app/api_routes/subagents.py": "51f778d0e2d307673d5f0a226d0b16893d85ed3dba377fd636292d98d8b81c83",
+    "apps/lea-standalone/adapter/app/api_routes/workspace.py": "27d79316965fec19097423706f62a3577d905b885c95876a5d5102a2268abfd4",
+    "apps/lea-standalone/adapter/app/bootstrap.py": "7a846164e301696ce025d0b74f0392e305958039afb0d22b1874f8b48e19a09b",
+    "apps/lea-standalone/adapter/app/checkpoint_compatibility.json": "71808b2b985976a950065852fb58b074917d9be269121326317735074ea80cbd",
+    "apps/lea-standalone/adapter/app/checkpoint_queries.py": "bca4491611d6c7e3b88526d40fe2781e25be83d610f15ab1382e01cc21cd144b",
+    "apps/lea-standalone/adapter/app/command_execution.py": "fa8daf438fe26a07c5c1e02c40be08135dc75216f3240664ec9c4f205a19e5d4",
+    "apps/lea-standalone/adapter/app/command_host.py": "b23dce2fc61b76b63e34bf547d5b3f87d27f57573333bf554fc098a3af0beb51",
+    "apps/lea-standalone/adapter/app/commands.py": "58e37b990b3e7015871257686422770bd00970c8d80b8f1e5c65475a3600c7bd",
+    "apps/lea-standalone/adapter/app/companion_service.py": "0e3277f342dc2011644b5d3915fd1a3eaf7872ddf77785ec5b450b214b88d38d",
+    "apps/lea-standalone/adapter/app/companion_worker.py": "1e2ce6b984ea4bcc43e311dd07087b645db84d311d4ffdf48efbb7b9d759c2fb",
+    "apps/lea-standalone/adapter/app/config.py": "121e03b61f45478e4fb0bb017d0cfde9086c68e71f76b6bbb3594aedb42a7a7f",
+    "apps/lea-standalone/adapter/app/db.py": "686c6a6de3ccb88ee5464a5398f3f6e31dd65ac8e96d7e654cd07f93eef22754",
+    "apps/lea-standalone/adapter/app/dependency_intake.py": "d5471acddc702c5885a6cfea72882b5ee77de407b0be499e29325ab2ea61829b",
+    "apps/lea-standalone/adapter/app/editor_service.py": "f517146650d4e537b125d8e81475f375a0353523471f5fd7f045e9847e24c762",
+    "apps/lea-standalone/adapter/app/editor_worker.py": "67d66ffbdcaf5b4ada1d5e56bd62febbcc4c7f345e855d2f291ff8103e2496d0",
+    "apps/lea-standalone/adapter/app/main.py": "402bef72787a4fb30d3a3b71fb9ba059aa9216c304921449aa6007b3f693cdc7",
+    "apps/lea-standalone/adapter/app/peripheral_views.py": "41a3ea2feb0086a251717fb5b97064abe20098c367fbf263e998da4722ddf796",
+    "apps/lea-standalone/adapter/app/process_state.py": "8ed8ed4ab1eace6e0f0ada9e7b9c80a5cef7a4cb62dc247b459e678939c95053",
+    "apps/lea-standalone/adapter/app/project_coordination.py": "82a106a25f64757d054d75d954296315416f8fcd87ccde51638ae5049bc9bdcb",
+    "apps/lea-standalone/adapter/app/project_intake.py": "b0e0f787a6513f77f51e2ecd52721e2a518a0bbf0850946ee9926e881c10d2c0",
+    "apps/lea-standalone/adapter/app/public_errors.py": "e04c744392c00d001b0dd760a87223f9880d5a563722db44803da729ce6646e8",
+    "apps/lea-standalone/adapter/app/queries/__init__.py": "ece6b09f1d02c90bbfdd16c5d3943f2df9c3955907cb558817ab4d3640dce7b1",
+    "apps/lea-standalone/adapter/app/queries/alignment.py": "725b52f1914f8bb2442016a538a8662591dc226a7bb0c20422bff16b9d859b64",
+    "apps/lea-standalone/adapter/app/queries/core.py": "260bd9b0abb0aabd1de89391efff8bac43342f27369f06704cd1c192ed1065c3",
+    "apps/lea-standalone/adapter/app/queries/files.py": "5b3e8b77d0c2de719e85ad05db1d3422ca86e6fbb1038eb6159340fe132cd1e8",
+    "apps/lea-standalone/adapter/app/queries/formatting.py": "143906db1e6e867ecae250f42b3b9f24446ca6bb4bfc97be836423717391368b",
+    "apps/lea-standalone/adapter/app/queries/identity.py": "b0fa99ccf3bb26c676bc9eddcd39d498a003d9a301287e0e5f6d2482fc737356",
+    "apps/lea-standalone/adapter/app/queries/proofs.py": "e03a3696b4aa024878ee449e722c1bc25551a9dd70d32956a2bff05bb6be5af1",
+    "apps/lea-standalone/adapter/app/queries/reports.py": "21b98135e04b92088d710d35d8bebb125a59b1783287b771f75d05391421f99f",
+    "apps/lea-standalone/adapter/app/queries/sessions.py": "93f23c5425b091577b66e3899301f2fc02edb0a0e049b2b45e9e53162306baa2",
+    "apps/lea-standalone/adapter/app/queries/sources.py": "16359a03b2461780e0b49b9f4d1ed565fe96b1121d5a1c453f64358a868bce7a",
+    "apps/lea-standalone/adapter/app/queries/status.py": "33d5d8655932c09239202922f39bfdf230442e96b3931de16320c930344a4666",
+    "apps/lea-standalone/adapter/app/queries/status_storage.py": "da6f7d9c97d5bceb5ff57a8d6503e40c19936e27138b8d3cf7a261abcef5a8b0",
+    "apps/lea-standalone/adapter/app/queries/usage.py": "bee0757afd7381a22ff61f032166345c469f01111ac9ff1e7750ccaa1fdd8add",
+    "apps/lea-standalone/adapter/app/read_projections.py": "eafb2a55a2c6f45cdbb00c3f262842afd019f0fc861fc1b2d5f8067ecc98e986",
+    "apps/lea-standalone/adapter/app/reformalization_intake.py": "1860d0d290709cf1b75a06a7063f6b584922d90917d196a3b7a2a66eb0a48cf6",
+    "apps/lea-standalone/adapter/app/run_commands.py": "0b48acfdfa73970ac071c6b229336cbb050b5b655d8f62def9a145cf3127a075",
+    "apps/lea-standalone/adapter/app/runtime.py": "937e6a6a179b7106000065a3c02fb0ca6fd17cd04ac6d75d304d56f3058e74b1",
+    "apps/lea-standalone/adapter/app/settings.py": "c0c6b77c24929ee233a8bd04e3be44afc6760d2424a933a2d41e3b5fe8eaccef",
+    "apps/lea-standalone/adapter/app/settings_policy.py": "7b72523648167c7107847dc5124372b2cd9ce14337e1ea1e6d07f793b9906c9a",
+    "apps/lea-standalone/adapter/app/source_publications.py": "bbc6d5e8420a239dfca3b521fd3c64374c33f01b447481a672594be2b38b66b9",
+    "apps/lea-standalone/adapter/app/store.py": "4ebf025e77a0dea5074ed130a2bb3c0075636a69125f792b866617891a5f95dc",
+    "apps/lea-standalone/adapter/app/upload_intake.py": "ba3956542cd930cba83ae5b778a66bc612a2862e65ca410955df1b7b1452bc83",
+    "apps/lea-standalone/adapter/app/url_policy.py": "5a88375df59107913ec576f4460fe5dbeb3423097d389f6551f8e6ebd805ae83",
+    "apps/lea-standalone/adapter/app/usage_details.py": "fa4ffe9f049865e56fb46addbcc5a9f173c28aa93cbd001fc6665bbdad4d7313",
+    "apps/lea-standalone/adapter/app/worker.py": "67fe7d8184c845be1632e3c437baffa78485c8d4b92a179d48fe1307c3965c63",
+    "apps/lea-standalone/adapter/app/workspace_commands.py": "2f7efeefd647fff1e94cf95eef9cfbf6d934d4d9bc8b1518d972876607d7611c",
+    "apps/lea-standalone/adapter/bootstrap.py": "a3fe3f03bb52394f848fe35d8a764adbe3fe3f324db51b77efb5a5a3556f5976",
+    "apps/lea-standalone/adapter/migrations/versions/0048_process_boundary.py": "c790b6e6154ccbaa27d65212e0ccab55e0b54e8c1b92c533ba916606c4d333cb",
+    "apps/lea-standalone/adapter/pyproject.toml": "56504d49f45b85e030b6eb1f54744fe3545f688f1c9d570d8b01a12a0d882f0b",
+    "apps/lea-standalone/adapter/run_api.py": "d36fa63fad5e0be77cfcd87d99bba7ac8f6925ea9f65ad2666cd9c7def291bf4",
+    "apps/lea-standalone/adapter/run_worker.py": "ce645423148abf001c83f7ebfa146e0f3a5950bc91fc39a9dc51da935dd7a09d",
+    "apps/lea-standalone/adapter/tests/process_boundary_worker.py": "d3f740d6053cab21af393decf792854856474970cb8beac299836923f73cb9fc",
+    "apps/lea-standalone/adapter/tests/test_process_boundary.py": "c3a95794e930374c86249e2fd551a2b1e184650bd1094d29abbb953aba478c33",
+    "apps/lea-standalone/adapter/tests/test_process_restart.py": "7bc83f12c3ae142ec83a1d2358823f8c7696431b8c085d1727c1744de6490f15",
+    "apps/lea-standalone/adapter/tests/test_recovery.py": "69c01e5f1446dc0067f5041538ff7c922a80fcfd5641c97600afd00fe6d1d3b7",
+    "apps/lea-standalone/adapter/tests/test_shutdown.py": "8d5f36fdab83d52843a283491b16eb774910d2daf46979da63b89bafd991f81b",
+    "apps/lea-standalone/adapter/tests/test_startup_inventory.py": "b959a9926ec5f893e08a8ab073171c9228677d0b4bd20ea6b0d16a95282ac93f",
+    "apps/lea-standalone/adapter/worker_health.py": "f7ed14113d4b2d126e4f49e0bc422877a6d7e9f16dd21bb76ad8aa6c1b1f9f71",
+    "apps/lea-standalone/docker-compose.dev.yml": "75bc20a4177c2a5d31772eae1af8d0b5bbd766a8463981ee1e16f2241ba97239",
+    "apps/lea-standalone/docker-compose.yml": "889ca4aba5ba4b02cdf5419c195573e8a981033fa20ca6721301a74352297c5e",
+    "apps/lea-standalone/docker/entrypoint.sh": "79cbaf170d4030382ffc9a18ba98a3c100f55ed031edc91e5bc6c7b00dea2e1b",
+    "apps/lea-standalone/prover/lea/lsp_daemon.py": "452bd08070ca3723bed417bace042ade66474dc1f9bc55329ceed305a82374eb",
+    "apps/lea-standalone/prover/lea/process_ownership.py": "9ae07a540804d6a8e3f7d07b38ac420c936e8827556a6ef0041d32f3b221883e",
+    "apps/lea-standalone/src/main.tsx": "e3961f630c548f4ddfe75b790a78bbeaf54f99940e1bd507616ab4e2de9e1836",
+    "apps/overleaf-extension/companion/leaApiClient.mjs": "250ce04465c43f72d6c50be0cba03d24bb160d0f3a8486901841ffce6105c64f",
+    "apps/overleaf-extension/companion/server.mjs": "e05eb447922dcdcf094034105aa433476ae52fe8fd3b8b3e11e672decdd0160a",
+    "docs/database-boundary-inventory.json": "528cec4d84fcb449cec27087c60fb8ca8270007b2c4ec4d27fdfd6222aa8e015",
+    "packages/lea-workspace-client/index.d.mts": "d804a4ca4b43d729be11b079a24e655e465a405b2c4cb4b294b4f6e2be25fdf9",
+    "packages/lea-workspace-client/index.mjs": "b684cb3ed90a2d66df5eef3393aa5497884be669ab6c6beeaca483c21e79b4ad",
+    "scripts/audit-ui-boundaries.py": "16b254d323e30b65507c68dcf818a9d1ce5c5ebd1e302ac95430375f9bef245b",
+    "scripts/service-env.mjs": "a80abd9ae25e87b2b082115c62be64856ec912a9d0c2fc681fd164849375231d",
+    "scripts/service-env.test.mjs": "b9b456e60cd6493dc9415c22e9c24e86ae83c1f43bf42777a93da93a375e6476",
+    "scripts/supervisor.mjs": "900a7630db691f124d8e415a0308a82f16d89c7de7d047c562ba6f3f1fc18da9",
+    "tests/integration/adapter_entry.py": "fdd52a8e596be368e1f283db83f3f53db5e86b4deccb7fd782d7c54dddee2c03",
+    "tests/integration/process_boundary_container.py": "1e065c607bacd4234e8b8621d6a029e405e8bf24ca47241547f2e7bf135a10d9"
+  },
+  "original_status": "implemented_and_locally_qualified_release_gates_open",
+  "status_scope": "Historical development evidence: captured_at, source_sha256, gate results and limitations retain their original scope. The subsequent report qualifies the repaired production source and exact binary pair.",
+  "open_release_gates_at_capture": [
+    "Build and qualify the final production API, worker and companion images for each supported native architecture; publish and pin a matching immutable role bundle.",
+    "Complete native AMD64 and any additional supported confined-runtime qualification; do not advertise unsupported Linux native execution.",
+    "Certify and pin an actual prior schema/journal-compatible strict release and rehearse that binary rollback. No compliant published predecessor currently exists; pre-Stage-8 in-process binaries are forbidden automatic rollback targets."
+  ],
+  "release_followup": {
+    "status": "requested_release_gates_complete",
+    "report": "stage8-release-qualification.json",
+    "workflow_run": "https://github.com/darturi/UnifiedLeaEcosystem/actions/runs/39081557247",
+    "native_architectures": [
+      "amd64",
+      "arm64"
+    ],
+    "registry_publication": "not performed",
+    "production_deployment": "not performed"
+  }
+}

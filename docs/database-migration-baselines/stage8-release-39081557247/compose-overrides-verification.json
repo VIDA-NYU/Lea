@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "architecture": "amd64",
+      "bundle": "baseline",
+      "result": "passed",
+      "api_db_mount_only": true,
+      "api_read_only_and_cap_drop_all": true,
+      "shared_ownership_volume": true,
+      "exact_image_ids_and_no_pulls": true
+    },
+    {
+      "architecture": "amd64",
+      "bundle": "candidate",
+      "result": "passed",
+      "api_db_mount_only": true,
+      "api_read_only_and_cap_drop_all": true,
+      "shared_ownership_volume": true,
+      "exact_image_ids_and_no_pulls": true
+    },
+    {
+      "architecture": "arm64",
+      "bundle": "baseline",
+      "result": "passed",
+      "api_db_mount_only": true,
+      "api_read_only_and_cap_drop_all": true,
+      "shared_ownership_volume": true,
+      "exact_image_ids_and_no_pulls": true
+    },
+    {
+      "architecture": "arm64",
+      "bundle": "candidate",
+      "result": "passed",
+      "api_db_mount_only": true,
+      "api_read_only_and_cap_drop_all": true,
+      "shared_ownership_volume": true,
+      "exact_image_ids_and_no_pulls": true
+    }
+  ]
+}

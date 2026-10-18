@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { reconcilePendingJobUsage } from "../companion/server.mjs";
+import { reconcilePendingJobUsage } from "../companion/workerService.mjs";
 import { createEventBus } from "../companion/eventBus.mjs";
 
 test("late timeout settlement records exact-run usage without rewriting the original job", async (t) => {

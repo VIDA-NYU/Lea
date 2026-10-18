@@ -1,7 +1,8 @@
 """Persistent Lean servers, with bounded recovery and per-Lake-root ownership.
 
-The editor WebSocket server is independent. This module owns only subprocesses it
-starts, and a check is complete only after exact-version diagnostics and Lean's
+The queued editor worker uses a separate pool of non-certifying daemon instances.
+This module owns only subprocesses it starts, and a check is complete only after
+exact-version diagnostics and Lean's
 waitForDiagnostics barrier have both arrived.
 """
 from __future__ import annotations

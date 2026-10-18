@@ -300,6 +300,15 @@ def _accept(op, journal_id, journal, commit):
     fid, sid, rid = (journal.get('helper') or {}).get('formalization_id', op['formalization_id']), op['session_id'], op['root_run_id']
     project = store.get_project(op['project_id'])
     with db.write() as conn:
+        if journal.get('workspace_command'):
+            from . import commands
+            if not commands._owned(conn,journal['workspace_command']):
+                raise PreservationConflict('The workspace command no longer owns publication')
+        if journal.get('command_token'):
+            from . import run_commands
+            current=conn.execute('select stop_requested_reason from runs where id=?',(rid,)).fetchone()
+            if not current or current[0] or not run_commands.owns(conn,rid,journal['command_token']):
+                raise PreservationConflict('The solver command was cancelled or fenced before publication')
         operation_state = conn.execute('select state,request_json from reformalization_operations where id=?', (op['id'],)).fetchone()
         if (operation_state['state'] not in {'active', 'applying', 'worker'}
                 or json.loads(operation_state['request_json']).get('_cancelled')):
@@ -533,20 +542,20 @@ def restore(op, journal_id, journal, *, committed=False):
     return not conflict
 
 
-def apply(operation_id, selection, outcome, *, assessment=None, helper=None):
+def apply(operation_id, selection, outcome, *, assessment=None, helper=None,command_token=None):
     op = operations.get(operation_id)
     # Acquire publication ownership before preparing any durable journal. A
     # blocked contender has neither changed files nor left recovery work behind.
     with operations.acting(operation_id), project_coordination.application(
             op['project_id'], op['manifest']['canonical_root']):
-        receipt = _apply(operation_id, selection, outcome, assessment=assessment, helper=helper)
+        receipt = _apply(operation_id, selection, outcome, assessment=assessment, helper=helper,command_token=command_token)
         if helper and op['request'].get('_foreground_owner'):
             from .reformalization_helpers import refresh_parent
             refresh_parent(operation_id)
         return receipt
 
 
-def _apply(operation_id, selection, outcome, *, assessment=None, helper=None):
+def _apply(operation_id, selection, outcome, *, assessment=None, helper=None,command_token=None):
     op = operations.get(operation_id)
     if op['state'] not in {'active', 'worker'}:
         raise PreservationConflict('This operation no longer owns publication')
@@ -558,7 +567,17 @@ def _apply(operation_id, selection, outcome, *, assessment=None, helper=None):
     journal.update(outcome=outcome, files={}, checks={}, reports=assessment['reports'], helper=helper,
                    candidate_checks=assessment['checks'], candidate_workspace=assessment['workspace'],
                    approval_id=(op.get('result') or {}).get('approval_id'))
+    if command_token:
+        journal['command_token']={k:command_token[k] for k in ('id','owner','worker_epoch','generation','attempt_id')}
+    from .workspace_commands import current as workspace_command, authorize
+    if workspace_command():
+        journal['workspace_command']={k:workspace_command()[k] for k in ('id','owner','worker_epoch','generation','attempt_id')}
     with db.write() as conn:
+        authorize(conn)
+        if command_token:
+            from . import run_commands
+            if not run_commands.owns(conn,op['root_run_id'],command_token):
+                raise PreservationConflict('The solver command no longer owns publication')
         for rel, content in assessment['changes'].items():
             before = manifest['files'].get(rel)
             journal['files'][rel] = {'before_blob': before['blob_id'] if before else None,
@@ -723,7 +742,8 @@ def publish_helper(op, dep, report, selected):
     selection = {'path': relative, 'declaration': dep['declaration_name'],
                  'kind': 'defined' if selected['kind'] != 'theorem' else 'proved'}
     assessment = _stage_assessment(helper_op, selection, target_name=dep['declaration_name'])
-    apply(op['id'], selection, selection['kind'], assessment=assessment, helper=dep)
+    from .run_commands import current_token
+    apply(op['id'], selection, selection['kind'], assessment=assessment, helper=dep,command_token=current_token())
     return {'outcome': 'published', 'dependency': project_dependencies_get(dep['id'])}
 
 

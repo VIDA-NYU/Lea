@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { handleLeanPaneEditSave, handleLeanPaneEditStart, handleLeanPaneManifest } from "../companion/server.mjs";
+import { handleLeanPaneEditSave, handleLeanPaneEditStart, handleLeanPaneManifest } from "../companion/workerService.mjs";
 import { formatDependentOutcome } from "../extension/leanPaneView.mjs";
 
 async function makeLeaRepo() {

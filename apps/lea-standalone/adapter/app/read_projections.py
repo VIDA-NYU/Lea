@@ -3,7 +3,7 @@ from contextvars import ContextVar
 from functools import wraps
 
 from fastapi import HTTPException
-from lea.check_evidence import ReadSnapshot
+
 
 _active = ContextVar('proof_read_snapshot', default=None)
 _artifacts = ContextVar('artifact_read_snapshots', default=None)
@@ -34,6 +34,7 @@ def read_projection(fn):
         if _active.get() is not None:
             return fn(*args, **kwargs)
         for _ in range(2):
+            from lea.check_evidence import ReadSnapshot
             snapshot = ReadSnapshot()
             token = _active.set(snapshot)
             artifact_token = _artifacts.set({})
@@ -48,3 +49,10 @@ def read_projection(fn):
             detail={'error': 'proof_environment_changing', 'message': 'Proof inputs changed while loading; retry.'},
             headers={'Retry-After': '1'})
     return read
+
+
+def __getattr__(name):
+    if name=='ReadSnapshot':
+        from lea.check_evidence import ReadSnapshot
+        return ReadSnapshot
+    raise AttributeError(name)

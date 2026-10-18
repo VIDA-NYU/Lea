@@ -218,10 +218,10 @@ def test_refresh_endpoint_preserves_envelope_and_returns_immediately(setup, monk
     from app.routes import settings as routes
     service, *_ = setup
     monkeypatch.setattr(catalog, "_service", service)
-    payload = routes.models()
+    payload = routes.models.worker()
     assert {"models", "featured", "revision", "sources", "warnings"} <= payload.keys()
     monkeypatch.delenv("LEA_MODEL_CATALOG_OFFLINE", raising=False)
-    result = routes.refresh_models()
+    result = routes.refresh_models.worker()
     assert result["refreshing"]
     assert service.wake_event.is_set()
 

@@ -28,6 +28,7 @@ def client(tmp_path, monkeypatch):
     never reach the check they are about."""
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
     from app.main import app
+    db.init_db()
     return TestClient(app, base_url="http://localhost:8001")
 
 

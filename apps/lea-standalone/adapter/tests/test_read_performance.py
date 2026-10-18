@@ -70,7 +70,7 @@ def test_inventory_target_sync_does_not_wait_for_compiler_lease(database, tmp_pa
         pending = None
         try:
             assert entered.wait(2)
-            pending = pool.submit(routes.sync_project_formalizations_by_slug, project['slug'], request)
+            pending = pool.submit(routes.sync_project_formalizations_by_slug.worker, project['slug'], request)
             try:
                 result = pending.result(timeout=1)
             except TimeoutError:
@@ -149,7 +149,7 @@ def test_inventory_target_sync_retains_project_reservation(database, monkeypatch
 
     monkeypatch.setattr(routes.github_import_service, 'sync_targets', sync)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        pending = pool.submit(routes.sync_project_formalizations_by_slug, project['slug'], request)
+        pending = pool.submit(routes.sync_project_formalizations_by_slug.worker, project['slug'], request)
         try:
             assert entered.wait(2)
             with pytest.raises(HTTPException) as exc:

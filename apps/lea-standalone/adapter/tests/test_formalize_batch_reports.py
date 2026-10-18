@@ -265,7 +265,22 @@ def test_project_report_routes_persist_and_read_after_generation(tmp_path, monke
     with TestClient(app, base_url="http://127.0.0.1:8001") as client:
         created = client.post(root, json=payload())
         assert created.status_code == 200
-        assert created.json()["facts"]["counts"]["verified"] == 1
+        assert created.json()['command']['state']=='queued'
+        # HTTP lifespan is SQL-only. Start the private executor explicitly in
+        # this embedded domain fixture; real process separation is tested apart.
+        from app.routes import formalize_batch_reports as private_report_routes
+        from app import command_host
+        command_host.start()
+        import time
+        command_id=created.json()['command']['id']
+        deadline=time.monotonic()+15
+        while True:
+            result=client.get('/api/workspace/commands/'+command_id).json()['command']
+            if result['state'] in {'succeeded','failed'}:break
+            assert time.monotonic()<deadline,result
+            time.sleep(.05)
+        assert result['state']=='succeeded',result
+        assert result['result']['facts']['counts']['verified']==1
         assert client.post(root, json=payload()).status_code == 200
         listed = client.get(root).json()
         assert listed["reports"][0]["batch_id"] == "formalize-batch-1"

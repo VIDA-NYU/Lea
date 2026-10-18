@@ -28,15 +28,16 @@ behind two local front ends and one shared backend.
 - **`packages/lea-model-catalog/`** — the shared provider/model catalog consumed
   by both apps.
 
-The architectural center is the FastAPI adapter on **`http://127.0.0.1:8001`**.
-It imports the vendored prover at `apps/lea-standalone/prover/` in-process and
-maps the prover's typed events onto the browser's SSE stream. There is no
-separate Lea API server to start, and no separate prover checkout to initialize.
+The FastAPI API on **`http://127.0.0.1:8001`** reads application state from SQLite
+and admits regulated commands. A separate singleton worker owns the workspace,
+the vendored prover, compiler processes, recovery and publication. Restarting the
+API leaves worker tasks running; worker downtime leaves database views readable.
 
-The adapter owns the persistent local timeline: SQLite stores sessions, runs,
-messages, usage, and code-step metadata; git stores proof content under the
-prover workspace. Overleaf-created formalizations go through the same adapter, so
-they appear in the standalone UI and can be opened with a `?session=<id>` link.
+SQLite owns the timeline, proof bytes, source publications and results. Git
+records workspace provenance. Both front ends observe committed database state;
+Lea cannot change their selection or navigate them. See the governing
+[database boundary specification](docs/FEATURE-database-mediated-lea.md) and
+[Stage 8 runtime and upgrade guide](docs/STAGE8-process-boundary.md).
 
 ## Quick start
 
@@ -100,11 +101,11 @@ same running container; no separate local toolchain is required.
 
 ### Option B — Local install (macOS / Linux)
 
-Needs three toolchains — **Node 22**, **[uv](https://docs.astral.sh/uv/)**, and
+Needs three toolchains — **Node 22.13 or newer**, **[uv](https://docs.astral.sh/uv/)**, and
 the **[Lean toolchain (elan)](https://leanprover.github.io/)**. The bundled
 bootstrap installs the missing ones for you.
 
-1. **Install Node 22** if you don't have it (https://nodejs.org, or `nvm install 22`).
+1. **Install Node 22.13 or newer** if you don't have it (https://nodejs.org, or `nvm install 22`).
    Check with `node --version`.
 2. **Clone this repo:**
    ```sh
@@ -147,7 +148,7 @@ npm run setup
 
 This checks prerequisites, installs workspace Node dependencies, writes root
 `.env` defaults, builds the standalone adapter/prover Python environments,
-refreshes the Lean/Mathlib cache, and writes Overleaf companion settings.
+refreshes the Lean/Mathlib cache, and initializes database-owned application policy.
 
 To provision only one side, or trim the install:
 
@@ -340,15 +341,27 @@ cd apps/lea-standalone/adapter
 
 - Root `.env` supplies shared defaults for both apps. Shell-exported values still
   win.
-- `apps/lea-standalone/config/lea.local.toml` is the adapter's runtime config and
-  the source of truth for model, turn limit, spend cap, and provider keys edited
-  through the standalone Settings page.
+- `apps/lea-standalone/config/lea.local.toml` retains bootstrap connections and
+  infrastructure credentials. Non-secret model, turn and spend policy is imported
+  once into SQLite; Settings updates use regulated worker commands.
 - The default SQLite database is
   `apps/lea-standalone/data/lea-interface.sqlite3`.
 - Local proof repos live under
   `apps/lea-standalone/prover/workspace/proofs/`.
-- Overleaf companion job logs and local settings live under
-  `apps/overleaf-extension/.overleaf-lean-stub/`.
+- Companion jobs, associations, batches, bounded logs and preferences live in
+  SQLite. The former `apps/overleaf-extension/.overleaf-lean-stub/` directory is a
+  bounded, idempotent migration source; keep its originals and the digest archives
+  beside the database until migration verification is complete.
+- The optional companion uses only API/UI connection settings. It needs no
+  workspace path, provider keys or writable job directory. The adapter-owned
+  business worker requires Node 22.13 or newer for SQLite support.
+
+See the [Stage 6 cutover record](docs/STAGE6-database-ui-cutover.md) for publication,
+migration checks, explicit limits and rollback. The [Stage 7 editor record](docs/STAGE7-queued-editor.md)
+covers immutable buffers, queued language requests and SQL results; direct LSP
+access is retired. The [Stage 8 runtime guide](docs/STAGE8-process-boundary.md)
+covers separate API/worker ownership; [production qualification](docs/STAGE8-release-qualification.md)
+records native AMD64/ARM64 images and same-data strict binary rollback.
 
 `LEA_SHARED_DATA_DIR` can relocate the adapter data directory for local
 experiments, but the normal current setup uses the standalone app's data

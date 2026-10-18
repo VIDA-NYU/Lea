@@ -344,7 +344,7 @@ def test_dependency_inventory_reads_never_compile_or_wait_for_environment(projec
     monkeypatch.setattr(library, "refresh", unexpected)
     monkeypatch.setattr(library, "validate_module", unexpected)
     def read():
-        return routes.get_dependency(p["slug"], dep["id"]) if single else routes.list_dependencies(p["slug"])["dependencies"][0]
+        return routes.get_dependency.worker(p["slug"], dep["id"]) if single else routes.list_dependencies.worker(p["slug"])["dependencies"][0]
 
     # A running proof may hold the compiler environment exclusively. Metadata
     # must still render, using filesystem freshness of the recorded evidence.
@@ -521,6 +521,9 @@ def test_dependency_continuation_retains_original_allowances(project, monkeypatc
     original_get = deps.get
     monkeypatch.setattr(deps, "get", lambda key, **kw: {"ready": True, "result": {"module": "Lea.Child"}}
                         if key == "verified-child" else original_get(key, **kw))
+    from app.queries import core
+    monkeypatch.setattr(core,'fact',lambda scope,kind,key: {'ready':True,'result':{'module':'Lea.Child'}}
+        if kind=='dependency' and key=='verified-child' else None)
     captured = {}
     def bundle(**arguments):
         captured.update(arguments)

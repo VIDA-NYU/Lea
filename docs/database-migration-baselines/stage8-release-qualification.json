@@ -1,0 +1,343 @@
+{
+  "version": 1,
+  "stage": 8,
+  "status": "requested_release_gates_complete",
+  "captured_at": "2026-10-18T00:34:14.290412+00:00",
+  "schema_head": "0048_process_boundary",
+  "workflow": {
+    "repository": "darturi/UnifiedLeaEcosystem",
+    "run_id": 39081557247,
+    "url": "https://github.com/darturi/UnifiedLeaEcosystem/actions/runs/39081557247",
+    "conclusion": "success"
+  },
+  "sources": {
+    "baseline": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b",
+    "baseline_tag": "refs/tags/codex/stage8-strict-baseline-20261017",
+    "candidate": "c8dc8f62efa1ddc6ca5e333e29317ef30ea433af",
+    "candidate_branch": "refs/heads/codex/stage8-release-gates"
+  },
+  "release_gates": {
+    "full_production_role_images": "passed_native_amd64_and_arm64",
+    "native_amd64": "passed_no_emulation",
+    "compliant_binary_rollback": "passed_same_data_both_architectures"
+  },
+  "architectures": {
+    "amd64": {
+      "job_id": 117539365218,
+      "native": true,
+      "baseline": {
+        "report": "stage8-release-39081557247/amd64/baseline.json",
+        "roles": {
+          "api": {
+            "image": "lea-stage8-baseline-api:amd64",
+            "id": "sha256:6e7720ca9e7497c9ca7619b041a9f89582398f955f895e195ca03d8752348e25",
+            "architecture": "amd64",
+            "size_bytes": 403744271,
+            "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b"
+          },
+          "worker": {
+            "image": "lea-stage8-baseline-worker:amd64",
+            "id": "sha256:2ac9f772bd27c54793a26b1e24eeeb58de879cc49e07fb4f09a22934565210b5",
+            "architecture": "amd64",
+            "size_bytes": 11246897991,
+            "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b"
+          },
+          "companion": {
+            "image": "lea-stage8-baseline-companion:amd64",
+            "id": "sha256:5e613b543f0ffb3f68155439c58e296ab13324c20fb0d40716255730574c4640",
+            "architecture": "amd64",
+            "size_bytes": 229734004,
+            "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b"
+          }
+        }
+      },
+      "candidate": {
+        "report": "stage8-release-39081557247/amd64/candidate.json",
+        "roles": {
+          "api": {
+            "image": "lea-stage8-candidate-api:amd64",
+            "id": "sha256:d47a76ad12ea73814834f5fde2e368b7885cd4683fb8a9a1a0aa033aa5ea4f16",
+            "architecture": "amd64",
+            "size_bytes": 403744742,
+            "source": "c8dc8f62efa1ddc6ca5e333e29317ef30ea433af"
+          },
+          "worker": {
+            "image": "lea-stage8-candidate-worker:amd64",
+            "id": "sha256:7369e4f6250c05dbf69cfb85dfb1983a364be493d3f9cbae446c599a6347dc7e",
+            "architecture": "amd64",
+            "size_bytes": 11246898462,
+            "source": "c8dc8f62efa1ddc6ca5e333e29317ef30ea433af"
+          },
+          "companion": {
+            "image": "lea-stage8-candidate-companion:amd64",
+            "id": "sha256:8441c16ac7fc93a9ccb920ebe3fc73c88c057a0b8cef13612b7eae913968d168",
+            "architecture": "amd64",
+            "size_bytes": 229734004,
+            "source": "c8dc8f62efa1ddc6ca5e333e29317ef30ea433af"
+          }
+        }
+      },
+      "rollback": {
+        "report": "stage8-release-39081557247/amd64/rollback.json",
+        "distinct_strict_binaries": true,
+        "same_database_and_workspace_volumes": true,
+        "schema_downgrade": false,
+        "backup_restore": false,
+        "volume_recreation": false,
+        "candidate_history_and_receipt_preserved": true,
+        "prepared_publication_recovered": true,
+        "uncertain_claim_suspended": true,
+        "old_claim_fenced": true,
+        "baseline_build_identity_restored": true
+      },
+      "compiler": {
+        "lean": "Lean (version 4.29.0, x86_64-unknown-linux-gnu, commit 98dc76e3c0a9b856c9b98726b713fb04fab16740, Release)",
+        "complete_mathlib": true,
+        "real_compilation": true,
+        "safeverify_accepts_proof": true,
+        "safeverify_rejects_sorry": true,
+        "confined_execution": {
+          "available": false,
+          "reason": "This runtime has no supported filesystem executor."
+        },
+        "note": "Trusted packaging probes do not enable application execution on unsupported platforms."
+      },
+      "native_regressions": {
+        "passed": 52,
+        "skipped": 1,
+        "summary": "52 passed, 1 skipped in 73.74s (0:01:13)",
+        "skip_reason": "Opt-in macOS confined editor; Linux confinement remains unavailable."
+      },
+      "retained_binaries": {
+        "architecture": "amd64",
+        "artifact": {
+          "id": 12119227085,
+          "name": "stage8-qualified-binaries-amd64",
+          "size_in_bytes": 4540118239,
+          "expired": false,
+          "digest": "sha256:df8adea3aae23e9fd714006ceed1a911e7e9f679974559a32426b1d0f4f68f3d",
+          "expires_at": "2026-11-01T00:23:51Z"
+        },
+        "local_archive": "/Users/danielarturi/Developer/VIDA_Dev/LeaEcosystem/.release-artifacts/stage8/39081557247/native-amd64.zip",
+        "outer_zip_sha256": "df8adea3aae23e9fd714006ceed1a911e7e9f679974559a32426b1d0f4f68f3d",
+        "inner_archive_sha256": {
+          "strict-bundles.tar.gz": "e4609dd10047df169670ccee382d8805c66db24de46d11baf0155333bee4b6f0",
+          "baseline-source.tar.gz": "ee20ee106c4b2da397c8a193cf9fce725a90599416dff1b174d4454fa4cee9ce",
+          "candidate-source.tar.gz": "f338d472ceee9c9cf9912364e80de5dccbdc6a4a94ba44705cbdece666d6b6f9"
+        },
+        "size_bytes": 4540118239,
+        "github_digest_verified": true,
+        "inner_checksums_verified": true,
+        "reports_match_evidence": true,
+        "release_provenance_verified": true
+      },
+      "evidence_artifact": {
+        "id": 12118928262,
+        "name": "stage8-release-evidence-amd64",
+        "size_in_bytes": 35077,
+        "expired": false,
+        "digest": "sha256:cbe2fd8ce909bfd7d972453c11c5a65e6f58640d497964ca74fcc93e932ae93b",
+        "expires_at": "2026-11-17T00:23:50Z",
+        "local_archive": "/Users/danielarturi/Developer/VIDA_Dev/LeaEcosystem/.release-artifacts/stage8/39081557247/evidence-amd64.zip",
+        "local_digest_verified": true
+      },
+      "report_sha256": {
+        "baseline.compose.json": "5ae3b31da20cbb39d7791c11b513de5b83fe09608e3889dc847a5410f1ad0237",
+        "retention.json": "7931dc07b94117afbe9c91b621e0a9deda1e5ff327d9ee2bb8b720e750627bf3",
+        "candidate.json": "497d3e6ac845547b54a5dfef5156b788bc9bda48622c6105e1896ac8c2aeedb0",
+        "native-regressions.log": "e66cee7be41a7b758025e3cca6c8cad1f27abb334ff53f27e4bc2a1d246ec958",
+        "rollback.json": "35c6224861c046179788e72820fd24a28f661741850c5d035d6a17ecc88a396c",
+        "baseline.json": "89cd5e54a778cfaa3990aef52ec7ceb6d02c14780bf64400dc76bfc5ce869764",
+        "binary-archive-SHA256SUMS": "a34c6084693f1c1759d977ad95fd152a9d06c3599015de04c2c63c5c00c4fcd5",
+        "candidate.compose.json": "21c50e37503e2bd87c1cd8082992b4f4f95ec3c3d51d34c48981a30bfa78622e"
+      }
+    },
+    "arm64": {
+      "job_id": 117539364911,
+      "native": true,
+      "baseline": {
+        "report": "stage8-release-39081557247/arm64/baseline.json",
+        "roles": {
+          "api": {
+            "image": "lea-stage8-baseline-api:arm64",
+            "id": "sha256:896cc8e8ee1f2c049ce5dc7ad2629456723b8c95df997d67ed48c31bd8dca2b5",
+            "architecture": "arm64",
+            "size_bytes": 424410129,
+            "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b"
+          },
+          "worker": {
+            "image": "lea-stage8-baseline-worker:arm64",
+            "id": "sha256:a1b07164f7a82c47f1efce7d92092ff22f965126a6b6a5a11637d5424d10e412",
+            "architecture": "arm64",
+            "size_bytes": 11326329220,
+            "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b"
+          },
+          "companion": {
+            "image": "lea-stage8-baseline-companion:arm64",
+            "id": "sha256:dcdb91d739740c85107ac2f33ed23cc92a3c6bab41d2c3f1063fc90ae1d3c671",
+            "architecture": "arm64",
+            "size_bytes": 249463986,
+            "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b"
+          }
+        }
+      },
+      "candidate": {
+        "report": "stage8-release-39081557247/arm64/candidate.json",
+        "roles": {
+          "api": {
+            "image": "lea-stage8-candidate-api:arm64",
+            "id": "sha256:757407dcb91f5227c4012a10d6da7b98cc88d4a5c53b82510a7b00b56e5fcd3d",
+            "architecture": "arm64",
+            "size_bytes": 424410600,
+            "source": "c8dc8f62efa1ddc6ca5e333e29317ef30ea433af"
+          },
+          "worker": {
+            "image": "lea-stage8-candidate-worker:arm64",
+            "id": "sha256:10d01dfa17c72dced3a0bf7187dca949ca2c697653887acbee2dea9f1df13cdf",
+            "architecture": "arm64",
+            "size_bytes": 11326329691,
+            "source": "c8dc8f62efa1ddc6ca5e333e29317ef30ea433af"
+          },
+          "companion": {
+            "image": "lea-stage8-candidate-companion:arm64",
+            "id": "sha256:1b765da03b720d0579621bca971ace55c0b9fc8fe510cd48e5012a74bb4bff66",
+            "architecture": "arm64",
+            "size_bytes": 249463986,
+            "source": "c8dc8f62efa1ddc6ca5e333e29317ef30ea433af"
+          }
+        }
+      },
+      "rollback": {
+        "report": "stage8-release-39081557247/arm64/rollback.json",
+        "distinct_strict_binaries": true,
+        "same_database_and_workspace_volumes": true,
+        "schema_downgrade": false,
+        "backup_restore": false,
+        "volume_recreation": false,
+        "candidate_history_and_receipt_preserved": true,
+        "prepared_publication_recovered": true,
+        "uncertain_claim_suspended": true,
+        "old_claim_fenced": true,
+        "baseline_build_identity_restored": true
+      },
+      "compiler": {
+        "lean": "Lean (version 4.29.0, aarch64-unknown-linux-gnu, commit 98dc76e3c0a9b856c9b98726b713fb04fab16740, Release)",
+        "complete_mathlib": true,
+        "real_compilation": true,
+        "safeverify_accepts_proof": true,
+        "safeverify_rejects_sorry": true,
+        "confined_execution": {
+          "available": false,
+          "reason": "This runtime has no supported filesystem executor."
+        },
+        "note": "Trusted packaging probes do not enable application execution on unsupported platforms."
+      },
+      "native_regressions": {
+        "passed": 52,
+        "skipped": 1,
+        "summary": "52 passed, 1 skipped in 95.04s (0:01:35)",
+        "skip_reason": "Opt-in macOS confined editor; Linux confinement remains unavailable."
+      },
+      "retained_binaries": {
+        "architecture": "arm64",
+        "artifact": {
+          "id": 12120105300,
+          "name": "stage8-qualified-binaries-arm64",
+          "size_in_bytes": 4533211004,
+          "expired": false,
+          "digest": "sha256:7e3926f90defb0b9992dd50de21412cdc782d0d49685a5eb27ed4a5f063c3f4a",
+          "expires_at": "2026-11-01T00:24:58Z"
+        },
+        "local_archive": "/Users/danielarturi/Developer/VIDA_Dev/LeaEcosystem/.release-artifacts/stage8/39081557247/native-arm64.zip",
+        "outer_zip_sha256": "7e3926f90defb0b9992dd50de21412cdc782d0d49685a5eb27ed4a5f063c3f4a",
+        "inner_archive_sha256": {
+          "strict-bundles.tar.gz": "5d0021adb28de0789955e2d1f59261abf14656eaa8db64b1dedf598c7e10622e",
+          "baseline-source.tar.gz": "ee20ee106c4b2da397c8a193cf9fce725a90599416dff1b174d4454fa4cee9ce",
+          "candidate-source.tar.gz": "f338d472ceee9c9cf9912364e80de5dccbdc6a4a94ba44705cbdece666d6b6f9"
+        },
+        "size_bytes": 4533211004,
+        "github_digest_verified": true,
+        "inner_checksums_verified": true,
+        "reports_match_evidence": true,
+        "release_provenance_verified": true
+      },
+      "evidence_artifact": {
+        "id": 12119577086,
+        "name": "stage8-release-evidence-arm64",
+        "size_in_bytes": 34974,
+        "expired": false,
+        "digest": "sha256:720c8e0b746c0b706a97a040b30e821706e575b61536e6a199ecb3960edd4028",
+        "expires_at": "2026-11-17T00:24:57Z",
+        "local_archive": "/Users/danielarturi/Developer/VIDA_Dev/LeaEcosystem/.release-artifacts/stage8/39081557247/evidence-arm64.zip",
+        "local_digest_verified": true
+      },
+      "report_sha256": {
+        "baseline.compose.json": "eb5cb6ad5854c42473e834b1ef52cb761e118d1e3591e22605576b299d1b8ee3",
+        "retention.json": "649dcd988e0ca8ea1e4ce408770219eb63ca9c6d3b64096e0eb3e0b869063712",
+        "candidate.json": "38bd8362cd68741f861125ecc68e4e83114fa096887c5eb5d675011046944a61",
+        "native-regressions.log": "c6a5308993bc05112ea87420a5d4f554e46b989082d71ec2b4942945fd54e979",
+        "rollback.json": "cbc6ca1192598bb5f56b7f0bf25e245f8f00fc25e84a793a9778dc52d43eddc4",
+        "baseline.json": "51f1001be5ee2744b75055a3f2497c37c002c4c4874d5d21ade306078038885f",
+        "binary-archive-SHA256SUMS": "e232e97b74a7eb0565434795fc9cd9e81a67a3292333b0e0b885c0f993eadc38",
+        "candidate.compose.json": "36f2ceed27d10dea9d11224f50abc7700c95c0a136e37d706d54d46b1bd3c925"
+      }
+    }
+  },
+  "local_verification": "stage8-release-39081557247/local/verification.json",
+  "compose_overrides_verification": "stage8-release-39081557247/compose-overrides-verification.json",
+  "source_comparison": {
+    "method": "Git blob identity for every non-documentation file in the qualified source snapshot",
+    "files_compared": 979,
+    "differences": [],
+    "post_qualification_changes": "documentation and evidence only"
+  },
+  "critical_source_sha256": {
+    ".dockerignore": "26b23ff0364c0e6095b0d03f501b5458a9672fc9328d2e575e8ba1a543824112",
+    ".github/workflows/stage8-release-gates.yml": "1337110953ef79acdc5f77ade3acda121e07aa395d53818e56014bf87bc736b6",
+    ".github/workflows/publish-image.yml": "2786044e8d6506bf83f83141dd55a58a97fea7055340f1f5e72f28fa60832400",
+    ".github/workflows/application-ci.yml": "2f082f4e174840bce9bc61e8e07381bbe8054d13a486e1e3fcd04c14af4ac12d",
+    ".github/scripts/verify-release-bundle.py": "179388782797eb403066b4039529a4e7b4ea64c06b660b162ab68e871de5dd56",
+    ".github/stage8-release-baseline.json": "e73d43810a9df411a2faf5397ef34adde6aaa5a5570d31826d1a9ec7e2e3d1f7",
+    "apps/lea-standalone/Dockerfile": "17869b71c0eecd9972e262a4e6edb2bea61d00d0d6ba76e8abd861a4c24fc581",
+    "apps/lea-standalone/docker-compose.yml": "efdbbd5e41c555b63c87a38014dcb7fe5d084642db1bee6f0dcdeef770b04ba6",
+    "apps/lea-standalone/adapter/app/bootstrap.py": "d03097eb08d9b2f194773c4ae4a610cdc713da9acdeb8c890f81720cc96c8d1f",
+    "apps/lea-standalone/adapter/app/catalog_service.py": "f445b0560163a9e3714e332d8478ea66d822df8cbe982587a231c26ff013b0f5",
+    "apps/lea-standalone/adapter/app/db.py": "b92a2692c37566fb8573635602cb050333ea166fffc0795a0c8c5c6883b58e19",
+    "apps/lea-standalone/adapter/app/runtime.py": "c4d44c15f8f328f144bb3876022f32054646c3ed1faf0863be06e1e9f28f9503",
+    "apps/lea-standalone/adapter/app/worker.py": "bd7ad9de8fa4b85dbca1e180dfd749ad70095cd19d7d00bae9579454d25fc86e",
+    "apps/lea-standalone/adapter/app/process_state.py": "7e3e5210c257e18cd9440deb2333f5e9f998c27b9ae743e61a0e9c76a257d78a",
+    "apps/lea-standalone/adapter/app/release_info.py": "cea02eb748dc6bc2905d18a2ef04fe20af05f8f6f7eb2fa587aff9228e122a7f",
+    "tests/integration/stage8_release.py": "949216fffd5989823049fafe7eec33d7ecc858cb556f7c5f958fa34fb1899b1d",
+    "tests/integration/stage8_release_fixture.py": "593eab4693de51260a2301e5f78e941227ef38d54df903ba00b17c074436dd6a",
+    "tests/local_preparation/test_release_bundle.py": "a84ea10a34021370d42905fbb69b3550baeba9bd9e5e1b6fde41b5aa792a4f09",
+    "apps/lea-standalone/adapter/tests/test_storage_access.py": "bd9bb047c28ad496b2fdf4cc788ea07442473a70fe35f9ded0b00dc7a3db6ccf"
+  },
+  "implementation_repairs": [
+    "Resolve packaged catalog and default database roots at shallow /app installation paths.",
+    "Use a retained Docker local ownership volume, verify flock enforcement, bind its persistent identity and physical root to the database, and take ownership during bootstrap.",
+    "Prepare only shared database/SQLite/private-intake permissions under offline migration ownership so the read-only API keeps all capabilities dropped.",
+    "Package source identity, qualify distinct strict binaries and retain their actual bytes; publication verifies and pushes those same images without rebuilding."
+  ],
+  "publication_and_deployment": {
+    "registry_image_push": false,
+    "production_stack_changed": false,
+    "production_data_used": false,
+    "paid_model_requests": false,
+    "qualified_source_branch_pushed": true,
+    "baseline_source_tag_pushed": true
+  },
+  "limitations": [
+    "This certifies only the exact schema-0048 strict baseline/successor pair and recorded native role image IDs, not arbitrary future downgrades.",
+    "Linux confined application/editor execution remains unavailable and fails closed. Trusted Lean/Mathlib/SafeVerify packaging probes do not enable an unconfined fallback. Supported macOS editor evidence remains separately recorded.",
+    "GitHub artifacts expire: evidence after 30 days and binaries/source after 14 days. Verified local ZIP copies preserve the actual qualified binaries beyond CI expiry; keep them with retained deployment artifacts.",
+    "Local test counts overlap. Native lifecycle regression counts and trusted compiler probes do not establish production latency, inference capacity or arbitrary workload throughput.",
+    "No hosted registry image or production deployment was published. Operational use requires the recorded exact bundle and preserved database/workspace/ownership volumes."
+  ],
+  "final_verification": {
+    "critical_source_fingerprints": "passed",
+    "retained_report_fingerprints": "passed",
+    "local_binary_archive_sizes": "passed",
+    "documentation_links": "passed",
+    "git_diff_check": "passed"
+  }
+}

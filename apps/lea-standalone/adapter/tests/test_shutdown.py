@@ -1,5 +1,6 @@
 """Exercise the production launcher with real HTTP streams and process signals."""
 import http.client
+import json
 from pathlib import Path
 import signal
 import socket
@@ -28,19 +29,12 @@ def test_launcher_second_interrupt_bypasses_python_teardown(monkeypatch):
     assert exits == [130]
 
 
-def test_bound_launcher_drains_before_exit_and_second_interrupt_can_force(monkeypatch):
-    drains, exits = [], []
-    monkeypatch.setattr(run_api.runtime, "begin_drain", lambda **kwargs: drains.append(kwargs))
-    monkeypatch.setattr(run_api.os, "_exit", exits.append)
-    server = create_server(FastAPI(), port=0)
-    server._runtime_bound = True
-    server.handle_exit(signal.SIGINT, None)
-    assert drains == [{"restart": False}]
-    assert server.config.app.state.shutting_down
-    assert not server.should_exit  # The coordinator waits for active work.
-    server.handle_exit(signal.SIGINT, None)
-    assert exits == [130]
-    assert server.force_exit
+def test_api_exit_never_drains_workspace_execution(monkeypatch):
+    from app import runtime
+    monkeypatch.setattr(runtime,'begin_drain',lambda **_:pytest.fail('API exit drained the worker'))
+    server=create_server(FastAPI(),port=0)
+    server.handle_exit(signal.SIGINT,None)
+    assert server.should_exit and server.config.app.state.shutting_down
 
 
 @pytest.fixture
@@ -115,7 +109,10 @@ def test_open_session_stream_closes_on_first_interrupt(running_server):
         process.send_signal(signal.SIGINT)
         process.wait(timeout=3)
         assert time.monotonic() - started < 2.5, log.read_text()
-        assert b"data: {}" in response.read()
+        remaining=response.read().decode()
+        assert 'id: 0\n' in remaining
+        payload=next(line[6:] for line in remaining.splitlines() if line.startswith('data: '))
+        assert json.loads(payload)=={'cursor':0,'reset':False}
         assert "timeout graceful shutdown exceeded" not in log.read_text()
     finally:
         connection.close()

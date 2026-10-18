@@ -81,9 +81,9 @@ def test_route_returns_results_envelope(tmp_path, monkeypatch):
     _fresh_db(tmp_path, monkeypatch)
     store.create_session("Irrationality of sqrt 2")
 
-    payload = search("sqrt")
+    payload = search.worker("sqrt")
     assert [r["title"] for r in payload["results"]] == ["Irrationality of sqrt 2"]
-    assert search("")["results"] == []
+    assert search.worker("")["results"] == []
 
 
 def test_route_unions_formalizations_with_conversations(tmp_path, monkeypatch):
@@ -99,7 +99,7 @@ def test_route_unions_formalizations_with_conversations(tmp_path, monkeypatch):
     store.link_session_formalization(session["id"], item["id"])
     store.link_formalization_file(item["id"], "compact_image.lean", "primary")
 
-    payload = search("compact")
+    payload = search.worker("compact")
 
     assert len(payload["results"]) == 1
     hit = payload["results"][0]

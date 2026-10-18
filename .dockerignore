@@ -4,6 +4,7 @@
 
 # VCS + installed deps (recreated inside the image)
 .git
+.release-artifacts
 **/.git
 **/node_modules
 **/.venv
@@ -33,6 +34,11 @@ apps/lea-standalone/data
 apps/lea-standalone/config/lea.local.toml
 apps/lea-standalone/prover/workspace/proofs
 apps/lea-standalone/prover/workspace/projects
+apps/lea-standalone/prover/workspace/.lea-worker.lock
+apps/lea-standalone/prover/workspace/.lea-owned-processes
+apps/lea-standalone/prover/workspace/.lea-workspace-id
+apps/lea-standalone/prover/workspace/.lea-runtime
+apps/lea-standalone/workspace-state
 apps/overleaf-extension/.overleaf-lean-stub
 
 # Docs and tests aren't needed to build the image. The extension/ dir IS needed:

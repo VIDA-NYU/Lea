@@ -19,7 +19,7 @@ import {
   settleCanceledBatchEntry,
   classifyFormalizeJob,
   reconcileRecoveredBatches
-} from "../companion/server.mjs";
+} from "../companion/workerService.mjs";
 
 const PROJECT = "project-1";
 

@@ -1,3 +1,4 @@
+import { observeSessionList } from './lib/sessionObserver.mjs';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatThread } from './components/ChatThread';
@@ -102,6 +103,8 @@ export default function App() {
   const setError = useProofSession((s) => s.setError);
   const [draft, setDraft] = useState('');
   const [submissionBusy, setSubmissionBusy] = useState(false);
+  const [restoringContext,setRestoringContext]=useState(true);
+  const restorationStarted=useRef(false);
   const [sourceConnection, setSourceConnection] = useState<{ targetId: string; label: string; state: 'preparing' | 'connected' | 'error' } | null>(null);
   const submitting = useRef(false);
   const submitChat = useRef(createChatSubmission({ prepare: prepareOverleafSource, create: createRun }));
@@ -223,25 +226,24 @@ export default function App() {
         }
       }
     };
-    restore().catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    if(restorationStarted.current)return;
+    restorationStarted.current=true;
+    restore().catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(()=>setRestoringContext(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Subscribe once to the session-list feed. Each `sessions_changed` event
-  // refreshes the sidebar and invalidates the selected formalization's canonical
-  // snapshot. It never rewrites the open session timeline. The browser EventSource auto-reconnects if
-  // the capped server stream recycles. A session started anywhere — including an
-  // Overleaf-driven formalization the companion creates via POST /api/runs —
-  // appears live without a manual refresh.
-  useEffect(() => {
-    const source = new EventSource('/api/sessions/events');
-    source.addEventListener('sessions_changed', () => {
-      refreshSessions().catch(() => {});
+  // One durable observer follows the watermark of a committed list snapshot.
+  // Refreshing data does not choose a conversation, file, or revision.
+  useEffect(() => observeSessionList({
+    refresh: refreshSessions,
+    readCursor: () => useSessions.getState().cursor,
+    onChanged: () => {
       bumpFormalizationRefresh();
-    });
-    return () => source.close();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+      const selected=useSessions.getState().selectedSessionId;
+      if(selected && !useProofSession.getState().isRunning)void reconcile(selected).catch(()=>{});
+    },
+  }), []);
 
   const loadSession = async (sessionId: string) => {
     const detail = await loadOwnedSession(sessionId);
@@ -457,7 +459,7 @@ export default function App() {
 
   const handleSubmit = async (general = false) => {
     const content = draft.trim();
-    if (!content || isRunning || submitting.current) return;
+    if (!content || restoringContext || isRunning || submitting.current) return;
     setError(undefined);
     setEditedPath(undefined);
     setApprovals((prev) => prev.filter((a) => a.decision));
@@ -618,11 +620,11 @@ export default function App() {
         'Manual edit from the canvas.',
         focusId,
         baseRevision || currentFormalizationSnapshot?.revision_token || undefined,
+        (() => { const step = [...sortedCode].reverse().find(item => item.path === target);
+          return step?.blob_id ? `proof:${step.id}:${step.blob_id}` : undefined; })(),
       );
     } catch (err) {
       if (owned() && err instanceof RevisionConflictError) {
-        setCanvasRevisionMode('current');
-        bumpFormalizationRefresh();
         setError(err.message);
       }
       throw err;
@@ -845,7 +847,7 @@ export default function App() {
             onDraftChange={setDraft}
             onSubmit={() => handleSubmit()}
             onSubmitGeneral={() => handleSubmit(true)}
-            submissionBusy={submissionBusy}
+            submissionBusy={submissionBusy || restoringContext}
             sourceConnection={sourceConnection}
             onInterrupt={handleInterrupt}
             onResumeRun={async (runId, action = 'resume') => {

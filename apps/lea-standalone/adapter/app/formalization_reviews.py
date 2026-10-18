@@ -213,6 +213,8 @@ def decide(fid, request):
     root = load_config().lea_root
     with project_coordination.review_decision(raw.get('project_id'), formalizations.get(fid).get('completion_run_id')), mutation(root / 'workspace' if root else db.DB_PATH.parent):
         with db.write() as conn:
+            from .workspace_commands import authorize
+            authorize(conn)
             duplicate = conn.execute('''select e.*, q.request_digest as submitted_digest
                 from formalization_review_requests q join formalization_review_events e on e.id=q.event_id
                 where q.formalization_id=? and q.idempotency_key=?''',

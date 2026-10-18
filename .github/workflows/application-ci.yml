@@ -87,37 +87,8 @@ jobs:
           path: validation
           if-no-files-found: ignore
   container:
-    name: container-${{ matrix.arch }}
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Reserve space for the full compiler image
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL
-          df -h /
-      - uses: actions/checkout@v4
-      - name: Supervision regressions
-        run: python3 tests/integration/container_lifecycle.py
-      - name: Build actual production image without publishing
-        run: docker build --platform linux/${{ matrix.arch }} -t lea-validation:${{ matrix.arch }} -f apps/lea-standalone/Dockerfile .
-      - name: Production entrypoint, both backends, compiler and persistence
-        run: |
-          python3 tests/integration/container_fixture_permissions.py --image lea-validation:${{ matrix.arch }}
-          python3 tests/integration/production_container.py --image lea-validation:${{ matrix.arch }} --output validation/container-${{ matrix.arch }}.json
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: container-validation-${{ matrix.arch }}
-          path: validation
-          if-no-files-found: ignore
+    name: strict-production-release
+    uses: ./.github/workflows/stage8-release-gates.yml
   merge-gate:
     name: merge-gate
     if: always()

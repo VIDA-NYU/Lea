@@ -1,0 +1,28 @@
+"""Calibrated starting policy for the database migration, not legacy admissions.
+
+Stage 0 evidence: docs/database-migration-baselines. Queue admission, blob upload
+and lease enforcement land with their respective handlers in later stages.
+"""
+
+COMMAND_BYTES = 64 * 1024
+COMPUTE_QUEUED_GLOBAL = 128
+COMPUTE_QUEUED_PRODUCER = 32
+COMPUTE_QUEUED_PROJECT = 16
+CONTROL_QUEUED_GLOBAL = 64
+EDITOR_QUEUED_PRODUCER = 8
+EDITOR_QUEUED_GLOBAL = 64  # Shared editor lane; per-client typed requests coalesce in Stage 7.
+EDITOR_DEADLINE_SECONDS = 5
+TEXT_CHUNK_BYTES = 16 * 1024
+TEXT_FLUSH_SECONDS = 0.2
+CHANGE_PAGE_DEFAULT = 200
+CHANGE_PAGE_MAX = 1000
+CHANGE_PAGE_BYTES = 1024 * 1024
+CLAIM_HEARTBEAT_SECONDS = 5
+CLAIM_LEASE_SECONDS = 30
+EDITOR_RESULT_SECONDS = 3600
+EXPORT_RESULT_SECONDS = 24 * 3600
+CHANGE_REPLAY_SECONDS = 7 * 24 * 3600
+SOURCE_FILE_BYTES = 4 * 1024 * 1024
+SOURCE_BUNDLE_BYTES = 32 * 1024 * 1024
+ATTACHMENT_BYTES = 25 * 1024 * 1024
+EXPORT_BYTES = 64 * 1024 * 1024

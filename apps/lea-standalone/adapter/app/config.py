@@ -25,7 +25,7 @@ import threading
 import tomllib
 from pathlib import Path
 
-from lea.config import LeaConfig  # the one config dataclass (re-exported below)
+
 
 __all__ = [
     "LeaConfig", "load_config", "configured_provider_keys", "ROOT", "LEGACY_KEY_ENV",
@@ -119,7 +119,8 @@ def _provider_endpoints(data: dict) -> dict[str, str]:
 
 def configured_provider_endpoints(path: Path | None = None) -> dict[str, str]:
     """Endpoint overrides saved in the config file (read-only; no export)."""
-    config_path = path or ROOT / "config" / "lea.local.toml"
+    from lea.config import LeaConfig
+    config_path = path or Path(os.environ.get("LEA_CONFIG_FILE",ROOT / "config" / "lea.local.toml"))
     return _provider_endpoints(read_config_data(config_path))
 
 
@@ -191,7 +192,8 @@ def configured_provider_keys(path: Path | None = None) -> dict[str, str]:
     going through `load_config`. Key-parsing lives only here, so the loader and
     the Settings layer can never disagree about what counts as a configured key.
     """
-    config_path = path or ROOT / "config" / "lea.local.toml"
+    from lea.config import LeaConfig
+    config_path = path or Path(os.environ.get("LEA_CONFIG_FILE",ROOT / "config" / "lea.local.toml"))
     return _provider_keys(read_config_data(config_path))
 
 
@@ -213,8 +215,12 @@ def permission_tier(path: Path | None = None) -> str:
     Falls back to the default for a missing/unknown value, so a hand-edited or
     stale config can never select a tier the run code doesn't understand.
     """
-    config_path = path or ROOT / "config" / "lea.local.toml"
+    from lea.config import LeaConfig
+    config_path = path or Path(os.environ.get("LEA_CONFIG_FILE",ROOT / "config" / "lea.local.toml"))
     tier = read_config_data(config_path).get("permission_tier", DEFAULT_PERMISSION_TIER)
+    if path is None:
+        from .settings_policy import read
+        tier=(read() or {}).get('permission_tier',tier)
     return tier if tier in PERMISSION_TIERS else DEFAULT_PERMISSION_TIER
 
 
@@ -223,7 +229,8 @@ def github_token(path: Path | None = None) -> str | None:
     the environment or returned to the client (Settings reports presence only). The
     git layer injects it into the push URL for a single invocation — it is never
     written to `.git/config`."""
-    config_path = path or ROOT / "config" / "lea.local.toml"
+    from lea.config import LeaConfig
+    config_path = path or Path(os.environ.get("LEA_CONFIG_FILE",ROOT / "config" / "lea.local.toml"))
     token = read_config_data(config_path).get("github_token")
     return str(token) if token else None
 
@@ -236,8 +243,12 @@ def load_config(path: Path | None = None) -> LeaConfig:
     (`prompt_variant`, `stream`, `tools`, …) keep their `LeaConfig` defaults.
     Provider keys are exported to `os.environ`, never stored on the object.
     """
-    config_path = path or ROOT / "config" / "lea.local.toml"
+    from lea.config import LeaConfig
+    config_path = path or Path(os.environ.get("LEA_CONFIG_FILE",ROOT / "config" / "lea.local.toml"))
     data: dict = read_config_data(config_path)
+    if path is None:
+        from .settings_policy import read
+        data.update(read() or {})
 
     lea_root = data.get("lea_root", "prover")
     resolved_lea_root: Path | None = None
@@ -272,3 +283,10 @@ def load_config(path: Path | None = None) -> LeaConfig:
         lea_root=resolved_lea_root,
         max_spend_usd=max_spend_usd,
     )
+
+
+def __getattr__(name):
+    if name=='LeaConfig':
+        from lea.config import LeaConfig
+        return LeaConfig
+    raise AttributeError(name)

@@ -1,9 +1,9 @@
 [project]
 name = "lea-interface-server"
 version = "0.1.0"
-description = "Local FastAPI adapter that drives the vendored Lea prover in-process."
-# >=3.13 because the adapter now imports the prover (lea-prover) in-process, and
-# the prover requires >=3.13. Single-process architecture (D1) — no HTTP boundary.
+description = "Database-only FastAPI API and separately owned Lea workspace worker."
+# Both entrypoints share this environment. Only the private worker imports the
+# prover library, which requires Python >=3.13.
 requires-python = ">=3.13"
 dependencies = [
   "certifi>=2024.8.30",
@@ -18,8 +18,8 @@ dependencies = [
   "python-multipart>=0.0.9",
   "pdfminer.six>=20240706",
   "python-docx>=1.1.0",
-  # The vendored prover, imported in-process as a library (D1/D20). Editable
-  # path dep so edits under prover/lea are picked up without re-syncing.
+  # The private worker imports the vendored prover as a library. Editable path
+  # dependency so worker edits under prover/lea need no re-sync.
   "lea-prover",
   "alembic>=1.18.5",
 ]

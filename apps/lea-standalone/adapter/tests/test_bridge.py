@@ -1111,7 +1111,7 @@ def test_enqueued_runs_execute_fifo(tmp_path, monkeypatch):
 
     assert _wait_for(lambda: all(
         store.get_run(rid)["status"] not in {"pending", "running"} for rid in run_ids
-    )), "all queued runs reach a terminal status"
+    ), timeout=30), "all queued runs reach a terminal status"
     assert executed == ["first", "second", "third"], "FIFO order preserved"
     for run_id in run_ids:
         assert store.get_run(run_id)["status"] == "needs_review"

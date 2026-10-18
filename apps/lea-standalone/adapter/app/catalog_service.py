@@ -30,7 +30,7 @@ METADATA_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_pri
 
 def bundled_catalog() -> dict:
     installation = Path(__file__).resolve().parents[2]
-    for base in (installation, installation.parents[1]):
+    for base in (installation, installation.parent.parent):
         path = base / "packages/lea-model-catalog/models.json"
         if path.is_file():
             return json.loads(path.read_text())

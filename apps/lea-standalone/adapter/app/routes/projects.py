@@ -9,12 +9,17 @@ graph), so detail here is just meta + the project's sessions.
 
 from __future__ import annotations
 
+from .. import peripheral_views
+from .. import workspace_commands
+
 import re
 import hashlib
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from ..core_query_dispatch import database_query
+from .. import workspace_commands
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
@@ -38,8 +43,7 @@ from ..read_projections import read_projection
 router = APIRouter()
 
 
-def _guard_project(*, by_slug=False, write=False, metadata=False, environment_write=True,
-                   source_refresh=False):
+def _guard_project(*, by_slug=False, write=False, metadata=False, environment_write=True):
     def resolve(arguments):
         if by_slug:
             try:
@@ -49,7 +53,7 @@ def _guard_project(*, by_slug=False, write=False, metadata=False, environment_wr
             return project["id"] if project else None
         return arguments["project_id"]
     return project_coordination.guarded(resolve, write=write, metadata=metadata,
-                                        environment_write=environment_write, source_refresh=source_refresh)
+                                        environment_write=environment_write)
 
 
 
@@ -86,11 +90,11 @@ class SessionCreate(BaseModel):
     title: str | None = None
 
 
-class DocUpdate(BaseModel):
+class DocUpdate(workspace_commands.EditRequest):
     content: str
 
 
-class FilePut(BaseModel):
+class FilePut(workspace_commands.EditRequest):
     path: str
     content: str
 
@@ -215,11 +219,13 @@ def _import_error(exc: Exception) -> HTTPException:
 
 
 @router.get("/api/projects")
+@database_query('projects')
 def list_projects() -> dict:
     return {"projects": store.list_projects()}
 
 
-@router.post("/api/projects", status_code=201)
+@router.post('/api/projects', status_code=202)
+@workspace_commands.register('project.create')
 def create_project(request: ProjectCreate) -> dict:
     title = request.title.strip()
     if not title:
@@ -228,6 +234,7 @@ def create_project(request: ProjectCreate) -> dict:
 
 
 @router.get("/api/projects/{project_id}")
+@database_query('project')
 def get_project(project_id: str) -> dict:
     project = store.get_project(project_id)
     if project is None:
@@ -235,7 +242,8 @@ def get_project(project_id: str) -> dict:
     return {**project, "sessions": store.list_project_sessions(project_id)}
 
 
-@router.put("/api/projects/{project_id}")
+@router.put('/api/projects/{project_id}', status_code=202)
+@workspace_commands.register('project.update')
 @_guard_project(by_slug=False, write=True, metadata=False)
 def update_project(project_id: str, request: ProjectUpdate) -> dict:
     updated = store.update_project(
@@ -282,7 +290,9 @@ def _get_doc(project_id: str, name: str) -> dict:
     project = store.get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return {"content": project_service.read_doc(project, _proofs_root(), name)}
+    content=project_service.read_doc(project, _proofs_root(), name)
+    revision=workspace_commands.revision_for('p:'+project_id,'.lea/'+name)
+    return {"content":content,'file_revision':revision if revision!='missing' else 'untracked:'+hashlib.sha256(content.encode()).hexdigest()}
 
 
 @_guard_project(by_slug=False, write=True, metadata=False)
@@ -291,25 +301,29 @@ def _put_doc(project_id: str, name: str, content: str) -> dict:
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     sha = project_service.write_doc(project, _proofs_root(), name, content)
-    return {"content": content, "commit_sha": sha}
+    return {"content": content, "commit_sha": sha,'file_revision':workspace_commands.revision_for('p:'+project_id,'.lea/'+name)}
 
 
 @router.get("/api/projects/{project_id}/instructions")
+@peripheral_views.query('get_instructions')
 def get_instructions(project_id: str) -> dict:
     return _get_doc(project_id, "instructions.md")
 
 
-@router.put("/api/projects/{project_id}/instructions")
+@router.put('/api/projects/{project_id}/instructions', status_code=202)
+@workspace_commands.register('project.instructions')
 def put_instructions(project_id: str, request: DocUpdate) -> dict:
     return _put_doc(project_id, "instructions.md", request.content)
 
 
 @router.get("/api/projects/{project_id}/memory")
+@peripheral_views.query('get_memory')
 def get_memory(project_id: str) -> dict:
     return _get_doc(project_id, "memory.md")
 
 
-@router.put("/api/projects/{project_id}/memory")
+@router.put('/api/projects/{project_id}/memory', status_code=202)
+@workspace_commands.register('project.memory')
 def put_memory(project_id: str, request: DocUpdate) -> dict:
     return _put_doc(project_id, "memory.md", request.content)
 
@@ -325,24 +339,30 @@ def _blueprint_payload(project: dict) -> dict:
     """Raw blueprint markdown + the parser's advisory warnings — shared by the
     by-id and by-slug GET routes."""
     content = project_service.read_doc(project, _proofs_root(), "blueprint.md")
-    return {"content": content, "warnings": blueprint_doc.validate(content)}
+    revision=workspace_commands.revision_for('p:'+project['id'],'.lea/blueprint.md')
+    return {"content": content, "warnings": blueprint_doc.validate(content),
+        'file_revision':revision if revision!='missing' else 'untracked:'+hashlib.sha256(content.encode()).hexdigest()}
 
 
 @router.get("/api/projects/{project_id}/blueprint")
+@peripheral_views.query('get_blueprint')
 @_guard_project(by_slug=False, write=False, metadata=True)
 def get_blueprint(project_id: str) -> dict:
     return _blueprint_payload(_require_project(project_id))
 
 
-@router.put("/api/projects/{project_id}/blueprint")
+@router.put('/api/projects/{project_id}/blueprint', status_code=202)
+@workspace_commands.register('project.blueprint')
 @_guard_project(by_slug=False, write=True, metadata=False)
 def put_blueprint(project_id: str, request: DocUpdate) -> dict:
     project = _require_project(project_id)
     sha = project_service.write_doc(project, _proofs_root(), "blueprint.md", request.content)
-    return {"content": request.content, "commit_sha": sha, "warnings": blueprint_doc.validate(request.content)}
+    return {"content": request.content, "commit_sha": sha, "warnings": blueprint_doc.validate(request.content),
+        'file_revision':workspace_commands.revision_for('p:'+project_id,'.lea/blueprint.md')}
 
 
 @router.get("/api/projects/{project_id}/graph")
+@peripheral_views.query('get_graph')
 @_guard_project(by_slug=False, write=False, metadata=True)
 def get_graph(project_id: str) -> dict:
     # T2: parse the blueprint + derive each node's live status and session
@@ -351,7 +371,8 @@ def get_graph(project_id: str) -> dict:
     return graph_service.build_graph(project, _proofs_root())
 
 
-@router.post("/api/projects/{project_id}/blueprint/generate")
+@router.post('/api/projects/{project_id}/blueprint/generate', status_code=202)
+@workspace_commands.register('project.generate_blueprint')
 @_guard_project(by_slug=False, write=True, metadata=True)
 def generate_blueprint(project_id: str) -> dict:
     # Populate the blueprint from formalized artifacts (additive, idempotent).
@@ -374,135 +395,117 @@ _FS_ERROR_STATUS = {"bad_path": 400, "not_found": 404, "binary": 415}
 
 
 @router.get("/api/projects/{project_id}/tree")
-@_guard_project(by_slug=False, write=False, metadata=True)
 def get_tree(project_id: str) -> dict:
-    project = _require_project(project_id)
-    repo = project_service.project_repo_dir(project, _proofs_root())
-    return {"tree": fs_service.build_tree(repo)}
+    _require_project(project_id)
+    from ..queries import files
+    try:return files.tree(project_id)
+    except files.ProjectionUnavailable as exc:raise HTTPException(409,detail={'error':'projection_unavailable','reason':exc.reason}) from exc
 
 
 @router.get("/api/projects/{project_id}/file")
-@_guard_project(by_slug=False, write=False, metadata=True)
-def read_project_file(project_id: str, path: str) -> dict:
-    project = _require_project(project_id)
-    repo = project_service.project_repo_dir(project, _proofs_root())
+def read_project_file(project_id: str,path:str,observation_id:str|None=None) -> dict:
+    _require_project(project_id)
+    from ..queries import files
+    from .workspace import file as sql_file
     try:
-        content = fs_service.read_text_file(repo, path)
-    except fs_service.FilesystemError as exc:
-        raise HTTPException(status_code=_FS_ERROR_STATUS.get(exc.code, 400), detail=str(exc))
-    return {"path": path, "content": content, "lean": path.endswith(".lean")}
+        if observation_id is not None:return {**files.content(project_id,path,observation_id),'file_revision':workspace_commands.revision_for('p:'+project_id,path)}
+        value=sql_file(path,project_id=project_id)
+        if value['content'] is not None:return {**value,'lean':path.endswith('.lean')}
+        return {**files.content(project_id,path),'file_revision':value['file_revision']}
+    except files.ProjectionUnavailable as exc:raise HTTPException({'not_found':404,'bad_path':400,'binary':415,'file_too_large':413}.get(exc.reason,409),detail={'error':'projection_unavailable','reason':exc.reason}) from exc
+    except HTTPException as exc:
+        if exc.status_code==422:raise HTTPException(400,exc.detail) from exc
+        raise
 
 
-@router.put("/api/projects/{project_id}/file")
+@router.put('/api/projects/{project_id}/file', status_code=202)
+@workspace_commands.register('project.save')
 @_guard_project(by_slug=False, write=True, metadata=False)
 def write_project_file(project_id: str, request: FilePut) -> dict:
-    """Write + commit any file under the project repo (path-guarded, author=user).
-    Editing a `.lean` returns its standalone `check` verdict so the editor can flag
-    a broken proof; editing `.lea/blueprint.md` lets the next `/graph` fetch re-derive."""
     project = _require_project(project_id)
-    if store.project_has_active_import(project_id):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "project_busy",
-                "message": "Wait for the active GitHub import before editing project files.",
-            },
-        )
+    if store.project_has_active_import(project_id):raise HTTPException(409,{'error':'project_busy','message':'Wait for the active GitHub import before editing project files.'})
     proofs_root = _proofs_root()
     repo = project_service.project_repo_dir(project, proofs_root)
     try:
         absolute = fs_service.safe_abs(repo, request.path)
     except fs_service.FilesystemError as exc:
-        raise HTTPException(status_code=_FS_ERROR_STATUS.get(exc.code, 400), detail=str(exc)) from None
+        raise HTTPException(_FS_ERROR_STATUS.get(exc.code, 400), str(exc)) from exc
     rel = absolute.relative_to(repo.resolve()).as_posix()
-    records = store.code_steps_for_project_path(project_id, rel, include_content=False) if rel.endswith(".lean") else []
+    records = store.code_steps_for_project_path(project_id, rel, include_content=False) if rel.endswith('.lean') else []
+    check = None
     if records:
-        session_id = records[0]["session_id"]
-        formalization_id = records[0].get("formalization_id")
-        with project_coordination.file_edit(project_id), proof_files.file_guard(absolute):
-            proof_files.save(session_id, rel, absolute, request.content,
-                formalization_id=formalization_id, note="Edited in the project filesystem editor.")
-            expected = store.current_proof_step(session_id, rel)
-            try:
-                sha = GitStore(proofs_root).commit_all(repo, f"edit {rel}", paths=[rel])
-            except GitStoreError:
-                raise HTTPException(500, detail={"code": "content_saved_commit_failed",
-                    "message": "Your edit was saved in history, but its Git commit failed. Refresh and retry.",
-                    "code_step_id": expected["id"], "content_sha256": expected["blob_sha256"]}) from None
-        check = proof_files.check(session_id, rel, absolute, interface_check,
-            formalization_id=formalization_id, expected=expected)
+        from .. import workspace_files
+        session_id, fid = records[0]['session_id'], records[0].get('formalization_id')
+        saved = proof_files.save(session_id, rel, absolute, request.content, formalization_id=fid,
+            note='Edited in the project filesystem editor.')
+        expected = store.current_proof_step(session_id, rel)
+        try:
+            sha = GitStore(proofs_root).commit_all(repo, f'edit {rel}', paths=[rel])
+        except Exception as exc:
+            workspace_files.provenance(saved.get('effect_id'), detail=str(exc))
+            raise HTTPException(500, {'code':'content_saved_commit_failed',
+                'message':'Content is saved in the database; Git provenance could not be recorded.', 'effect_id':saved.get('effect_id')}) from exc
+        workspace_files.provenance(saved.get('effect_id'), sha)
+        check = proof_files.check(session_id, rel, absolute, interface_check, formalization_id=fid, expected=expected)
     else:
         try:
             sha = fs_service.write_text_file(project, proofs_root, rel, request.content)
         except fs_service.FilesystemError as exc:
-            raise HTTPException(status_code=_FS_ERROR_STATUS.get(exc.code, 400), detail=str(exc)) from None
-        check = None
-        if rel.endswith(".lean"):
+            raise HTTPException(_FS_ERROR_STATUS.get(exc.code, 400), str(exc)) from exc
+        if rel.endswith('.lean'):
             result = interface_check(str(absolute))
-            check = {"status": result.status, "detail": result.detail}
-    return {"path": rel, "commit_sha": sha, "check": check}
+            check = {'status':result.status, 'detail':result.detail}
+    return {'path':rel, 'commit_sha':sha, 'check':check,
+        'file_revision':workspace_commands.revision_for('p:'+project_id,rel)}
 
 
 def _export_project_response(project: dict) -> Response:
-    """Zip the project repo (source + .lea assets; .git/.lake excluded) into a
-    download response — shared by the by-id and by-slug export routes (D34)."""
     repo = project_service.project_repo_dir(project, _proofs_root())
-    data = fs_service.export_zip(repo)
-    filename = f"{project['slug']}.zip"
-    return Response(
-        content=data,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    try:
+        data = fs_service.export_zip(repo)
+    except fs_service.FilesystemError as exc:
+        raise HTTPException({'too_large':413,'changed':409,'bad_path':400}.get(exc.code,400),str(exc)) from exc
+    from ..peripheral_views import disposition
+    return Response(data, media_type='application/zip', headers={'Content-Disposition':disposition(project['slug']+'.zip')})
 
 
-@router.get("/api/projects/{project_id}/export")
+@router.get('/api/projects/{project_id}/export')
+@peripheral_views.query('export_project', automatic=False, lifetime=86400)
 @_guard_project(by_slug=False, write=False, metadata=True)
 def export_project(project_id: str) -> Response:
-    """Stream a zip of the whole project repo (source + .lea assets; .git/.lake
-    excluded) so the project is shareable as a single download (D34)."""
     return _export_project_response(_require_project(project_id))
-
-
-# ── Additive GitHub Lean-file import ────────────────────────────────────────
 
 
 def _preview_github_import(project: dict, request: GithubImportPreviewRequest) -> dict:
     try:
-        return github_import_service.preview_import(
-            project=project,
-            proofs_root=_proofs_root(),
-            repository_url=request.repository_url,
-            targets=_import_targets(request.targets),
-        )
+        return github_import_service.preview_import(project=project, proofs_root=_proofs_root(),
+            repository_url=request.repository_url, targets=_import_targets(request.targets))
     except (ImportPlanningError, GitHubSourceError) as exc:
-        raise _import_error(exc) from None
+        raise _import_error(exc) from exc
 
 
 def _confirm_github_import(project: dict, request: GithubImportConfirmRequest) -> dict:
     try:
-        return github_import_service.confirm_import(
-            project=project,
-            proofs_root=_proofs_root(),
-            preview_id=request.preview_id,
-        )
+        return github_import_service.confirm_import(project=project, proofs_root=_proofs_root(),preview_id=request.preview_id)
     except (ImportPlanningError, GitHubSourceError) as exc:
-        raise _import_error(exc) from None
+        raise _import_error(exc) from exc
 
 
 def _github_import_progress(project: dict, import_id: str) -> dict:
     result = store.github_import_progress(import_id)
-    if result is None or result["project_id"] != project["id"]:
-        raise HTTPException(status_code=404, detail="GitHub import not found")
+    if result is None or result['project_id'] != project['id']:
+        raise HTTPException(404,'GitHub import not found')
     return result
 
 
 @router.post("/api/projects/{project_id}/github-imports/preview")
+@workspace_commands.register('peripheral.preview_project_github_import')
 def preview_project_github_import(project_id: str, request: GithubImportPreviewRequest) -> dict:
     return _preview_github_import(_require_project(project_id), request)
 
 
 @router.post("/api/projects/{project_id}/github-imports", status_code=202)
+@workspace_commands.register('peripheral.confirm_project_github_import')
 @_guard_project(by_slug=False, write=True, metadata=False)
 def confirm_project_github_import(project_id: str, request: GithubImportConfirmRequest) -> dict:
     return _confirm_github_import(_require_project(project_id), request)
@@ -514,6 +517,7 @@ def get_project_github_import(project_id: str, import_id: str) -> dict:
 
 
 @router.post("/api/projects/by-slug/{slug}/github-imports/preview")
+@workspace_commands.register('peripheral.preview_project_github_import_by_slug')
 def preview_project_github_import_by_slug(
     slug: str, request: GithubImportPreviewRequest
 ) -> dict:
@@ -539,6 +543,7 @@ def preview_project_github_import_by_slug(
 
 
 @router.post("/api/projects/by-slug/{slug}/github-imports", status_code=202)
+@workspace_commands.register('peripheral.confirm_project_github_import_by_slug')
 @_guard_project(by_slug=True, write=True, metadata=False)
 def confirm_project_github_import_by_slug(
     slug: str, request: GithubImportConfirmRequest
@@ -554,7 +559,8 @@ def get_project_github_import_by_slug(slug: str, import_id: str) -> dict:
     return _github_import_progress(_require_project_by_slug(slug), import_id)
 
 
-@router.post("/api/projects/by-slug/{slug}/formalizations/sync")
+@router.post('/api/projects/by-slug/{slug}/formalizations/sync', status_code=202)
+@workspace_commands.register('project.sync_formalizations')
 @_guard_project(by_slug=True, write=True, metadata=False, environment_write=False)
 def sync_project_formalizations_by_slug(
     slug: str, request: FormalizationTargetSyncRequest
@@ -650,7 +656,8 @@ def _push_project(project: dict) -> dict:
     }
 
 
-@router.put("/api/projects/{project_id}/git/remote")
+@router.put('/api/projects/{project_id}/git/remote', status_code=202)
+@workspace_commands.register('project.remote')
 @_guard_project(by_slug=False, write=True)
 def set_project_remote(project_id: str, request: RemoteUpdate) -> dict:
     """Set the project's GitHub remote URL (D34). Stored on the project row; the
@@ -658,7 +665,8 @@ def set_project_remote(project_id: str, request: RemoteUpdate) -> dict:
     return _set_remote_on(_require_project(project_id), request.remote_url)
 
 
-@router.post("/api/projects/{project_id}/git/push")
+@router.post('/api/projects/{project_id}/git/push', status_code=202)
+@workspace_commands.register('project.push')
 @_guard_project(by_slug=False, write=True)
 def push_project(project_id: str) -> dict:
     """Push the project repo to its configured GitHub remote using the global token
@@ -685,12 +693,13 @@ def _require_project_by_slug(slug: str) -> dict:
 
 
 @router.get("/api/projects/by-slug/{slug}/identity")
-@_guard_project(by_slug=True, write=False, metadata=True)
 def get_project_identity_by_slug(slug: str) -> dict:
-    return project_service.project_identity(_require_project_by_slug(slug))
+    from ..queries.identity import project_identity
+    return project_identity(_require_project_by_slug(slug))
 
 
-@router.put("/api/projects/by-slug/{slug}/identity")
+@router.put('/api/projects/by-slug/{slug}/identity', status_code=202)
+@workspace_commands.register('project.identity')
 def update_project_identity_by_slug(slug: str, request: ProjectIdentityUpdate) -> dict:
     if request.mode not in {"display-only", "rename-namespace", "default-name"}:
         raise HTTPException(status_code=422, detail="mode must be 'display-only', 'rename-namespace', or 'default-name'")
@@ -757,7 +766,8 @@ def update_project_identity_by_slug(slug: str, request: ProjectIdentityUpdate) -
     }
 
 
-@router.post("/api/projects/by-slug/{slug}/identity/default-name")
+@router.post('/api/projects/by-slug/{slug}/identity/default-name', status_code=202)
+@workspace_commands.register('project.default_name')
 @_guard_project(by_slug=True, write=True, environment_write=False)
 def initialize_overleaf_default_name(slug: str, request: OverleafDefaultNameRequest) -> dict:
     try:
@@ -772,6 +782,7 @@ def initialize_overleaf_default_name(slug: str, request: OverleafDefaultNameRequ
 
 
 @router.get("/api/projects/by-slug/{slug}/share")
+@peripheral_views.query('get_share_status_by_slug')
 def get_share_status_by_slug(slug: str) -> dict:
     """The share state the Overleaf pane needs in one call: the project's remote
     (token-free) plus whether the global GitHub token is configured (presence only,
@@ -793,18 +804,21 @@ def get_share_status_by_slug(slug: str) -> dict:
 
 
 @router.get("/api/projects/by-slug/{slug}/blueprint")
+@peripheral_views.query('get_blueprint_by_slug')
 @_guard_project(by_slug=True, write=False, metadata=True)
 def get_blueprint_by_slug(slug: str) -> dict:
     return _blueprint_payload(_require_project_by_slug(slug))
 
 
 @router.get("/api/projects/by-slug/{slug}/graph")
+@peripheral_views.query('get_graph_by_slug')
 @_guard_project(by_slug=True, write=False, metadata=True)
 def get_graph_by_slug(slug: str) -> dict:
     return graph_service.build_graph(_require_project_by_slug(slug), _proofs_root())
 
 
-@router.post("/api/projects/by-slug/{slug}/blueprint/generate")
+@router.post('/api/projects/by-slug/{slug}/blueprint/generate', status_code=202)
+@workspace_commands.register('project.generate_blueprint_slug')
 @_guard_project(by_slug=True, write=True, metadata=True)
 def generate_blueprint_by_slug(slug: str) -> dict:
     # The Overleaf "Generate from formalized theorems" button lands here (slug-resolved,
@@ -831,7 +845,6 @@ def _ensure_artifacts_backfilled(project: dict) -> None:
 
 
 @router.get("/api/projects/by-slug/{slug}/artifacts")
-@_guard_project(by_slug=True, write=False, metadata=True)
 def project_artifacts_by_slug(slug: str) -> dict:
     """Structured artifact index (PLAN-system-hardening 4.1): which declaration
     lives in which file, as recorded by the run finalizer. The Overleaf
@@ -839,7 +852,6 @@ def project_artifacts_by_slug(slug: str) -> dict:
     registry-markdown diffs. Like every by-slug route, never creates a
     project — an unknown slug is a 404 ("nothing recorded yet")."""
     project = _require_project_by_slug(slug)
-    _ensure_artifacts_backfilled(project)
     return {
         "project_id": project["id"],
         "slug": project["slug"],
@@ -871,6 +883,7 @@ def _shared_artifact(project_id: str, proof_path: str, content: str, owners: lis
 
 
 @router.get("/api/projects/by-slug/{slug}/target-status")
+@database_query('target_status')
 @_guard_project(by_slug=True, write=False, metadata=True)
 @read_projection
 def project_target_status_by_slug(slug: str, declarations: str = "", formalization_ids: str = "") -> dict:
@@ -1071,7 +1084,8 @@ def _resolve_repo_file(project: dict, rel: str) -> tuple[Path, Path, str]:
     return repo, absolute, absolute.relative_to(repo.resolve()).as_posix()
 
 
-@router.post("/api/projects/by-slug/{slug}/artifacts/retire")
+@router.post('/api/projects/by-slug/{slug}/artifacts/retire', status_code=202)
+@workspace_commands.register('project.retire')
 @_guard_project(by_slug=True, write=True, metadata=False)
 def retire_project_artifact_by_slug(slug: str, request: ArtifactRetireRequest) -> dict:
     """Single-writer retirement (PLAN-system-hardening 4.5): a retry deletes the
@@ -1118,14 +1132,16 @@ def retire_project_artifact_by_slug(slug: str, request: ArtifactRetireRequest) -
     gs = GitStore(repo.parent)
     try:
         gs.commit_all(repo, f"record {rel} before retry retirement", paths=[rel])
-        absolute.unlink()
+        from ..workspace_effects import install_from_snapshot
+        install_from_snapshot(absolute,None)
         sha = gs.commit_all(repo, f"retire {rel} for retry", paths=[rel])
     except GitStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return {"retire_commit": sha, "path": rel}
 
 
-@router.post("/api/projects/by-slug/{slug}/artifacts/restore")
+@router.post('/api/projects/by-slug/{slug}/artifacts/restore', status_code=202)
+@workspace_commands.register('project.restore')
 @_guard_project(by_slug=True, write=True, metadata=False)
 def restore_project_artifact_by_slug(slug: str, request: ArtifactRestoreRequest) -> dict:
     """Undo a retirement after a retry that produced no verified replacement:
@@ -1154,7 +1170,8 @@ def restore_project_artifact_by_slug(slug: str, request: ArtifactRestoreRequest)
                 detail="No verified snapshot or file in the retire commit's parent",
             )
     absolute.parent.mkdir(parents=True, exist_ok=True)
-    absolute.write_text(content)
+    from ..workspace_effects import install_from_snapshot
+    install_from_snapshot(absolute,content)
     try:
         sha = GitStore(repo.parent).commit_all(
             repo, f"restore {rel} after unverified retry", paths=[rel],
@@ -1165,18 +1182,21 @@ def restore_project_artifact_by_slug(slug: str, request: ArtifactRestoreRequest)
 
 
 @router.get("/api/projects/by-slug/{slug}/export")
+@peripheral_views.query('export_project_by_slug',automatic=False,lifetime=86400)
 @_guard_project(by_slug=True, write=False, metadata=True)
 def export_project_by_slug(slug: str) -> Response:
     return _export_project_response(_require_project_by_slug(slug))
 
 
-@router.put("/api/projects/by-slug/{slug}/git/remote")
+@router.put('/api/projects/by-slug/{slug}/git/remote', status_code=202)
+@workspace_commands.register('project.remote_slug')
 @_guard_project(by_slug=True, write=True)
 def set_project_remote_by_slug(slug: str, request: RemoteUpdate) -> dict:
     return _set_remote_on(_require_project_by_slug(slug), request.remote_url)
 
 
-@router.post("/api/projects/by-slug/{slug}/git/push")
+@router.post('/api/projects/by-slug/{slug}/git/push', status_code=202)
+@workspace_commands.register('project.push_slug')
 @_guard_project(by_slug=True, write=True)
 def push_project_by_slug(slug: str) -> dict:
     return _push_project(_require_project_by_slug(slug))
@@ -1204,30 +1224,40 @@ def list_files(project_id: str) -> dict:
 
 
 @router.post("/api/projects/by-slug/{slug}/mirror")
-@_guard_project(by_slug=True, write=True, source_refresh=True)
-def mirror_overleaf_tex(slug: str, request: MirrorRequest, background_tasks: BackgroundTasks) -> dict:
-    """Mirror the Overleaf project's `.tex`/`.sty`/`.cls` sources into the matching project's
-    `.lea/files/overleaf/` (resolving/creating the project by slug, like `/api/runs`).
-    Reconcile is synchronous (files on disk + indexed before returning); the git commit
-    is **deferred** to a background task so the formalize path never waits on git."""
-    proofs_root = _proofs_root()
-    try:
-        project = project_service.ensure_project(slug, proofs_root, overleaf_project_title=request.overleaf_project_title)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    incoming = [{"path": f.path, "content": f.content} for f in request.files]
-    mode = "upsert" if request.mode == "upsert" else "reconcile"
-    try:
-        summary = uploads.sync_overleaf_tex(project, proofs_root, incoming, commit=False, mode=mode)
-    except uploads.UploadError as exc:
-        raise HTTPException(status_code=_UPLOAD_ERROR_STATUS.get(exc.code, 400), detail=str(exc))
-    store.mark_project_overleaf_linked(project["id"])
-    if summary.get("changed"):
-        from .. import reformalizations
-        background_tasks.add_task(uploads.commit_mirror, project, proofs_root,
-                                  reformalization_id=reformalizations.actor())
-    return {"project_id": project["id"], "slug": project["slug"],
-            "identity": project_service.project_identity(project), **summary}
+def mirror_overleaf_tex(slug: str, request: MirrorRequest) -> dict:
+    """Publish a SQL archive; only an accepted worker binds it to workspace files."""
+    from .. import db
+    from uuid import uuid4
+    incoming={workspace_commands.normalize_path(f.path):f.content for f in request.files}
+    if len(incoming)>10000 or any(len(c.encode())>4*1024*1024 for c in incoming.values()) or sum(len(p.encode())+len(c.encode()) for p,c in incoming.items())>32*1024*1024:
+        raise HTTPException(413,'Source archive exceeds its file/input bounds')
+    with db.write() as conn:
+        project=store.get_project_by_slug(slug) or project_service.ensure_project(slug,None,overleaf_project_title=request.overleaf_project_title)
+        previous=conn.execute('select files_json from source_archives where project_id=? order by created_at desc limit 1',(project['id'],)).fetchone()
+        import json
+        files=json.loads(previous[0]) if previous and request.mode=='upsert' else {}
+        files.update(incoming)
+        if sum(len(p.encode())+len(c.encode()) for p,c in files.items())>32*1024*1024:raise HTTPException(413,'Source archive exceeds 32 MiB')
+        archive=uuid4().hex
+        conn.execute('insert into source_archives(id,project_id,files_json,mode,created_at) values(?,?,?,?,?)',(archive,project['id'],json.dumps(files),request.mode,db.utc_now()))
+        store.mark_project_overleaf_linked(project['id'])
+    hashes={p:hashlib.sha256(c.encode()).hexdigest() for p,c in files.items()}
+    revision=hashlib.sha256('\0'.join(p+'\0'+h for p,h in sorted(hashes.items())).encode()).hexdigest()
+    return {'project_id':project['id'],'slug':slug,'identity':project_service.project_identity(project),
+            'source_archive_id':archive,'mirrorRevision':revision,'mirroredFiles':hashes,'changed':True,
+            'materialization':'deferred_until_worker_binding','summary':{'published':len(files)}}
+
+
+@router.post('/api/projects/{project_id}/export',status_code=202)
+@workspace_commands.register('project.export')
+def prepare_project_export(project_id:str):
+    return peripheral_views.capture('export_project',{'project_id':project_id})
+
+
+@router.post('/api/projects/by-slug/{slug}/export',status_code=202)
+@workspace_commands.register('project.export_slug')
+def prepare_project_export_by_slug(slug:str):
+    return peripheral_views.capture('export_project_by_slug',{'slug':slug})
 
 
 async def _read_capped(file: UploadFile, cap: int) -> bytes:
@@ -1254,24 +1284,45 @@ async def _read_capped(file: UploadFile, cap: int) -> bytes:
     return b"".join(chunks)
 
 
-@router.post("/api/projects/{project_id}/files", status_code=201)
+class AttachmentRequest(BaseModel):
+    filename: str
+    mime: str | None = None
+    upload_blob_id: str
+
+
+@workspace_commands.register('project.upload')
 @_guard_project(by_slug=False, write=True, metadata=False)
-async def upload_file(project_id: str, file: UploadFile = File(...)) -> dict:
+def save_uploaded_file(project_id: str, request: AttachmentRequest) -> dict:
+    import base64
     project = _require_project(project_id)
+    try:
+        return uploads.save_upload(project, _proofs_root(), request.filename,
+            base64.b64decode(store.blob_content(request.upload_blob_id)), mime=request.mime)
+    except uploads.UploadError as exc:
+        raise HTTPException(status_code=_UPLOAD_ERROR_STATUS.get(exc.code,400),detail=str(exc)) from exc
+
+
+@router.post("/api/projects/{project_id}/files", status_code=202)
+async def upload_file(project_id: str, file: UploadFile = File(...), http_request: Request = None) -> dict:
+    import base64
+    from .. import db
+    _require_project(project_id)
     try:
         data = await _read_capped(file, uploads.MAX_UPLOAD_BYTES)
     except uploads.UploadError as exc:
         raise HTTPException(status_code=_UPLOAD_ERROR_STATUS.get(exc.code, 400), detail=str(exc))
-    try:
-        return uploads.save_upload(
-            project, _proofs_root(), file.filename or "file", data, mime=file.content_type
-        )
-    except uploads.UploadError as exc:
-        raise HTTPException(status_code=_UPLOAD_ERROR_STATUS.get(exc.code, 400), detail=str(exc))
+    with db.write() as conn:
+        blob = store._put_blob(conn, base64.b64encode(data).decode())
+        try:
+            return workspace_commands.admit('project.upload', {'project_id': project_id,
+                'request': {'filename': file.filename or 'file', 'mime': file.content_type, 'upload_blob_id': blob}},
+                idempotency_key=http_request.headers.get('Idempotency-Key') if http_request else None,connection=conn)
+        except workspace_commands.commands.QueueError as exc:
+            raise HTTPException(exc.status, detail={'error':exc.code}) from exc
 
 
-@router.get("/api/projects/{project_id}/files/{file_id}")
-def download_file(project_id: str, file_id: str) -> FileResponse:
+@peripheral_views.query('download_file')
+def _capture_download_file(project_id: str, file_id: str) -> FileResponse:
     project = _require_project(project_id)
     row = store.get_project_file(file_id)
     if row is None or row["project_id"] != project_id:
@@ -1282,7 +1333,22 @@ def download_file(project_id: str, file_id: str) -> FileResponse:
     return FileResponse(path, media_type=row.get("mime") or "application/octet-stream", filename=row["filename"])
 
 
-@router.delete("/api/projects/{project_id}/files/{file_id}")
+@router.get('/api/projects/{project_id}/files/{file_id}')
+def download_file(project_id:str,file_id:str) -> Response:
+    import base64
+    from .. import db
+    row=store.get_project_file(file_id)
+    if not row or row['project_id']!=project_id:raise HTTPException(404,'File not found')
+    with db.connect() as conn:binding=conn.execute('select * from workspace_files where scope=? and path=?',('p:'+project_id,row['stored_path'])).fetchone()
+    if not binding:return peripheral_views.get('download_file',{'project_id':project_id,'file_id':file_id})
+    if binding['materialization']=='deleted':raise HTTPException(404,'File was deleted')
+    raw=store.blob_content(binding['blob_id'])
+    content=base64.b64decode(raw) if binding['encoding']=='base64' else raw.encode()
+    return Response(content,media_type=row.get('mime') or 'application/octet-stream',headers={'Content-Disposition':peripheral_views.disposition(row['filename'])})
+
+
+@router.delete('/api/projects/{project_id}/files/{file_id}', status_code=202)
+@workspace_commands.register('project.delete_file')
 @_guard_project(by_slug=False, write=True, metadata=False)
 def delete_file(project_id: str, file_id: str) -> dict:
     project = _require_project(project_id)
@@ -1293,7 +1359,8 @@ def delete_file(project_id: str, file_id: str) -> dict:
     return {"deleted": True, "id": file_id}
 
 
-@router.delete("/api/projects/{project_id}")
+@router.delete('/api/projects/{project_id}', status_code=202)
+@workspace_commands.register('project.delete')
 def delete_project(project_id: str) -> dict:
     if store.project_has_active_import(project_id):
         raise HTTPException(status_code=409, detail={

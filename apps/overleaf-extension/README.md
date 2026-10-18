@@ -10,8 +10,20 @@ The default path is:
 Overleaf page -> Chrome extension -> companion (:31245) -> FastAPI adapter (:8001)
 ```
 
-The adapter then drives the vendored prover at `apps/lea-standalone/prover/`
-in-process. The companion does not start its own prover backend.
+The API admits durable SQL commands and a separate worker drives the vendored prover.
+The optional companion forwards database operations and observes SQL receipts;
+it needs no workspace access, provider keys or writable job storage. The adapter
+workspace worker owns a private Node business process (Node 22.13 or newer).
+
+The extension publishes immutable editor snapshots with a document/tab generation
+and sequence before requesting execution. Source callbacks and pending-source
+polling are retired. A competing tab or changed source receives an actionable
+conflict; accepted work never silently adopts a newer source snapshot.
+
+See the [Stage 6 cutover record](../../docs/STAGE6-database-ui-cutover.md) for the
+legacy-state import, limits, qualification and rollback procedure.
+The [Stage 8 runtime guide](../../docs/STAGE8-process-boundary.md) defines the final
+API/worker split and strict client capability negotiation.
 
 For the VIDA-hosted Docker installation and Chrome side-load steps, see
 [BETA_INSTALL.md](BETA_INSTALL.md). The image already runs both the adapter and
@@ -20,8 +32,9 @@ the companion; only the unpacked extension is loaded separately in Chrome.
 ## Pieces
 
 - `extension/`: Chrome MV3 extension injected into Overleaf.
-- `companion/`: local HTTP service that validates theorem payloads, starts Lea
-  runs, tracks jobs, and reads adapter-persisted usage.
+- `companion/server.mjs`: optional stateless HTTP compatibility transport.
+- `companion/worker.mjs`, `workerService.mjs`, `databaseState.mjs`: private adapter-owned
+  business worker; orchestration records and diagnostics are committed to SQL.
 - `shared/`: theorem parser and Lean path helpers used by the companion and tests.
 - `tests/`: Node test suite.
 
@@ -304,15 +317,14 @@ apps/lea-standalone/prover/workspace/context/overleaf/<ProjectSlug>/
 Formalization prompts include only the manifest path. Lea can open the mirrored
 `.tex` file if it decides the additional context is useful.
 
-Temporary retry behavior: when a failed theorem is retried, the companion removes
-the prior generated proof file and matching project markdown theorem entry before
-asking Lea to run again. This prevents stale failed artifacts from interfering
-with artifact mapping.
+Retries retain prior proof bytes and canonical conversation history. Source
+changes invalidate current verification. Replacements follow the existing staged
+publication and human-review rules.
 
 ## Usage And Session Links
 
-Usage comes from the standalone adapter's persisted stats endpoint. The
-companion falls back to its local job index only when the adapter is unreachable.
+Usage, job history and sessions come from SQL projections. An unavailable adapter
+is an unavailable observation; it never enables a second JSON authority.
 
 The extension opens Lea sessions through:
 
@@ -328,13 +340,14 @@ The Lean pane header has two actions that operate on the document's Lea project
 (the same repo the Lea UI's Filesystem tab shows):
 
 - **Export** downloads the whole project as a zip (source + `.lea/` assets;
-  `.git`/`.lake` excluded), streamed from the adapter through the companion's
-  `GET /project-export`.
+  `.git`/`.lake` excluded). `POST /project-export` queues preparation; download
+  bytes are retained in SQL for 24 hours and can be read without workspace access.
 - **Share** opens a panel to save a GitHub remote (`https://github.com/you/repo`)
   and push the project's commits to its `main` branch. Pushing requires a GitHub
   token, set either in the extension's settings popover ("GitHub sharing") or in
   the Lea UI's Settings — it's the same token, stored only in the adapter's
-  `config/lea.local.toml` and never persisted by the companion or Chrome.
+  protected adapter infrastructure and represented by redacted SQL status. Raw
+  credentials never enter command payloads, companion records or Chrome storage.
 
 Both actions resolve the project by the document's slug and never create one: a
 document with no formalized theorems yet has nothing to export. If a push is

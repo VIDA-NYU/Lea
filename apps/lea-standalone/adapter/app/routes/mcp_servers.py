@@ -13,6 +13,9 @@ the user is still looking at the fields (A2's preflight, E0b's button).
 
 from __future__ import annotations
 
+from .. import peripheral_views
+from .. import workspace_commands
+
 import shutil
 from pathlib import Path
 
@@ -93,12 +96,14 @@ def create_server(request: ServerPayload) -> dict:
 
 
 @router.get("/api/mcp-servers/defaults")
+@peripheral_views.query('server_defaults')
 def server_defaults() -> dict:
     """Machine-specific values the form can offer, so the user never types a path."""
     return {"lean_project_path": _lean_project_path()}
 
 
 @router.get("/api/mcp-servers/key-requirements")
+@peripheral_views.query('key_requirements')
 def key_requirements() -> dict:
     """Which declared credentials are missing, and what breaks without them (D1/D2/D3).
 
@@ -119,6 +124,7 @@ def key_requirements() -> dict:
 
 
 @router.get("/api/mcp-servers/catalog")
+@peripheral_views.query('list_catalog')
 def list_catalog() -> dict:
     """The curated entries, each marked with whether it is already installed (E2)."""
     from .. import catalog
@@ -133,6 +139,7 @@ def list_catalog() -> dict:
 
 
 @router.post("/api/mcp-servers/catalog/{entry_id}", status_code=201)
+@workspace_commands.register('peripheral.install_catalog_entry')
 def install_catalog_entry(entry_id: str) -> dict:
     """Install one curated entry: the server, pinned, with its Lean path filled in, and
     its recommended tool subset recorded (E2).
@@ -214,6 +221,7 @@ class SkillMcpToggle(BaseModel):
 
 
 @router.get("/api/sessions/{session_id}/skills-mcp")
+@peripheral_views.query('session_skills_mcp')
 def session_skills_mcp(session_id: str) -> dict:
     """What THIS session resolves to, item by item, with where each state came from (E0e).
 
@@ -267,6 +275,7 @@ def session_skills_mcp(session_id: str) -> dict:
 
 
 @router.put("/api/sessions/{session_id}/skills-mcp")
+@workspace_commands.register('peripheral.update_session_skills_mcp')
 def update_session_skills_mcp(session_id: str, request: SkillMcpToggle) -> dict:
     """Add/drop one item for this session, or clear the override to inherit the project
     again. Stores the DIFF, so a later project-level change still reaches this session."""
@@ -327,6 +336,7 @@ def _preflight(transport: str, command: str | None, env: dict) -> str | None:
 
 
 @router.post("/api/mcp-servers/test")
+@workspace_commands.register('peripheral.test_server')
 def test_server(request: ServerTest) -> dict:
     """Dry-run a server spec: connect, list its tools, disconnect.
 

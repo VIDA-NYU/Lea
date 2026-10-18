@@ -117,7 +117,7 @@ def read(project_id: str | None):
         revision = state.revision
     state.application_lock.acquire()
     try:
-        from .reformalizations import assert_readable
+        from .reformalization_intake import assert_readable
         assert_readable(project_id)
         yield revision
     finally:
@@ -137,7 +137,7 @@ def mutation(project_id: str | None, *, wait=False, admission=False):
         return
     state = _state(project_id)
     if not admission:
-        from .reformalizations import assert_writer
+        from .reformalization_intake import assert_writer
         assert_writer(project_id)
     with state.condition:
         while state.renaming:
@@ -166,7 +166,7 @@ def mutation(project_id: str | None, *, wait=False, admission=False):
 def application(project_id, root, *, recovery=False):
     """Environment first, then the short gate shared by canonical I/O routes."""
     from lea.check_evidence import mutation as environment_mutation
-    from .reformalizations import assert_writer
+    from .reformalization_intake import assert_writer
     with environment_mutation(root), _state(project_id).application_lock:
         if not recovery:
             assert_writer(project_id)
@@ -175,7 +175,7 @@ def application(project_id, root, *, recovery=False):
 
 @contextmanager
 def migration(project_id: str):
-    from .reformalizations import assert_writer
+    from .reformalization_intake import assert_writer
     assert_writer(project_id)
     state = _state(project_id)
     with state.lock:
@@ -212,7 +212,7 @@ def worker_finished(project_id: str | None, run_id: str):
 @contextmanager
 def deletion(project_id: str):
     """Exclude admission and I/O for the full busy check and destructive operation."""
-    from .reformalizations import assert_writer
+    from .reformalization_intake import assert_writer
     assert_writer(project_id)
     state = _state(project_id)
     with state.lock:
@@ -244,7 +244,7 @@ def file_edit(project_id: str | None):
         yield
         return
     state = _state(project_id)
-    from .reformalizations import assert_writer
+    from .reformalization_intake import assert_writer
     assert_writer(project_id)
     with state.lock:
         _available(state)
@@ -291,8 +291,7 @@ def review_decision(project_id: str | None, run_id: str | None):
             state.mutations -= 1
 
 
-def guarded(resolver, *, write=False, metadata=False, admission=False, environment_write=True,
-            source_refresh=False):
+def guarded(resolver, *, write=False, metadata=False, admission=False, environment_write=True):
     """Guard sync/async route functions without changing FastAPI's signature.
 
     Database-only mutations can opt out of the compiler environment lease while
@@ -311,7 +310,7 @@ def guarded(resolver, *, write=False, metadata=False, admission=False, environme
                 with ExitStack() as stack:
                     # Managed dependency workers carry a registered parent identity.
                     # They may satisfy their waiting owner's reservation.
-                    from . import reformalizations, store
+                    from . import reformalization_intake as reformalizations, store
                     req = bound.arguments.get("request")
                     run = store.get_run(bound.arguments.get("run_id")) if bound.arguments.get("run_id") else None
                     op = reformalizations.for_run(run["id"]) if run else None
@@ -331,12 +330,6 @@ def guarded(resolver, *, write=False, metadata=False, admission=False, environme
                         from pathlib import Path
                         root = load_config().lea_root or Path(__file__).resolve().parents[2] / 'prover'
                         stack.enter_context(environment_mutation(root / 'workspace'))
-                    # An editor refresh uses a separate HTTP request. Resolve its
-                    # narrow mirror permission after any environment-lease wait.
-                    if source_refresh:
-                        refresh_owner = reformalizations.source_refresh_owner(project_id)
-                        if refresh_owner:
-                            stack.enter_context(reformalizations.acting(refresh_owner))
                     revision = stack.enter_context(mutation(project_id, admission=admission) if write else read(project_id))
                     yield revision
             return project_id, coordinated()
@@ -345,7 +338,7 @@ def guarded(resolver, *, write=False, metadata=False, admission=False, environme
             if metadata and project_id and isinstance(result, dict):
                 from . import store
                 project = store.get_project(project_id)
-                result = {**result, "namespace_revision": revision,
+                result = {**result, "namespace_revision": project["namespace_generation"] if project else None,
                           "project_namespace": project["namespace"] if project else None}
             return result
 

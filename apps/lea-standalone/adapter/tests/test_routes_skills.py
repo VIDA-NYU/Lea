@@ -118,7 +118,7 @@ def test_import_creates_and_scopes_a_skill(tmp_path, monkeypatch):
         ),
     )
 
-    created = skills_route.import_skill(
+    created = skills_route.import_skill.worker(
         SkillImport(url="https://github.com/you/repo", project_ids=[p["id"]])
     )
     assert created["name"] == "Imported Skill"
@@ -137,7 +137,7 @@ def test_import_bad_url_is_400(tmp_path, monkeypatch):
 
     monkeypatch.setattr(skills_route.ghimport, "fetch_skill", boom)
     with pytest.raises(HTTPException) as exc:
-        skills_route.import_skill(SkillImport(url="https://gitlab.com/o/r"))
+        skills_route.import_skill.worker(SkillImport(url="https://gitlab.com/o/r"))
     assert exc.value.status_code == 400
 
 

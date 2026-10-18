@@ -64,7 +64,7 @@ def test_overleaf_policy_backfills_only_recorded_provenance(tmp_path, monkeypatc
     assert historical_row["pending_approval"]["approval_id"] == "keep"
     assert historical_row["status"] == "pending"
     db.init_db()
-    assert migrations.current_revision() == "0035_overleaf_project_names"
+    assert migrations.current_revision() == migrations.head_revision()
     assert store.get_run("historical-run")["approval_mode"] == "stepwise"
 
 
@@ -149,6 +149,7 @@ def test_baseline_is_a_noop_on_a_preexisting_database(tmp_path, monkeypatch):
     # Simulate the pre-Alembic database: schema present, data present, no stamp.
     db.init_db()
     with sqlite3.connect(path) as conn:
+        db.register_change_batch(conn)
         conn.execute(
             "insert into sessions (id, title, origin, created_at, updated_at)"
             " values ('s1','keep me','ui','t','t')"
@@ -178,6 +179,7 @@ def test_reconcile_repairs_a_legacy_database_missing_artifact_kind(tmp_path, mon
 
     # Rewind to the pre-98d69ef shape, keeping a row to prove data survives.
     with sqlite3.connect(path) as conn:
+        db.register_change_batch(conn)
         conn.execute(
             "insert into sessions (id, title, origin, created_at, updated_at)"
             " values ('s1','legacy','ui','t','t')"

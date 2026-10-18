@@ -146,47 +146,48 @@ def request_subagent_stop(child_session_id: str) -> bool:
     return request_child_stop(result_id)
 
 
-# --- Capacity-aware FIFO dispatcher (integrates v2.3 + hardening Phase 2) -----
-# POST /api/runs enqueues immediately and GET /events only observes. A single
-# dispatcher preserves FIFO admission order, while the v2.3 registry still allows
-# up to LEA_MAX_CONCURRENT_RUNS admitted drivers at once. Each admitted run gets
-# the existing rejoinable RunBroker, so reconnect/cursor semantics and concurrent
-# sub-agent work remain intact. This replaces gen_repair's single-run event hub;
-# the broker is the one event source for both interactive and Overleaf clients.
-_run_queue: "Queue[str]" = Queue()
-_worker_guard = Lock()
-_worker_thread: Thread | None = None
-_DISPATCH_STOP = object()
+# Solver waiting/claim authority is SQL. These worker helpers retain the
+# existing run registry, prompt construction and prover driver.
 
 
 def _resolve_task(run: dict[str, Any]) -> str | None:
-    session = store.session_detail(run["session_id"])
-    if not session or not session.get("messages"):
-        return None
-    return next(
-        (m["content"] for m in reversed(session["messages"])
-         if m["run_id"] == run["id"] and m["role"] == "user"),
-        None,
-    )
+    # A solver command references its already committed task. Loading the entire
+    # UI projection here also scanned proof/environment state on every retry.
+    from .db import connect
+    with connect() as conn:
+        row=conn.execute("""select content from timeline where run_id=? and session_id=?
+            and author='user' and kind not in ('code','diagnostic') order by id desc limit 1""",
+            (run['id'],run['session_id'])).fetchone()
+    return row[0] if row else None
 
 
-# One dispatch attempt's outcome. `DEFER` is the only one that keeps a run waiting.
+# Dispatch outcomes distinguish scope contention from exhausted global capacity.
 _SETTLED, _DISPATCHED, _DEFER = "settled", "dispatched", "defer"
+_CAPACITY = "capacity"
 
-# How long the dispatcher waits between retries when every waiting run is blocked on
-# capacity or on its own session. Only reached when nothing else is arriving.
-_DISPATCH_RETRY_SECONDS = 0.1
-
-
-def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
+def _try_dispatch(run_id: str, superseded: dict[str, str], *, command_token=None) -> str:
     """Attempt to admit and start one run. Never blocks.
 
     Returns `_SETTLED` (nothing more to do — terminal, missing, or already driven),
     `_DISPATCHED` (a driver thread is running it), or `_DEFER` (not admissible *yet*).
     """
     run = store.get_run(run_id)
-    if not runtime.accepting_work():
+    from . import run_commands, commands, db
+    linked=run_commands.for_run(run_id)
+    if linked and command_token is None:return _DEFER
+    if command_token:
+        with db.connect() as conn:
+            if not run_commands.owns(conn,run_id,command_token):return _SETTLED
+    if not runtime.accepting_work() or run_commands.drain_requested():
         return _DEFER
+    if run:
+        from .workspace_commands import blocks_solver
+        with db.connect() as conn:
+            if blocks_solver(conn,run.get('project_id'),run['session_id']):return _DEFER
+    if run and run['status']=='running':
+        # A second scheduler observation cannot close the live run's event log.
+        # Its driver and command claim remain the only execution owners.
+        return _SETTLED
     if not run or run["status"] != "pending":
         if run:
             publish_terminal_from_row(run_id)
@@ -252,6 +253,7 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
                 autonomous=bool(run.get("autonomous")),
                 approval_mode=str(run.get("approval_mode") or "stepwise"),
                 purpose=str(run.get("purpose") or "general"),
+                command_token=command_token,
                 allow_source_pause=bool(run.get("allow_source_pause")),
             )
             Thread(target=run_lea, args=(context,), daemon=True,
@@ -268,6 +270,8 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
     if admission.outcome == runregistry.ALREADY_ACTIVE:
         # A duplicate enqueue/recovery entry; the admitted driver owns it.
         return _SETTLED
+    if admission.outcome == runregistry.AT_CAPACITY:
+        return _CAPACITY if admission.active>=admission.capacity else _DEFER
     if admission.outcome == runregistry.SESSION_BUSY and admission.incumbent_run_id:
         # Preserve main's per-session supersede behavior without letting two turns
         # mutate the same session concurrently. Asked ONCE per incumbent: the flag is
@@ -279,80 +283,17 @@ def _try_dispatch(run_id: str, superseded: dict[str, str]) -> str:
     return _DEFER
 
 
-def _worker_loop() -> None:
-    """Dispatch queued runs, never letting one that cannot start hold up one that can.
-
-    The previous shape spun in an inner loop on the run at the head of the queue until
-    it was admissible (AUDIT-2026-07-24 X1). That is fine when the blocker is capacity
-    — nothing else could start either — but `SESSION_BUSY` blocks on a *different*
-    session's incumbent winding down, which can take a whole model call, or up to the
-    900-second approval timeout if that incumbent is parked on an unanswered gate.
-    Runs for unrelated sessions sat behind it with slots free, so
-    `LEA_MAX_CONCURRENT_RUNS=4` did not deliver four in the multi-chat case Phase 6
-    raised the default for.
-
-    Now a run that cannot be admitted is set aside and retried on the next pass while
-    the dispatcher keeps draining the queue. `deferred` preserves the relative order of
-    the runs waiting, and is retried before newly arrived ones, so FIFO among the
-    blocked set is unchanged — what is gone is one blocked run's claim on everyone
-    else's turn.
-
-    The queue is polled only while something is deferred; with nothing waiting the
-    dispatcher blocks on `get()` as before and costs nothing when idle.
-    """
-    deferred: list[str] = []
-    # run_id -> the incumbent we have already asked to stop for it, so a supersede is
-    # requested once rather than on every retry.
-    superseded: dict[str, str] = {}
-    while True:
-        try:
-            arrived = _run_queue.get(timeout=_DISPATCH_RETRY_SECONDS if deferred else None)
-        except Empty:
-            arrived = None
-
-        if arrived is _DISPATCH_STOP:
-            return
-
-        # Deferred first: they have been waiting longest.
-        batch, deferred = deferred, []
-        if arrived is not None:
-            batch.append(arrived)
-
-        for run_id in batch:
-            try:
-                if _try_dispatch(run_id, superseded) == _DEFER:
-                    deferred.append(run_id)
-                else:
-                    superseded.pop(run_id, None)
-            except Exception:  # noqa: BLE001 — the worker must survive any single run
-                logger.exception("Run worker failed while driving run %s", run_id)
-                superseded.pop(run_id, None)
-                try:
-                    current = store.get_run(run_id)
-                    if current and current["status"] in {"pending", "running"}:
-                        store.update_run(run_id, "failed")
-                except Exception:
-                    logger.exception("Failed to mark run %s failed", run_id)
-                publish_terminal_from_row(run_id)
-                runbroker.drop(run_id)
-
-
 def enqueue_run(run_id: str) -> None:
-    """FIFO-enqueue a created run for capacity-aware background admission."""
-    global _worker_thread
-    if runbroker.get(run_id) is None:
-        runbroker.create(run_id)
-    with _worker_guard:
-        if _worker_thread is None or not _worker_thread.is_alive():
-            _worker_thread = Thread(target=_worker_loop, daemon=True, name="lea-run-dispatcher")
-            _worker_thread.start()
-    _run_queue.put(run_id)
+    """Compatibility for worker/library callers; never owns an in-memory FIFO."""
+    from . import run_commands, command_host
+    run_commands.ensure_run(run_id)
+    command_host.start()
 
 
 def recover_runs_at_startup() -> None:
-    """Re-enqueue pending rows after stale running rows are reaped on startup."""
-    for run in store.list_runs_by_status("pending"):
-        enqueue_run(run["id"])
+    """Compatibility entry point after process/journal/checkpoint recovery."""
+    from . import run_commands
+    run_commands.recover_at_startup()
 
 
 def publish_terminal_from_row(run_id: str) -> None:
@@ -365,7 +306,7 @@ def publish_terminal_from_row(run_id: str) -> None:
     run = store.get_run(run_id)
     _stop_events.pop(run_id, None)
     broker = runbroker.get(run_id)
-    if not run or broker is None:
+    if not run or broker is None or run["status"] in {"pending","running"}:
         return
     payload: dict[str, Any] = {"status": run["status"]}
     if run.get("result_kind"):
@@ -385,7 +326,7 @@ def publish_terminal_from_row(run_id: str) -> None:
 # session" adds the tool to a per-session in-memory allowlist (persists across
 # runs in a session, resets on process restart). The prover owns the yield/.send
 # hook (A8); the adapter owns the policy + the human relay.
-GATED_TOOLS = {"bash", "write_file", "edit_file"}
+from .run_commands import GATED_TOOLS
 _APPROVAL_DECISIONS = {"allow", "deny", "always_session"}
 # E1: not a decision the human can send — the run synthesizes it when a Stop arrives
 # while a gate is pending. The tool still does not run (same safe outcome as a deny),
@@ -405,12 +346,14 @@ _session_allowlists: dict[str, set[str]] = {}
 _pending_approvals: dict[str, dict[str, Any]] = {}
 
 
-def _make_gate(session_id: str):
+def _make_gate(session_id: str, *, persisted=False):
     """The policy passed to run_events: True = this tool needs human approval."""
     def gate(tool_name: str, args: dict) -> bool:
         if tool_name not in GATED_TOOLS:
             return False
-        return tool_name not in _session_allowlists.get(session_id, set())
+        from . import run_commands
+        if persisted:return not run_commands.allowlisted(session_id,tool_name)
+        return tool_name not in _session_allowlists.get(session_id,set())
     return gate
 
 
@@ -432,6 +375,9 @@ def _await_decision(run_id, session_id, ev, events, stop_event) -> str:
     it (staying responsive to Stop — a stop bails to `deny`), records an
     `always_session` allowlist entry, emits `approval_resolved`, and returns
     `allow | deny | always_session`. Anything unexpected → `deny` (safe default)."""
+    from . import run_commands
+    if run_commands.for_run(run_id):
+        return _await_database_decision(run_id,session_id,ev,events,stop_event)
     approval_id = uuid4().hex
     # Persist the pending approval onto the run row so it survives a stream drop,
     # a reconnect, or a session switch: `session_detail` re-surfaces
@@ -487,6 +433,30 @@ def _await_decision(run_id, session_id, ev, events, stop_event) -> str:
     return decision
 
 
+def _await_database_decision(run_id,session_id,ev,events,stop_event):
+    from . import run_commands
+    approval_id=uuid4().hex
+    card=run_commands.bind_approval(run_id,approval_id,ev.invocation_id or uuid4().hex,ev.tool_name,ev.args)
+    emit(events,'approval_requested',{**card,'run_id':run_id,'session_id':session_id})
+    deadline=time.monotonic()+APPROVAL_DECISION_TIMEOUT_SECONDS
+    decision=None
+    while time.monotonic()<deadline:
+        decision=run_commands.consume_approval(run_id,approval_id)
+        if decision is not None:break
+        if stop_event.wait(.1):
+            decision='cancelled';break
+    run_commands.close_approval(approval_id)
+    decision=decision or 'deny'
+    if decision=='cancelled':
+        stop_event.set()
+        diagnose(events,session_id,run_id,'notice','approval.cancelled',
+            f'Stop cancelled the pending approval for {ev.tool_name}.',tool=ev.tool_name,approval_id=approval_id)
+    if decision=='always_session':_session_allowlists.setdefault(session_id,set()).add(ev.tool_name)
+    store.set_run_pending_approval(run_id,None)
+    emit(events,'approval_resolved',{'approval_id':approval_id,'decision':decision})
+    return decision
+
+
 @dataclass
 class RunnerContext:
     """What a single run needs. Same shape main.py built for runner.py, minus the
@@ -507,6 +477,7 @@ class RunnerContext:
     # Snapshotted independently: Overleaf-linked chats stay conversational while
     # skipping per-tool approvals. Autonomous execution always skips them too.
     approval_mode: str = "stepwise"
+    command_token: dict | None = None
 
 
 def emit(events: "runbroker.RunBroker | Queue[dict[str, Any]]",
@@ -564,12 +535,8 @@ def diagnose(
     return row
 
 
-# How long a run may hold streamed text before publishing it, and the largest single
-# frame it will build. The interval matches the subscriber poll in
-# `routes/runs._subscribe` — text produced between two polls is delivered together no
-# matter how many frames it arrived in, so a finer granularity than this is invisible.
-_DELTA_FLUSH_SECONDS = 0.08
-_DELTA_FLUSH_CHARS = 512
+# Calibrated batching interval and UTF-8 byte cap (Stage 0 runtime evidence).
+from .migration_limits import TEXT_FLUSH_SECONDS as _DELTA_FLUSH_SECONDS, TEXT_CHUNK_BYTES
 
 
 class _DeltaStream:
@@ -591,8 +558,12 @@ class _DeltaStream:
     come in slower than the interval each one flushes immediately.
     """
 
-    def __init__(self, events: "runbroker.RunBroker | Queue[dict[str, Any]]") -> None:
+    def __init__(self, events: "runbroker.RunBroker | Queue[dict[str, Any]]",
+                 session_id: str | None = None, run_id: str | None = None, *, on_chunk=None) -> None:
         self._events = events
+        self.session_id, self.run_id = session_id, run_id
+        self.message_id: str | None = None
+        self.on_chunk = on_chunk
         self._parts: list[str] = []
         self._length = 0
         self._deadline: float | None = None
@@ -600,13 +571,22 @@ class _DeltaStream:
     def add(self, text: str) -> None:
         if not text:
             return
-        self._parts.append(text)
-        self._length += len(text)
-        now = time.monotonic()
-        if self._deadline is None:
-            self._deadline = now + _DELTA_FLUSH_SECONDS
-        if self._length >= _DELTA_FLUSH_CHARS or now >= self._deadline:
-            self.flush()
+        remaining = text.encode()
+        while remaining:
+            available = TEXT_CHUNK_BYTES - self._length
+            part = remaining[:available].decode("utf-8", errors="ignore")
+            if not part:
+                self.flush()
+                continue
+            size = len(part.encode())
+            self._parts.append(part)
+            self._length += size
+            remaining = remaining[size:]
+            now = time.monotonic()
+            if self._deadline is None:
+                self._deadline = now + _DELTA_FLUSH_SECONDS
+            if remaining or self._length == TEXT_CHUNK_BYTES or now >= self._deadline:
+                self.flush()
 
     def flush(self) -> None:
         """Publish whatever is buffered. Must run before ANY other event is emitted, so
@@ -614,10 +594,26 @@ class _DeltaStream:
         if not self._parts:
             return
         text = "".join(self._parts)
+        payload = {"text": text}
+        if self.session_id and self.run_id:
+            row = store.append_message_chunk(self.session_id, self.run_id, text, self.message_id)
+            self.message_id = row["id"]
+            payload["message"] = {key: value for key, value in row.items() if key != "content"}
+        # Clear only after persistence succeeds. Uncommitted text is never visible.
         self._parts.clear()
         self._length = 0
         self._deadline = None
-        emit(self._events, "assistant_delta", {"text": text})
+        emit(self._events, "assistant_delta", payload)
+        if self.on_chunk:
+            self.on_chunk(payload)
+
+    def finish(self, text: str) -> dict | None:
+        self.flush()
+        if self.message_id is None:
+            return None
+        row = store.finish_message_stream(self.message_id, text)
+        self.message_id = None
+        return row
 
 
 # A run's final status. "proved" / "disproved" / "needs_review" are terminal
@@ -1202,7 +1198,13 @@ def _child_deltas(broker, started: dict) -> "_DeltaStream":
     does, so it needs the same coalescing (P1)."""
     stream = started.get("deltas")
     if stream is None:
-        stream = _DeltaStream(broker)
+        def publish_parent(payload):
+            if started.get("parent_events") is not None:
+                emit(started["parent_events"], "subagent_progress", {
+                    "child_id": started["child_id"], "result_id": started.get("result_id"),
+                    "kind": "text", **payload,
+                })
+        stream = _DeltaStream(broker, started["child_id"], started["run_id"], on_chunk=publish_parent)
         started["deltas"] = stream
     return stream
 
@@ -1218,16 +1220,9 @@ def _flush_child_narration(broker, started: dict) -> None:
     started["narration"] = []
     if not text:
         return
-    n = started.get("msg_seq", 0) + 1
-    started["msg_seq"] = n
-    emit(broker, "message", {
-        "id": f"sa-{started['run_id']}-{n}",
-        "session_id": started["child_id"],
-        "run_id": started["run_id"],
-        "role": "assistant",
-        "content": text,
-        "created_at": store.utc_now(),
-    })
+    row = _child_deltas(broker, started).finish(text)
+    if row:
+        emit(broker, "message", row)
 
 
 def _forward_to_child_broker(broker, inner, started: dict) -> None:
@@ -1344,10 +1339,21 @@ def _populate_subagent(
     # child's thread opens with the same prompt twice.
     if task_already_recorded and pending and pending[0].get("role") == "user":
         pending = pending[1:]
+    # Consume recorded narration in order, once per occurrence. Repeated identical
+    # assistant turns remain distinct; do not deduplicate a whole transcript by text.
+    recorded = []
+    if child_run_id:
+        from .db import connect
+        with connect() as conn:
+            recorded = [r[0].strip() for r in conn.execute("""select content from timeline where
+                run_id=? and author='agent' and stream_state='final' order by id""", (child_run_id,))]
     for msg in pending:
         text = _text_from_content(msg.get("content"))
         if text.strip():
             role = "user" if msg.get("role") == "user" else "assistant"
+            if role == "assistant" and recorded and text.strip() == recorded[0]:
+                recorded.pop(0)
+                continue
             store.add_message(child_id, role, text)
     # A child that FAILED TO RUN has no transcript — persist the error as its message so
     # the failure is visible in the child's own session (and its final_summary), not lost.
@@ -1701,18 +1707,22 @@ def validate_continuation_runtime(old: dict, config: LeaConfig, checkpoint_id: i
 def run_lea(context: RunnerContext) -> None:
     # Keep the worker lease through all final bookkeeping, including SSE.
     try:
-        from . import reformalizations
-        op = reformalizations.for_run(context.run_id)
-        if op:
-            from .reformalization_runner import run
-            with reformalizations.acting(op["id"]):
-                run(context, op)
-        else:
-            _run_lea(context)
+        from . import reformalizations, run_commands
+        with run_commands.executing(context.command_token):
+            op = reformalizations.for_run(context.run_id)
+            if op:
+                from .reformalization_runner import run
+                with reformalizations.acting(op["id"]):
+                    run(context, op)
+            else:
+                _run_lea(context)
     finally:
         runregistry.registry.release(context.run_id)
         from . import reformalizations
         row = store.get_run(context.run_id) or {}
+        if context.command_token:
+            from . import commands
+            commands.complete(context.command_token,{'run_id':context.run_id,'status':row.get('status'),'result_kind':row.get('result_kind')})
         reformalizations.dispatch_all()
 
 
@@ -1772,7 +1782,7 @@ def _run_lea(context: RunnerContext) -> None:
     narration: list[str] = []
     # Batches streamed text into ~one frame per subscriber poll (P1). `narration` still
     # accumulates every token for persistence — this only shapes what goes on the wire.
-    deltas = _DeltaStream(events)
+    deltas = _DeltaStream(events, session_id, run_id)
     current_turn = 0
     last_tool: str | None = None
     # The intent narration the model wrote just before its current tool call —
@@ -1853,13 +1863,13 @@ def _run_lea(context: RunnerContext) -> None:
     def persist_assistant(text: str) -> None:
         nonlocal last_persisted
         text = text.strip()
-        if not text or text == last_persisted:
+        if not text or (text == last_persisted and deltas.message_id is None):
             return
         last_persisted = text
         emit(
             events,
             "message",
-            store.add_message(
+            deltas.finish(text) or store.add_message(
                 session_id,
                 "assistant",
                 text,
@@ -1897,6 +1907,12 @@ def _run_lea(context: RunnerContext) -> None:
             store.get_project(session["project_id"])
             if session and session.get("project_id") else None
         )
+        if project:
+            # Provisioning/adoption belongs to the worker, after durable admission.
+            projects._provision_repo(project,proofs_root,overwrite=False)
+            if focused_formalization:
+                from . import github_import_service
+                github_import_service.try_adopt_imported_declaration(project,focused_formalization,proofs_root)
         repo = projects.repo_for_session(session or {"id": session_id}, proofs_root, project)
         gs = GitStore(repo.parent)
         repo_key = repo.name
@@ -1971,6 +1987,9 @@ def _run_lea(context: RunnerContext) -> None:
         # `update_run(running)`: the claim IS the transition.
         if not store.claim_pending_run(run_id):
             current = store.get_run(run_id)
+            if current and current['status']=='pending' and current.get('stop_requested_reason'):
+                store.fail_pending_run(run_id,'Interrupted before the run started.')
+                current=store.get_run(run_id)
             final_status = (current or {}).get("status") or "cancelled"
             final_result_kind = (current or {}).get("result_kind")
             final_result_detail = (current or {}).get("result_detail")
@@ -2112,7 +2131,7 @@ def _run_lea(context: RunnerContext) -> None:
                     step_id_by_path[path] = step["id"]
                     checked_artifact_kind = step.get("artifact_kind") or _classify(step.get("code") or "")
                     produced_clean = True
-        recorder = recovery.Recorder(run_id, attempt_id, manifest_provider)
+        recorder = recovery.Recorder(run_id, attempt_id, manifest_provider, command_token=context.command_token)
         if resume_state is not None:
             # Persist the rebased seed before the next paid request or tool, so
             # subsequent automatic recovery uses this segment's own state.
@@ -2123,13 +2142,18 @@ def _run_lea(context: RunnerContext) -> None:
                 return True
             if current and current.get("deadline_at") and datetime.fromisoformat(current["deadline_at"]) <= datetime.now(timezone.utc):
                 request_stop(run_id, reason="timeout", source="adapter")
+            if current.get('stop_requested_reason'):return True
+            if context.command_token:
+                from . import commands,db
+                with db.connect() as conn:
+                    if not commands._owned(conn,context.command_token):return True
             return stop_event.is_set()
 
         import inspect
         event_options = {
             "namespace": namespace, "session_id": session_id, "working_dir": str(repo),
             "should_stop": should_stop_run,
-            "gate": None if context.autonomous or context.approval_mode == "none" else _make_gate(session_id),
+            "gate": None if context.autonomous or context.approval_mode == "none" else _make_gate(session_id,persisted=bool(context.command_token)),
         }
         signature = inspect.signature(run_events)
         if "resume_state" in signature.parameters or any(
@@ -2482,16 +2506,19 @@ def _run_lea(context: RunnerContext) -> None:
                                 started["cost_usd"], started["usage_revision"], started["usage_details"]):
                             _advance_spend_cache(inner.cost)
                         check_spend_cap()
-                    # (a) the coordinator's spawn box (a compact live line per child)
-                    payload = _subagent_progress_payload(started["child_id"], ev.result_id, ev.event)
-                    if payload:
-                        emit(events, "subagent_progress", payload)
                     # (b) the child's OWN run stream (E1 first-class): re-emit the inner
                     # event in the normal SSE vocab onto the child's broker, so the child's
                     # session view renders it live with the same listeners as any run.
                     child_broker = runbroker.get(started["run_id"])
+                    started["parent_events"] = events
+                    started["result_id"] = ev.result_id
                     if child_broker is not None:
                         _forward_to_child_broker(child_broker, ev.event, started)
+                    # Child text reaches the parent through the same committed,
+                    # bounded batch. Non-text progress follows the child's flush.
+                    payload = _subagent_progress_payload(started["child_id"], ev.result_id, ev.event)
+                    if payload and payload.get("kind") != "text":
+                        emit(events, "subagent_progress", payload)
 
             elif isinstance(ev, SubagentFinished):
                 # A child sub-agent finished (item 24). If it was materialized at spawn
@@ -2507,6 +2534,9 @@ def _run_lea(context: RunnerContext) -> None:
                     if started.get("usage"):
                         store.replace_run_usage_breakdown(started["run_id"], started["usage"].rows())
                         store.update_run(started["run_id"], "running", usage_status="final")
+                    child_broker = runbroker.get(started["run_id"])
+                    if child_broker is not None:
+                        _flush_child_narration(child_broker, started)
                     _finalize_started_subagent(
                         started["child_id"], started["run_id"], ev,
                         turn=current_turn, repo=repo,
@@ -2684,14 +2714,19 @@ def _run_lea(context: RunnerContext) -> None:
                     final_recoverable = recoverable
                     if final_result_detail:
                         final_result_detail = _redact(final_result_detail)
-                    store.update_run(
+                    committed=store.update_run(
                         run_id, final_status, final_text=final_text,
                         input_tokens=ev.usage.input_tokens, output_tokens=ev.usage.output_tokens,
                         cost_usd=ev.cost,
                         usage_status="final", usage_details=ev.usage.usage_details,
                         result_kind=final_result_kind, result_detail=final_result_detail,
                         stop_reason=stop_reason, recoverable=recoverable,
+                        command_token=context.command_token,
                     )
+                    if committed:
+                        final_status=committed['status'];final_result_kind=committed['result_kind']
+                        final_result_detail=committed['result_detail'];final_stop_reason=committed['stop_reason']
+                        final_recoverable=bool(committed['recoverable'])
                     reset_persisted_spend_cache()
                     if reporting_context:
                         def record_reporting_completion():
@@ -2826,7 +2861,11 @@ def _run_lea(context: RunnerContext) -> None:
                 logger.exception("Could not finish attempt %s", attempt_id)
         # Publish any trailing streamed text before the terminal `done` (P1) — a run
         # that ends mid-batch must not drop its last words.
-        deltas.flush()
+        try:
+            deltas.flush()
+            store.interrupt_message_streams(run_id)
+        except Exception:
+            logger.exception("Could not settle partial messages for %s", run_id)
         skills_catalog.cleanup(skills_tempdir)
         roles_catalog.cleanup(roles_tempdir)
         # D1: retire any child whose SubagentStarted never saw its SubagentFinished —
@@ -2835,7 +2874,10 @@ def _run_lea(context: RunnerContext) -> None:
         # it failed so the child's derived status settles. Best-effort.
         for _rid, started in subagent_children.items():
             try:
+                if started.get("deltas"):
+                    started["deltas"].flush()
                 store.update_run(started["run_id"], "failed")
+                store.interrupt_message_streams(started["run_id"])
             except Exception:
                 logger.exception("Failed to retire orphan sub-agent run %s", started.get("run_id"))
             _child_session_to_result.pop(started["child_id"], None)  # D2: drop stop handle

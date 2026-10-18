@@ -1,3 +1,4 @@
+from published_source_fixtures import publish_for
 """User certification is durable evidence, never another prover attempt."""
 import json
 from uuid import uuid4
@@ -165,32 +166,46 @@ def test_api_validation_and_no_execution_or_history_mutation(tmp_path, monkeypat
     from app import bridge
     from app.routes.formalizations import router
     from lea import interface
-    session, target, _, _ = setup_target(tmp_path, monkeypatch, project_target=project_target)
+    session, target, _, proof = setup_target(tmp_path, monkeypatch, project_target=project_target)
     def forbidden(*args, **kwargs):
         pytest.fail('Review must never execute a prover or compiler.')
     monkeypatch.setattr(interface, 'check', forbidden)
     monkeypatch.setattr(interface, 'run_events', forbidden)
     monkeypatch.setattr(bridge, 'enqueue_run', forbidden)
+    from app import core_observer,commands,workspace_commands
+    from app.queries import core
+    scope=core.scope_for(formalization_id=target['id']);core_observer.enroll(scope)
+    for _ in range(20):
+        if core_observer.capture(scope)['state']=='observed':break
+    epoch=commands.start_worker('review-fixture')
+    def settled(response):
+        assert response.status_code==202,response.text
+        accepted=response.json()['command']['id']
+        token=commands.claim('review-fixture',epoch,'compute',kinds={'workspace.execute'})
+        if token:workspace_commands.execute(token)
+        return workspace_commands.get(accepted)['command']
     app = FastAPI()
     app.include_router(router)
     client = TestClient(app)
     def immutable_history():
         with db.connect() as conn:
             return {table: [tuple(row) for row in conn.execute(f'select * from {table}')]
-                for table in ['runs', 'timeline', 'artifact_blobs', 'proof_check_evidence', 'run_usage_breakdown']}
+                for table in ['runs', 'timeline', 'proof_check_evidence', 'run_usage_breakdown']}
     before = immutable_history()
     path = f"/api/formalizations/{target['id']}"
     ctx = client.get(path + '/review').json()
     request = dict(action='approve', outcome='proved', revision_token=ctx['review']['revision_token'], idempotency_key='api')
-    result = client.post(path + '/review-decisions', json=request)
-    assert result.status_code == 200
-    assert result.json()['formalization']['validity_status'] == 'proved'
-    assert client.post(path + '/review-decisions', json=request).json()['decision']['id'] == result.json()['decision']['id']
-    assert client.post(path + '/review-decisions', json={'action': 'approve', 'idempotency_key': 'missing'}).status_code == 422
-    assert client.get('/api/formalizations/missing/review').status_code == 404
-    withdrawn = client.post(path + '/review-decisions', json=dict(action='withdraw',
-        approval_id=result.json()['decision']['id'], idempotency_key='withdraw'))
-    assert withdrawn.status_code == 200
+    result=settled(client.post(path+'/review-decisions',json=request))
+    assert result['state']=='succeeded',result
+    assert result['result']['formalization']['validity_status']=='proved'
+    duplicate=settled(client.post(path+'/review-decisions',json=request))
+    assert duplicate['result']['decision']['id']==result['result']['decision']['id']
+    invalid=settled(client.post(path+'/review-decisions',json={'action':'approve','idempotency_key':'missing'}))
+    assert invalid['state']=='failed' and invalid['error_status']==422
+    assert client.get('/api/formalizations/missing/review').status_code==404
+    withdrawn=settled(client.post(path+'/review-decisions',json=dict(action='withdraw',approval_id=result['result']['decision']['id'],idempotency_key='withdraw')))
+    assert withdrawn['state']=='succeeded',withdrawn
+    assert store.blob_content(proof['blob_id'])==proof['code']
     assert immutable_history() == before
 
 
@@ -307,8 +322,7 @@ def test_overleaf_requires_current_bound_source_at_submission(tmp_path, monkeypa
             (source['sourceIdentityHash'], target['id']))
         conn.execute('update runs set focus_source_hash=? where id=?', (source['sourceIdentityHash'], run['id']))
         overleaf_source.bind(conn, dict(conn.execute('select * from formalizations where id=?', (target['id'],)).fetchone()), source)
-    ref = overleaf_source.new_request(target['id'])
-    overleaf_source.respond(ref, source, document_id='doc')
+    ref = publish_for(target['id'],source)
     ctx = reviews.context(target['id'], ref)
     assert ctx['source_snapshot']['statement'] == source['statement']
     request = dict(action='approve', outcome='proved', revision_token=ctx['review']['revision_token'], idempotency_key='overleaf')
@@ -316,10 +330,9 @@ def test_overleaf_requires_current_bound_source_at_submission(tmp_path, monkeypa
         reviews.decide(target['id'], request)
     assert exc.value.status_code == 409
     with db.connect() as conn:
-        conn.execute("update overleaf_source_requests set expires_at='2000' where id=?", (ref,))
+        conn.execute("update source_publishers set lease_until='2000' where document_id='doc'")
     with pytest.raises(HTTPException) as exc:
         reviews.decide(target['id'], {**request, 'source_context_ref': ref})
     assert exc.value.status_code == 409
-    ref = overleaf_source.new_request(target['id'])
-    overleaf_source.respond(ref, source, document_id='doc')
+    ref = publish_for(target['id'],source)
     assert reviews.decide(target['id'], {**request, 'source_context_ref': ref})['formalization']['validity_status'] == 'proved'

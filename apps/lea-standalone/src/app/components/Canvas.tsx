@@ -38,7 +38,7 @@ export function Canvas({
   captureSelection,
 }: {
   // Present once the session is persisted; the Live editor needs it for the
-  // per-session LSP WebSocket. Absent on a brand-new, unsaved session.
+  // queued editor requests. Absent on a brand-new, unsaved session.
   sessionId?: string;
   captureSelection: () => () => boolean;
   onClose: () => void;
@@ -67,6 +67,7 @@ export function Canvas({
   const currentSnapshot = useProofSession((s) => s.currentFormalizationSnapshot);
   const setCurrentSnapshot = useProofSession((s) => s.setCurrentFormalizationSnapshot);
   const refreshToken = useProofSession((s) => s.formalizationRefreshToken);
+  const snapshotContext = useRef('');
   const [currentLoading, setCurrentLoading] = useState(false);
   const [currentError, setCurrentError] = useState<string | null>(null);
   const scoped = scope !== 'project' && scope !== 'new';
@@ -77,7 +78,11 @@ export function Canvas({
       return;
     }
     let cancelled = false;
-    setCurrentSnapshot(null);
+    const context = JSON.stringify([sessionId, scope]);
+    // A data refresh must not unmount the editor or erase its cursor/draft.
+    // Clear the old snapshot only when the author navigates to another context.
+    if (snapshotContext.current !== context) setCurrentSnapshot(null);
+    snapshotContext.current = context;
     setCurrentLoading(true);
     setCurrentError(null);
     getCurrentFormalization(scope, sessionId)
@@ -127,22 +132,28 @@ export function Canvas({
   );
   const globalIndex = useProofSession((s) => s.codeIndex);
   const setGlobalIndex = useProofSession((s) => s.setCodeIndex);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const [currentFile, setCurrentFile] = useState<{ context: string; path: string } | null>(null);
+  const fileContext = JSON.stringify([sessionId, scope]);
+  const selectedCurrentPath = currentFile?.context === fileContext
+    ? currentFile.path
+    : codeSteps[0]?.path;
   const total = codeSteps.length;
   const selectedId = allCodeSteps[globalIndex]?.id;
   const selectedScopedIndex = historicalSteps.findIndex((item) => item.id === selectedId);
   const safeIndex = showingCurrent
-    ? Math.min(currentIndex, Math.max(0, total - 1))
+    ? codeSteps.findIndex((item) => item.path === selectedCurrentPath)
     : selectedScopedIndex >= 0
       ? selectedScopedIndex
       : Math.max(0, total - 1);
   useEffect(() => {
-    if (showingCurrent) setCurrentIndex(0);
-  }, [scope, currentSnapshot?.revision_token, showingCurrent]);
+    if (showingCurrent && selectedCurrentPath && currentFile?.context !== fileContext) {
+      setCurrentFile({ context: fileContext, path: selectedCurrentPath });
+    }
+  }, [currentFile, fileContext, selectedCurrentPath, showingCurrent]);
   const onIndexChange = (nextIndex: number) => {
     const bounded = Math.min(Math.max(nextIndex, 0), Math.max(total - 1, 0));
     if (showingCurrent) {
-      setCurrentIndex(bounded);
+      if (codeSteps[bounded]) setCurrentFile({ context: fileContext, path: codeSteps[bounded].path });
       return;
     }
     const id = codeSteps[bounded]?.id;
@@ -151,9 +162,10 @@ export function Canvas({
   };
   const step = codeSteps[safeIndex];
 
-  // Live mode needs a saved session + a file to open. If those go away (e.g. the
-  // session resets), fall back to History so we never mount the editor with nothing.
-  const canLive = !!sessionId && total > 0 && (!scoped || showingCurrent);
+  // Require a file to open an editor, but retain an already-mounted draft when a
+  // background publication removes its file. Explicit navigation can leave it.
+  const retainDraft = mode === 'live' && showingCurrent && !!selectedCurrentPath;
+  const canLive = !!sessionId && (total > 0 || retainDraft) && (!scoped || showingCurrent);
   useEffect(() => {
     if (!canLive && mode === 'live') setMode('history');
   }, [canLive, mode]);
@@ -163,7 +175,7 @@ export function Canvas({
   // true when the shown step is the newest snapshot OF THAT FILE — so Edit / Run
   // SafeVerify / the verdict stay available on the main proof even when a scratch
   // write is the newest step overall (the old `isLatest === total-1` hid them).
-  const shownPath = step?.path;
+  const shownPath = step?.path || (showingCurrent ? selectedCurrentPath : undefined);
   const files = useMemo(() => distinctFiles(codeSteps), [codeSteps]);
   const mainPath = useMemo(
     () => showingCurrent
@@ -274,7 +286,7 @@ export function Canvas({
         {files.length > 1 ? (
           <FileSelect files={files} current={shownPath} mainPath={mainPath} onPick={pickFile} />
         ) : (
-          <span className="file">{step ? step.path : 'no file yet'}</span>
+          <span className="file">{shownPath || 'no file yet'}</span>
         )}
         <span className="head-spacer" />
         {canLive && (
@@ -333,6 +345,9 @@ export function Canvas({
       {scoped && showingCurrent && currentLoading && !step && (
         <div className="revision-loading">Loading current project version…</div>
       )}
+      {showingCurrent && shownPath && !step && !currentLoading && (
+        <div className="revision-notice">The selected file is unavailable in the current revision.</div>
+      )}
       {scoped && showingCurrent && currentError && (
         <div className="revision-notice error">
           <span>{currentError}</span>
@@ -348,6 +363,7 @@ export function Canvas({
       {mode === 'live' && sessionId ? (
         <LiveEditor
           sessionId={sessionId}
+          path={shownPath}
           captureSelection={captureSelection}
           locked={isRunning}
           onSave={(content, path) => onSaveAndCheck(
@@ -387,7 +403,7 @@ export function Canvas({
               {currentSnapshot.certification?.source === 'user_review' ? ' · Approved by user' : ''}
             </span>
           )}
-          <span className={`verdict ${verdict.cls}`}>{verdict.text}</span>
+          <span className={`verdict ${verdict.cls}`} title={step?.projection?.observed_at ? `Workspace observed at ${step.projection.observed_at}; observation expires at ${step.projection.expires_at}.` : undefined}>{verdict.text}</span>
         </div>
       )}
 

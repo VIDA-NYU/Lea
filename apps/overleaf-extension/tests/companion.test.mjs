@@ -50,7 +50,7 @@ import {
   recoverInterruptedJobs,
   resolveProofOutcome,
   validateLeaRepo
-} from "../companion/server.mjs";
+} from "../companion/workerService.mjs";
 import {
   buildLeaProjectMarkdownPath,
   buildLeaWorkspacePath,
@@ -1135,7 +1135,7 @@ test('review transport refreshes source and never admits a prover run or rewrite
   const calls = [];
   const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
     calls.push({ url: String(url), options });
-    if (String(url).endsWith('/overleaf-source/prepare')) return jsonResponse(200, { source_context_ref: 'fresh-source' });
+    if (String(url).endsWith('/published-source')) return jsonResponse(200, { source_context_ref: 'fresh-source' });
     if (String(url).includes('/review?')) return jsonResponse(200, { review: { eligible: true } });
     if (String(url).endsWith('/review-decisions')) return jsonResponse(200, { formalization: { validity_status: 'proved' } });
     throw new Error(`Unexpected request: ${url}`);
@@ -5127,7 +5127,7 @@ for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates 
   const state = await makeState({ leaRepoPath: await makeLeaRepo(), env: { OPENAI_API_KEY: "test-key" },
     fetchImpl: async (url, options = {}) => {
       const u = String(url), body = options.body ? JSON.parse(options.body) : {};
-      if (u.endsWith("/overleaf-source/prepare")) return jsonResponse(200, { source_context_ref: "current-source" });
+      if (u.endsWith("/published-source")) return jsonResponse(200, { source_context_ref: "current-source" });
       if (u.endsWith("/dependencies/L/run")) {
         assert.equal(body.initiating_run_id, "A:0");
         admissions.push("L"); dep.state = "running"; dep.owner_run_id = "L:0";
@@ -5210,7 +5210,7 @@ async function dependencyRecoveryFixture() {
   const state = await makeState({ leaRepoPath: await makeLeaRepo(), env: {}, fetchImpl: async (url, options = {}) => {
     const u = String(url), body = options.body ? JSON.parse(options.body) : {};
     calls.push({ url: u, body, options });
-    if (u.endsWith("/overleaf-source/prepare")) return jsonResponse(200, { source_context_ref: "fresh-source" });
+    if (u.endsWith("/published-source")) return jsonResponse(200, { source_context_ref: "fresh-source" });
     const dependency = /\/dependencies\/([^/]+)(?:\/(retry|run))?$/.exec(u);
     if (dependency) {
       const dep = dependencies.get(dependency[1]);
@@ -5364,7 +5364,7 @@ test("lost admission response reuses the exact saved source request after restar
   assert.equal((await admitDependencyContinuation(state, restarted)).ok, true);
   const requests = calls.filter(call => call.url.endsWith("/continue"));
   assert.deepEqual(requests[0].body, requests[1].body);
-  assert.equal(calls.filter(call => call.url.endsWith("/overleaf-source/prepare")).length, 1);
+  assert.equal(calls.filter(call => call.url.endsWith("/published-source")).length, 1);
   assert.equal(requests[1].body.dependency_resume, true);
   assert.equal(requests[1].body.source_bundle, undefined);
 });

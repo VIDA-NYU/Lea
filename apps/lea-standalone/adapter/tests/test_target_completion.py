@@ -67,7 +67,7 @@ def test_partial_helper_is_unchecked_until_successful_target_run(tmp_path, monke
     store.update_run(first["id"], "needs_review", result_kind="needs_review")
 
     def status():
-        return project_target_status_by_slug(
+        return project_target_status_by_slug.worker(
             project["slug"], declarations="thmB", formalization_ids=target["id"]
         )["targets"][0]
 
@@ -80,7 +80,7 @@ def test_partial_helper_is_unchecked_until_successful_target_run(tmp_path, monke
     assert partial["exists"] is True
     assert partial["declaration_present"] is False
     assert partial["check_current"] is True  # The helper itself passed Lean.
-    assert project_target_status_by_slug(project["slug"], declarations="thmB")["targets"][0]["validity_status"] == "unchecked"
+    assert project_target_status_by_slug.worker(project["slug"], declarations="thmB")["targets"][0]["validity_status"] == "unchecked"
 
     # A later chat turn and a manual check cannot clear the review verdict.
     chat = store.create_run(session["id"], "model", None, 3,
@@ -146,7 +146,7 @@ def test_batch_explanation_is_informational_and_hidden_after_newer_work(tmp_path
             values ('formalize-batch-old',?,'hash','2026-01-01','2026-01-02',0,'ready',?,'t','t')""",
             (project["id"], json.dumps({"items": [{"targetKind": "theorem", "targetLabel": "target", "state": "skipped", "reason": "depends_on_incomplete:base"}]})))
     def status():
-        return project_target_status_by_slug(project["slug"], declarations="target")["targets"][0]
+        return project_target_status_by_slug.worker(project["slug"], declarations="target")["targets"][0]
     before = status()
     assert before["last_batch_outcome"]["reason"] == "depends_on_incomplete:base"
     assert before["check_current"] is False
@@ -182,7 +182,7 @@ def test_disproof_evidence_does_not_require_original_declaration(tmp_path, monke
         artifact_kind="proof", formalization_id=target["id"])
     store.update_run(run["id"], "disproved", result_kind="disproved")
     def status():
-        return project_target_status_by_slug(project["slug"], declarations="target")["targets"][0]
+        return project_target_status_by_slug.worker(project["slug"], declarations="target")["targets"][0]
     checked = status()
     assert checked["validity_status"] == "disproved"
     assert checked["declaration_present"] is False

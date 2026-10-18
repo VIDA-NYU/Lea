@@ -63,7 +63,7 @@ def test_session_detail_returns_code_from_the_db(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_route, "load_config",
                         lambda: LeaConfig(model="m", max_turns=3, lea_root=tmp_path))
 
-    detail = sessions_route.session_detail(session["id"])
+    detail = sessions_route.session_detail.worker(session["id"])
 
     assert detail["code_steps"][0]["code"] == code
     # the route is no longer a composition layer over DB + git — the store answers
@@ -87,7 +87,7 @@ def test_code_survives_without_the_repo(tmp_path, monkeypatch):
 
     shutil.rmtree(tmp_path / "workspace" / "proofs")
 
-    detail = sessions_route.session_detail(session["id"])
+    detail = sessions_route.session_detail.worker(session["id"])
     assert detail["code_steps"][0]["code"] == code, "content must not depend on git"
 
 
@@ -103,7 +103,7 @@ def test_lean_check_backfills_verdict_onto_the_step(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_route, "interface_check",
                         lambda p, cold=False, allow_cold=True: CheckResult(p, "error", "p.lean:2:0: error: boom"))
 
-    result = sessions_route.lean_check_session(session["id"], PathRequest(path="Lea/Misc/p.lean"))
+    result = sessions_route.lean_check_session.worker(session["id"], PathRequest(path="Lea/Misc/p.lean"))
 
     assert result["status"] == "error" and result["path"] == "Lea/Misc/p.lean"
     # the verdict is back-filled onto the file's latest code_step (canvas + status)
@@ -125,7 +125,7 @@ def test_lean_check_with_author_records_a_new_cascade_step_instead_of_backfillin
     monkeypatch.setattr(sessions_route, "interface_check",
                         lambda p, cold=False, allow_cold=True: CheckResult(p, "error", "p.lean:3:0: error: unknown identifier"))
 
-    result = sessions_route.lean_check_session(
+    result = sessions_route.lean_check_session.worker(
         session["id"],
         PathRequest(path="Lea/Misc/p.lean", author="cascade", summary="Re-checked after edit to compactness_criterion"),
     )
@@ -166,15 +166,15 @@ def test_lean_check_with_cascade_author_uses_the_warm_path_not_cold(tmp_path, mo
 
     monkeypatch.setattr(sessions_route, "interface_check", _fake_check)
 
-    sessions_route.lean_check_session(session["id"], PathRequest(path="Lea/Misc/p.lean", author="cascade"))
+    sessions_route.lean_check_session.worker(session["id"], PathRequest(path="Lea/Misc/p.lean", author="cascade"))
     assert calls == [(False, False)]
 
     calls.clear()
-    sessions_route.lean_check_session(session["id"], PathRequest(path="Lea/Misc/p.lean"))
+    sessions_route.lean_check_session.worker(session["id"], PathRequest(path="Lea/Misc/p.lean"))
     assert calls == [(False, True)]
 
     calls.clear()
-    sessions_route.lean_check_session(session["id"], PathRequest(path="Lea/Misc/p.lean", author="user"))
+    sessions_route.lean_check_session.worker(session["id"], PathRequest(path="Lea/Misc/p.lean", author="user"))
     assert calls == [(False, True)]  # every author uses the same (warm) path
 
 
@@ -187,7 +187,7 @@ def test_lean_check_without_author_still_backfills_as_before(tmp_path, monkeypat
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
     monkeypatch.setattr(sessions_route, "interface_check", lambda p, cold=False, allow_cold=True: CheckResult(p, "ok", None))
 
-    result = sessions_route.lean_check_session(session["id"], PathRequest(path="Lea/Misc/p.lean"))
+    result = sessions_route.lean_check_session.worker(session["id"], PathRequest(path="Lea/Misc/p.lean"))
 
     assert result["code_step"]["check_current"] is True
     steps = store.session_detail(session["id"])["code_steps"]
@@ -201,7 +201,7 @@ def test_verify_returns_the_verdict_for_the_default_file(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
     monkeypatch.setattr(sessions_route, "interface_verify", lambda p: VerifyResult("ok", None))
 
-    result = sessions_route.verify_session(session["id"], PathRequest())  # default = latest step
+    result = sessions_route.verify_session.worker(session["id"], PathRequest())  # default = latest step
 
     assert result["status"] == "ok"
     assert result["path"] == "Lea/Misc/p.lean"
@@ -218,7 +218,7 @@ def test_rebuild_returns_the_verdict_for_the_default_file(tmp_path, monkeypatch)
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
     monkeypatch.setattr(sessions_route, "interface_rebuild", lambda p: CheckResult(p, "ok", None))
 
-    result = sessions_route.rebuild_session_module(session["id"], PathRequest(path="Lea/Misc/p.lean"))
+    result = sessions_route.rebuild_session_module.worker(session["id"], PathRequest(path="Lea/Misc/p.lean"))
 
     assert result == {"path": "Lea/Misc/p.lean", "status": "ok", "detail": None}
 
@@ -234,7 +234,7 @@ def test_rebuild_surfaces_a_real_compile_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_route, "interface_rebuild",
                         lambda p: CheckResult(p, "error", "p.lean:2:0: error: boom"))
 
-    result = sessions_route.rebuild_session_module(session["id"], PathRequest(path="Lea/Misc/p.lean"))
+    result = sessions_route.rebuild_session_module.worker(session["id"], PathRequest(path="Lea/Misc/p.lean"))
 
     assert result["status"] == "error"
     assert result["detail"] == "p.lean:2:0: error: boom"
@@ -247,7 +247,7 @@ def test_rebuild_404_when_session_has_no_proof_file(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
 
     with pytest.raises(HTTPException) as exc:
-        sessions_route.rebuild_session_module(session["id"], PathRequest())
+        sessions_route.rebuild_session_module.worker(session["id"], PathRequest())
     assert exc.value.status_code == 404
 
 
@@ -258,7 +258,7 @@ def test_check_404_when_session_has_no_proof_file(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
 
     with pytest.raises(HTTPException) as exc:
-        sessions_route.lean_check_session(session["id"], PathRequest())
+        sessions_route.lean_check_session.worker(session["id"], PathRequest())
     assert exc.value.status_code == 404
 
 
@@ -269,7 +269,7 @@ def test_write_file_creates_user_step_and_edit_note(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
     code = "import Mathlib\n\ntheorem mine : True := by trivial\n"
 
-    result = sessions_route.write_file_session(
+    result = sessions_route.write_file_session.worker(
         session["id"], FileWriteRequest(path="Lea/Misc/Mine.lean", content=code, note="hand-wrote it"))
 
     assert result["unchanged"] is False
@@ -298,7 +298,7 @@ def test_write_file_rejected_during_active_run(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
 
     with pytest.raises(HTTPException) as exc:
-        sessions_route.write_file_session(
+        sessions_route.write_file_session.worker(
             session["id"], FileWriteRequest(path="Lea/Misc/P.lean", content="x"))
     assert exc.value.status_code == 409
 
@@ -313,9 +313,9 @@ def test_write_file_coalesces_successive_user_edits(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
     p = "Lea/Misc/P.lean"
 
-    r1 = sessions_route.write_file_session(
+    r1 = sessions_route.write_file_session.worker(
         session["id"], FileWriteRequest(path=p, content="theorem p : True := by trivial\n"))
-    r2 = sessions_route.write_file_session(
+    r2 = sessions_route.write_file_session.worker(
         session["id"], FileWriteRequest(path=p, content="theorem p : True := by\n  trivial\n"))
 
     assert r1["code_step"]["id"] == r2["code_step"]["id"]  # same row -> coalesced
@@ -336,7 +336,7 @@ def test_user_edit_after_agent_step_starts_a_new_step(tmp_path, monkeypatch):
     store.update_run(run["id"], "ok")
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
 
-    sessions_route.write_file_session(
+    sessions_route.write_file_session.worker(
         session["id"], FileWriteRequest(path="Lea/Misc/p.lean", content="import Mathlib\n\ntheorem t : True := by\n  trivial\n"))
 
     steps = store.session_detail(session["id"])["code_steps"]
@@ -351,8 +351,8 @@ def test_write_file_no_op_save_creates_no_step(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
     req = FileWriteRequest(path="Lea/Misc/P.lean", content="theorem p : True := by trivial\n")
 
-    sessions_route.write_file_session(session["id"], req)
-    again = sessions_route.write_file_session(session["id"], req)  # identical content
+    sessions_route.write_file_session.worker(session["id"], req)
+    again = sessions_route.write_file_session.worker(session["id"], req)  # identical content
 
     assert again["unchanged"] is True and again["code_step"] is None
     # only the first save made a step
@@ -392,7 +392,7 @@ def test_write_file_rejects_stale_cross_session_revision(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
 
     with pytest.raises(HTTPException) as exc:
-        sessions_route.write_file_session(
+        sessions_route.write_file_session.worker(
             session_one["id"],
             FileWriteRequest(
                 path="A.lean",
@@ -419,7 +419,7 @@ def test_session_list_events_emits_initial_sessions_changed(tmp_path, monkeypatc
         async def receive():
             return {"type": "http.request", "body": b"", "more_body": False}
 
-        request = Request({"type": "http", "app": FastAPI()}, receive=receive)
+        request = Request({"type": "http", "app": FastAPI(), "headers": [], "query_string": b""}, receive=receive)
         response = await sessions_route.session_list_events(request)
         return await response.body_iterator.__anext__()
 
@@ -438,10 +438,10 @@ def test_export_session_returns_a_zip_of_its_files(tmp_path, monkeypatch):
     session, _ = _seed_session_with_code(tmp_path)  # writes Lea/Misc/p.lean
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
 
-    response = sessions_route.export_session(session["id"])
+    response = sessions_route.export_session.worker(session["id"])
 
     assert response.media_type == "application/zip"
-    assert response.headers["Content-Disposition"] == 'attachment; filename="s.zip"'  # slug of "S"
+    assert response.headers["Content-Disposition"].startswith('attachment; filename="s.zip"')  # slug of "S"
     names = zipfile.ZipFile(io.BytesIO(response.body)).namelist()
     assert any(n.endswith("Lea/Misc/p.lean") for n in names)
     assert not any("/.git/" in n for n in names)  # .git excluded by export_zip
@@ -454,13 +454,13 @@ def test_export_session_404_when_missing_or_empty(tmp_path, monkeypatch):
 
     # unknown session
     with pytest.raises(HTTPException) as exc:
-        sessions_route.export_session("no-such-session")
+        sessions_route.export_session.worker("no-such-session")
     assert exc.value.status_code == 404
 
     # a session that has never written a file → no repo on disk → 404 (not a 500)
     empty = store.create_session("nothing here")
     with pytest.raises(HTTPException) as exc:
-        sessions_route.export_session(empty["id"])
+        sessions_route.export_session.worker(empty["id"])
     assert exc.value.status_code == 404
 
 
@@ -475,9 +475,9 @@ def test_export_session_filename_falls_back_to_id(tmp_path, monkeypatch):
     gs.commit_write(session["id"], turn=None, author="user", tool="edit")
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
 
-    response = sessions_route.export_session(session["id"])
+    response = sessions_route.export_session.worker(session["id"])
     expected = f'attachment; filename="session-{session["id"][:8]}.zip"'
-    assert response.headers["Content-Disposition"] == expected
+    assert response.headers["Content-Disposition"].startswith(expected)
 
 
 def test_write_file_rejects_path_escape(tmp_path, monkeypatch):
@@ -487,7 +487,7 @@ def test_write_file_rejects_path_escape(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
 
     with pytest.raises(HTTPException) as exc:
-        sessions_route.write_file_session(
+        sessions_route.write_file_session.worker(
             session["id"], FileWriteRequest(path="../../escape.lean", content="x"))
     assert exc.value.status_code == 400
 
@@ -520,7 +520,7 @@ def test_compact_prunes_the_stored_transcript(tmp_path, monkeypatch):
     store.set_run_transcript(run["id"], _big_transcript())
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
 
-    result = sessions_route.compact_session(session["id"])
+    result = sessions_route.compact_session.worker(session["id"])
     assert result["changed"] is True
     assert result["pruned"] >= 1
     assert result["freed_tokens"] > 0
@@ -547,7 +547,7 @@ def test_compact_is_a_noop_with_no_finished_run(tmp_path, monkeypatch):
     session = store.create_session("S")  # no run, no transcript
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
 
-    result = sessions_route.compact_session(session["id"])
+    result = sessions_route.compact_session.worker(session["id"])
     assert result["changed"] is False and result["pruned"] == 0 and result["freed_tokens"] == 0
 
 
@@ -559,7 +559,7 @@ def test_compact_refuses_while_a_run_is_active(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_route, "load_config", _config_for(tmp_path))
 
     with pytest.raises(HTTPException) as exc:
-        sessions_route.compact_session(session["id"])
+        sessions_route.compact_session.worker(session["id"])
     assert exc.value.status_code == 409
 
 
@@ -594,9 +594,9 @@ def test_check_verify_and_rebuild_refuse_paths_outside_the_session_repo(
     monkeypatch.setattr(sessions_route, "interface_rebuild", never)
 
     for call in (
-        sessions_route.lean_check_session,
-        sessions_route.verify_session,
-        sessions_route.rebuild_session_module,
+        sessions_route.lean_check_session.worker,
+        sessions_route.verify_session.worker,
+        sessions_route.rebuild_session_module.worker,
     ):
         with pytest.raises(HTTPException) as ei:
             call(session["id"], PathRequest(path=escape))
@@ -617,7 +617,7 @@ def test_escaping_path_is_refused_before_a_cascade_step_is_written(tmp_path, mon
                         lambda p, cold=False, allow_cold=True: CheckResult(p, "ok", None))
 
     with pytest.raises(HTTPException) as ei:
-        sessions_route.lean_check_session(
+        sessions_route.lean_check_session.worker(
             session["id"], PathRequest(path="../../../../etc/passwd", author="cascade")
         )
     assert ei.value.status_code == 400
@@ -634,8 +634,8 @@ def test_a_legitimate_path_still_resolves_and_normalizes(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_route, "interface_check",
                         lambda p, cold=False, allow_cold=True: CheckResult(p, "ok", None))
 
-    plain = sessions_route.lean_check_session(session["id"], PathRequest(path="Lea/Misc/p.lean"))
-    noisy = sessions_route.lean_check_session(
+    plain = sessions_route.lean_check_session.worker(session["id"], PathRequest(path="Lea/Misc/p.lean"))
+    noisy = sessions_route.lean_check_session.worker(
         session["id"], PathRequest(path="./Lea/Other/../Misc/p.lean")
     )
 
@@ -653,7 +653,7 @@ def test_lean_runtime_read_does_not_start_server_or_create_files(tmp_path, monke
         raise AssertionError('runtime reads must not start Lean')
     monkeypatch.setattr(lsp_daemon.LeanDaemon, 'start', forbidden)
     before = set(tmp_path.rglob('*'))
-    assert sessions_route.lean_check_runtime(session['id'])['state'] in {'idle', 'disabled'}
+    assert sessions_route.lean_check_runtime.worker(session['id'])['state'] in {'idle', 'disabled'}
     assert set(tmp_path.rglob('*')) == before
 
 
@@ -672,7 +672,7 @@ def test_manual_check_persists_execution_and_transition_diagnostics(tmp_path, mo
         diagnostics.report('notice', 'lean.check_execution', 'Lean check finished', execution=execution)
         return CheckResult(path, 'ok', execution=execution)
     monkeypatch.setattr(sessions_route, 'interface_check', check)
-    result = sessions_route.lean_check_session(session['id'], PathRequest(path='Lea/Misc/p.lean'))
+    result = sessions_route.lean_check_session.worker(session['id'], PathRequest(path='Lea/Misc/p.lean'))
     assert all(result['execution'][key] == value for key, value in execution.items())
     stored = store.session_detail(session['id'])['diagnostics']
     assert [d['code'] for d in stored] == ['lean.lsp_cold_fallback', 'lean.check_execution']

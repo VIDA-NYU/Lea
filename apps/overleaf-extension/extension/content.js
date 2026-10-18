@@ -1,4 +1,6 @@
 (function () {
+  const nativeFetch=globalThis.fetch.bind(globalThis);
+  let commandClient;
   const DEFAULT_COMPANION_URL = "http://127.0.0.1:31245";
   const DEFAULT_LEA_UI_BASE_URL = "http://localhost:5173";
   // Placeholder only, used before the first successful companion fetch. The
@@ -116,6 +118,7 @@
       lastProjectIdentity = null;
       defaultNameLoadedProjectId = "";
       lastLeanPaneManifest = null;
+      deferredLeanPaneManifest = null;
       leanPaneBlueprintGraph = null;
     }
     renderRenameNotice();
@@ -256,6 +259,7 @@
   let leanPaneExpandedItemIds = new Set();
   let leanPaneHighlightTimer = null;
   let lastLeanPaneManifest = null;
+  let deferredLeanPaneManifest = null;
   let lastLeanPaneManifestProjectId = "";
   let lastProjectIdentity = null;
   let lastLeanPaneFiles = null;
@@ -366,7 +370,7 @@
   // Push channel (PLAN 3.1): one EventSource on the companion's /events.
   // pushConnected is consulted by every poll scheduler when picking a delay.
   let eventsClient = null;
-  let sourceRefreshHandler = null;
+  let sourcePublisher = null;
   let pushConnected = false;
 
   window.addEventListener("message", (event) => {
@@ -571,7 +575,7 @@
     try {
       const stored = await getSettings();
       const baseUrl = String(stored.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
-      const response = await fetch(`${baseUrl}/settings`);
+      const response = await companionFetch(`${baseUrl}/settings`);
       if (!response.ok) return;
       const payload = await response.json().catch(() => ({}));
       updateApiKeyNudge({ leaModelRequirements: payload.leaModelRequirements });
@@ -806,6 +810,7 @@
   }
 
   function closeLeanPane() {
+    deferredLeanPaneManifest = null;
     leaTagsSetupControls?.dispose();
     leaTagsSetupControls = null;
     closeGithubPushConfirmation({ restoreFocus: false });
@@ -1128,8 +1133,8 @@
     if (button) button.disabled = true;
     if (leanPaneStatus) leanPaneStatus.textContent = "Preparing the project zip...";
     try {
-      const response = await fetch(
-        `${baseUrl}/project-export?overleafProjectId=${encodeURIComponent(projectId)}`
+      const response = await companionFetch(
+        `${baseUrl}/project-export`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({overleafProjectId:projectId})}
       );
       if (!response.ok) {
         let message = `Export failed (HTTP ${response.status}).`;
@@ -1214,7 +1219,7 @@
   async function loadShareStatus() {
     const projectId = extractOverleafProjectId();
     const baseUrl = await chatCompanionBaseUrl();
-    const response = await fetch(
+    const response = await companionFetch(
       `${baseUrl}/share/github?overleafProjectId=${encodeURIComponent(projectId)}`
     );
     const body = await response.json().catch(() => ({}));
@@ -1286,7 +1291,7 @@
     renderShareControls();
     setShareStatus("Saving remote...");
     try {
-      const response = await fetch(`${baseUrl}/share/github/remote`, {
+      const response = await companionFetch(`${baseUrl}/share/github/remote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overleafProjectId: projectId, remoteUrl })
@@ -1462,7 +1467,7 @@
     renderShareControls();
     setShareStatus("Pushing to GitHub...");
     try {
-      const response = await fetch(`${baseUrl}/share/github/push`, {
+      const response = await companionFetch(`${baseUrl}/share/github/push`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overleafProjectId: projectId })
@@ -1747,7 +1752,7 @@
   async function pollGithubImport(tracker) {
     if (activeGithubImport !== tracker) return;
     try {
-      const response = await fetch(
+      const response = await companionFetch(
         `${tracker.baseUrl}/project/github-import/status?overleafProjectId=${encodeURIComponent(tracker.projectId)}&importId=${encodeURIComponent(tracker.id)}`
       );
       const progress = await response.json().catch(() => ({}));
@@ -1890,7 +1895,7 @@
       analyzeButton.disabled = true;
       setStatus("Analyzing repository...");
       try {
-        const response = await fetch(`${baseUrl}/project/github-import/preview`, {
+        const response = await companionFetch(`${baseUrl}/project/github-import/preview`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ overleafProjectId: projectId, repositoryUrl, targets })
@@ -1913,7 +1918,7 @@
       confirmButton.disabled = true;
       setStatus("Adding files and handing checks to the background...");
       try {
-        const response = await fetch(`${baseUrl}/project/github-import/confirm`, {
+        const response = await companionFetch(`${baseUrl}/project/github-import/confirm`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ overleafProjectId: projectId, previewId: preview.preview_id })
@@ -2038,7 +2043,7 @@
 
     let payload;
     try {
-      const response = await fetch(
+      const response = await companionFetch(
         `${baseUrl}/project/graph?overleafProjectId=${encodeURIComponent(projectId)}`,
       );
       payload = await response.json().catch(() => ({}));
@@ -2152,7 +2157,7 @@
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
     let payload;
     try {
-      const response = await fetch(`${baseUrl}/project/blueprint/generate`, {
+      const response = await companionFetch(`${baseUrl}/project/blueprint/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overleafProjectId: projectId }),
@@ -2528,6 +2533,16 @@
     return files;
   }
 
+  document.addEventListener("selectionchange", () => {
+    const pending = deferredLeanPaneManifest;
+    if (!pending) return;
+    deferredLeanPaneManifest = null;
+    if (leanPaneMainView === "items" && pending.projectId === extractOverleafProjectId()
+      && pending.generation === displayGeneration && pending.namespace === displayNamespaceRevision) {
+      renderLeanPaneManifest(pending.manifest);
+    }
+  });
+
   function renderLeanPaneManifest(manifest) {
     if (!leanPaneBody || !leanPaneStatus) return;
     manifest = githubImportPaneOverlay(manifest);
@@ -2537,10 +2552,16 @@
     const itemHeaderFocusId = document.activeElement?.closest?.(".ol-lean-project-item-header")
       ?.closest?.(".ol-lean-project-item")?.dataset.itemId;
     const selection = document.getSelection?.();
-    // Defer this refresh while the author is selecting status text. The next
-    // normal poll applies it after selection clears without destroying the range.
-    const selectedElement = selection?.anchorNode?.parentElement;
-    if (!selection?.isCollapsed && selectedElement?.closest?.(".ol-lean-live-status")) return;
+    // Retain the newest refresh without destroying a selected range. Apply it
+    // when the selection clears, even if the final job no longer needs polling.
+    if (selection && !selection.isCollapsed && (
+      leanPaneBody.contains(selection.anchorNode) || leanPaneBody.contains(selection.focusNode)
+    )) {
+      deferredLeanPaneManifest = { manifest, projectId: extractOverleafProjectId(),
+        generation: displayGeneration, namespace: displayNamespaceRevision };
+      return;
+    }
+    deferredLeanPaneManifest = null;
     const items = Array.isArray(manifest?.items) ? manifest.items : [];
     const renderedProjectId = extractOverleafProjectId();
     if (leanPaneBatchReportsProjectId && leanPaneBatchReportsProjectId !== renderedProjectId) {
@@ -2640,7 +2661,7 @@
       const baseUrl = await chatCompanionBaseUrl();
       const cursor = append && leanPaneBatchReportsNextCursor
         ? `&before=${encodeURIComponent(leanPaneBatchReportsNextCursor)}` : "";
-      const response = await fetch(`${baseUrl}/formalize/all/reports?overleafProjectId=${encodeURIComponent(projectId)}${cursor}`);
+      const response = await companionFetch(`${baseUrl}/formalize/all/reports?overleafProjectId=${encodeURIComponent(projectId)}${cursor}`);
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.message || "Could not load Formalize all reports.");
       if (projectId !== extractOverleafProjectId()) return;
@@ -2662,7 +2683,7 @@
     try {
       const baseUrl = await chatCompanionBaseUrl();
       const projectId = extractOverleafProjectId();
-      const response = await fetch(`${baseUrl}/formalize/all/reports/${encodeURIComponent(batchId)}?overleafProjectId=${encodeURIComponent(projectId)}`);
+      const response = await companionFetch(`${baseUrl}/formalize/all/reports/${encodeURIComponent(batchId)}?overleafProjectId=${encodeURIComponent(projectId)}`);
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.message || "Could not load this report.");
       if (projectId !== extractOverleafProjectId()) return;
@@ -2684,7 +2705,7 @@
   async function retryFormalizeBatchReport(batchId) {
     try {
       const baseUrl = await chatCompanionBaseUrl();
-      const response = await fetch(`${baseUrl}/formalize/all/reports/${encodeURIComponent(batchId)}/retry`, {
+      const response = await companionFetch(`${baseUrl}/formalize/all/reports/${encodeURIComponent(batchId)}/retry`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overleafProjectId: extractOverleafProjectId() })
       });
@@ -2840,7 +2861,7 @@
       ? setTimeout(() => controller.abort(), timeoutMs)
       : null;
     try {
-      const response = await fetch(url, controller ? { ...options, signal: controller.signal } : options);
+      const response = await companionFetch(url, controller ? { ...options, signal: controller.signal } : options);
       const payload = await response.json().catch(() => ({}));
       return { response, payload };
     } catch (error) {
@@ -2852,7 +2873,7 @@
   }
 
   async function previewProjectIdentity({ baseUrl, projectId, projectName, namespace = "", excludeProjectId = "" }) {
-    const response = await fetch(`${baseUrl}/project/identity/preview`, {
+    const response = await companionFetch(`${baseUrl}/project/identity/preview`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ overleafProjectId: projectId, projectName, namespace, excludeProjectId })
@@ -2863,7 +2884,7 @@
   }
 
   async function saveProjectIdentity({ baseUrl, projectId, projectName, mode, namespace = "", expectedNamespace = "", createIfMissing = false }) {
-    const response = await fetch(`${baseUrl}/project/identity`, {
+    const response = await companionFetch(`${baseUrl}/project/identity`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ overleafProjectId: projectId, projectName, mode, namespace, expectedNamespace, createIfMissing })
@@ -3530,7 +3551,7 @@
         const baseUrl = await chatCompanionBaseUrl();
         const query = new URLSearchParams({ formalizationId: target.formalizationId });
         if (after) query.set("after", after);
-        const response = await fetch(`${baseUrl}/lean-pane/lea-status/updates?${query}`);
+        const response = await companionFetch(`${baseUrl}/lean-pane/lea-status/updates?${query}`);
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.message || payload.error || "Could not load Lea Status history.");
         return payload;
@@ -3541,7 +3562,7 @@
           return;
         }
         const baseUrl = await chatCompanionBaseUrl();
-        const response = await fetch(`${baseUrl}/lean-pane/chat/interrupt`, {
+        const response = await companionFetch(`${baseUrl}/lean-pane/chat/interrupt`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ runId: target.leaStatus.run_id, sessionId: target.leaSessionId })
         });
@@ -3556,7 +3577,7 @@
     return leanPaneView.renderSharedDependencies(dependencies, { document, key,
       retry: async (dep, { resume = false } = {}) => {
         const baseUrl = await chatCompanionBaseUrl();
-        const response = await fetch(`${baseUrl}/lean-pane/dependencies/retry`, {
+        const response = await companionFetch(`${baseUrl}/lean-pane/dependencies/retry`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(), dependencyId: dep.id, resume })
         });
@@ -4193,7 +4214,7 @@
     try {
       const baseUrl = await chatCompanionBaseUrl();
       if (items.length === 1) {
-        const response = await fetch(`${baseUrl}/lean-pane/repair/start`, {
+        const response = await companionFetch(`${baseUrl}/lean-pane/repair/start`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ overleafProjectId, ...items[0] })
@@ -4201,7 +4222,7 @@
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload?.message || `Companion returned HTTP ${response.status}.`);
       } else {
-        const response = await fetch(`${baseUrl}/lean-pane/repair/all`, {
+        const response = await companionFetch(`${baseUrl}/lean-pane/repair/all`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ overleafProjectId, items })
@@ -4235,7 +4256,7 @@
       // reconciliation while the stream is up, fast poll when it's down)
       try {
         const baseUrl = await chatCompanionBaseUrl();
-        const response = await fetch(`${baseUrl}/lean-pane/repair/status`, {
+        const response = await companionFetch(`${baseUrl}/lean-pane/repair/status`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ batchId })
@@ -4265,7 +4286,7 @@
     if (!batchId) return;
     try {
       const baseUrl = await chatCompanionBaseUrl();
-      const response = await fetch(`${baseUrl}/lean-pane/repair/all/continue`, {
+      const response = await companionFetch(`${baseUrl}/lean-pane/repair/all/continue`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ batchId })
@@ -4287,7 +4308,7 @@
     if (!batchId) return;
     try {
       const baseUrl = await chatCompanionBaseUrl();
-      const response = await fetch(`${baseUrl}/lean-pane/repair/all/cancel`, {
+      const response = await companionFetch(`${baseUrl}/lean-pane/repair/all/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ batchId })
@@ -4660,7 +4681,7 @@
           retry.addEventListener("click", async () => {
             try {
               const baseUrl = await chatCompanionBaseUrl();
-              const response = await fetch(`${baseUrl}/formalize/all/reports/save`, {
+              const response = await companionFetch(`${baseUrl}/formalize/all/reports/save`, {
                 method: "POST", headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(), batchId: batch.batchId })
               });
@@ -5000,7 +5021,7 @@
       const projectId = itemsProjectId(lastLeanPaneManifest?.items || []);
       const target = leanPaneView.paneItemToEditTarget(item, projectId);
       const baseUrl = await chatCompanionBaseUrl();
-      const response = await fetch(`${baseUrl}/lean-pane/edit/start`, {
+      const response = await companionFetch(`${baseUrl}/lean-pane/edit/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(target)
@@ -5026,7 +5047,7 @@
       request = new AbortController();
       try {
         const baseUrl = await chatCompanionBaseUrl();
-        const response = await fetch(`${baseUrl}/lean-pane/check-runtime/${encodeURIComponent(sessionId)}`, { signal: request.signal });
+        const response = await companionFetch(`${baseUrl}/lean-pane/check-runtime/${encodeURIComponent(sessionId)}`, { signal: request.signal });
         const payload = await response.json();
         if (!stopped) line.textContent = payload.message || "Checking with Lean…";
       } catch { if (!stopped) line.textContent = "Lean check runtime unavailable"; }
@@ -5147,7 +5168,7 @@
         const projectId = itemsProjectId(lastLeanPaneManifest?.items || []);
         const target = leanPaneView.paneItemToEditTarget(item, projectId);
         const baseUrl = await chatCompanionBaseUrl();
-        const response = await fetch(`${baseUrl}/lean-pane/edit/save`, {
+        const response = await companionFetch(`${baseUrl}/lean-pane/edit/save`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ...target, content })
@@ -5511,7 +5532,7 @@
       return;
     }
     const baseUrl = await chatCompanionBaseUrl();
-    const response = await fetch(`${baseUrl}/lean-pane/dependencies/wait`, {
+    const response = await companionFetch(`${baseUrl}/lean-pane/dependencies/wait`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(),
         runId: item.apiRunId || item.leaStatus?.run_id,
@@ -5709,7 +5730,7 @@
     }
     const baseUrl = await chatCompanionBaseUrl();
     const target = leanPaneView.paneItemToChatTarget(item, itemsProjectId(lastLeanPaneManifest?.items || []));
-    const response = await fetch(`${baseUrl}/lean-pane/chat/session`, {
+    const response = await companionFetch(`${baseUrl}/lean-pane/chat/session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ target })
@@ -5792,7 +5813,7 @@
     if (input) input.focus();
     try {
       const baseUrl = await chatCompanionBaseUrl();
-      const response = await fetch(`${baseUrl}/lean-pane/chat/session`, {
+      const response = await companionFetch(`${baseUrl}/lean-pane/chat/session`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target: leanPaneChatTarget })
@@ -5839,7 +5860,7 @@
         }))
       };
       const baseUrl = await chatCompanionBaseUrl();
-      const response = await fetch(`${baseUrl}/lean-pane/chat/message`, {
+      const response = await companionFetch(`${baseUrl}/lean-pane/chat/message`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target: leanPaneChatTarget, message: text })
@@ -5880,7 +5901,7 @@
     let payload = null;
     try {
       const baseUrl = await chatCompanionBaseUrl();
-      const response = await fetch(`${baseUrl}/lean-pane/chat/session/${encodeURIComponent(leanPaneChatSessionId)}`);
+      const response = await companionFetch(`${baseUrl}/lean-pane/chat/session/${encodeURIComponent(leanPaneChatSessionId)}`);
       payload = await response.json().catch(() => ({}));
     } catch {
       // Transient failure (companion restarting, network blip). AUDIT M2: do
@@ -5926,7 +5947,7 @@
     const token = leanPaneChatToken;
     try {
       const baseUrl = await chatCompanionBaseUrl();
-      await fetch(`${baseUrl}/lean-pane/chat/interrupt`, {
+      await companionFetch(`${baseUrl}/lean-pane/chat/interrupt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ runId: leanPaneChatRunId, sessionId: leanPaneChatSessionId })
@@ -7294,6 +7315,9 @@
   }
 
   async function buildFormalizationSourceContext(target, { verifyMirror = true, mirrorSnapshot = null } = {}) {
+    const capturedDocument=extractOverleafProjectId();
+    const capturedBuffer=latestActiveTex;
+    const capturedActivePath=latestActiveTexPath;
     const manifestTarget = (lastLeanPaneManifest?.items || []).find((item) => (
       item.label === target?.targetLabel
       && (!target?.sourceFile || normalizeDocPath(item.sourceFile) === normalizeDocPath(target.sourceFile))
@@ -7337,16 +7361,19 @@
     const proofAssociation = currentTarget?.proofAssociation || { status: "missing", method: "none" };
     const sourceProof = String(currentTarget?.sourceProof || "").replace(/\r\n?/g, "\n");
     const proofHash = sourceProof ? await sha256(sourceProof) : "";
+    const immutableFiles = Object.fromEntries(uniqueFiles);
+    const complete = leanPaneSourceCoverage === "complete" || Boolean(mirrorSnapshot?.mirrorRevision);
+    let publicationMirror = null;
+    if (complete) {
+      const hashes = await Promise.all([...uniqueFiles].sort(([a],[b]) => {const left=Array.from(a,c=>c.codePointAt(0)),right=Array.from(b,c=>c.codePointAt(0));for(let i=0;i<Math.min(left.length,right.length);i++)if(left[i]!==right[i])return left[i]-right[i];return left.length-right.length;}).map(async ([p,c]) => [p,await sha256(c)]));
+      publicationMirror = { revision:await sha256(hashes.map(([p,h]) => `${p}\0${h}`).join("\0")), mirroredFileCount:hashes.length, verified:true };
+    }
     const { buildSourceBundleCore, sourceHashInputs } = await import(chrome.runtime.getURL("sourceIdentityCore.mjs"));
     const sourceBundleCore = buildSourceBundleCore({ ...currentTarget, ...enrichedTarget,
       sourceFile, sourceStartLine, sourceEndLine, sourceProof, proofAssociation }, {
       proofHash,
       files: [...uniqueFiles].map(([path, fileContent]) => ({ path, content: fileContent })),
-      mirror: verifyMirror && mirrorSnapshot?.mirrorRevision ? {
-        revision: String(mirrorSnapshot.mirrorRevision),
-        mirroredFileCount: Object.keys(mirrorSnapshot.mirroredFiles || {}).length,
-        verified: true
-      } : null
+      mirror: publicationMirror
     });
     const excerpt = sourceBundleCore.relevantSource[0];
     const sourceExcerpt = excerpt?.content || "";
@@ -7358,7 +7385,20 @@
       bundleHash: await sha256(JSON.stringify(evidence)),
       sourceIdentityHash: await sha256(JSON.stringify(identity))
     };
+    if (!sourcePublisher) {
+      const {createSourcePublisher} = await import(chrome.runtime.getURL("sourcePublisher.mjs"));
+      sourcePublisher = createSourcePublisher({ documentId:extractOverleafProjectId, request:async (route,value) => {
+        const baseUrl=await chatCompanionBaseUrl();
+        const response=await companionFetch(baseUrl+route,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
+        const result=await response.json();
+        if(!response.ok) throw Object.assign(new Error(result.message||result.detail?.message||result.detail||"Source publication failed"),{status:response.status,detail:result.detail});
+        return result;
+      }});
+    }
+    if(capturedDocument!==extractOverleafProjectId() || capturedBuffer!==latestActiveTex || capturedActivePath!==latestActiveTexPath)throw new Error('The editor changed during source capture. Publish its current revision again.');
+    const publication=await sourcePublisher({document_id:capturedDocument,source_bundle:sourceBundle,files:immutableFiles,coverage:complete?"complete":"partial"});
     return {
+      ...publication,
       sourceFile,
       sourceStartLine,
       sourceEndLine,
@@ -7385,7 +7425,7 @@
       || candidate.targetUses.some((use) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(use)))) {
       const settings = await getSettings();
       const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
-      const response = await fetch(`${baseUrl}/targets/resolve`, {
+      const response = await companionFetch(`${baseUrl}/targets/resolve`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(), sourceFile: path,
           source: content, files: lastLeanPaneFiles || [] })
@@ -7432,7 +7472,7 @@
     });
     const settings = await getSettings();
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
-    const response = await fetch(`${baseUrl}/formalize`, {
+    const response = await companionFetch(`${baseUrl}/formalize`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -7473,7 +7513,7 @@
     });
     const settings = await getSettings();
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
-    const response = await fetch(`${baseUrl}/stub`, {
+    const response = await companionFetch(`${baseUrl}/stub`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -7549,7 +7589,7 @@
         verifyMirror: mirrorResult?.disabled !== true,
         mirrorSnapshot: mirrorResult
       });
-      const response = await fetch(`${baseUrl}${endpoint}`, {
+      const response = await companionFetch(`${baseUrl}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(), items: payloads })
@@ -7632,7 +7672,7 @@
         sourceIdentityHash: sourceContext.sourceBundle?.sourceIdentityHash || ""
       };
     }));
-    const response = await fetch(`${baseUrl}/statuses`, {
+    const response = await companionFetch(`${baseUrl}/statuses`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -7694,7 +7734,7 @@
         await ensureLeanPaneView();
         files = await getLeanPaneProjectFiles({ projectId, forceFetch: false });
       }
-      const response = await fetch(`${baseUrl}/targets/resolve`, {
+      const response = await companionFetch(`${baseUrl}/targets/resolve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overleafProjectId: projectId, sourceFile, source, files })
@@ -7808,7 +7848,7 @@
         Date.now() - lastTexMirrorFullSyncAt > TEX_MIRROR_FULL_SYNC_INTERVAL_MS;
 
       if (!force && !fullSyncDue && activeRel && typeof latestActiveTex === "string") {
-        const response = await fetch(`${baseUrl}/mirror-tex`, {
+        const response = await companionFetch(`${baseUrl}/mirror-tex`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -7849,7 +7889,7 @@
         const active = files.find((file) => file.path === activeRel);
         if (active) active.content = latestActiveTex;
       }
-      const response = await fetch(`${baseUrl}/mirror-tex`, {
+      const response = await companionFetch(`${baseUrl}/mirror-tex`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overleafProjectId: projectId, files, overleafProjectTitle: readOverleafProjectTitle(files) })
@@ -7886,7 +7926,7 @@
       : null;
     let buffer;
     try {
-      const response = await fetch(`/project/${encodeURIComponent(projectId)}/download/zip`, {
+      const response = await companionFetch(`/project/${encodeURIComponent(projectId)}/download/zip`, {
         credentials: "same-origin",
         ...(controller ? { signal: controller.signal } : {})
       });
@@ -8410,20 +8450,20 @@
     });
   }
 
+  async function companionFetch(url,options={}) {
+    if(!['POST','PUT','PATCH','DELETE'].includes(options.method||'GET'))return nativeFetch(url,options);
+    commandClient ||= import(chrome.runtime.getURL("commandClient.mjs"));
+    return (await commandClient).commandFetch(nativeFetch,url,options);
+  }
+
   function getSettings() {
     if (isExtensionContextInvalidated()) {
       return Promise.reject(new Error("Extension was reloaded. Refresh this Overleaf tab."));
     }
     return chrome.storage.sync.get({
       companionUrl: DEFAULT_COMPANION_URL,
-      leaRepoPath: "",
       leaApiBaseUrl: "http://127.0.0.1:8001",
-      leaUiBaseUrl: DEFAULT_LEA_UI_BASE_URL,
-      leaModel: DEFAULT_LEA_MODEL,
-      leaMaxTurns: DEFAULT_LEA_MAX_TURNS,
-      leaMaxSpendUsd: null,
-      leaTexMirrorEnabled: DEFAULT_LEA_TEX_MIRROR_ENABLED,
-      leaPauseOnSourceIssue: false
+      leaUiBaseUrl: DEFAULT_LEA_UI_BASE_URL
     });
   }
 
@@ -8452,7 +8492,6 @@
       }
       const settings = {
         companionUrl: baseUrl,
-        leaRepoPath: payload.leaRepoPath || stored.leaRepoPath || "",
         leaApiBaseUrl: payload.leaApiBaseUrl || stored.leaApiBaseUrl || "http://127.0.0.1:8001",
         leaUiBaseUrl: payload.leaUiBaseUrl || stored.leaUiBaseUrl || DEFAULT_LEA_UI_BASE_URL,
         leaModel: payload.leaModel || stored.leaModel || DEFAULT_LEA_MODEL,
@@ -8472,17 +8511,8 @@
         githubTokenConfigured: Boolean(payload.githubTokenConfigured)
       };
       updateApiKeyNudge(settings);
-      await chrome.storage.sync.set({
-        companionUrl: settings.companionUrl,
-        leaRepoPath: settings.leaRepoPath,
-        leaApiBaseUrl: settings.leaApiBaseUrl,
-        leaUiBaseUrl: settings.leaUiBaseUrl,
-        leaModel: settings.leaModel,
-        leaMaxTurns: settings.leaMaxTurns,
-        leaMaxSpendUsd: settings.leaMaxSpendUsd,
-        leaTexMirrorEnabled: settings.leaTexMirrorEnabled,
-        leaPauseOnSourceIssue: settings.leaPauseOnSourceIssue
-      });
+      await chrome.storage.sync.set({companionUrl:settings.companionUrl,leaApiBaseUrl:settings.leaApiBaseUrl,leaUiBaseUrl:settings.leaUiBaseUrl});
+      await chrome.storage.sync.remove?.(['leaRepoPath','leaModel','leaMaxTurns','leaMaxSpendUsd','leaTexMirrorEnabled','leaPauseOnSourceIssue','leaTheoremTranslationMaxRetries']);
       return settings;
     } catch (error) {
       if (requireLive) throw error;
@@ -8616,7 +8646,7 @@
   // token itself.
   async function updateGithubToken(payload) {
     const baseUrl = await chatCompanionBaseUrl();
-    const response = await fetch(`${baseUrl}/settings/github-token`, {
+    const response = await companionFetch(`${baseUrl}/settings/github-token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
@@ -8665,7 +8695,7 @@
     const settings = await getSettings();
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
     try {
-      const response = await fetch(
+      const response = await companionFetch(
         `${baseUrl}/settings/models/requirements?model=${encodeURIComponent(model)}`
       );
       const payload = await response.json().catch(() => ({}));
@@ -8826,7 +8856,6 @@
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        leaRepoPath: current.leaRepoPath,
         leaApiBaseUrl: current.leaApiBaseUrl,
         leaModel,
         leaMaxTurns,
@@ -8841,18 +8870,7 @@
     if (!response.ok) {
       throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
     }
-    await chrome.storage.sync.set({
-      companionUrl: baseUrl,
-      leaRepoPath: payload.leaRepoPath,
-      leaApiBaseUrl: payload.leaApiBaseUrl,
-      leaUiBaseUrl: payload.leaUiBaseUrl || current.leaUiBaseUrl || DEFAULT_LEA_UI_BASE_URL,
-      leaModel: payload.leaModel,
-      leaMaxTurns: payload.leaMaxTurns,
-      leaMaxSpendUsd: payload.leaMaxSpendUsd,
-      leaTheoremTranslationMaxRetries: payload.leaTheoremTranslationMaxRetries,
-      leaTexMirrorEnabled: payload.leaTexMirrorEnabled,
-      leaPauseOnSourceIssue: payload.leaPauseOnSourceIssue
-    });
+    await chrome.storage.sync.set({companionUrl:baseUrl,leaApiBaseUrl:payload.leaApiBaseUrl||current.leaApiBaseUrl,leaUiBaseUrl:payload.leaUiBaseUrl||current.leaUiBaseUrl||DEFAULT_LEA_UI_BASE_URL});
     return payload;
   }
 
@@ -9029,49 +9047,6 @@
   async function startEventsClient() {
     try {
       const module = await import(chrome.runtime.getURL("eventsClient.mjs"));
-      const sourceModule = await import(chrome.runtime.getURL("sourceRefreshClient.mjs"));
-      const sourceClientId = crypto.randomUUID();
-      const refreshSource = sourceModule.createSourceRefreshResponder({
-        documentId: extractOverleafProjectId,
-        readSource: async (request) => {
-          await ensureLeanPaneView();
-          const buffer = latestActiveTex;
-          const activePath = latestActiveTexPath;
-          const mirror = await syncTexMirrorNow({ force: true, freshArchive: true });
-          const files = mirror?.disabled === true ? lastLeanPaneFiles : lastMirrorFiles;
-          if (!Array.isArray(files) || !files.length) throw new Error("The current Overleaf source archive is unavailable.");
-          lastLeanPaneFiles = files.map((file) => ({ ...file }));
-          lastLeanPaneProjectId = request.overleafProjectId;
-          const baseUrl = await chatCompanionBaseUrl();
-          const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/source-context/manifest`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ overleafProjectId: request.overleafProjectId, activePath: latestActiveTexPath, files, sourceCoverage: "complete" })
-          }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
-            timeoutMessage: "Reading the current Overleaf source timed out. Check that the Lea companion is running, then retry." });
-          if (!response.ok) throw new Error(payload.message || "The current document could not be parsed.");
-          const item = sourceModule.selectSourceTarget(payload.items, request);
-          const target = { ...item, ...leanPaneView.paneItemToChatTarget(item, request.overleafProjectId),
-            targetText: item.naturalLanguageLatex, targetContext: item.targetContext || "",
-            sourceFile: item.sourceFile, sourceStartLine: item.sourceStartLine,
-            sourceEndLine: item.sourceEndLine, sourceStartOffset: item.sourceStartOffset, sourceEndOffset: item.sourceEndOffset };
-          const context = await buildFormalizationSourceContext(target, {
-            verifyMirror: mirror?.disabled !== true, mirrorSnapshot: mirror
-          });
-          if (latestActiveTex !== buffer || latestActiveTexPath !== activePath || extractOverleafProjectId() !== request.overleafProjectId) {
-            throw new Error("The editor changed during source refresh. Send again to use the latest revision.");
-          }
-          return { ...context, mirroredFiles: mirror?.mirroredFiles || null };
-        },
-        respond: async (payload) => {
-          const baseUrl = await chatCompanionBaseUrl();
-          const response = await fetch(`${baseUrl}/source-context/respond`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...payload, clientId: sourceClientId })
-          });
-          if (!response.ok) throw new Error("Source refresh response was not accepted.");
-        }
-      });
-      sourceRefreshHandler = refreshSource;
       // The companion URL comes from settings (async); cache it for the
       // client's synchronous url() and refresh the cache on every reconnect
       // attempt so a settings change is picked up without a page reload.
@@ -9089,7 +9064,7 @@
           refreshUrlCache();
           const projectId = extractOverleafProjectId();
           const query = projectId && projectId !== "unknown"
-            ? `?projectId=${encodeURIComponent(projectId)}&clientId=${encodeURIComponent(sourceClientId)}`
+            ? `?projectId=${encodeURIComponent(projectId)}`
             : "";
           return `${companionUrlCache}/events${query}`;
         },
@@ -9098,12 +9073,6 @@
           pushConnected = connected;
           if (connected) {
             if (projectRenaming) scheduleRenameReconciliation(0);
-            // Reconcile pending refreshes too: the event bus has no replay.
-            chatCompanionBaseUrl().then(async (baseUrl) => {
-              const response = await fetch(`${baseUrl}/source-context/pending?projectId=${encodeURIComponent(extractOverleafProjectId())}`);
-              const payload = await response.json();
-              await Promise.all((payload.requests || []).map(refreshSource));
-            }).catch(() => {});
             // Reconcile once on (re)connect: anything that changed while the
             // stream was down is picked up now instead of on the slow poll.
             scheduleStatusRefresh();
@@ -9143,10 +9112,6 @@
       return;
     }
 
-    if (type === "source-refresh-requested") {
-      sourceRefreshHandler?.(data).catch(() => {});
-      return;
-    }
     if (type === "jobs-changed") {
       scheduleStatusRefresh();
       if (leanPane) scheduleLeanPaneRefresh();

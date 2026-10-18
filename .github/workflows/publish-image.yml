@@ -1,5 +1,4 @@
-# Publish the self-contained Lea image (standalone UI, adapter, in-process
-# prover, Overleaf companion, Lean, and Mathlib) under the VIDA organization.
+# Explicitly publish matching API, worker and stateless companion images.
 
 name: Publish container image
 
@@ -32,17 +31,24 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
+        role: [worker, api, companion]
+        platform: [linux/amd64, linux/arm64]
         include:
           - platform: linux/amd64
             runner: ubuntu-latest
+            arch: amd64
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
+            arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Prepare platform slug
         run: |
           platform="${{ matrix.platform }}"
           echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+          selected_image="$IMAGE"
+          if [ "${{ matrix.role }}" != worker ]; then selected_image="$IMAGE-${{ matrix.role }}"; fi
+          echo "ROLE_IMAGE=$selected_image" >> "$GITHUB_ENV"
 
       - name: Free runner disk space
         run: |
@@ -60,29 +66,57 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push by digest
-        id: build
-        uses: docker/build-push-action@v6
+      - uses: actions/download-artifact@v4
         with:
-          context: .
-          file: apps/lea-standalone/Dockerfile
-          platforms: ${{ matrix.platform }}
-          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          name: stage8-qualified-binaries-${{ matrix.arch }}
+          path: /tmp/qualified
+
+      - name: Verify and load the exact qualified role bundle
+        env:
+          ROLE: ${{ matrix.role }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          (cd /tmp/qualified && sha256sum -c SHA256SUMS)
+          gzip -dc /tmp/qualified/strict-bundles.tar.gz | docker load
+          qualified_id=$(python3 .github/scripts/verify-release-bundle.py \
+            --directory /tmp/qualified --source "$GITHUB_SHA" --arch "$ARCH" --role "$ROLE")
+          echo "QUALIFIED_ID=$qualified_id" >> "$GITHUB_ENV"
+
+      - name: Push the qualified binary without rebuilding
+        env:
+          ROLE: ${{ matrix.role }}
+        run: |
+          set -euo pipefail
+          qualified_tag="$ROLE_IMAGE:qualified-$GITHUB_SHA-$PLATFORM_PAIR"
+          docker tag "$QUALIFIED_ID" "$qualified_tag"
+          docker push "$qualified_tag"
+          echo "QUALIFIED_TAG=$qualified_tag" >> "$GITHUB_ENV"
 
       - name: Export digest
         run: |
           mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
+          python3 - <<'PY'
+          import json,os,subprocess
+          from pathlib import Path
+          record=json.loads(subprocess.check_output(['docker','image','inspect',os.environ['QUALIFIED_TAG']],text=True))[0]
+          assert record['Id']==os.environ['QUALIFIED_ID']
+          digests={v.split('@')[1] for v in record['RepoDigests'] if v.startswith(os.environ['ROLE_IMAGE']+'@')}
+          assert len(digests)==1,digests
+          Path('/tmp/digests',next(iter(digests)).removeprefix('sha256:')).touch()
+          PY
 
       - uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ env.PLATFORM_PAIR }}
+          name: digests-${{ matrix.role }}-${{ env.PLATFORM_PAIR }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
   merge:
+    strategy:
+      matrix:
+        role: [worker, api, companion]
     permissions:
       contents: read
       packages: write
@@ -90,10 +124,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
+      - name: Select role image
+        run: |
+          selected_image="$IMAGE"
+          if [ "${{ matrix.role }}" != worker ]; then selected_image="$IMAGE-${{ matrix.role }}"; fi
+          echo "ROLE_IMAGE=$selected_image" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digests-*
+          pattern: digests-${{ matrix.role }}-*
           merge-multiple: true
 
       - uses: docker/setup-buildx-action@v3
@@ -108,7 +147,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE }}
+          images: ${{ env.ROLE_IMAGE }}
           tags: |
             type=semver,pattern={{version}}
             type=ref,event=branch
@@ -116,13 +155,21 @@ jobs:
       - name: Create multi-architecture manifest
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf "$IMAGE@sha256:%s " *)
+          python3 - <<'PY'
+          import json,os,re,subprocess
+          from pathlib import Path
+          tags=json.loads(os.environ['DOCKER_METADATA_OUTPUT_JSON'])['tags']
+          digests=sorted(p.name for p in Path('.').iterdir())
+          assert tags and len(digests)==2 and all(re.fullmatch('[0-9a-f]{64}',d) for d in digests)
+          command=['docker','buildx','imagetools','create']
+          for tag in tags:command.extend(['-t',tag])
+          command.extend(os.environ['ROLE_IMAGE']+'@sha256:'+digest for digest in digests)
+          subprocess.run(command,check=True)
+          PY
 
       - name: Verify published image
-        run: docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}"
+        run: docker buildx imagetools inspect "$ROLE_IMAGE:${{ steps.meta.outputs.version }}"
 
       - name: Write publication summary
         run: |
-          echo "Published \`$IMAGE:${{ steps.meta.outputs.version }}\` for linux/amd64 and linux/arm64." >> "$GITHUB_STEP_SUMMARY"
+          echo "Published \`$ROLE_IMAGE:${{ steps.meta.outputs.version }}\` for linux/amd64 and linux/arm64." >> "$GITHUB_STEP_SUMMARY"

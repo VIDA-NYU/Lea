@@ -117,7 +117,7 @@ def test_inventory_updates_changed_source_and_removes_deleted_modules(project, m
 
 
 def test_application_startup_uses_inventory_without_compiler(project, monkeypatch, tmp_path):
-    from app import main, runtime
+    from app import worker as main, runtime
     from app.config import LeaConfig
     from lea import process_ownership
 
@@ -125,6 +125,7 @@ def test_application_startup_uses_inventory_without_compiler(project, monkeypatc
     (repo / "Target.lean").write_text("theorem target : True := by trivial\n")
     forbid_resolution(monkeypatch)
     monkeypatch.setattr(runtime, "acquire_data_lock", lambda: None)
+    monkeypatch.setattr(runtime,"acquire_workspace_lock",lambda _:None)
     monkeypatch.setattr(runtime, "owned_process_dir", lambda: tmp_path / "owned-processes")
     monkeypatch.setenv("LEA_OWNED_PROCESS_DIR", str(tmp_path / "owned-processes"))
     monkeypatch.setattr(process_ownership, "reap_previous", lambda: None)

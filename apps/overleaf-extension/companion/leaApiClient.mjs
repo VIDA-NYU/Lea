@@ -1,3 +1,4 @@
+import { workspaceResult, submitWithRecovery } from '../../../packages/lea-workspace-client/index.mjs';
 // Lea standalone adapter client for the Overleaf companion.
 //
 // The adapter (apps/lea-standalone/adapter, :8001) drives the prover in-process.
@@ -117,6 +118,16 @@ async function readJson(fetchImpl, url, options) {
         ? rawDetail.message || JSON.stringify(rawDetail)
         : rawDetail;
     return { ok: false, status: response.status, error: `HTTP ${response.status}: ${detail}`, body };
+  }
+  try {
+    if (!url.includes('/api/workspace/commands/')) body = await workspaceResult(body, async id => {
+      const receiptUrl = `${String(url).split('/api/')[0]}/api/workspace/commands/${encodeURIComponent(id)}`;
+      const result = await readJson(fetchImpl, receiptUrl, {method:'GET', headers: options?.headers});
+      if (!result.ok) throw Object.assign(new Error(result.error), {status:result.status});
+      return result.body;
+    });
+  } catch (error) {
+    return {ok:false, status:error.status || 409, error:error.message, body:{detail:error.detail, command_id:error.commandId}};
   }
   return { ok: true, status: response.status, body };
 }
@@ -450,6 +461,7 @@ export async function startApiRun({
   artifactOperation = null,
   purpose = "general",
   sourceBundle = null,
+  sourceContextRef = null,
   allowSourcePause = false,
   idempotencyKey = null,
   timeoutSeconds = null,
@@ -480,6 +492,7 @@ export async function startApiRun({
   if (artifactOperation) body.artifact_operation = artifactOperation;
   if (idempotencyKey) body.idempotency_key = idempotencyKey;
   if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) body.timeout_seconds = Math.ceil(timeoutSeconds);
+  if (sourceContextRef) body.source_context_ref = sourceContextRef;
   if (sourceBundle) { body.source_bundle = sourceBundle; body.lea_status_version = 1; }
   if (sessionId) body.session_id = sessionId;
   if (projectSlug) {
@@ -513,7 +526,7 @@ export function startApiContinuation({ fetchImpl, baseUrl, apiKey, runId, source
   return fetchJson(fetchImpl, `${baseUrl}/api/runs/${encodeURIComponent(runId)}/continue`, {
     method: "POST",
     headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
-    body: JSON.stringify({ idempotency_key: idempotencyKey, source_bundle: sourceBundle, source_context_ref: sourceContextRef,
+    body: JSON.stringify({ idempotency_key: idempotencyKey, source_bundle: sourceContextRef?undefined:sourceBundle, source_context_ref: sourceContextRef,
       lea_status_version: 1, timeout_seconds: Math.ceil(timeoutSeconds),
       best_effort: bestEffort === true, allow_source_pause: allowSourcePause === true,
       dependency_resume: dependencyResume === true }),
@@ -580,19 +593,37 @@ export function fetchApiSessionDetail({ fetchImpl, baseUrl, apiKey, sessionId })
 // no-op save. Used by the Overleaf lean pane's manual-edit surface
 // (docs/FEATURE-overleaf-lean-pane-manual-edit.md) -- the same primitive the
 // standalone canvas already uses, just called from a second client.
-export function writeApiSessionFile({
+export async function writeApiSessionFile({
   fetchImpl, baseUrl, apiKey, sessionId, path, content, note,
-  formalizationId = null,
+  formalizationId = null, fileRevision = null,
 }) {
-  const body = { path, content };
+  const body = { path, content, check_and_cascade: true };
+  if (fileRevision) body.file_revision = fileRevision;
+  body.idempotency_key = globalThis.crypto?.randomUUID?.() || `edit-${Date.now()}-${Math.random()}`;
   if (note) body.note = note;
   if (formalizationId) body.formalization_id = formalizationId;
-  return fetchJson(fetchImpl, `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/file`, {
+  const send = () => fetchJson(fetchImpl, `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/file`, {
     method: "POST",
     headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
+  try {
+    return await submitWithRecovery(async()=>{
+      const value=await send();
+      if (!value.ok && !value.status) throw new Error(value.error || 'Submission response was lost.');
+      return value;
+    },async()=>{
+      const value=await fetchJson(fetchImpl, `${baseUrl}/api/workspace/receipts?idempotency_key=${encodeURIComponent(body.idempotency_key)}`,
+        {method:'GET',headers:buildHeaders(apiKey)});
+      if (!value.ok) throw Object.assign(new Error(value.error),{status:value.status});
+      return value;
+    });
+  } catch(error) {
+    return {ok:false,error:error.message,idempotencyKey:body.idempotency_key};
+  }
+
 }
+
 
 // Standalone LSP-backed `lean_check` on a session's working file (D2), no
 // run required. Without `author`, back-fills the verdict onto the file's
@@ -647,8 +678,8 @@ function deriveTurnProgress(payload, defaultMaxTurns) {
   return { currentTurn: turn, maxTurns: defaultMaxTurns ?? null };
 }
 
-// Drive + observe one run to terminal `done`. Opening the stream is what runs the
-// job adapter-side; auto-approving keeps it autonomous. Returns the terminal
+// Observe one already-admitted run to terminal `done`; observation starts no work.
+// Auto-approval follows the existing policy. Returns the terminal
 // outcome (NOT usage — caller reads that back via fetchApiRunUsage).
 export async function streamApiRun({
   fetchImpl,
@@ -692,7 +723,7 @@ export async function streamApiRun({
 
   const handleFrame = async (frame) => {
     const { type, data } = parseSseFrame(frame);
-    if (!type) return;
+    if (!type || (type==='done'&&['pending','running'].includes(String(data?.status||'').toLowerCase()))) return;
     if (onEvent) await onEvent(type, data);
     if (onProgressUpdated) {
       const progress = deriveTurnProgress(data, maxTurns);
@@ -836,6 +867,7 @@ export async function runApiProofJob({
   onOperationQueued = null,
   purpose = "general",
   sourceBundle = null,
+  sourceContextRef = null,
   allowSourcePause = false,
   appendLog = null,
   logPath = null,
@@ -869,6 +901,7 @@ export async function runApiProofJob({
     artifactOperation,
     purpose,
     sourceBundle,
+    sourceContextRef,
     allowSourcePause,
     idempotencyKey,
     timeoutSeconds: timeoutMs / 1000,
@@ -1056,8 +1089,8 @@ export function fetchCurrentLeaStatus({ fetchImpl, baseUrl, apiKey, formalizatio
 }
 
 export function prepareOverleafSource({ fetchImpl, baseUrl, apiKey, formalizationId }) {
-  return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/overleaf-source/prepare`, {
-    method: "POST", headers: buildHeaders(apiKey), signal: AbortSignal.timeout(50000)
+  return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/published-source`, {
+    method: "GET", headers: buildHeaders(apiKey), signal: AbortSignal.timeout(5000)
   });
 }
 

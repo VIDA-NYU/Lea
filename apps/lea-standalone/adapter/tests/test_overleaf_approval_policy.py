@@ -1,5 +1,6 @@
 """Approval defaults survive Overleaf → LeaChat without changing execution mode."""
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from queue import Queue
@@ -73,14 +74,21 @@ def _drive(result, config, monkeypatch):
         def put(self, event):
             super().put(event)
             if event["type"] == "approval_requested":
-                assert bridge.resolve_approval(result["run_id"], event["payload"]["approval_id"], "allow")
+                from app import run_commands,commands,command_execution
+                run_commands.approve(result['run_id'],event['payload']['approval_id'],'allow')
+                control=commands.claim('policy-fixture',epoch,'control')
+                commands.complete(control,command_execution.control(control))
 
     monkeypatch.setattr(bridge, "run_events", fake)
     events = ApprovingQueue()
+    from app import commands,run_commands
+    run_commands.recover_at_startup()
+    epoch=commands.start_worker('policy-fixture')
+    token=commands.claim('policy-fixture',epoch,'compute',kinds={'run.execute'})
     row = store.get_run(result["run_id"])
     bridge.run_lea(bridge.RunnerContext(
         session_id=row["session_id"], run_id=row["id"], task="Update proof", config=config,
-        events=events, autonomous=bool(row["autonomous"]), approval_mode=row["approval_mode"],
+        events=events, autonomous=bool(row["autonomous"]), approval_mode=row["approval_mode"],command_token=token,
     ))
     output = list(events.queue)
     assert output[-1]["type"] == "done"
@@ -90,6 +98,7 @@ def _drive(result, config, monkeypatch):
 
 def test_overleaf_followup_is_conversational_without_any_tool_approval(env, monkeypatch):
     first = _overleaf_run()
+    store.update_run(first['run_id'],'answered',result_kind='answered')
     followup = runs_route.create_run(RunRequest(message="Update the proof", session_id=first["session_id"]))
     assert first["autonomous"] is True and first["approval_mode"] == "none"
     assert followup["autonomous"] is False and followup["approval_mode"] == "none"
@@ -213,10 +222,10 @@ def test_idempotent_retry_returns_original_policy_after_project_linkage(env):
 
 def test_empty_and_deleted_mirrors_keep_linkage(env):
     tasks = BackgroundTasks()
-    empty = projects_route.mirror_overleaf_tex("empty", MirrorRequest(files=[]), tasks)
+    empty = projects_route.mirror_overleaf_tex("empty", MirrorRequest(files=[]))
     assert store.get_project(empty["project_id"])["overleaf_linked"] is True
-    mirrored = projects_route.mirror_overleaf_tex("paper", MirrorRequest(files=[MirrorFile(path="main.tex", content="Text")]), tasks)
-    projects_route.mirror_overleaf_tex("paper", MirrorRequest(files=[]), tasks)
+    mirrored = projects_route.mirror_overleaf_tex("paper", MirrorRequest(files=[MirrorFile(path="main.tex", content="Text")]))
+    projects_route.mirror_overleaf_tex("paper", MirrorRequest(files=[]))
     assert store.list_project_files(mirrored["project_id"]) == []
     result = runs_route.create_run(RunRequest(message="Continue", project_slug="paper"))
     assert result["approval_mode"] == "none"
@@ -226,30 +235,30 @@ def test_empty_and_deleted_mirrors_keep_linkage(env):
 def test_overleaf_project_operations_establish_linkage(env, monkeypatch, operation):
     project = None if operation == "identity_create" else store.create_project("paper")
     if operation.startswith("identity"):
-        projects_route.update_project_identity_by_slug("paper", ProjectIdentityUpdate(
+        projects_route.update_project_identity_by_slug.worker("paper", ProjectIdentityUpdate(
             project_name="Renamed", mode="display-only", create_if_missing=True,
         ))
     elif operation == "import_preview":
         monkeypatch.setattr(projects_route, "_preview_github_import", lambda *args: {"ok": True})
-        projects_route.preview_project_github_import_by_slug("paper", GithubImportPreviewRequest(repository_url="https://github.com/example/paper"))
+        projects_route.preview_project_github_import_by_slug.worker("paper", GithubImportPreviewRequest(repository_url="https://github.com/example/paper"))
     elif operation == "import_confirm":
         monkeypatch.setattr(projects_route, "_confirm_github_import", lambda *args: {"ok": True})
-        projects_route.confirm_project_github_import_by_slug("paper", GithubImportConfirmRequest(preview_id="preview"))
+        projects_route.confirm_project_github_import_by_slug.worker("paper", GithubImportConfirmRequest(preview_id="preview"))
     else:
-        projects_route.sync_project_formalizations_by_slug("paper", FormalizationTargetSyncRequest(targets=[]))
+        projects_route.sync_project_formalizations_by_slug.worker("paper", FormalizationTargetSyncRequest(targets=[]))
     assert store.get_project_by_slug("paper")["overleaf_linked"] is True
 
 
 def test_failed_operation_and_reads_do_not_establish_linkage(env, monkeypatch):
     project = store.create_project("paper")
-    projects_route.get_project(project["id"])
+    projects_route.get_project.worker(project["id"])
     projects_route.get_project_identity_by_slug("paper")
-    projects_route.list_projects()
+    projects_route.list_projects.worker()
     def rejected(*args):
         raise HTTPException(422, "Invalid import")
     monkeypatch.setattr(projects_route, "_preview_github_import", rejected)
     with pytest.raises(HTTPException):
-        projects_route.preview_project_github_import_by_slug("paper", GithubImportPreviewRequest(repository_url="bad"))
+        projects_route.preview_project_github_import_by_slug.worker("paper", GithubImportPreviewRequest(repository_url="bad"))
     assert store.get_project(project["id"])["overleaf_linked"] is False
 
 
@@ -276,9 +285,9 @@ def test_recovered_dispatch_uses_the_run_snapshot(env, monkeypatch):
     monkeypatch.setattr(runs_route, "permission_tier", lambda: "none")
     store.mark_project_overleaf_linked(ordinary["project_id"])
     db.init_db()
-    recovered = []
-    monkeypatch.setattr(bridge, "enqueue_run", recovered.append)
+    from app import run_commands,commands
     bridge.recover_runs_at_startup()
+    recovered=[row['id'] for row in store.list_runs_by_status('pending') if run_commands.for_run(row['id'])]
     assert set(recovered) == {followup["run_id"], ordinary["run_id"]}
     contexts = []
     class RecordingThread:
@@ -288,8 +297,11 @@ def test_recovered_dispatch_uses_the_run_snapshot(env, monkeypatch):
             contexts.append(self.context)
             runregistry.registry.release(self.context.run_id)
     monkeypatch.setattr(bridge, "Thread", RecordingThread)
-    for run_id in recovered:
-        bridge._try_dispatch(run_id, {})
+    epoch=commands.start_worker('recovered-policy')
+    for _ in recovered:
+        token=commands.claim('recovered-policy',epoch,'compute',kinds={'run.execute'})
+        run_id=json.loads(token['payload_json'])['run_id']
+        bridge._try_dispatch(run_id, {},command_token=token)
     policies = {ctx.run_id: (ctx.autonomous, ctx.approval_mode) for ctx in contexts}
     assert policies[followup["run_id"]] == (False, "none")
     assert policies[ordinary["run_id"]] == (False, "stepwise")

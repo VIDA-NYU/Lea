@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "stage": 7,
+  "status": "qualified_development_cutover",
+  "captured_at": "2026-10-17T22:07:26.384517+00:00",
+  "schema_head": "0047_queued_editor",
+  "baseline": "stage7-editor-macos-arm64.json",
+  "native_environment": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "python": "3.14.4",
+    "sqlite": "3.53.1",
+    "lean": "Lean (version 4.29.0, arm64-apple-darwin24.6.0, commit 98dc76e3c0a9b856c9b98726b713fb04fab16740, Release)"
+  },
+  "gates": {
+    "native_adapter_selected": {
+      "passed": 143,
+      "failed": 0
+    },
+    "native_final_editor_and_queue": {
+      "passed": 31,
+      "failed": 0
+    },
+    "native_language_and_changed_buffer_latency": {
+      "passed": 1,
+      "failed": 0
+    },
+    "linux_arm64_selected": {
+      "passed": 108,
+      "failed": 0
+    },
+    "linux_arm64_final_editor": {
+      "passed": 21,
+      "failed": 0
+    },
+    "javascript_scripts_extension_frontend": {
+      "passed": 940,
+      "failed": 0
+    },
+    "browser_full": {
+      "passed": 13,
+      "failed": 0
+    },
+    "browser_final_editor": {
+      "passed": 4,
+      "failed": 0
+    },
+    "typescript": "passed",
+    "production_frontend_build": "passed",
+    "boundary_audit": "Boundary register covers 179 adapter routes and 27 companion dispatch branches."
+  },
+  "source_sha256": {
+    "apps/lea-standalone/adapter/app/editor_service.py": "f517146650d4e537b125d8e81475f375a0353523471f5fd7f045e9847e24c762",
+    "apps/lea-standalone/adapter/app/editor_worker.py": "67d66ffbdcaf5b4ada1d5e56bd62febbcc4c7f345e855d2f291ff8103e2496d0",
+    "apps/lea-standalone/adapter/app/command_host.py": "82bbba6867e0dfff916071f57c60a5f2ca881a3a3d9dafa22b3bca4ea51f0c76",
+    "apps/lea-standalone/adapter/app/commands.py": "0b16dfaa9968b45b0a84b16cdef32b307e50d8959ae6def5d04ac5dcda7b63c7",
+    "apps/lea-standalone/adapter/app/routes/editor.py": "7d025f3ff8c9c309ea3b9b75b85ef8e75809dd2c9d7731d76592825818770ca1",
+    "apps/lea-standalone/adapter/app/routes/sessions.py": "ac3b026061f8c8a7599a397a5fd6765cdf415a6a9df14f87e488f83d18922aea",
+    "apps/lea-standalone/adapter/app/main.py": "ef76f5f7c63f1137a0c926f738d9b115eb14d49dd44487a5043abf4a5dd42931",
+    "apps/lea-standalone/adapter/app/observation_maintenance.py": "2670cada148ab94a12411d5b2ed9c291e38c2b2cb2a4d553b8d2f3fc1e56642a",
+    "apps/lea-standalone/adapter/migrations/versions/0047_queued_editor.py": "a6ebda6a25a8cd70f18f3c1ede9af16ab7dcc6e4c50aa6cd86efdcc52187ad37",
+    "apps/lea-standalone/prover/lea/lsp_daemon.py": "452bd08070ca3723bed417bace042ade66474dc1f9bc55329ceed305a82374eb",
+    "apps/lea-standalone/prover/lea/check_evidence.py": "def721534c3b6b44bbb43238cb590032f711b85a964752b454ce83bbcf1250a0",
+    "apps/lea-standalone/prover/lea/check_runtime.py": "4e0e326a4056ac826f8440ad01a8c3767a19cf71f7f0c877f847aaf337c60284",
+    "apps/lea-standalone/prover/lea/execution.py": "7fda28d8e4a6d86d40f1ef6fede0aea418371ba50b2aedc24ac86f5d8e23e05e",
+    "apps/lea-standalone/src/app/lib/editorClient.mjs": "21df70f0e5c475ea3f5305150892e240597125b4d3855f78dc4e0f448d780db9",
+    "apps/lea-standalone/src/app/lib/queuedMonaco.ts": "db62a4949d1a69b6e782e20ef85f40ef6571c03f8dea5fc800cf8fc1c7c3046d",
+    "apps/lea-standalone/src/app/lib/leanQuery.ts": "9a9e54aa3f990803c991e96482ee45f853c78e05e655913938f122e74d100b9a",
+    "apps/lea-standalone/src/app/components/LiveEditor.tsx": "b45a565b2f274d9ba892fb931f58eafff9a9e91e28b6782fdfe1f05ba4873245",
+    "apps/lea-standalone/src/app/components/Canvas.tsx": "eba2f9ab462352d88b94cfcc1e48497fbbb042a60e041348d465e08ee3c2ccda",
+    "apps/lea-standalone/adapter/tests/test_editor_commands.py": "0ea9538996cca923fa8d2e8bd494a092e3fbb6c55c027cc099456387bc6437e7",
+    "tests/browser/editor.spec.mjs": "efc32d007c2acc85964f8002aab57d9c81876ad8c7241d3daa30e9f0eede2895"
+  },
+  "warm_diagnostics": {
+    "samples": 20,
+    "p50_ms": 658.76,
+    "p95_ms": 838.43,
+    "max_ms": 841.24
+  },
+  "limitations": [
+    "Counts overlap between selected regressions and final editor-specific gates; native Lean is separately enabled.",
+    "Native measurement uses ASGI HTTP routes and the actual queue/private confined Lean server with 20 changed small-file buffers. It is not a TCP throughput or Mathlib benchmark.",
+    "Linux ARM64 SQL/queue/migration gates use a read-only source mount in the existing audit-derived image. Native Lean is skipped there because its supported confined executor is unavailable.",
+    "Interactive widgets/server RPC, navigation, code actions and semantic tokens are unavailable; no direct execution fallback exists.",
+    "Initial or large-project analysis can exceed the five-second deadline and reports unavailable/expired. Small-file development p95 is not a production latency guarantee.",
+    "Stage 8 process/import separation, full production image, native AMD64 and broader platform/native-language qualification remain outstanding.",
+    "Qualification uses temporary databases and workspaces. The user database migrates on next normal adapter startup; no paid inference or external Git push was performed."
+  ],
+  "additional_sha256": {
+    "apps/lea-standalone/src/app/editorClient.test.mjs": "b5fd1e6c9fc7c48a40374f6961f3e50b9ac2648b674e4c7bfe20ec5aae657b6c",
+    "tests/browser/smoke.spec.mjs": "664d44c0e9f7f4792faf4f05bb39bdd74dad0c9700edb5f520b221f754006b57",
+    "apps/lea-standalone/adapter/tests/test_stage6_boundary.py": "6f34330662bf0b207c4ab452d909eeede2c55c40f5a5e8fa565dd732abd5ebe5",
+    "docs/database-boundary-inventory.json": "1980a2178bc2bcc26ee569e427751834b7c867b6ada9c5b6bd7987136c319ca0"
+  }
+}

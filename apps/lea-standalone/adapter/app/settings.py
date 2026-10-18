@@ -24,7 +24,7 @@ from .catalog_service import bundled_catalog, service as catalog_service
 from . import store
 
 
-CONFIG_PATH = ROOT / "config" / "lea.local.toml"
+CONFIG_PATH = Path(os.environ.get("LEA_CONFIG_FILE",ROOT / "config" / "lea.local.toml"))
 API_KEY_FIELDS = {
     "openai": "openai_api_key",
     "anthropic": "anthropic_api_key",
@@ -115,12 +115,13 @@ class ApiKeyUpdate:
 
 def settings_payload(path: Path | None = None) -> dict[str, Any]:
     config = load_config(path)
+    effective_keys={**{key:value for key,value in os.environ.items() if re.fullmatch(r'[A-Z][A-Z0-9_]*_(?:API_KEY|AUTH_TOKEN)',key)},**configured_provider_keys(path)}
     return {
         "model": config.model,
         "max_turns": config.max_turns,
         "max_spend_usd": config.max_spend_usd,
         "current_spend_usd": current_spend_usd(),
-        "api_keys": _api_keys_payload(configured_provider_keys(path)),
+        "api_keys": _api_keys_payload(effective_keys),
         # Endpoint overrides (a Portkey gateway URL): effective value + where it came
         # from, so the UI can show an inherited value as a placeholder.
         "provider_endpoints": {
@@ -231,9 +232,9 @@ def validate_configured_model(model: str, path: Path | None = None) -> str:
     return normalized
 
 
-def update_settings(values: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
+def update_settings(values: dict[str, Any], path: Path | None = None, *, database: bool = False) -> dict[str, Any]:
     config_path = path or CONFIG_PATH
-    current_config = load_config(config_path)
+    current_config = load_config() if database else load_config(config_path)
     updates: dict[str, Any] = {}
 
     if "model" in values and values["model"] is not None:
@@ -388,12 +389,19 @@ def update_settings(values: dict[str, Any], path: Path | None = None) -> dict[st
         updates[toml_key] = value
 
     _validate_selected_model_has_key(str(current_config.model), current_keys, updates)
-    _write_toml_updates(config_path, updates)
+    if database:
+        from . import settings_policy
+        from .workspace_commands import authorize
+        authorize()
+        _write_toml_updates(config_path,{k:v for k,v in updates.items() if k not in settings_policy.FIELDS})
+        settings_policy.update(updates)
+    else:
+        _write_toml_updates(config_path, updates)
     if "model" in updates and config_path == CONFIG_PATH:
         catalog_service().remember_model(str(updates["model"]))
     if api_key_updates or endpoint_updates:
         catalog_service().request_refresh()
-    return settings_payload(config_path)
+    return settings_payload() if database else settings_payload(config_path)
 
 
 def current_spend_usd() -> float:

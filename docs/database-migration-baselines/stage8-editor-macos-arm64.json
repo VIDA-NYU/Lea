@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "transport": "canonical separate API and worker; real HTTP; queued native confined Lean; SQL results",
+  "lean": "Lean (version 4.29.0, arm64-apple-darwin24.6.0, commit 98dc76e3c0a9b856c9b98726b713fb04fab16740, Release)",
+  "request_latency_ms": {
+    "editor.analyze": 1216.33,
+    "editor.goals": 725.16,
+    "editor.hover": 582.89,
+    "editor.complete": 581.9,
+    "editor.term_goal": 369.77
+  },
+  "canonical_file_unchanged": true,
+  "no_proof_evidence_created": true,
+  "result_readable_after_worker_stop": true
+}

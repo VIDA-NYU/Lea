@@ -1,3 +1,9 @@
+let commandClient;
+async function connectionFetch(url,options={}) {
+  if(!['POST','PUT'].includes(options.method||'GET'))return fetch(url,options);
+  commandClient ||= import('./commandClient.mjs');
+  return (await commandClient).commandFetch(fetch,url,options);
+}
 const DEFAULT_COMPANION_URL = "http://127.0.0.1:31245";
 const DEFAULT_LEA_TEX_MIRROR_ENABLED = true;
 const MODEL_FAMILY_LABELS = {
@@ -16,7 +22,6 @@ const DEFAULT_MODEL_OPTIONS = [
 
 const form = document.querySelector("#settings-form");
 const companionUrlInput = document.querySelector("#companion-url");
-const leaRepoPathInput = document.querySelector("#lea-repo-path");
 const leaApiBaseUrlInput = document.querySelector("#lea-api-base-url");
 const leaModelInput = document.querySelector("#lea-model");
 const modelCatalogStatus = document.querySelector("#model-catalog-status");
@@ -42,20 +47,14 @@ let latestModelRequirements = null;
 chrome.storage.sync.get(
   {
     companionUrl: DEFAULT_COMPANION_URL,
-    leaRepoPath: "",
     leaApiBaseUrl: "http://127.0.0.1:8001",
-    leaModel: DEFAULT_LEA_MODEL,
-    leaMaxTurns: 20,
-    leaTexMirrorEnabled: DEFAULT_LEA_TEX_MIRROR_ENABLED,
-    leaPauseOnSourceIssue: false
   },
   (settings) => {
     companionUrlInput.value = settings.companionUrl;
-    leaRepoPathInput.value = settings.leaRepoPath;
     leaApiBaseUrlInput.value = settings.leaApiBaseUrl;
-    renderModelOptions(DEFAULT_MODEL_OPTIONS, DEFAULT_MODEL_OPTIONS, settings.leaModel || DEFAULT_LEA_MODEL);
+    renderModelOptions(DEFAULT_MODEL_OPTIONS, DEFAULT_MODEL_OPTIONS, DEFAULT_LEA_MODEL);
     renderProviderKeyStatus(latestProviderKeys);
-    leaMaxTurnsInput.value = settings.leaMaxTurns;
+    leaMaxTurnsInput.value = 20;
     if (leaTexMirrorInput) leaTexMirrorInput.checked = settings.leaTexMirrorEnabled !== false;
     leaSourcePauseInput.checked = settings.leaPauseOnSourceIssue === true;
     loadCompanionSettings({ silent: true });
@@ -71,7 +70,6 @@ form.addEventListener("submit", async (event) => {
   statusEl.textContent = "Validating Lea settings...";
 
   const companionUrl = companionUrlInput.value.trim().replace(/\/+$/, "");
-  const leaRepoPath = leaRepoPathInput.value.trim();
   const leaApiBaseUrl = leaApiBaseUrlInput.value.trim().replace(/\/+$/, "");
   const leaModel = leaModelInput.value.trim() || DEFAULT_LEA_MODEL;
   const leaMaxTurns = Number.parseInt(leaMaxTurnsInput.value, 10) || 20;
@@ -79,11 +77,10 @@ form.addEventListener("submit", async (event) => {
   const leaPauseOnSourceIssue = leaSourcePauseInput.checked;
   const leaProviderApiKeys = collectProviderApiKeyPatch();
   try {
-    const leaResponse = await fetch(`${companionUrl}/settings/lea`, {
+    const leaResponse = await connectionFetch(`${companionUrl}/settings/lea`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        leaRepoPath,
         leaApiBaseUrl,
         leaModel,
         leaMaxTurns,
@@ -98,15 +95,8 @@ form.addEventListener("submit", async (event) => {
       throw new Error(leaPayload.message || `Companion returned HTTP ${leaResponse.status}.`);
     }
 
-    await chrome.storage.sync.set({
-      companionUrl,
-      leaRepoPath: leaPayload.leaRepoPath,
-      leaApiBaseUrl: leaPayload.leaApiBaseUrl,
-      leaModel: leaPayload.leaModel,
-      leaMaxTurns: leaPayload.leaMaxTurns,
-      leaTexMirrorEnabled: leaPayload.leaTexMirrorEnabled,
-      leaPauseOnSourceIssue: leaPayload.leaPauseOnSourceIssue
-    });
+    await chrome.storage.sync.set({companionUrl,leaApiBaseUrl});
+    await chrome.storage.sync.remove(['leaRepoPath','leaModel','leaMaxTurns','leaMaxSpendUsd','leaTexMirrorEnabled','leaPauseOnSourceIssue']);
     latestProviderKeys = leaPayload.leaProviderKeys || latestProviderKeys;
     latestApiKeys = leaPayload.leaApiKeys || latestApiKeys;
     renderProviderKeyStatus(latestProviderKeys);
@@ -123,14 +113,13 @@ async function loadCompanionSettings({ silent }) {
   const companionUrl = companionUrlInput.value.trim().replace(/\/+$/, "") || DEFAULT_COMPANION_URL;
 
   try {
-    const response = await fetch(`${companionUrl}/settings`);
+    const response = await connectionFetch(`${companionUrl}/settings`);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
     }
 
     companionUrlInput.value = companionUrl;
-    leaRepoPathInput.value = payload.leaRepoPath || leaRepoPathInput.value;
     leaApiBaseUrlInput.value = payload.leaApiBaseUrl || leaApiBaseUrlInput.value || "http://127.0.0.1:8001";
     latestModelOptions = payload.leaModelOptions || DEFAULT_MODEL_OPTIONS;
     latestProviderKeys = payload.leaProviderKeys || {};
@@ -148,15 +137,7 @@ async function loadCompanionSettings({ silent }) {
     if (leaTexMirrorInput) leaTexMirrorInput.checked = payload.leaTexMirrorEnabled !== false;
     leaSourcePauseInput.checked = payload.leaPauseOnSourceIssue === true;
 
-    await chrome.storage.sync.set({
-      companionUrl,
-      leaRepoPath: leaRepoPathInput.value,
-      leaApiBaseUrl: leaApiBaseUrlInput.value,
-      leaModel: leaModelInput.value,
-      leaMaxTurns: Number.parseInt(leaMaxTurnsInput.value, 10) || 20,
-      leaTexMirrorEnabled: leaTexMirrorInput ? leaTexMirrorInput.checked : DEFAULT_LEA_TEX_MIRROR_ENABLED,
-      leaPauseOnSourceIssue: leaSourcePauseInput.checked
-    });
+    await chrome.storage.sync.set({companionUrl,leaApiBaseUrl:leaApiBaseUrlInput.value});
 
     if (!silent) {
       statusEl.textContent = "Loaded settings from companion.";
@@ -189,7 +170,7 @@ function renderModelOptions(catalog, featured, selectedModel) {
 
 async function loadModelCatalog(companionUrl, refresh = false) {
   try {
-    const response = await fetch(`${companionUrl}/settings/models${refresh ? "/refresh" : ""}`, { method: refresh ? "POST" : "GET" });
+    const response = await connectionFetch(`${companionUrl}/settings/models${refresh ? "/refresh" : ""}`, { method: refresh ? "POST" : "GET" });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
     const models = Array.isArray(payload.models) && payload.models.length > 0
@@ -214,7 +195,7 @@ async function loadModelCatalog(companionUrl, refresh = false) {
 async function loadModelRequirements(model) {
   const companionUrl = companionUrlInput.value.trim().replace(/\/+$/, "") || DEFAULT_COMPANION_URL;
   try {
-    const response = await fetch(
+    const response = await connectionFetch(
       `${companionUrl}/settings/models/requirements?model=${encodeURIComponent(model)}`
     );
     const payload = await response.json().catch(() => ({}));

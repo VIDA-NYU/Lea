@@ -60,7 +60,7 @@ def test_legacy_upgrade_preserves_proof_content_paths_and_custom_docs(proofs):
     (repo / ".lea" / "memory.md").write_text("# My own heading\nKeep this text.\n")
     git_before = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     proof_before = proof.read_bytes()
-    upgraded = routes.initialize_overleaf_default_name(legacy["slug"],
+    upgraded = routes.initialize_overleaf_default_name.worker(legacy["slug"],
         OverleafDefaultNameRequest(overleaf_project_title="Fourier Notes"))["identity"]
     assert upgraded["projectName"] == "Fourier Notes" and upgraded["nameSource"] == "overleaf"
     assert upgraded["namespace"] == legacy["namespace"] and upgraded["repoPath"] == legacy["repo_path"]
@@ -83,34 +83,34 @@ def test_missing_title_can_be_adopted_later_but_custom_title_is_protected(proofs
     store.update_project(fallback["id"], title="Overleaf Project")
     protected = projects.adopt_overleaf_project_name("fallback", proofs, "Paper")
     assert protected["title"] == "Overleaf Project" and protected["name_source"] == "custom"
-    explicit = routes.update_project_identity_by_slug("explicit",
+    explicit = routes.update_project_identity_by_slug.worker("explicit",
         ProjectIdentityUpdate(project_name="Overleaf Project", mode="display-only", create_if_missing=True))
     assert explicit["identity"]["nameSource"] == "custom"
 
 
 def test_tab_open_cannot_create_and_mirror_metadata_names_first_creation(proofs):
     with pytest.raises(HTTPException) as missing:
-        routes.initialize_overleaf_default_name("untouched", OverleafDefaultNameRequest(overleaf_project_title="Paper"))
+        routes.initialize_overleaf_default_name.worker("untouched", OverleafDefaultNameRequest(overleaf_project_title="Paper"))
     assert missing.value.status_code == 404 and store.list_projects() == []
     result = routes.mirror_overleaf_tex("paper-id", MirrorRequest(
-        files=[], overleaf_project_title="My Paper"), BackgroundTasks())
+        files=[], overleaf_project_title="My Paper"))
     assert result["identity"]["projectName"] == "My Paper"
     assert result["identity"]["namespace"] == "Lea.MyPaper"
-    old_client = routes.mirror_overleaf_tex("legacy-client", MirrorRequest(files=[]), BackgroundTasks())
+    old_client = routes.mirror_overleaf_tex("legacy-client", MirrorRequest(files=[]))
     assert old_client["identity"]["projectName"] == "legacy-client"
     assert old_client["identity"]["nameSource"] == "generated"
 
 
 def test_run_identity_initialization_uses_source_title_and_ignores_stale_namespace(proofs):
-    result = routes.update_project_identity_by_slug("no-mirror", ProjectIdentityUpdate(
+    result = routes.update_project_identity_by_slug.worker("no-mirror", ProjectIdentityUpdate(
         project_name="Old cached title", mode="default-name", create_if_missing=True,
         overleaf_project_title="Readable Paper", namespace="Lea.OpaqueId"))["identity"]
     assert result["projectName"] == "Readable Paper" and result["namespace"] == "Lea.ReadablePaper"
-    again = routes.update_project_identity_by_slug("no-mirror", ProjectIdentityUpdate(
+    again = routes.update_project_identity_by_slug.worker("no-mirror", ProjectIdentityUpdate(
         project_name="New title", mode="default-name", create_if_missing=True,
         overleaf_project_title="New title"))["identity"]
     assert again == result
-    repeated = routes.initialize_overleaf_default_name("no-mirror",
+    repeated = routes.initialize_overleaf_default_name.worker("no-mirror",
         OverleafDefaultNameRequest(overleaf_project_title="Renamed Overleaf title"))
     assert repeated["changed"] is False
     assert repeated["identity"] == result

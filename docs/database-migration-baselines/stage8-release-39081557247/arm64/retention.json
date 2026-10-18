@@ -1,0 +1,23 @@
+{
+  "architecture": "arm64",
+  "artifact": {
+    "id": 12120105300,
+    "name": "stage8-qualified-binaries-arm64",
+    "size_in_bytes": 4533211004,
+    "expired": false,
+    "digest": "sha256:7e3926f90defb0b9992dd50de21412cdc782d0d49685a5eb27ed4a5f063c3f4a",
+    "expires_at": "2026-11-01T00:24:58Z"
+  },
+  "local_archive": "/Users/danielarturi/Developer/VIDA_Dev/LeaEcosystem/.release-artifacts/stage8/39081557247/native-arm64.zip",
+  "outer_zip_sha256": "7e3926f90defb0b9992dd50de21412cdc782d0d49685a5eb27ed4a5f063c3f4a",
+  "inner_archive_sha256": {
+    "strict-bundles.tar.gz": "5d0021adb28de0789955e2d1f59261abf14656eaa8db64b1dedf598c7e10622e",
+    "baseline-source.tar.gz": "ee20ee106c4b2da397c8a193cf9fce725a90599416dff1b174d4454fa4cee9ce",
+    "candidate-source.tar.gz": "f338d472ceee9c9cf9912364e80de5dccbdc6a4a94ba44705cbdece666d6b6f9"
+  },
+  "size_bytes": 4533211004,
+  "github_digest_verified": true,
+  "inner_checksums_verified": true,
+  "reports_match_evidence": true,
+  "release_provenance_verified": true
+}

@@ -70,6 +70,8 @@ def record_check(session_id, path, absolute, result, *, expected=None, require_c
         except (OSError, UnicodeError):
             disk = None
         with db.write() as conn:
+            from .workspace_commands import authorize
+            authorize(conn)
             session = conn.execute('select * from sessions where id=?', (session_id,)).fetchone()
             if not session:
                 return False, None

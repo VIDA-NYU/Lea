@@ -48,6 +48,7 @@ function reconnectDelay(attempt: number): number {
  */
 export function useProofStream() {
   const eventSourceRef = useRef<EventSource | null>(null);
+  const runCursorsRef = useRef(new Map<string, string>());
   // Highest seq seen + a counter, so an approval (which has no server seq) can be
   // stamped with a synthetic seq just after the latest item — interleaving it
   // into the thread at the point it actually happened, before the step it gates.
@@ -139,12 +140,22 @@ export function useProofStream() {
     eventSourceRef.current = null;
   };
 
-  const applyDetail = (detail: SessionDetail) => {
+  // Timeline ordering can change on replay/backfill. Retain the selected step by
+  // identity rather than letting its old numeric index select a different file.
+  const replaceCodeSteps = (steps: CodeStep[]) => {
+    const state = useProofSession.getState();
+    const selectedId = sortCodeSteps(state.codeSteps)[state.codeIndex]?.id;
+    state.setCodeSteps(steps);
+    const index = sortCodeSteps(steps).findIndex((step) => step.id === selectedId);
+    if (index >= 0) state.setCodeIndex(index);
+  };
+
+  const applyDetail = (detail: SessionDetail, { preservePresentation = false } = {}) => {
+    const preserve = preservePresentation && useSessions.getState().selectedSessionId === detail.id;
     if (useSessions.getState().selectedSessionId !== detail.id) closeStream();
     const previousScope = useProofSession.getState().formalizationScope;
     const {
       setMessages,
-      setCodeSteps,
       setStatusEvents,
       setCodeIndex,
       setError,
@@ -172,33 +183,45 @@ export function useProofStream() {
     // currentFormalizationSnapshot, canvasRevisionMode), which all reset to the same
     // defaults — they now live in SESSION_SCOPED instead of being repeated.
     applyingDetail.current = true;
-    useProofSession.getState().resetSessionScoped();
+    if (!preserve) useProofSession.getState().resetSessionScoped();
     const formalizations = detail.formalizations || [];
     setFormalizations(formalizations);
     // Not a plain reset: the selected scope is RESTORED from the detail, so it must be
     // applied after the wipe rather than left at the default.
-    setFormalizationScope(restoreFormalizationSelection({
-      currentId: previousScope,
-      latestFocusId: detail.latest_focus_formalization_id,
-      formalizations,
-    }));
+    if (!preserve) {
+      setFormalizationScope(restoreFormalizationSelection({
+        currentId: previousScope,
+        latestFocusId: detail.latest_focus_formalization_id,
+        formalizations,
+      }));
+    }
     applyingDetail.current = false;
+    if (preserve) {
+      // These are replayable execution data, unlike the author's view state.
+      const state = useProofSession.getState();
+      state.setSubagentProgress({});
+      state.setSubagentErrors({});
+      state.setSubagentQueued({});
+      state.setSubagentStopNotices({});
+      state.bumpFormalizationRefresh();
+    }
     useSessions.getState().setSelectedSessionId(detail.id);
     setMessages(detail.messages);
-    setCodeSteps(detail.code_steps);
+    replaceCodeSteps(detail.code_steps);
     setStatusEvents(detail.status_events || []);
     // Open on the main proof's latest snapshot, not the absolute last step — so a
     // session that ended on a throwaway `scratch` probe still shows the proof (#10).
-    // (Live runs still auto-follow new steps below.)
+    // Only explicit navigation chooses an initial step. Background refreshes
+    // retain the author's file, revision, and interaction state.
     const sortedForOpen = sortCodeSteps(detail.code_steps);
     const openIndex = mainFileIndex(sortedForOpen);
-    setCodeIndex(openIndex >= 0 ? openIndex : Math.max(0, sortedForOpen.length - 1));
+    if (!preserve) setCodeIndex(openIndex >= 0 ? openIndex : Math.max(0, sortedForOpen.length - 1));
     lastSeqRef.current = Math.max(
       0,
       ...detail.messages.map((m) => m.seq ?? 0),
       ...detail.code_steps.map((c) => c.seq ?? 0),
     );
-    setError(undefined);
+    if(!preserve)setError(undefined);
     // G1: replay this session's persisted failures. `setDiagnostics` (not merge) —
     // the DB is authoritative on load, and a live diagnostic that arrives after
     // this is added by `addDiagnostic`, which dedupes by id. This is what makes a
@@ -246,10 +269,12 @@ export function useProofStream() {
     setRunStopReasonById(stopReasons);
     setRunFocusById(focuses);
     setRunRecoveryById(recoveries);
-    setEditedPath(undefined);
+    if (!preserve) setEditedPath(undefined);
     setSafeVerify(detail.safe_verify || null);
-    setVerifySurface(null);
-    setGoalSurface(null);
+    if (!preserve) {
+      setVerifySurface(null);
+      setGoalSurface(null);
+    }
     if (active && (active.status === 'running' || active.status === 'pending')) {
       attachStream(active.id, detail.id);
     }
@@ -291,7 +316,7 @@ export function useProofStream() {
     const finishedResultKind = currentRunId
       ? useProofSession.getState().runResultKindById[currentRunId]
       : undefined;
-    applyDetail(detail);
+    applyDetail(detail, { preservePresentation: true });
     if (finished && !detail.active_run) useProofSession.getState().setRunStatus(finished);
     if (currentRunId && finishedResultKind) {
       useProofSession.getState().setRunResultKindById((prev) => ({
@@ -336,12 +361,12 @@ export function useProofStream() {
             // Still live → applyDetail reattaches; the new stream's onopen resets
             // the backoff. Attempt count is intentionally left to grow until then,
             // so a run held off by a 409 keeps backing off across cycles.
-            applyDetail(detail);
+            applyDetail(detail, { preservePresentation: true });
           } else {
             // Finished (or vanished) while we were away → settle cleanly.
             reconnectRef.current = { runId: '', count: 0 };
             setReconnecting(undefined);
-            applyDetail(detail);
+            applyDetail(detail, { preservePresentation: true });
             useSessions.getState().refreshSessions().catch(() => {});
           }
         })
@@ -353,19 +378,37 @@ export function useProofStream() {
     if (useSessions.getState().selectedSessionId !== sessionId) return;
     closeStream(false);
     const owned = captureStream();
-    const source = new EventSource(`/api/runs/${runId}/events`);
+    const cursor = runCursorsRef.current.get(runId);
+    const source = new EventSource(`/api/runs/${runId}/events${cursor ? `?since=${encodeURIComponent(cursor)}` : ''}`);
     eventSourceRef.current = source;
     const listen = (type: string, handler: (event: Event) => void) => {
       source.addEventListener(type, (event) => {
-        if (owned() && eventSourceRef.current === source) handler(event);
+        if (owned() && eventSourceRef.current === source) {
+          const id = (event as MessageEvent).lastEventId;
+          if (id) {
+            const previous = runCursorsRef.current.get(runId);
+            const split = id.lastIndexOf(':');
+            const sameAttempt = previous && previous.slice(0, previous.lastIndexOf(':')) === id.slice(0, split);
+            if (!sameAttempt || Number(id.slice(split + 1)) > Number(previous!.slice(previous!.lastIndexOf(':') + 1))) {
+              runCursorsRef.current.set(runId, id);
+            }
+            if (runCursorsRef.current.size > 128) runCursorsRef.current.delete(runCursorsRef.current.keys().next().value!);
+          }
+          handler(event);
+        }
       });
     };
     const liveId = `live-${runId}`;
     let sawDone = false;
-    listen('resync', () => {
+    listen('resync', (event) => {
+      const payload = JSON.parse((event as MessageEvent).data);
+      // A reset is authoritative even when restoring a backup moves the cursor
+      // backwards, or an execution attempt changed before its first event.
+      runCursorsRef.current.set(runId, (event as MessageEvent).lastEventId ||
+        `${payload.attempt_id || 'pending'}:${payload.cursor || 0}`);
       source.close();
       eventSourceRef.current = null;
-      fetchDetail(sessionId).then((detail) => { if (owned()) applyDetail(detail); })
+      fetchDetail(sessionId).then((detail) => { if (owned()) applyDetail(detail, { preservePresentation: true }); })
         .catch(() => { if (owned()) scheduleReconnect(runId, sessionId); });
     });
 
@@ -378,8 +421,6 @@ export function useProofStream() {
     };
     const {
       setMessages,
-      setCodeSteps,
-      setCodeIndex,
       setStatusEvents,
       setApprovals,
       setApprovalBusy,
@@ -393,7 +434,28 @@ export function useProofStream() {
     } = useProofSession.getState();
 
     listen('assistant_delta', (event) => {
-      const { text } = JSON.parse((event as MessageEvent).data) as { text: string };
+      const { text, message } = JSON.parse((event as MessageEvent).data) as {
+        text: string; message?: Omit<ChatMessage, 'content'>;
+      };
+      if (message) {
+        if (typeof message.seq === 'number') lastSeqRef.current = Math.max(lastSeqRef.current, message.seq);
+        const existing = useProofSession.getState().messages.find((m) => m.id === message.id);
+        const sequence = message.stream_sequence ?? 0;
+        if (existing && (existing.stream_sequence ?? 0) >= sequence) return;
+        if (sequence !== (existing?.stream_sequence ?? 0) + 1) {
+          // A gap is recovered from committed state, preserving presentation.
+          source.close();
+          eventSourceRef.current = null;
+          fetchDetail(sessionId).then((detail) => { if (owned()) applyDetail(detail, { preservePresentation: true }); })
+            .catch(() => { if (owned()) scheduleReconnect(runId, sessionId); });
+          return;
+        }
+        setMessages((current) => {
+          const next = { ...message, content: (existing?.content ?? '') + text } as ChatMessage;
+          return existing ? current.map((m) => m.id === message.id ? next : m) : [...current, next];
+        });
+        return;
+      }
       setMessages((current) => {
         const existing = current.find((m) => m.id === liveId);
         if (existing) {
@@ -424,7 +486,11 @@ export function useProofStream() {
           !!live &&
           (payload.content.includes(live.content) || live.content.includes(payload.content));
         const base = replacesLive ? current.filter((m) => m.id !== liveId) : current;
-        if (base.some((m) => m.id === payload.id)) return base;
+        const existing = base.find((m) => m.id === payload.id);
+        if (existing) {
+          if ((existing.stream_sequence ?? 0) > (payload.stream_sequence ?? 0)) return base;
+          return base.map((m) => m.id === payload.id ? payload : m);
+        }
         return [...base, payload];
       });
     });
@@ -438,28 +504,12 @@ export function useProofStream() {
       if (typeof payload.seq === 'number') lastSeqRef.current = Math.max(lastSeqRef.current, payload.seq);
       const current = useProofSession.getState().codeSteps;
       if (current.some((s) => s.id === payload.id)) {
-        setCodeSteps(current.map((s) => (s.id === payload.id ? { ...s, ...payload } : s)));
+        replaceCodeSteps(current.map((s) => (s.id === payload.id ? { ...s, ...payload } : s)));
       } else {
-        const next = sortCodeSteps([...current, payload]);
-        setCodeSteps(next);
-        const idx = next.findIndex((s) => s.id === payload.id);
-        let scope = useProofSession.getState().formalizationScope;
-        if (payload.formalization_id && payload.formalization_id !== scope) {
-          // Actual declaration attribution is stronger evidence than the
-          // pre-run inference. Follow the formalization Lea is really editing.
-          useProofSession.getState().setFormalizationScope(payload.formalization_id);
-          useProofSession.getState().setCanvasRevisionMode('current');
-          scope = payload.formalization_id;
-        }
-        if (payload.formalization_id) {
-          useProofSession.getState().bumpFormalizationRefresh();
-        }
-        const shouldFollow =
-          scope === 'project'
-          || scope === 'new'
-          || payload.formalization_id === scope;
-        if (idx >= 0 && shouldFollow) setCodeIndex(idx);
+        replaceCodeSteps(sortCodeSteps([...current, payload]));
       }
+      // Attribution updates data, never the author's selected scope or history.
+      if (payload.formalization_id) useProofSession.getState().bumpFormalizationRefresh();
     });
 
     listen('status', (event) => {

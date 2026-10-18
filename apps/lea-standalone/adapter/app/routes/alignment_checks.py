@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .. import peripheral_views
+
 from fastapi import APIRouter, HTTPException
 
 from .. import alignment_checks as service, alignment_store, store
@@ -19,15 +21,17 @@ def start_alignment_check(formalization_id: str, request: dict | None = None) ->
 def current_alignment_check(formalization_id: str, source_bundle_hash: str | None = None) -> dict:
     if store.get_formalization(formalization_id) is None:
         raise HTTPException(status_code=404, detail="Formalization not found")
-    return service.current(formalization_id, source_bundle_hash)
+    from ..queries import alignment
+    return alignment.current(formalization_id,source_bundle_hash)
 
 
 @router.get("/api/formalizations/{formalization_id}/alignment-checks")
 def alignment_check_history(formalization_id: str) -> dict:
     if store.get_formalization(formalization_id) is None:
         raise HTTPException(status_code=404, detail="Formalization not found")
+    from ..queries import alignment
     return {
-        "alignment_checks": [service.public(item, current=False)["lea_check"] for item in alignment_store.history(formalization_id)]
+        "alignment_checks": [alignment.public(item,current=False)["lea_check"] for item in alignment.history(formalization_id)]
     }
 
 

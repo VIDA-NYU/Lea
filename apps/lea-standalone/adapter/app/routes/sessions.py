@@ -11,6 +11,8 @@ silently rendering as an empty canvas.
 
 from __future__ import annotations
 
+from .. import peripheral_views
+
 import asyncio
 import json
 import logging
@@ -18,7 +20,9 @@ import re
 from queue import Queue
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from ..core_query_dispatch import database_query
+from .. import workspace_commands
+from fastapi import APIRouter, HTTPException, Request, WebSocket
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -28,7 +32,7 @@ from lea.interface import check as interface_check, rebuild as interface_rebuild
 from ..artifacts import classify_lean_artifact
 from ..config import load_config
 from .. import formalizations as formalization_service
-from .. import filesystem as fs_service, lsp_proxy, netguard, projects, store, project_coordination, proof_files
+from .. import filesystem as fs_service, netguard, projects, store, project_coordination, proof_files
 
 
 def _session_project(arguments):
@@ -41,6 +45,7 @@ logger = logging.getLogger("lea-interface.sessions")
 
 
 class PathRequest(BaseModel):
+    file_revision: str | None = None
     # which file in the session to act on; defaults to the latest code_step's path
     path: str | None = None
     # Optional: attribute this check as its own new code_step instead of
@@ -58,7 +63,7 @@ class PathRequest(BaseModel):
     formalization_id: str | None = None
 
 
-class FileWriteRequest(BaseModel):
+class FileWriteRequest(workspace_commands.EditRequest):
     path: str
     content: str
     note: str | None = None  # optional explanation of the edit (D11)
@@ -66,6 +71,7 @@ class FileWriteRequest(BaseModel):
     # Optional optimistic-concurrency token from
     # GET /api/formalizations/{id}/current. Old clients may omit it.
     base_revision: str | None = None
+    check_and_cascade: bool = False
 
 
 class SessionUpdate(BaseModel):
@@ -89,80 +95,67 @@ def _validated_formalization_id(
 
 
 @router.get("/api/sessions")
+@database_query('sessions')
 def list_sessions() -> dict:
-    return {"sessions": store.list_sessions()}
+    from .. import db, observation
+    with db.read_snapshot() as conn:
+        cursor = observation.watermark(conn)
+        return {"sessions": store.list_sessions(), "cursor": cursor}
 
 
-# How often the sessions feed re-checks the digest, and how long one connection
-# lives before the browser EventSource transparently reconnects (~3h).
 _SESSIONS_POLL_SECONDS = 1.0
 _SESSIONS_MAX_TICKS = 10800
-# How often the SQL digest runs anyway, as a backstop to the in-process change token
-# (P4). 30 ticks ≈ 30s: rare enough to stop being a per-second query, frequent enough
-# that a change the token somehow missed still surfaces quickly.
-_SESSIONS_DIGEST_EVERY = 30
 
 
 @router.get("/api/sessions/events")
 async def session_list_events(request: Request) -> StreamingResponse:
-    """SSE feed that fires `sessions_changed` whenever the session list changes —
-    a session is created/touched or a run enters/leaves the active set. The UI
-    subscribes once and re-fetches `/api/sessions` on each event, so a run started
-    from anywhere (including an Overleaf-driven formalization, which the companion
-    creates via this adapter's own `POST /api/runs`) appears live without a manual
-    refresh.
+    """One durable invalidation feed; query snapshots own the list contents.
 
-    Implemented as a capped digest poll (the same passive-observer shape as
-    `/api/runs/{id}/events`): the cheap `store.sessions_digest()` runs each tick and
-    the expensive list query only re-runs client-side when the digest actually
-    moves. One long-lived connection per client instead of the UI polling the full
-    list on a timer."""
+    Resume a consistent list snapshot via ?after=N or Last-Event-ID. Expiry is
+    an explicit refresh event, so EventSource never loops on an unreadable 409.
+    No process token, digest, worker invocation or open DB transaction spans IO.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from .. import observation
+    raw = request.headers.get('last-event-id') or request.query_params.get('after')
+    initial = raw is None
+    cursor = int(raw) if raw and raw.isascii() and raw.isdigit() and len(raw) <= 19 else 0
 
     async def stream():
-        last_digest: str | None = None
-        last_token: int | None = None
-        ticks_since_digest = 0
+        nonlocal cursor, initial
         for _ in range(_SESSIONS_MAX_TICKS):
-            if getattr(request.app.state, "shutting_down", False) or await request.is_disconnected():
+            if getattr(request.app.state, 'shutting_down', False) or await request.is_disconnected():
                 return
-            # The in-memory change token first (AUDIT-2026-07-24 P4). This loop ran a
-            # real query every second, per connected client, for up to three hours,
-            # against the single-writer database the runs are writing to. Every write
-            # that can move the list bumps the token, so an idle client now costs an
-            # integer comparison.
-            token = store.sessions_change_token()
-            ticks_since_digest += 1
-            digest = last_digest
-            if token != last_token or ticks_since_digest >= _SESSIONS_DIGEST_EVERY:
-                # The token only sees writes from THIS process — which is all of them
-                # today. The periodic SQL digest is the backstop, so if that ever stops
-                # being true the feed degrades to the old latency rather than to
-                # silence.
-                ticks_since_digest = 0
-                try:
-                    digest = store.sessions_digest()
-                except Exception:  # pragma: no cover - defensive; never wedge the stream
-                    logger.exception("sessions_digest failed")
-                    digest = last_digest
-            last_token = token
-            if digest != last_digest:
-                last_digest = digest
-                yield f"event: sessions_changed\ndata: {json.dumps({})}\n\n"
+            try:
+                page = await run_in_threadpool(observation.changes, cursor)
+                next_cursor = page['watermark'] if initial else page['cursor']
+                noise={'peripheral_views','commands','command_workers','worker_process','command_attempts','companion_documents',
+                       'companion_jobs','companion_associations','download_artifacts','source_publishers'}
+                changed = initial or any(change['entity_type'] not in noise for change in page['changes'])
+                reset = False
+            except observation.CursorReset as exc:
+                next_cursor, changed, reset = exc.watermark, True, True
+                page = {'has_more': False}
+            cursor, initial = next_cursor, False
+            if changed:
+                payload = {'cursor': cursor, 'reset': reset}
+                yield f"event: sessions_changed\nid: {cursor}\ndata: {json.dumps(payload)}\n\n"
             else:
-                # Comment line doubles as a keep-alive so idle connections (and any
-                # proxy in between) don't time out between real changes.
-                yield ": keep-alive\n\n"
-            await asyncio.sleep(_SESSIONS_POLL_SECONDS)
-
-    return StreamingResponse(stream(), media_type="text/event-stream")
+                yield ': keep-alive\n\n'
+            if not page['has_more']:
+                await asyncio.sleep(_SESSIONS_POLL_SECONDS)
+    return StreamingResponse(stream(), media_type='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
 @router.get("/api/stats")
+@database_query('stats')
 def stats(include_proof_status: bool = True) -> dict:
     return store.usage_stats(include_proof_status=include_proof_status)
 
 
 @router.get("/api/sessions/{session_id}")
+@database_query('session')
 @project_coordination.guarded(_session_project, metadata=True)
 def session_detail(session_id: str) -> dict:
     detail = store.session_detail(session_id)
@@ -199,7 +192,8 @@ def update_session(session_id: str, request: SessionUpdate) -> dict:
     return updated
 
 
-@router.post("/api/sessions/{session_id}/compact")
+@router.post('/api/sessions/{session_id}/compact', status_code=202)
+@workspace_commands.register('session.compact')
 def compact_session(session_id: str) -> dict:
     """Manual context compaction (G3) — the user-triggered twin of G1's automatic
     condenser (`/compact` slash command). Runs the SAME condenser on the session's
@@ -250,7 +244,8 @@ def compact_session(session_id: str) -> dict:
     return {**payload, "message": message}
 
 
-@router.post("/api/sessions/{session_id}/file")
+@router.post('/api/sessions/{session_id}/file', status_code=202)
+@workspace_commands.register('session.save')
 @project_coordination.guarded(_session_project, write=True)
 def write_file_session(session_id: str, request: FileWriteRequest) -> dict:
     """Save human edits in SQL, then atomically materialize their working file.
@@ -294,6 +289,7 @@ def write_file_session(session_id: str, request: FileWriteRequest) -> dict:
 
 
 @router.get("/api/sessions/{session_id}/lean-check-runtime")
+@peripheral_views.query('lean_check_runtime')
 def lean_check_runtime(session_id: str) -> dict:
     """Read current shared-server health without starting Lean or creating files."""
     from lea.lsp_daemon import runtime_snapshot
@@ -309,7 +305,15 @@ def lean_check_runtime(session_id: str) -> dict:
     return runtime_snapshot(_find_lake_root(str(repo / "Runtime.lean")))
 
 
-@router.post("/api/sessions/{session_id}/lean-check")
+@router.post('/api/sessions/{session_id}/edit',status_code=202)
+@workspace_commands.register('session.edit')
+def edit_session(session_id: str, request: FileWriteRequest) -> dict:
+    from ..workspace_edits import apply
+    return apply(session_id,request)
+
+
+@router.post('/api/sessions/{session_id}/lean-check', status_code=202)
+@workspace_commands.register('session.check')
 @project_coordination.guarded(_session_project, write=True)
 def lean_check_session(session_id: str, request: PathRequest) -> dict:
     from .. import runtime
@@ -371,7 +375,8 @@ def _lean_check_session(session_id: str, request: PathRequest) -> dict:
             "lean_check_runtime": lean_check_runtime(session_id)}
 
 
-@router.post("/api/sessions/{session_id}/rebuild")
+@router.post('/api/sessions/{session_id}/rebuild', status_code=202)
+@workspace_commands.register('session.rebuild')
 @project_coordination.guarded(_session_project, write=True)
 def rebuild_session_module(session_id: str, request: PathRequest) -> dict:
     """Force a real `lake build` of a session's working file's module (D2-adjacent
@@ -402,7 +407,8 @@ def rebuild_session_module(session_id: str, request: PathRequest) -> dict:
     return {"path": rel, "status": result.status, "detail": result.detail}
 
 
-@router.post("/api/sessions/{session_id}/verify")
+@router.post('/api/sessions/{session_id}/verify', status_code=202)
+@workspace_commands.register('session.verify')
 @project_coordination.guarded(_session_project, write=True)
 def verify_session(session_id: str, request: PathRequest) -> dict:
     """Standalone SafeVerify on a session's working file (kernel replay + axiom
@@ -416,78 +422,21 @@ def verify_session(session_id: str, request: PathRequest) -> dict:
 
 
 @router.get("/api/sessions/{session_id}/lsp-info")
-def lsp_info(session_id: str) -> dict:
-    """What the live editor (v2.2) needs to open a file: `fileName` is the proof's
-    path **relative to the Lake root** — the URI the browser opens the Monaco model
-    as, so the WS proxy's `file://`-prefix rewrite (D60/D64) lands it on the real
-    file — plus the current on-disk `content` (the read-only Phase-1 buffer)."""
-    abs_path, rel = _resolve_proof_path(session_id, None)
-    try:
-        lake_root, file_name = lsp_proxy.resolve_target(abs_path)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    try:
-        content = Path(abs_path).read_text()
-    except OSError:
-        content = ""
-    return {"fileName": file_name, "content": content, "path": rel}
+def lsp_info(session_id: str, path: str | None = None) -> dict:
+    """Legacy initial-content alias. Reads only the published SQL file."""
+    from .editor import invoke
+    from ..editor_service import file_info
+    return invoke(file_info,session_id,path)
 
 
 @router.websocket("/api/sessions/{session_id}/lsp")
 async def lsp_socket(websocket: WebSocket, session_id: str) -> None:
-    """Bridge the browser's Monaco/Lean LSP to a per-connection `lake serve`
-    (v2.2 · D60/D61). Bare JSON per WS frame ⇄ Content-Length-framed stdio, with
-    `file://` URI rewriting between the browser's virtual path and the real file.
-    The process is spawned on connect and killed on disconnect (idle-reap)."""
-    # WebSockets are exempt from the same-origin policy, so this endpoint was reachable
-    # from ANY page the user had open — and it spawns a `lake serve` per connection and
-    # speaks a protocol that names files (AUDIT-2026-07-24 S1). The HTTP middleware in
-    # `main.py` never sees a handshake, so the same check runs here, before `accept()`.
-    if not netguard.is_allowed_origin(websocket.headers.get("origin")):
-        await websocket.close(code=1008, reason="origin not allowed")
-        return
-    if not netguard.is_allowed_host(websocket.headers.get("host")):
-        await websocket.close(code=1008, reason="host not allowed")
-        return
-    await websocket.accept()
-    try:
-        abs_path, _ = _resolve_proof_path(session_id, None)
-        lake_root, _file_name = lsp_proxy.resolve_target(abs_path)
-    except HTTPException as exc:
-        await websocket.close(code=1011, reason=str(exc.detail)[:120])
-        return
-    except FileNotFoundError as exc:
-        await websocket.close(code=1011, reason=str(exc)[:120])
-        return
-
-    # Bound the number of live `lake serve` processes (AUDIT-2026-07-24 X3). Each is
-    # multi-GB resident once Mathlib is loaded, and nothing capped them.
-    if not lsp_proxy.acquire_session_slot():
-        await websocket.close(
-            code=1013,  # "try again later"
-            reason=f"too many Lean editor sessions open (max {lsp_proxy.MAX_SESSIONS})",
-        )
-        return
-    proxy = lsp_proxy.LspProxy(lake_root, str(lake_root))
-    try:
-        try:
-            await proxy.start()
-        except FileNotFoundError:
-            await websocket.close(code=1011, reason="lake not found on PATH")
-            return
-        await proxy.pump(websocket)
-    except WebSocketDisconnect:
-        pass  # ordinary teardown; `stop` runs below
-    finally:
-        # `pump` stops the process in its own finally, but everything between a
-        # successful `start()` and that point was unguarded — a cancellation or an
-        # unexpected error there orphaned the process (X3). `stop` is idempotent, so
-        # calling it unconditionally is free.
-        await proxy.stop()
-        lsp_proxy.release_session_slot()
+    """Retired execution channel. Every client must use persisted requests."""
+    await websocket.close(code=1008,reason="Direct LSP retired; use queued editor requests")
 
 
 @router.get("/api/sessions/{session_id}/export")
+@peripheral_views.query('export_session',automatic=False,lifetime=86400)
 def export_session(session_id: str) -> Response:
     """Stream a zip of a session's files (#14). A loose session has its own repo
     (``proofs/<session-id>``) with no other download path — this fills that gap,
@@ -506,11 +455,13 @@ def export_session(session_id: str) -> Response:
     repo = projects.repo_for_session(session, proofs_root, project)
     if not repo.exists():
         raise HTTPException(status_code=404, detail="This session has no files to download yet.")
-    data = fs_service.export_zip(repo)
+    try:data = fs_service.export_zip(repo)
+    except fs_service.FilesystemError as exc:
+        raise HTTPException({'too_large':413,'changed':409,'bad_path':400}.get(exc.code,400),str(exc)) from exc
     return Response(
         content=data,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{_session_zip_name(session)}"'},
+        headers={"Content-Disposition": peripheral_views.disposition(_session_zip_name(session))},
     )
 
 
@@ -520,6 +471,12 @@ def _session_zip_name(session: dict) -> str:
     or slugifies to nothing."""
     slug = re.sub(r"[^a-z0-9]+", "-", (session.get("title") or "").lower()).strip("-")[:60]
     return f"{slug or 'session-' + str(session['id'])[:8]}.zip"
+
+
+@router.post('/api/sessions/{session_id}/export',status_code=202)
+@workspace_commands.register('session.export')
+def prepare_session_export(session_id:str):
+    return peripheral_views.capture('export_session',{'session_id':session_id})
 
 
 def _resolve_proof_path(session_id: str, path: str | None) -> tuple[str, str]:

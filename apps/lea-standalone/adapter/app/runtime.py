@@ -1,4 +1,4 @@
-"""Adapter process ownership and graceful restart coordination."""
+"""Workspace worker ownership and graceful restart coordination."""
 
 from __future__ import annotations
 
@@ -22,13 +22,15 @@ _restart_requested = False
 _force = False
 _server = None
 _lock_handle = None
+_workspace_lock_handle = None
+_workspace_owned = None
 _drain_worker = None
 _active_operations = 0
 _log = logging.getLogger("lea.adapter.runtime")
 
 
 def owned_process_dir() -> Path:
-    return db.DB_PATH.parent / "owned-processes"
+    return _workspace_owned or db.DB_PATH.parent / "owned-processes"
 
 
 def acquire_data_lock() -> None:
@@ -40,7 +42,7 @@ def acquire_data_lock() -> None:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError as exc:
         handle.close()
-        raise RuntimeError(f"Another adapter owns data directory {path.parent}") from exc
+        raise RuntimeError(f"Another workspace worker owns data directory {path.parent}") from exc
     handle.seek(0)
     handle.truncate()
     handle.write(f"pid={os.getpid()} runtime={IDENTITY}\n")
@@ -54,6 +56,15 @@ def release_data_lock() -> None:
         fcntl.flock(_lock_handle.fileno(), fcntl.LOCK_UN)
         _lock_handle.close()
         _lock_handle = None
+
+
+def release_workspace_lock() -> None:
+    """Only the one-shot bootstrap releases ownership before process exit."""
+    global _workspace_lock_handle,_workspace_owned
+    if _workspace_lock_handle is not None:
+        _workspace_lock_handle.close()
+        _workspace_lock_handle=None
+        _workspace_owned=None
 
 
 def set_state(state: str) -> None:
@@ -121,7 +132,7 @@ def begin_drain(*, force: bool = False, restart: bool = True) -> dict:
         if _server is None:
             from fastapi import HTTPException
             raise HTTPException(409, detail={"code": "restart_unavailable",
-                "message": "Start the adapter through run_api.py to enable restart control."})
+                "message": "Start the workspace worker through run_worker.py to enable restart control."})
         if _state == "draining":
             if not restart:
                 _restart_requested = False
@@ -181,3 +192,49 @@ def _drain() -> None:
         if _force:
             _server.config.timeout_graceful_shutdown = 5
         _server.should_exit = True
+
+
+def acquire_workspace_lock(workspace):
+    """Fence the physical workspace even when two DB paths name the same tree."""
+    global _workspace_lock_handle,_workspace_owned
+    import json
+    workspace=Path(workspace).resolve()
+    binding=db.DB_PATH.parent/'.lea-workspace.json'
+    saved=json.loads(binding.read_text()) if binding.exists() else None
+    if saved is not None:
+        if saved.get('version') not in {1,2} or saved.get('workspace')!=str(workspace):
+            raise RuntimeError('This database is bound to a different physical workspace; restore its configured root or migrate it offline before starting a worker.')
+    workspace.mkdir(parents=True,exist_ok=True)
+    # Container roots differ even when their proof/project bind mounts match.
+    # Compose supplies the same ownership volume to every writer of that tree.
+    ownership=Path(os.environ.get('LEA_WORKSPACE_OWNERSHIP_DIR',workspace)).resolve()
+    if os.environ.get('LEA_REQUIRE_SHARED_OWNERSHIP')=='1' and (
+            not os.environ.get('LEA_WORKSPACE_OWNERSHIP_DIR') or not os.path.ismount(ownership)):
+        raise RuntimeError('Production workers and migrations require a shared Docker local ownership volume at LEA_WORKSPACE_OWNERSHIP_DIR.')
+    ownership.mkdir(parents=True,exist_ok=True)
+    handle=(ownership/'.lea-worker.lock').open('a+')
+    try:fcntl.flock(handle.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close();raise RuntimeError('Another worker owns this physical workspace')
+    try:
+        # Some virtualized host bind mounts silently ignore flock. A second
+        # independent open must conflict even in this same process.
+        with (ownership/'.lea-worker.lock').open('a+') as probe:
+            try:fcntl.flock(probe.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+            except BlockingIOError:pass
+            else:raise RuntimeError('The ownership filesystem does not enforce exclusive locks; use a Docker local ownership volume or a supported local filesystem.')
+        from .config import write_private_text
+        marker=ownership/'.lea-workspace-id'
+        identity=marker.read_text().strip() if marker.exists() else uuid4().hex
+        if len(identity)!=32 or any(c not in '0123456789abcdef' for c in identity):
+            raise RuntimeError('Workspace ownership identity is invalid; reconcile it offline.')
+        if saved is not None and saved.get('version')==2 and saved.get('ownership_id')!=identity:
+            raise RuntimeError('This database is bound to a different workspace ownership volume; restore its mounts or migrate it offline.')
+        if not marker.exists():write_private_text(marker,identity)
+        write_private_text(binding,json.dumps({'version':2,'workspace':str(workspace),'ownership_id':identity}))
+        handle.seek(0);handle.truncate();handle.write(f'pid={os.getpid()} runtime={IDENTITY}\n');handle.flush()
+    except BaseException:
+        handle.close()
+        raise
+    _workspace_lock_handle=handle
+    _workspace_owned=ownership/'.lea-owned-processes'

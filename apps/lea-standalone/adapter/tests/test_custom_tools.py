@@ -131,20 +131,20 @@ def test_loogle_entry_installs_and_carries_its_tiebreaker(tmp_path, monkeypatch)
     competing with an existing server by accident.
     """
     _setup(tmp_path, monkeypatch)
-    entries = route.list_tool_catalog()["entries"]
+    entries = route.list_tool_catalog.worker()["entries"]
     assert entries[0]["id"] == "loogle"
     assert entries[0]["installed"] is False
 
-    tool = route.install_tool_entry("loogle")
+    tool = route.install_tool_entry.worker("loogle")
     assert tool["slug"] == "loogle"
     assert "{query}" in tool["url"]
     assert tool["is_global"] is False and tool["project_ids"] == []
     # The overlap tiebreaker must survive into what the model actually reads.
     assert "lean_loogle" in tool["description"]
-    assert route.list_tool_catalog()["entries"][0]["installed"] is True
+    assert route.list_tool_catalog.worker()["entries"][0]["installed"] is True
 
     with pytest.raises(HTTPException) as exc:
-        route.install_tool_entry("nope")
+        route.install_tool_entry.worker("nope")
     assert exc.value.status_code == 404
 
 
@@ -155,5 +155,7 @@ def test_tool_catalog_route_is_reachable_over_http(tmp_path, monkeypatch):
     from app.main import app
 
     _setup(tmp_path, monkeypatch)
+    from app import peripheral_views
+    peripheral_views.capture('list_tool_catalog',{})
     client = TestClient(app, base_url="http://localhost:8001")
     assert client.get("/api/custom-tools/catalog").status_code == 200

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { reconcileGeneratedItems } from "../companion/generatedTargetRegistry.mjs";
-import { handleLeanPaneManifest, handleResolveTargets } from "../companion/server.mjs";
+import { handleLeanPaneManifest, handleResolveTargets } from "../companion/workerService.mjs";
 
 const theorem = (statement, label = "") => [
   `\\begin{theorem}${label ? `\\label{${label}}` : ""}`,

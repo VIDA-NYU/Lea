@@ -145,8 +145,8 @@ def _adopt_overleaf_name(conn, project: dict, title: str, proofs_root: Path | No
     if not title or project["name_source"] != "generated":
         return project
     title = _unique_default_name(conn, title, exclude_project_id=project["id"])
-    if proofs_root is not None:
-        refresh_project_title_docs(project, proofs_root, title)
+    from .workspace_commands import authorize
+    authorize(conn)
     conn.execute("update projects set title = ?, name_source = 'overleaf', updated_at = ? where id = ?",
                  (title, store.utc_now(), project["id"]))
     return store._normalize_project(store.row_to_dict(
@@ -158,11 +158,16 @@ def adopt_overleaf_project_name(slug: str, proofs_root: Path | None, title: str)
     existing = store.get_project_by_slug(slug)
     if existing is None:
         raise ProjectIdentityError("project_missing", "No Lea project exists for this document yet.", status=404)
-    with project_coordination.mutation(existing["id"]), store.write() as conn:
-        row = conn.execute("select * from projects where id = ?", (existing["id"],)).fetchone()
-        if row is None:
-            raise ProjectIdentityError("project_missing", "Project no longer exists.", status=404)
-        return _adopt_overleaf_name(conn, store._normalize_project(store.row_to_dict(row)), title, proofs_root)
+    with project_coordination.mutation(existing["id"]):
+        with store.write() as conn:
+            row = conn.execute("select * from projects where id = ?", (existing["id"],)).fetchone()
+            if row is None:
+                raise ProjectIdentityError("project_missing", "Project no longer exists.", status=404)
+            previous=store._normalize_project(store.row_to_dict(row))
+            updated=_adopt_overleaf_name(conn,previous,title,None)
+        if proofs_root is not None and updated['title']!=previous['title']:
+            refresh_project_title_docs(previous,proofs_root,updated['title'])
+        return updated
 
 
 def project_repo_dir(project: dict, proofs_root: Path) -> Path:
@@ -172,25 +177,8 @@ def project_repo_dir(project: dict, proofs_root: Path) -> Path:
 
 
 def project_identity(project: dict, *, overleaf_project_id: str | None = None) -> dict:
-    # This describes history existence, not whether a proof is currently valid.
-    with store.connect() as conn:
-        recorded = conn.execute("""select exists(select 1 from timeline t
-            join sessions s on s.id=t.session_id where s.project_id=?
-            and t.kind='code' and lower(t.path) not like '%scratch%')""",
-            (project['id'],)).fetchone()[0]
-    return {
-        **project_coordination.snapshot(project["id"]),
-        "projectId": project["id"],
-        "overleafProjectId": overleaf_project_id or project["slug"],
-        "slug": project["slug"],
-        "projectName": project["title"],
-        "nameSource": project["name_source"],
-        "namespace": project["namespace"],
-        "namespaceEditable": True,
-        "repoPath": project.get("repo_path"),
-        "hasRecordedProofs": bool(recorded),
-        "exists": True,
-    }
+    from .queries.identity import project_identity as query
+    return query(project, overleaf_project_id=overleaf_project_id)
 
 
 def repo_for_session(session: dict, proofs_root: Path, project: dict | None = None) -> Path:
@@ -430,6 +418,19 @@ def write_doc(project: dict, proofs_root: Path, name: str, content: str) -> str:
     :data:`EDITABLE_DOCS`."""
     if name not in EDITABLE_DOCS:
         raise ValueError(f"not an editable project doc: {name!r}")
+    from . import workspace_commands, workspace_files
+    if workspace_commands.current() is not None:
+        rel = '.lea/' + name
+        repo = project_repo_dir(project, proofs_root)
+        saved = workspace_files.save(None, rel, repo / rel, content, project_id=project['id'])
+        try:
+            commit = GitStore(proofs_root).commit_all(repo, f'edit {rel}', paths=[rel])
+        except Exception as exc:
+            workspace_files.provenance(saved['effect_id'], detail=str(exc))
+            from fastapi import HTTPException
+            raise HTTPException(500, detail={'code': 'content_saved_commit_failed', 'message': 'Content is saved in the database; Git provenance could not be recorded.', 'effect_id': saved['effect_id']}) from exc
+        workspace_files.provenance(saved['effect_id'], commit)
+        return commit
     repo = project_repo_dir(project, proofs_root)
     lea_dir = repo / ".lea"
     lea_dir.mkdir(parents=True, exist_ok=True)
@@ -543,10 +544,12 @@ def ensure_project(
     provisioning is best-effort — the index row is the source of truth and is always
     returned; a missing ``proofs_root`` (lea_root unconfigured) just skips the disk half."""
     existing = store.get_project_by_slug(slug)
+    previous_project=None
     with project_coordination.mutation(existing["id"] if existing else None), store.write() as conn:
         row = conn.execute("select * from projects where slug = ?", (slug,)).fetchone()
         if row:
             project = store._normalize_project(store.row_to_dict(row))
+            previous_project=project
             if overleaf_project_title is not None:
                 project = _adopt_overleaf_name(conn, project, overleaf_project_title, proofs_root)
         else:
@@ -568,6 +571,8 @@ def ensure_project(
                 repo_path=store.repo_path_for_namespace(ns), name_source=name_source or source, conn=conn,
             )
     if proofs_root is not None:
+        if previous_project and previous_project['title']!=project['title']:
+            refresh_project_title_docs(previous_project,proofs_root,project['title'])
         try:
             _provision_repo(project, proofs_root, overwrite=False)
         except Exception:
@@ -638,7 +643,8 @@ def refresh_project_title_docs(project: dict, proofs_root: Path, title: str) -> 
             continue
         updated = _rewrite_project_doc_title(original, old_title, new_title)
         if updated != original:
-            path.write_text(updated)
+            from .workspace_effects import install_from_snapshot
+            install_from_snapshot(path,updated)
             changed_paths.append(path.relative_to(repo).as_posix())
     if not changed_paths:
         return None
@@ -715,6 +721,8 @@ def migrate_project_namespace(
     check_fn=None,
 ) -> dict:
     from lea.check_evidence import mutation as environment_mutation
+    from .workspace_commands import authorize
+    authorize()
     with project_coordination.read(project["id"]):
         pass  # Reject an already active namespace migration before waiting for I/O.
     with environment_mutation(proofs_root), project_coordination.migration(project["id"]):
@@ -748,6 +756,8 @@ def migrate_project_namespace(
         for path in sorted(old_repo.rglob("*")):
             if not path.is_file() or ".git" in path.parts:
                 continue
+            if path.is_relative_to(old_repo/'.lea/displaced'):
+                continue
             if path.suffix not in {".lean", ".md"}:
                 continue
             try:
@@ -761,16 +771,20 @@ def migrate_project_namespace(
             updated = _rewrite_namespace_text(original, old_namespace, new_namespace)
             updated = _rewrite_project_doc_title(updated, project.get("title", ""), title)
             if updated != original:
-                path.write_text(updated)
+                authorize()
+                from .workspace_effects import install_from_snapshot
+                install_from_snapshot(path,updated)
                 changed_files.append(path)
 
         if new_repo != old_repo:
             new_repo.parent.mkdir(parents=True, exist_ok=True)
+            authorize()
             shutil.move(str(old_repo), str(new_repo))
             repo = new_repo
         else:
             repo = old_repo
 
+        authorize()
         commit_sha = GitStore(proofs_root).commit_all(
             repo,
             f"rename project namespace: {old_namespace} -> {new_namespace}",
@@ -800,6 +814,7 @@ def migrate_project_namespace(
             result = None
             if check_fn is not None:
                 checked_files += 1
+                authorize()
                 result = check_fn(str(lean_path))
                 if getattr(result, "status", None) != "ok":
                     failed_files.append({
@@ -845,6 +860,9 @@ def delete_project(project_id: str, proofs_root: Path) -> bool:
     """Delete only an idle project, excluding admission and I/O until completion."""
     if store.get_project(project_id) is None:
         return False
+    from . import workspace_commands, workspace_effects
+    if workspace_commands.current() is not None:
+        return workspace_effects.delete_project(store.get_project(project_id), proofs_root)
     with project_coordination.deletion(project_id):
         project = store.get_project(project_id)
         if project is None:

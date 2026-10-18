@@ -2,13 +2,15 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from .. import formalize_batch_reports as service
+from .. import workspace_commands
 
 router = APIRouter()
 BASE = "/api/projects/by-slug/{slug}/formalize-batch-reports"
 
 
 @router.post(BASE)
-def create(slug: str, payload: dict, background_tasks: BackgroundTasks):
+@workspace_commands.register('report.create')
+def create(slug: str, payload: dict):
     try:
         report, created = service.create(slug, payload)
     except LookupError as exc:
@@ -16,7 +18,7 @@ def create(slug: str, payload: dict, background_tasks: BackgroundTasks):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     if created:
-        background_tasks.add_task(service.generate, report["batch_id"])
+        service.generate(report['batch_id'])
     return report
 
 
@@ -39,12 +41,13 @@ def get(slug: str, batch_id: str):
 
 
 @router.post(BASE + "/{batch_id}/retry")
-def retry(slug: str, batch_id: str, background_tasks: BackgroundTasks):
+@workspace_commands.register('report.retry')
+def retry(slug: str, batch_id: str):
     try:
         report = service.retry(slug, batch_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
-    background_tasks.add_task(service.generate, batch_id)
+    service.generate(batch_id)
     return report

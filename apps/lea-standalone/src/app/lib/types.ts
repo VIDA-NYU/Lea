@@ -575,11 +575,15 @@ export interface ChatMessage {
   kind?: 'assistant' | 'edit_note' | string;
   seq?: number;
   created_at: string;
-  // Frontend-only marker for the streaming bubble before its persisted twin lands.
+  // Stable persisted partials and the legacy transient streaming bubble.
   live?: boolean;
+  stream_state?: 'streaming' | 'final' | 'interrupted';
+  stream_attempt_id?: string;
+  stream_sequence?: number;
 }
 
 export interface CodeStep {
+  projection?: {state:string;observed_at?:string|null;expires_at?:string|null};
   id: string;
   artifact_scope?: 'attempt' | 'canonical';
   blob_id?: string | null;

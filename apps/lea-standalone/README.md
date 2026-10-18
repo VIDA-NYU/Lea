@@ -4,13 +4,23 @@
 
 - a React + Vite web app on `http://localhost:5173`;
 - a FastAPI adapter on `http://127.0.0.1:8001`;
-- the vendored Lea prover at `prover/`, imported by the adapter as a Python
-  library.
+- a separate singleton workspace worker, which imports the vendored prover at
+  `prover/` as a Python library.
 
-The adapter drives the prover in-process through `lea.interface.run_events(...)`.
-It translates typed prover events into Server-Sent Events for the browser,
-commits proof changes to git, stores timeline metadata in SQLite, and exposes
-manual `lean_check` and SafeVerify endpoints.
+The adapter admits typed SQL commands; its workers drive the prover through
+`lea.interface.run_events(...)`. Timeline, progress, source publications and
+application views are read from SQLite. Workspace changes and checks return
+receipts; the browser observes their committed outcomes. The live Monaco editor
+publishes immutable buffers and uses queued diagnostics, hover, completion and
+plain goals. Results are read from SQL; direct LSP access is rejected. Interactive
+widgets, navigation and code actions are unavailable in this cutover.
+
+See the [Stage 6 delivery record](../../docs/STAGE6-database-ui-cutover.md) for
+companion import, limits, qualification and rollback. The
+[Stage 7 editor record](../../docs/STAGE7-queued-editor.md) covers language features,
+queue limits and supported-runtime qualification.
+The [Stage 8 runtime guide](../../docs/STAGE8-process-boundary.md) governs process
+ownership, bootstrap, strict API isolation, health and compatible rollback.
 
 ## Run The VIDA Image
 
@@ -21,12 +31,20 @@ docker compose pull
 docker compose up
 ```
 
-This anonymously pulls `ghcr.io/vida-nyu/leaui:main`, which contains the UI,
-adapter, prover, Overleaf companion, Lean, and Mathlib for both AMD64 and ARM64.
-The download is about 3.7 GB and the extracted image about 10.7 GB; keep at
-least 20 GB free in Docker during extraction. Open `http://localhost:8001`;
+Compose expects matching `leaui-api`, `leaui` (worker) and `leaui-companion` images.
+The migration job runs before API and worker startup. The API image has no
+workspace/compiler/config tree and mounts only the database directory. These
+Stage 8 image targets require an explicit release publication before pulling a
+hosted version; build the checkout below for development. Open `http://localhost:8001`;
 the companion is exposed on `:31245`. Runtime data and proofs persist in the
 host directories declared by `docker-compose.yml`.
+
+Keep the `lea-workspace-ownership` Docker local volume as well. Worker and
+migration share its enforced lock and persistent identity. Every deployment that
+shares a database/workspace must use the same ownership volume; independent
+workspaces can set `LEA_WORKSPACE_OWNERSHIP_VOLUME` to distinct names. Host bind
+mounts that do not enforce locks are rejected. See the
+[production qualification and rollback guide](../../docs/STAGE8-release-qualification.md).
 
 To build the same image from the checkout instead, use:
 
@@ -76,7 +94,7 @@ The launcher:
 - starts Vite with `--host 0.0.0.0` on `http://localhost:5173`;
 - stops both child processes on `Ctrl+C`.
 
-To start only one process:
+To start the API/worker backend pair without Vite:
 
 ```sh
 npm run start:api  # FastAPI adapter only
@@ -88,10 +106,13 @@ From the monorepo root, `npm run start:adapter` is equivalent to this app's
 
 ## Configuration
 
-The adapter reads `config/lea.local.toml`. The standalone Settings page edits the
-same file, so manual edits and UI edits share one source of truth.
+The adapter reads bootstrap connections and credentials from
+`config/lea.local.toml`. Non-secret policy is imported once into SQLite; subsequent
+Settings changes use regulated commands. Editing the old TOML model/limit fields
+after import does not replace database policy. Credentials remain protected
+infrastructure and appear only as redacted status in SQL views.
 
-Common fields:
+Bootstrap example:
 
 ```toml
 lea_root = "prover"
@@ -119,7 +140,7 @@ are marked autonomous and skip this gate.
 
 - Chat messages and status chips show the prover's live reasoning, tool calls,
   checks, and terminal status.
-- The proof canvas shows git-backed file snapshots from each `code_step`; use the
+- The proof canvas shows database-backed file snapshots from each `code_step`; use the
   stepper to inspect earlier proof states.
 - Human edits in the canvas write to the same working tree, commit as user-authored
   steps, and can include an edit note for the next run.
@@ -128,8 +149,8 @@ are marked autonomous and skip this gate.
 - SafeVerify audits a finished proof with kernel replay and axiom checks.
 - Projects create shared proof repos under `prover/workspace/proofs/Lea/<Project>`
   so sessions can import sibling lemmas.
-- Project Instructions, Memory, Blueprint, uploaded files, and the filesystem tab
-  are all backed by files in that project repo.
+- Project Instructions, Memory, Blueprint, uploads and file views use SQL content
+  and worker observations; workers materialize managed files in the project repo.
 - The Stats page reads persisted usage and cost from SQLite.
 
 ## Health Check

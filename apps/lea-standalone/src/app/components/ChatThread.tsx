@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, PanelLeftOpen } from 'lucide-react';
-import { sessionExportUrl, interruptSubagent } from '../lib/api';
+import { sessionExportUrl, downloadWorkspaceExport, interruptSubagent } from '../lib/api';
 import type {
   ApprovalDecision,
   ApprovalRecord,
@@ -594,6 +594,7 @@ export function ChatThread({
           <a
             className="head-download"
             href={sessionExportUrl(session.id)}
+            onClick={(event)=>{event.preventDefault();downloadWorkspaceExport(sessionExportUrl(session.id)).catch(error=>window.alert(String(error)));}}
             download
             title="Download this session's files as a zip"
           >

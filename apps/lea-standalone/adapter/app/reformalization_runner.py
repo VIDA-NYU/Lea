@@ -58,6 +58,12 @@ def run(context, op):
     def preparation_stopped():
         if not stop.is_set() and deadline and deadline <= datetime.now(timezone.utc):
             bridge.request_stop(rid, reason='timeout', source='adapter')
+        current=store.get_run_status(rid) or {}
+        if current.get('stop_requested_reason'):stop.set()
+        if context.command_token:
+            from . import commands,db
+            with db.connect() as conn:
+                if not commands._owned(conn,context.command_token):stop.set()
         return stop.is_set()
     try:
         if not store.claim_pending_run(rid):
@@ -148,7 +154,7 @@ def run(context, op):
             task += '\nPrior retained drafts are available as advisory progress. Reuse useful ideas against the current source and baseline; these files carry no current check or approval:\n' + '\n'.join(retained)
         messages = ([ctx] if ctx else []) + [bridge._formalization_context_message(form)] + prior + [{'role': 'user', 'content': task}]
         provider = lambda: recovery.manifest(run=store.get_run(rid), config=cfg, repo=repo)
-        recorder = recovery.Recorder(rid, attempt, provider)
+        recorder = recovery.Recorder(rid, attempt, provider,command_token=context.command_token)
         resume_state = None
         if row.get('recovery_state') == 'recovering':
             saved = recovery.load_checkpoint(rid)
@@ -163,7 +169,7 @@ def run(context, op):
                 bridge.request_stop(rid, reason='timeout', source='adapter')
             if cfg.max_spend_usd is not None and bridge._persisted_spend_usd() >= cfg.max_spend_usd:
                 bridge.request_stop(rid, reason='global_spend_cap', source='adapter')
-            return stop.is_set()
+            return preparation_stopped()
         policy = {**operations.workspace_policy(manifest['workspace']),
                   'canonical_repo': manifest['canonical_repo'], 'attempt_repo': str(repo)}
         # Every prover tool thread copies this ContextVar, including compiler and
@@ -171,7 +177,7 @@ def run(context, op):
         with execution.scope(policy):
             gen = bridge.run_events(cfg, messages, namespace=manifest['namespace'], session_id=sid,
                 working_dir=str(repo), should_stop=should_stop,
-                gate=None if context.autonomous or context.approval_mode == 'none' else bridge._make_gate(sid),
+                gate=None if context.autonomous or context.approval_mode == 'none' else bridge._make_gate(sid,persisted=bool(context.command_token)),
                 resume_state=resume_state, checkpoint_callback=recorder)
             answer = None
             while True:
@@ -277,7 +283,7 @@ def run(context, op):
                     store.set_run_transcript(rid, ev.transcript.get('messages', []))
                     kind = ev.result_kind or 'needs_review'
                     detail = ev.result_detail or ev.text
-                    if ev.reason == 'completed':
+                    if ev.reason == 'completed' and not should_stop():
                         chosen = ev.selected_result or {}
                         selection = {'path': _relative(ev.candidate_path or cfg.selected_result['path'], repo),
                             'declaration': chosen.get('user_name') or cfg.selected_result['declaration'],
@@ -290,8 +296,9 @@ def run(context, op):
                                 kind = 'needs_review'
                                 detail = 'The selected declaration and reported outcome require correspondence review.'
                         if kind in {'proved', 'defined', 'disproved'}:
+                            if should_stop():raise ValueError('Solver was cancelled before publication; the draft is retained')
                             with execution.scope(None):
-                                receipt = apply(op['id'], selection, kind, assessment=assessment, helper=dependency)
+                                receipt = apply(op['id'], selection, kind, assessment=assessment, helper=dependency,command_token=context.command_token)
                             status = kind
                             detail = kind.upper()
                             bridge.emit(events, 'reformalization_applied', receipt)
@@ -304,14 +311,17 @@ def run(context, op):
                                 'selection': selection, 'drafts': [{'path': d['path'], 'blob_id': d['blob_id']} for d in operations.drafts(op['id'])]})
                     else:
                         status, kind, reason, recoverable = 'cancelled', 'interrupted', ev.reason, True
+                        if ev.reason=='completed':reason='interrupted'
                         if reason == 'interrupted':
                             reason = (store.get_run(rid) or {}).get('stop_requested_reason') or 'user_stop'
                         operations.update(op['id'], ('worker' if op['request'].get('_foreground_owner') else 'active') if reason == 'dependency_wait' else 'paused',
                             result={'outcome': kind, 'detail': detail, 'stop_reason': reason})
                     incoming, outgoing, cost = ev.usage.input_tokens, ev.usage.output_tokens, ev.cost
-                    store.update_run(rid, status, final_text=ev.text, input_tokens=incoming,
+                    committed=store.update_run(rid, status, final_text=ev.text, input_tokens=incoming,
                         output_tokens=outgoing, cost_usd=cost, usage_status='final', usage_details=ev.usage.usage_details,
-                        result_kind=kind, result_detail=detail, stop_reason=reason, recoverable=recoverable)
+                        result_kind=kind, result_detail=detail, stop_reason=reason, recoverable=recoverable,command_token=context.command_token)
+                    if committed:
+                        status,kind,detail,reason,recoverable=(committed[k] for k in ('status','result_kind','result_detail','stop_reason','recoverable'))
                     break
     except Exception as exc:
         detail = bridge._public_error_detail(exc)

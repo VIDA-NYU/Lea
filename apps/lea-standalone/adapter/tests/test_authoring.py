@@ -94,7 +94,7 @@ def test_a_role_gets_its_prompt_and_its_enum_line(tmp_path, monkeypatch):
     """`when_to_use` does double duty: it is in the role head AND becomes the description
     B1 lists beside the role name, so writing it IS what makes the coordinator choose."""
     _setup(tmp_path, monkeypatch)
-    role = roles_route.create_role(RoleCreate(name="Ring Prover", authoring=FIELDS))
+    role = roles_route.create_role.worker(RoleCreate(name="Ring Prover", authoring=FIELDS))
     assert role["effective"]["system_prompt"] == authoring.compile_text(FIELDS)
     assert "polynomial identity" in role["description"]
 
@@ -102,13 +102,13 @@ def test_a_role_gets_its_prompt_and_its_enum_line(tmp_path, monkeypatch):
 def test_a_role_still_needs_something_to_say(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     with pytest.raises(HTTPException) as exc:
-        roles_route.create_role(RoleCreate(name="Hollow", authoring={"summary": "   "}))
+        roles_route.create_role.worker(RoleCreate(name="Hollow", authoring={"summary": "   "}))
     assert exc.value.status_code == 400
 
 
 def test_updating_other_role_fields_keeps_the_authoring(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    role = roles_route.create_role(RoleCreate(name="Ring Prover", authoring=FIELDS))
-    updated = roles_route.update_role(role["id"], RoleUpdate(max_turns=5))
+    role = roles_route.create_role.worker(RoleCreate(name="Ring Prover", authoring=FIELDS))
+    updated = roles_route.update_role.worker(role["id"], RoleUpdate(max_turns=5))
     assert updated["authoring"]["when_to_use"] == FIELDS["when_to_use"]
     assert updated["effective"]["system_prompt"] == authoring.compile_text(FIELDS)

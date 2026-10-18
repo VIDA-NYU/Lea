@@ -24,10 +24,21 @@ from app.routes.projects import (
 
 
 def _upload(project_id, filename, data, content_type=None):
-    """Call the async upload route directly with a constructed UploadFile."""
+    """Admit the multipart bytes, then explicitly execute the worker receipt."""
     headers = Headers({"content-type": content_type}) if content_type else None
     uf = UploadFile(filename=filename, file=io.BytesIO(data), headers=headers)
-    return asyncio.run(projects_route.upload_file(project_id, uf))
+    receipt = asyncio.run(projects_route.upload_file(project_id, uf))
+    from app import commands, workspace_commands
+    from uuid import uuid4
+    owner='upload-test-'+uuid4().hex
+    epoch=commands.start_worker(owner)
+    token=commands.claim(owner,epoch,'compute',kinds=workspace_commands.KINDS)
+    assert token and token['id']==receipt['command']['id']
+    workspace_commands.execute(token)
+    result=workspace_commands.get(token['id'])['command']
+    if result['state']!='succeeded':
+        raise HTTPException(result['error_status'] or 500,detail=result['result']['detail'])
+    return result['result']
 
 
 def _setup(tmp_path, monkeypatch):
@@ -37,23 +48,25 @@ def _setup(tmp_path, monkeypatch):
         projects_route, "load_config",
         lambda: LeaConfig(model="m", max_turns=3, lea_root=tmp_path, max_spend_usd=None),
     )
+    import app.config
+    monkeypatch.setattr(app.config,'load_config',projects_route.load_config)
     return tmp_path / "workspace" / "proofs"
 
 
 def test_create_lists_and_gets_a_project(tmp_path, monkeypatch):
     proofs = _setup(tmp_path, monkeypatch)
 
-    created = projects_route.create_project(ProjectCreate(title="Real Analysis", description="ε–δ"))
+    created = projects_route.create_project.worker(ProjectCreate(title="Real Analysis", description="ε–δ"))
     assert created["slug"] == "real-analysis"
     assert created["namespace"] == "Lea.RealAnalysis"
     assert (proofs / "Lea" / "RealAnalysis" / ".lea" / "blueprint.md").is_file()
 
-    listed = projects_route.list_projects()["projects"]
+    listed = projects_route.list_projects.worker()["projects"]
     assert len(listed) == 1
     assert listed[0]["id"] == created["id"]
     assert listed[0]["session_count"] == 0
 
-    detail = projects_route.get_project(created["id"])
+    detail = projects_route.get_project.worker(created["id"])
     assert detail["id"] == created["id"]
     assert detail["sessions"] == []  # no sessions yet
 
@@ -61,30 +74,30 @@ def test_create_lists_and_gets_a_project(tmp_path, monkeypatch):
 def test_create_rejects_blank_title(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     with pytest.raises(HTTPException) as exc:
-        projects_route.create_project(ProjectCreate(title="   "))
+        projects_route.create_project.worker(ProjectCreate(title="   "))
     assert exc.value.status_code == 400
 
 
 def test_detail_includes_project_sessions(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Topology"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Topology"))
     sess = store.create_session("a proof", project_id=project["id"])
 
-    detail = projects_route.get_project(project["id"])
+    detail = projects_route.get_project.worker(project["id"])
     assert [s["id"] for s in detail["sessions"]] == [sess["id"]]
-    assert projects_route.list_projects()["projects"][0]["session_count"] == 1
+    assert projects_route.list_projects.worker()["projects"][0]["session_count"] == 1
 
 
 def test_create_session_in_project(tmp_path, monkeypatch):
     # D23: a session created inside a project is tagged with project_id and appears
     # in the project's session list.
     _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Topology"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Topology"))
 
     sess = projects_route.create_session_in_project(project["id"], SessionCreate(title="lemma A"))
     assert sess["project_id"] == project["id"]
     assert sess["title"] == "lemma A"
-    assert [s["id"] for s in projects_route.get_project(project["id"])["sessions"]] == [sess["id"]]
+    assert [s["id"] for s in projects_route.get_project.worker(project["id"])["sessions"]] == [sess["id"]]
 
     # blank title falls back; missing project → 404
     fallback = projects_route.create_session_in_project(project["id"], SessionCreate())
@@ -96,9 +109,9 @@ def test_create_session_in_project(tmp_path, monkeypatch):
 
 def test_update_edits_title_and_description(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Old"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Old"))
 
-    updated = projects_route.update_project(
+    updated = projects_route.update_project.worker(
         project["id"], ProjectUpdate(title="New", description="now described")
     )
     assert updated["title"] == "New"
@@ -108,7 +121,7 @@ def test_update_edits_title_and_description(tmp_path, monkeypatch):
 
 def test_project_identity_preview_and_display_rename_by_slug(tmp_path, monkeypatch):
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Old Name"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Old Name"))
     repo = proofs / "Lea" / "OldName"
     assert "# Instructions — Old Name" in (repo / ".lea" / "instructions.md").read_text()
 
@@ -120,7 +133,7 @@ def test_project_identity_preview_and_display_rename_by_slug(tmp_path, monkeypat
     assert identity["projectName"] == "Old Name"
     assert identity["exists"] is True
 
-    result = projects_route.update_project_identity_by_slug(
+    result = projects_route.update_project_identity_by_slug.worker(
         project["slug"],
         ProjectIdentityUpdate(project_name="Readable Name", mode="display-only"),
     )
@@ -139,7 +152,7 @@ def test_project_identity_put_can_create_without_get_side_effect(tmp_path, monke
     assert missing.value.status_code == 404
     assert store.list_projects() == []
 
-    result = projects_route.update_project_identity_by_slug(
+    result = projects_route.update_project_identity_by_slug.worker(
         "doc-a",
         ProjectIdentityUpdate(
             project_name="Fourier Notes",
@@ -155,7 +168,7 @@ def test_project_identity_put_can_create_without_get_side_effect(tmp_path, monke
 
 def test_project_namespace_migration_rewrites_files_and_updates_row(tmp_path, monkeypatch):
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Old Name"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Old Name"))
     repo = proofs / "Lea" / "OldName"
     (repo / "helper.lean").write_text(
         "import Mathlib\nnamespace Lea.OldName\n\nlemma helper : True := by\n  trivial\n\nend Lea.OldName\n"
@@ -166,7 +179,7 @@ def test_project_namespace_migration_rewrites_files_and_updates_row(tmp_path, mo
         detail = ""
 
     monkeypatch.setattr(projects_route, "interface_check", lambda _path: CheckOk())
-    result = projects_route.update_project_identity_by_slug(
+    result = projects_route.update_project_identity_by_slug.worker(
         project["slug"],
         ProjectIdentityUpdate(
             project_name="New Name",
@@ -187,7 +200,7 @@ def test_project_namespace_migration_rewrites_files_and_updates_row(tmp_path, mo
 
 
 def _checked_rename_target(proofs, *, kind="theorem", result_kind="proved"):
-    project = projects_route.create_project(ProjectCreate(title="Old Name"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Old Name"))
     session = store.create_session("Formalize target", project_id=project["id"])
     target = store.create_formalization(
         project_id=project["id"], loose_session_id=None,
@@ -228,12 +241,12 @@ def test_namespace_rename_preserves_certification_and_original_history(tmp_path,
     # Certification survives successive renames, without attributing the new
     # namespace bytes to the agent's original completed run.
     for title in ("NewName", "FinalName"):
-        projects_route.update_project_identity_by_slug(
+        projects_route.update_project_identity_by_slug.worker(
             project["slug"], ProjectIdentityUpdate(
                 project_name=title, mode="rename-namespace", namespace=f"Lea.{title}",
             ),
         )
-        status = projects_route.project_target_status_by_slug(project["slug"], declarations="target")["targets"][0]
+        status = projects_route.project_target_status_by_slug.worker(project["slug"], declarations="target")["targets"][0]
         assert status["validity_status"] == verdict
         assert status["check_current"] is True
         assert status["completion_run_id"] == original["run_id"]
@@ -285,11 +298,11 @@ def test_namespace_rename_cannot_create_certification(tmp_path, monkeypatch, sce
 
 def test_delete_removes_repo_and_rows(tmp_path, monkeypatch):
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Doomed"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Doomed"))
     repo = proofs / "Lea" / "Doomed"
     assert repo.is_dir()
 
-    result = projects_route.delete_project(project["id"])
+    result = projects_route.delete_project.worker(project["id"])
     assert result["deleted"] is True
     assert not repo.exists()
     assert store.get_project(project["id"]) is None
@@ -298,15 +311,15 @@ def test_delete_removes_repo_and_rows(tmp_path, monkeypatch):
 def test_missing_project_is_404(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     for call in (
-        lambda: projects_route.get_project("nope"),
-        lambda: projects_route.update_project("nope", ProjectUpdate(title="x")),
-        lambda: projects_route.delete_project("nope"),
-        lambda: projects_route.get_instructions("nope"),
-        lambda: projects_route.put_instructions("nope", DocUpdate(content="x")),
-        lambda: projects_route.get_memory("nope"),
-        lambda: projects_route.put_memory("nope", DocUpdate(content="x")),
-        lambda: projects_route.get_blueprint("nope"),
-        lambda: projects_route.put_blueprint("nope", DocUpdate(content="x")),
+        lambda: projects_route.get_project.worker("nope"),
+        lambda: projects_route.update_project.worker("nope", ProjectUpdate(title="x")),
+        lambda: projects_route.delete_project.worker("nope"),
+        lambda: projects_route.get_instructions.worker("nope"),
+        lambda: projects_route.put_instructions.worker("nope", DocUpdate(content="x")),
+        lambda: projects_route.get_memory.worker("nope"),
+        lambda: projects_route.put_memory.worker("nope", DocUpdate(content="x")),
+        lambda: projects_route.get_blueprint.worker("nope"),
+        lambda: projects_route.put_blueprint.worker("nope", DocUpdate(content="x")),
     ):
         with pytest.raises(HTTPException) as exc:
             call()
@@ -318,9 +331,9 @@ def test_doc_get_returns_seeded_then_roundtrips_put(tmp_path, monkeypatch, doc):
     # R1/R2: GET returns the seeded template; PUT writes+commits; GET returns the
     # new content; and the composed run context reflects the edit.
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
-    get = getattr(projects_route, f"get_{doc}")
-    put = getattr(projects_route, f"put_{doc}")
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
+    get = getattr(projects_route, f"get_{doc}").worker
+    put = getattr(projects_route, f"put_{doc}").worker
 
     seeded = get(project["id"])["content"]
     assert doc[:4].lower() in seeded.lower()  # "inst"/"memo" header present
@@ -337,7 +350,7 @@ def test_doc_get_returns_seeded_then_roundtrips_put(tmp_path, monkeypatch, doc):
 def test_file_upload_list_download_delete_roundtrip(tmp_path, monkeypatch):
     # S1: POST stores+indexes; GET lists; GET/{fid} downloads the bytes; DELETE removes.
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     pid = project["id"]
     assert projects_route.list_files(pid)["files"] == []
 
@@ -346,16 +359,16 @@ def test_file_upload_list_download_delete_roundtrip(tmp_path, monkeypatch):
     assert [f["id"] for f in projects_route.list_files(pid)["files"]] == [row["id"]]
 
     resp = projects_route.download_file(pid, row["id"])
-    assert str(resp.path) == str(proofs / "Lea" / "Analysis" / ".lea" / "files" / "notes.tex")
-    assert resp.filename == "notes.tex"
+    assert resp.body==b"\\section{x}"
+    assert 'notes.tex' in resp.headers['content-disposition']
 
-    assert projects_route.delete_file(pid, row["id"])["deleted"] is True
+    assert projects_route.delete_file.worker(pid, row["id"])["deleted"] is True
     assert projects_route.list_files(pid)["files"] == []
 
 
 def test_file_upload_rejects_unsupported_type(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     with pytest.raises(HTTPException) as exc:
         _upload(project["id"], "evil.sh", b"rm -rf /")
     assert exc.value.status_code == 415
@@ -363,7 +376,7 @@ def test_file_upload_rejects_unsupported_type(tmp_path, monkeypatch):
 
 def test_file_routes_404_on_missing_project_or_file(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     pid = project["id"]
     with pytest.raises(HTTPException) as e1:
         projects_route.list_files("nope")
@@ -372,7 +385,7 @@ def test_file_routes_404_on_missing_project_or_file(tmp_path, monkeypatch):
         projects_route.download_file(pid, "no-such-file")
     assert e2.value.status_code == 404
     with pytest.raises(HTTPException) as e3:
-        projects_route.delete_file(pid, "no-such-file")
+        projects_route.delete_file.worker(pid, "no-such-file")
     assert e3.value.status_code == 404
 
 
@@ -380,38 +393,38 @@ def test_blueprint_route_returns_validator_warnings(tmp_path, monkeypatch):
     # T1: PUT/GET /blueprint attach advisory warnings (a dangling `uses` edge), but
     # still save (warnings never block the write).
     _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     pid = project["id"]
 
     bad = "## a\n- kind: lemma\n- uses: ghost\n\nstatement\n"
-    put = projects_route.put_blueprint(pid, DocUpdate(content=bad))
+    put = projects_route.put_blueprint.worker(pid, DocUpdate(content=bad))
     assert len(put["commit_sha"]) == 40  # the malformed blueprint still committed
     assert any("ghost" in w["message"] for w in put["warnings"])
 
     # The warning is recomputed on GET too, not just returned from the PUT.
-    assert any("ghost" in w["message"] for w in projects_route.get_blueprint(pid)["warnings"])
+    assert any("ghost" in w["message"] for w in projects_route.get_blueprint.worker(pid)["warnings"])
 
 
 def test_graph_route_derives_node_status(tmp_path, monkeypatch):
     # T2: GET /graph parses the blueprint and derives status from the stored verdict.
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     pid = project["id"]
     repo = proofs / "Lea" / "Analysis"
 
     (repo / "helper.lean").write_text("import Mathlib\nnamespace Lea.Analysis\nlemma helper : True := trivial\nend Lea.Analysis\n")
-    projects_route.put_blueprint(pid, DocUpdate(content="## helper\n- kind: lemma\n- lean: `Lea.Analysis.helper`\n\nA helper.\n"))
+    projects_route.put_blueprint.worker(pid, DocUpdate(content="## helper\n- kind: lemma\n- lean: `Lea.Analysis.helper`\n\nA helper.\n"))
     sess = store.create_session("w", project_id=pid)["id"]
     store.add_code_step(sess, None, "helper.lean", content="proof-a", check_status="ok")
 
-    result = projects_route.get_graph(pid)
+    result = projects_route.get_graph.worker(pid)
     node = result["nodes"][0]
     assert node["key"] == "helper"
     assert node["status"] == "proved"
     assert node["last_modified_by"] == sess
 
     with pytest.raises(HTTPException) as exc:
-        projects_route.get_graph("nope")
+        projects_route.get_graph.worker("nope")
     assert exc.value.status_code == 404
 
 
@@ -422,10 +435,14 @@ def test_filesystem_tree_read_edit_export_roundtrip(tmp_path, monkeypatch):
     import zipfile
 
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     pid = project["id"]
 
     # Tree: the seeded .lea/ dir shows; .git is hidden.
+    from app import workspace_observer
+    workspace_observer.enroll(pid)
+    for _ in range(20):
+        if workspace_observer.scan(pid,proofs/'Lea/Analysis')['state']=='observed':break
     tree = projects_route.get_tree(pid)["tree"]
     names = [e["name"] for e in tree]
     assert ".lea" in names and ".git" not in names
@@ -436,13 +453,15 @@ def test_filesystem_tree_read_edit_export_roundtrip(tmp_path, monkeypatch):
     assert bp["lean"] is False
 
     # Edit a brand-new file → write + commit; reading it back returns the content.
-    put = projects_route.write_project_file(pid, FilePut(path="notes/scratch.md", content="# hi\n"))
+    put = projects_route.write_project_file.worker(pid, FilePut(path="notes/scratch.md", content="# hi\n"))
     assert len(put["commit_sha"]) == 40
     assert put["check"] is None  # not a .lean file
+    for _ in range(20):
+        if workspace_observer.scan(pid,proofs/'Lea/Analysis')['state']=='observed':break
     assert projects_route.read_project_file(pid, "notes/scratch.md")["content"] == "# hi\n"
 
     # Export: a zip carrying the source + assets, excluding internals.
-    resp = projects_route.export_project(pid)
+    resp = projects_route.export_project.worker(pid)
     assert resp.media_type == "application/zip"
     with zipfile.ZipFile(io.BytesIO(resp.body)) as zf:
         entries = zf.namelist()
@@ -455,14 +474,14 @@ def test_write_lean_file_returns_check_verdict(tmp_path, monkeypatch):
     # A .lean edit re-uses the standalone check for a verdict (like the v2 canvas, D2).
     # interface_check is patched so the route doesn't invoke real Lean.
     _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
 
     class _Result:
         status = "ok"
         detail = None
 
     monkeypatch.setattr(projects_route, "interface_check", lambda _path: _Result())
-    put = projects_route.write_project_file(
+    put = projects_route.write_project_file.worker(
         project["id"], FilePut(path="Foo.lean", content="theorem foo : True := trivial\n")
     )
     assert put["check"] == {"status": "ok", "detail": None}
@@ -470,7 +489,7 @@ def test_write_lean_file_returns_check_verdict(tmp_path, monkeypatch):
 
 def test_filesystem_path_guard_and_404s(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     pid = project["id"]
 
     # Path escape → 400 on both read and write.
@@ -478,9 +497,12 @@ def test_filesystem_path_guard_and_404s(tmp_path, monkeypatch):
         projects_route.read_project_file(pid, "../escape.txt")
     assert e1.value.status_code == 400
     with pytest.raises(HTTPException) as e2:
-        projects_route.write_project_file(pid, FilePut(path="../sneaky.txt", content="x"))
+        projects_route.write_project_file.worker(pid, FilePut(path="../sneaky.txt", content="x"))
     assert e2.value.status_code == 400
 
+    from app import workspace_observer
+    workspace_observer.enroll(pid)
+    workspace_observer.scan(pid,tmp_path/'workspace/proofs/Lea/Analysis')
     # Missing file → 404; hidden dir → 400.
     with pytest.raises(HTTPException) as e3:
         projects_route.read_project_file(pid, "ghost.lean")
@@ -493,8 +515,8 @@ def test_filesystem_path_guard_and_404s(tmp_path, monkeypatch):
     for call in (
         lambda: projects_route.get_tree("nope"),
         lambda: projects_route.read_project_file("nope", "x"),
-        lambda: projects_route.write_project_file("nope", FilePut(path="x", content="y")),
-        lambda: projects_route.export_project("nope"),
+        lambda: projects_route.write_project_file.worker("nope", FilePut(path="x", content="y")),
+        lambda: projects_route.export_project.worker("nope"),
     ):
         with pytest.raises(HTTPException) as exc:
             call()
@@ -506,9 +528,9 @@ def test_put_doc_feeds_composed_context(tmp_path, monkeypatch):
     from app import projects as project_service
 
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
-    projects_route.put_instructions(project["id"], DocUpdate(content="Prove √2 is irrational."))
-    projects_route.put_memory(project["id"], DocUpdate(content="- explicit witnesses preferred"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
+    projects_route.put_instructions.worker(project["id"], DocUpdate(content="Prove √2 is irrational."))
+    projects_route.put_memory.worker(project["id"], DocUpdate(content="- explicit witnesses preferred"))
 
     repo = proofs / "Lea" / "Analysis"
     msg = project_service.compose_context_message(store.get_project(project["id"]), repo)
@@ -520,15 +542,15 @@ def test_put_doc_feeds_composed_context(tmp_path, monkeypatch):
 
 def test_set_project_remote_valid_and_invalid(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    pid = projects_route.create_project(ProjectCreate(title="Share Me"))["id"]
+    pid = projects_route.create_project.worker(ProjectCreate(title="Share Me"))["id"]
     from app.routes.projects import RemoteUpdate
 
-    res = projects_route.set_project_remote(pid, RemoteUpdate(remote_url="https://github.com/me/share-me.git/"))
+    res = projects_route.set_project_remote.worker(pid, RemoteUpdate(remote_url="https://github.com/me/share-me.git/"))
     assert res["remote_url"] == "https://github.com/me/share-me.git"  # trailing slash stripped
     assert store.get_project(pid)["remote_url"] == "https://github.com/me/share-me.git"
 
     with pytest.raises(HTTPException) as ei:
-        projects_route.set_project_remote(pid, RemoteUpdate(remote_url="ftp://example.com/x"))
+        projects_route.set_project_remote.worker(pid, RemoteUpdate(remote_url="ftp://example.com/x"))
     assert ei.value.status_code == 400
 
 
@@ -537,7 +559,7 @@ def test_set_project_remote_pins_the_github_host(tmp_path, monkeypatch):
     message promised a GitHub URL — and `push` embeds the user's PAT in whatever
     was stored, so a foreign host was credential exfiltration, not a typo."""
     _setup(tmp_path, monkeypatch)
-    pid = projects_route.create_project(ProjectCreate(title="Pin Me"))["id"]
+    pid = projects_route.create_project.worker(ProjectCreate(title="Pin Me"))["id"]
     from app.routes.projects import RemoteUpdate
 
     for hostile in (
@@ -548,13 +570,13 @@ def test_set_project_remote_pins_the_github_host(tmp_path, monkeypatch):
         "https://github.com/../..",                 # traversal-ish path segments
     ):
         with pytest.raises(HTTPException) as ei:
-            projects_route.set_project_remote(pid, RemoteUpdate(remote_url=hostile))
+            projects_route.set_project_remote.worker(pid, RemoteUpdate(remote_url=hostile))
         assert ei.value.status_code == 400, hostile
     assert store.get_project(pid)["remote_url"] is None
 
     # The legitimate shapes still round-trip.
     for good in ("https://github.com/me/repo", "https://www.github.com/me/repo.git"):
-        assert projects_route.set_project_remote(
+        assert projects_route.set_project_remote.worker(
             pid, RemoteUpdate(remote_url=good)
         )["remote_url"] == good
 
@@ -564,7 +586,7 @@ def test_push_refuses_a_non_github_remote_stored_directly(tmp_path, monkeypatch)
     something other than the route). Re-check where the credential is actually
     used, so an old row can't become a token-delivery target."""
     _setup(tmp_path, monkeypatch)
-    pid = projects_route.create_project(ProjectCreate(title="Legacy Remote"))["id"]
+    pid = projects_route.create_project.worker(ProjectCreate(title="Legacy Remote"))["id"]
     store.update_project(pid, remote_url="https://evil.example.com/me/repo")
     monkeypatch.setattr(projects_route, "github_token", lambda: "ghp_dummy")
 
@@ -574,7 +596,7 @@ def test_push_refuses_a_non_github_remote_stored_directly(tmp_path, monkeypatch)
     monkeypatch.setattr(projects_route.GitStore, "push_to_github", explode)
 
     with pytest.raises(HTTPException) as ei:
-        projects_route.push_project(pid)
+        projects_route.push_project.worker(pid)
     assert ei.value.status_code == 400
     assert "github" in ei.value.detail.lower()
 
@@ -582,16 +604,16 @@ def test_push_refuses_a_non_github_remote_stored_directly(tmp_path, monkeypatch)
 def test_push_guards_no_remote_then_no_token(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     from app.routes.projects import RemoteUpdate
-    pid = projects_route.create_project(ProjectCreate(title="NoShare"))["id"]
+    pid = projects_route.create_project.worker(ProjectCreate(title="NoShare"))["id"]
 
     with pytest.raises(HTTPException) as e1:
-        projects_route.push_project(pid)
+        projects_route.push_project.worker(pid)
     assert e1.value.status_code == 400 and "remote" in e1.value.detail.lower()
 
-    projects_route.set_project_remote(pid, RemoteUpdate(remote_url="https://github.com/me/noshare"))
+    projects_route.set_project_remote.worker(pid, RemoteUpdate(remote_url="https://github.com/me/noshare"))
     monkeypatch.setattr(projects_route, "github_token", lambda: None)
     with pytest.raises(HTTPException) as e2:
-        projects_route.push_project(pid)
+        projects_route.push_project.worker(pid)
     assert e2.value.status_code == 400 and "token" in e2.value.detail.lower()
 
 
@@ -602,7 +624,7 @@ def test_push_to_local_bare_repo_functionally(tmp_path, monkeypatch):
     from app.gitstore import GitStore
 
     proofs = _setup(tmp_path, monkeypatch)
-    pid = projects_route.create_project(ProjectCreate(title="Pushy"))["id"]
+    pid = projects_route.create_project.worker(ProjectCreate(title="Pushy"))["id"]
     repo = projects_route.project_service.project_repo_dir(store.get_project(pid), proofs)
     (repo / "hello.txt").write_text("hi")
     GitStore(proofs).commit_all(repo, "add hello")
@@ -632,7 +654,7 @@ def test_push_to_diverged_remote_points_at_lea(tmp_path, monkeypatch):
     from app.gitstore import GitStore
 
     proofs = _setup(tmp_path, monkeypatch)
-    pid = projects_route.create_project(ProjectCreate(title="Diverged"))["id"]
+    pid = projects_route.create_project.worker(ProjectCreate(title="Diverged"))["id"]
     repo = projects_route.project_service.project_repo_dir(store.get_project(pid), proofs)
     (repo / "local.txt").write_text("local")
     GitStore(proofs).commit_all(repo, "local commit")
@@ -652,7 +674,7 @@ def test_push_to_diverged_remote_points_at_lea(tmp_path, monkeypatch):
     monkeypatch.setattr(projects_route, "github_token", lambda: "ghp_dummy")
 
     with pytest.raises(HTTPException) as ei:
-        projects_route.push_project(pid)
+        projects_route.push_project.worker(pid)
     assert ei.value.status_code == 502
     assert "reconcile" in ei.value.detail.lower() and "lea" in ei.value.detail.lower()
 
@@ -668,23 +690,23 @@ def test_by_slug_share_status_export_and_remote(tmp_path, monkeypatch):
     from app.routes.projects import RemoteUpdate
 
     _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Doc One"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Doc One"))
     slug = project["slug"]
 
     # Share status: no remote yet; token presence mirrors Settings.
     monkeypatch.setattr(projects_route, "github_token", lambda: None)
-    status = projects_route.get_share_status_by_slug(slug)
+    status = projects_route.get_share_status_by_slug.worker(slug)
     assert status == {"id": project["id"], "slug": slug, "remote_url": None, "token_configured": False}
 
     monkeypatch.setattr(projects_route, "github_token", lambda: "ghp_dummy")
-    projects_route.set_project_remote_by_slug(slug, RemoteUpdate(remote_url="https://github.com/me/doc-one/"))
-    status = projects_route.get_share_status_by_slug(slug)
+    projects_route.set_project_remote_by_slug.worker(slug, RemoteUpdate(remote_url="https://github.com/me/doc-one/"))
+    status = projects_route.get_share_status_by_slug.worker(slug)
     assert status["remote_url"] == "https://github.com/me/doc-one"  # trailing slash stripped
     assert status["token_configured"] is True
     assert status["remote_url"] == store.get_project(project["id"])["remote_url"]
 
     # Export by slug: same zip as the by-id route.
-    resp = projects_route.export_project_by_slug(slug)
+    resp = projects_route.export_project_by_slug.worker(slug)
     assert resp.media_type == "application/zip"
     assert f'filename="{slug}.zip"' in resp.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(resp.body)) as zf:
@@ -698,7 +720,7 @@ def test_by_slug_push_functionally(tmp_path, monkeypatch):
     import subprocess
 
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Slug Push"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Slug Push"))
     repo = projects_route.project_service.project_repo_dir(store.get_project(project["id"]), proofs)
     (repo / "hello.txt").write_text("hi")
 
@@ -707,7 +729,7 @@ def test_by_slug_push_functionally(tmp_path, monkeypatch):
     store.update_project(project["id"], remote_url=str(bare))
     monkeypatch.setattr(projects_route, "github_token", lambda: "ghp_dummy")
 
-    res = projects_route.push_project_by_slug(project["slug"])
+    res = projects_route.push_project_by_slug.worker(project["slug"])
     assert res["pushed"] is True
     assert res["commit_sha"]
     log = subprocess.run(
@@ -726,7 +748,7 @@ def test_by_slug_push_functionally(tmp_path, monkeypatch):
         ["git", "-C", str(repo), "rev-list", "--count", "HEAD"],
         capture_output=True, text=True, check=True,
     ).stdout.strip()
-    second = projects_route.push_project_by_slug(project["slug"])
+    second = projects_route.push_project_by_slug.worker(project["slug"])
     after = subprocess.run(
         ["git", "-C", str(repo), "rev-list", "--count", "HEAD"],
         capture_output=True, text=True, check=True,
@@ -742,13 +764,13 @@ def test_by_slug_never_creates_a_project(tmp_path, monkeypatch):
 
     _setup(tmp_path, monkeypatch)
     for call in (
-        lambda: projects_route.get_share_status_by_slug("no-such-doc"),
-        lambda: projects_route.export_project_by_slug("no-such-doc"),
-        lambda: projects_route.set_project_remote_by_slug("no-such-doc", RemoteUpdate(remote_url="https://github.com/a/b")),
-        lambda: projects_route.push_project_by_slug("no-such-doc"),
-        lambda: projects_route.get_blueprint_by_slug("no-such-doc"),
-        lambda: projects_route.get_graph_by_slug("no-such-doc"),
-        lambda: projects_route.export_project_by_slug("Bad Slug!!"),  # malformed ≡ missing
+        lambda: projects_route.get_share_status_by_slug.worker("no-such-doc"),
+        lambda: projects_route.export_project_by_slug.worker("no-such-doc"),
+        lambda: projects_route.set_project_remote_by_slug.worker("no-such-doc", RemoteUpdate(remote_url="https://github.com/a/b")),
+        lambda: projects_route.push_project_by_slug.worker("no-such-doc"),
+        lambda: projects_route.get_blueprint_by_slug.worker("no-such-doc"),
+        lambda: projects_route.get_graph_by_slug.worker("no-such-doc"),
+        lambda: projects_route.export_project_by_slug.worker("Bad Slug!!"),  # malformed ≡ missing
     ):
         with pytest.raises(HTTPException) as exc:
             call()
@@ -760,14 +782,14 @@ def test_blueprint_by_slug_matches_by_id_and_returns_warnings(tmp_path, monkeypa
     """The companion's read-only blueprint fetch: same payload as the by-id route,
     warnings included (a dangling `uses` edge)."""
     _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Doc One"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Doc One"))
     pid, slug = project["id"], project["slug"]
 
     bad = "## a\n- kind: lemma\n- uses: ghost\n\nstatement\n"
-    projects_route.put_blueprint(pid, DocUpdate(content=bad))
+    projects_route.put_blueprint.worker(pid, DocUpdate(content=bad))
 
-    by_slug = projects_route.get_blueprint_by_slug(slug)
-    assert by_slug == projects_route.get_blueprint(pid)  # same derivation, slug-resolved
+    by_slug = projects_route.get_blueprint_by_slug.worker(slug)
+    assert by_slug == projects_route.get_blueprint.worker(pid)  # same derivation, slug-resolved
     assert any("ghost" in w["message"] for w in by_slug["warnings"])
 
 
@@ -775,14 +797,14 @@ def test_graph_by_slug_matches_by_id_and_derives_status(tmp_path, monkeypatch):
     """GET graph-by-slug parses the blueprint and derives node status from the
     stored verdict — identical to the by-id route for the same project."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     pid, slug = project["id"], project["slug"]
     repo = proofs / "Lea" / "Analysis"
 
     (repo / "helper.lean").write_text(
         "import Mathlib\nnamespace Lea.Analysis\nlemma helper : True := trivial\nend Lea.Analysis\n"
     )
-    projects_route.put_blueprint(
+    projects_route.put_blueprint.worker(
         pid, DocUpdate(content="## helper\n- kind: lemma\n- lean: `Lea.Analysis.helper`\n\nA helper.\n")
     )
     sess = store.create_session("w", project_id=pid)["id"]
@@ -791,8 +813,8 @@ def test_graph_by_slug_matches_by_id_and_derives_status(tmp_path, monkeypatch):
         content=(repo / "helper.lean").read_text(), check_status="ok",
     )
 
-    by_slug = projects_route.get_graph_by_slug(slug)
-    assert by_slug == projects_route.get_graph(pid)  # slug-resolved, same graph
+    by_slug = projects_route.get_graph_by_slug.worker(slug)
+    assert by_slug == projects_route.get_graph.worker(pid)  # slug-resolved, same graph
     node = by_slug["nodes"][0]
     assert node["key"] == "helper"
     assert node["status"] == "proved"
@@ -811,7 +833,7 @@ def test_generate_blueprint_synthesizes_nodes_edges_and_is_idempotent(tmp_path, 
     """Populate the blueprint from formalized artifacts: one node per recorded decl,
     kind from the Lean keyword, `uses` edges from decl references — additive + idempotent."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     pid = project["id"]
     repo = proofs / "Lea" / "Analysis"
     session = store.create_session("prove", project_id=pid)["id"]
@@ -826,7 +848,7 @@ def test_generate_blueprint_synthesizes_nodes_edges_and_is_idempotent(tmp_path, 
     _record_artifact(pid, session, "Lea.Analysis.base", "definition", "base.lean")
     _record_artifact(pid, session, "Lea.Analysis.uses_base", "proof", "uses_base.lean")
 
-    result = projects_route.generate_blueprint(pid)
+    result = projects_route.generate_blueprint.worker(pid)
     assert result["added"] == 2 and result["skipped"] == 0
 
     nodes = {n["key"]: n for n in result["graph"]["nodes"]}
@@ -836,7 +858,7 @@ def test_generate_blueprint_synthesizes_nodes_edges_and_is_idempotent(tmp_path, 
     assert {"from": "uses_base", "to": "base"} in result["graph"]["edges"]
 
     # Idempotent: a second run adds nothing and preserves the existing nodes.
-    again = projects_route.generate_blueprint(pid)
+    again = projects_route.generate_blueprint.worker(pid)
     assert again["added"] == 0 and again["skipped"] == 2
     assert len(again["graph"]["nodes"]) == 2
 
@@ -845,7 +867,7 @@ def test_generate_blueprint_backfills_pre_index_artifacts(tmp_path, monkeypatch)
     """A project whose proofs predate the artifacts index (registry markdown only, no
     artifact rows) must still generate nodes — the route backfills before reading."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Legacy"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Legacy"))
     pid = project["id"]
     repo = proofs / "Lea" / "Legacy"
     (repo / "old.lean").write_text(
@@ -862,7 +884,7 @@ def test_generate_blueprint_backfills_pre_index_artifacts(tmp_path, monkeypatch)
         'proof="workspace/proofs/Lea/Legacy/old.lean" module="Lea.Legacy.Old" -->\n'
     )
 
-    result = projects_route.generate_blueprint(pid)
+    result = projects_route.generate_blueprint.worker(pid)
     assert result["added"] == 1, "backfill should surface the registry proof before generating"
     assert result["graph"]["nodes"][0]["key"] == "old"
 
@@ -871,7 +893,7 @@ def test_generate_blueprint_edge_derivation_ignores_comments_and_ambiguous_short
     """Edges come from real references only: a name mentioned in a comment yields no
     edge, and a short name shared by two decls is too ambiguous to edge (skipped)."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Edges"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Edges"))
     pid = project["id"]
     repo = proofs / "Lea" / "Edges"
     session = store.create_session("prove", project_id=pid)["id"]
@@ -897,7 +919,7 @@ def test_generate_blueprint_edge_derivation_ignores_comments_and_ambiguous_short
     ]:
         _record_artifact(pid, session, name, "proof", path)
 
-    result = projects_route.generate_blueprint(pid)
+    result = projects_route.generate_blueprint.worker(pid)
     nodes = {n["key"]: n for n in result["graph"]["nodes"]}
     assert nodes["commented"]["uses"] == []                       # comment ref → no edge
     assert all(u not in ("dup", "dup_2") for u in nodes["cites_dup"]["uses"])  # ambiguous short → skipped
@@ -907,7 +929,7 @@ def test_generate_blueprint_preserves_multiline_signature(tmp_path, monkeypatch)
     """A signature that spans multiple source lines keeps its line breaks in the node
     statement (so the pane can render it like the Lean pane), not collapsed to one line."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Multi"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Multi"))
     pid = project["id"]
     repo = proofs / "Lea" / "Multi"
     session = store.create_session("prove", project_id=pid)["id"]
@@ -917,7 +939,7 @@ def test_generate_blueprint_preserves_multiline_signature(tmp_path, monkeypatch)
     )
     _record_artifact(pid, session, "Lea.Multi.wide", "proof", "wide.lean")
 
-    result = projects_route.generate_blueprint(pid)
+    result = projects_route.generate_blueprint.worker(pid)
     stmt = result["graph"]["nodes"][0]["statement"]
     assert "\n" in stmt, "multi-line signature must keep its line breaks"
     lines = stmt.splitlines()
@@ -929,7 +951,7 @@ def test_generate_blueprint_closes_dangling_fence_before_appending(tmp_path, mon
     """An unclosed ``` fence in blueprint.md must not swallow the appended nodes — the
     node stays a real section, so a second run is still idempotent."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Fence"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Fence"))
     pid = project["id"]
     repo = proofs / "Lea" / "Fence"
     session = store.create_session("prove", project_id=pid)["id"]
@@ -939,18 +961,18 @@ def test_generate_blueprint_closes_dangling_fence_before_appending(tmp_path, mon
     _record_artifact(pid, session, "Lea.Fence.t", "proof", "t.lean")
 
     # A blueprint that ends inside an open fence (odd number of ``` lines).
-    projects_route.put_blueprint(pid, DocUpdate(content="# Blueprint\n\n```\nunterminated example\n"))
+    projects_route.put_blueprint.worker(pid, DocUpdate(content="# Blueprint\n\n```\nunterminated example\n"))
 
-    first = projects_route.generate_blueprint(pid)
+    first = projects_route.generate_blueprint.worker(pid)
     assert first["added"] == 1 and first["graph"]["nodes"][0]["key"] == "t"
     # Idempotent despite the dangling fence: the node was written outside it.
-    second = projects_route.generate_blueprint(pid)
+    second = projects_route.generate_blueprint.worker(pid)
     assert second["added"] == 0 and len(second["graph"]["nodes"]) == 1
 
 
 def test_generate_blueprint_by_slug_and_404(tmp_path, monkeypatch):
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Doc One"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Doc One"))
     slug = project["slug"]
     repo = proofs / "Lea" / "DocOne"
     session = store.create_session("prove", project_id=project["id"])["id"]
@@ -959,13 +981,13 @@ def test_generate_blueprint_by_slug_and_404(tmp_path, monkeypatch):
     )
     _record_artifact(project["id"], session, "Lea.DocOne.thm", "proof", "thm.lean")
 
-    result = projects_route.generate_blueprint_by_slug(slug)
+    result = projects_route.generate_blueprint_by_slug.worker(slug)
     assert result["added"] == 1
     assert result["graph"]["nodes"][0]["key"] == "thm"
     assert result["graph"]["nodes"][0]["kind"] == "lemma"
 
     with pytest.raises(HTTPException) as exc:
-        projects_route.generate_blueprint_by_slug("no-such-doc")
+        projects_route.generate_blueprint_by_slug.worker("no-such-doc")
     assert exc.value.status_code == 404
 
 
@@ -974,7 +996,7 @@ def test_artifacts_by_slug_returns_recorded_rows_and_404s_unknown(tmp_path, monk
     companion reads instead of diffing registry markdown. Never creates a
     project — unknown slug is a 404."""
     _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     session = store.create_session("prove", project_id=project["id"])
     run = store.create_run(session["id"], "m", None, 3, project_id=project["id"])
     store.upsert_artifact(
@@ -1000,20 +1022,20 @@ def test_artifact_retire_and_restore_round_trip_through_git(tmp_path, monkeypatc
     proof through the adapter's git layer (a commit, not a bare unlink), and an
     unverified retry restores it from that commit's parent."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     repo = proofs / "Lea" / "Analysis"
     proof = repo / "cauchy_bound.lean"
     proof.write_text("theorem cauchy_bound : True := by\n  trivial\n")
     from app.gitstore import GitStore
     GitStore(repo.parent).commit_all(repo, "record cauchy_bound")
 
-    retired = projects_route.retire_project_artifact_by_slug(
+    retired = projects_route.retire_project_artifact_by_slug.worker(
         project["slug"], projects_route.ArtifactRetireRequest(path="cauchy_bound.lean")
     )
     assert not proof.exists(), "the file is gone from the working tree"
     assert len(retired["retire_commit"]) == 40
 
-    restored = projects_route.restore_project_artifact_by_slug(
+    restored = projects_route.restore_project_artifact_by_slug.worker(
         project["slug"],
         projects_route.ArtifactRestoreRequest(path="cauchy_bound.lean", retire_commit=retired["retire_commit"]),
     )
@@ -1024,7 +1046,7 @@ def test_artifact_retire_and_restore_round_trip_through_git(tmp_path, monkeypatc
 def test_artifact_retire_refuses_file_with_multiple_declarations(tmp_path, monkeypatch):
     """Retrying one declaration must not delete its siblings' proof file."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     repo = proofs / "Lea" / "Analysis"
     proof = repo / "shared.lean"
     original = (
@@ -1038,7 +1060,7 @@ def test_artifact_retire_refuses_file_with_multiple_declarations(tmp_path, monke
     GitStore(repo.parent).commit_all(repo, "record shared proof")
 
     with pytest.raises(HTTPException) as exc:
-        projects_route.retire_project_artifact_by_slug(
+        projects_route.retire_project_artifact_by_slug.worker(
             project["slug"], projects_route.ArtifactRetireRequest(path="shared.lean")
         )
 
@@ -1051,7 +1073,7 @@ def test_artifact_retire_refuses_file_with_multiple_declarations(tmp_path, monke
         declaration_name="needs_retry", kind="proof", path="shared.lean",
         module_name="Lea.Analysis.shared",
     )
-    status = projects_route.project_target_status_by_slug(
+    status = projects_route.project_target_status_by_slug.worker(
         project["slug"], declarations="needs_retry"
     )
     assert status["targets"][0]["shared_file"] is True
@@ -1062,7 +1084,7 @@ def test_definition_helpers_share_one_artifact_but_separate_targets_stay_protect
     tmp_path, monkeypatch, extra_owner
 ):
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     repo = proofs / "Lea" / "Analysis"
     original = (
         "namespace Lea.Analysis\n"
@@ -1097,21 +1119,21 @@ def test_definition_helpers_share_one_artifact_but_separate_targets_stay_protect
                 display_title=name, declaration_name=name, kind="definition",
             )
             store.link_formalization_file(formalization["id"], proof.name, "primary")
-    status = projects_route.project_target_status_by_slug(project["slug"], declarations="CapacityEncoding")
+    status = projects_route.project_target_status_by_slug.worker(project["slug"], declarations="CapacityEncoding")
     assert status["targets"][0]["shared_file"] is (extra_owner is not None)
     if extra_owner:
         with pytest.raises(HTTPException) as exc:
-            projects_route.retire_project_artifact_by_slug(
+            projects_route.retire_project_artifact_by_slug.worker(
                 project["slug"], projects_route.ArtifactRetireRequest(path=proof.name)
             )
         assert exc.value.status_code == 409
         assert proof.read_text() == original
     else:
-        retired = projects_route.retire_project_artifact_by_slug(
+        retired = projects_route.retire_project_artifact_by_slug.worker(
             project["slug"], projects_route.ArtifactRetireRequest(path=proof.name)
         )
         assert not proof.exists()
-        projects_route.restore_project_artifact_by_slug(
+        projects_route.restore_project_artifact_by_slug.worker(
             project["slug"], projects_route.ArtifactRestoreRequest(
                 path=proof.name, retire_commit=retired["retire_commit"]
             )
@@ -1123,7 +1145,7 @@ def test_artifact_retire_first_records_an_untracked_sql_owned_file(tmp_path, mon
     """Retiring an indexed but untracked materialization must not unlink it and
     then fail `git add` before a restore token can be returned."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     repo = proofs / "Lea" / "Analysis"
     proof = repo / "untracked.lean"
     content = "theorem untracked : True := by\n  trivial\n"
@@ -1136,11 +1158,11 @@ def test_artifact_retire_first_records_an_untracked_sql_owned_file(tmp_path, mon
         module_name="Lea.Analysis.untracked",
     )
 
-    retired = projects_route.retire_project_artifact_by_slug(
+    retired = projects_route.retire_project_artifact_by_slug.worker(
         project["slug"], projects_route.ArtifactRetireRequest(path="untracked.lean")
     )
     assert not proof.exists()
-    restored = projects_route.restore_project_artifact_by_slug(
+    restored = projects_route.restore_project_artifact_by_slug.worker(
         project["slug"], projects_route.ArtifactRestoreRequest(
             path="untracked.lean", retire_commit=retired["retire_commit"],
         ),
@@ -1153,7 +1175,7 @@ def test_artifact_restore_prefers_verified_sql_snapshot(tmp_path, monkeypatch):
     """Agent proof bytes live in the timeline, even when project Git never saw
     that version. A failed retry must restore those exact verified bytes."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     repo = proofs / "Lea" / "Analysis"
     proof = repo / "sql_owned.lean"
     stale = "theorem sql_owned : True := by\n  exact True.intro\n"
@@ -1170,10 +1192,10 @@ def test_artifact_restore_prefers_verified_sql_snapshot(tmp_path, monkeypatch):
     )
     proof.write_text(verified)  # deliberately not committed: SQL owns this version
 
-    retired = projects_route.retire_project_artifact_by_slug(
+    retired = projects_route.retire_project_artifact_by_slug.worker(
         project["slug"], projects_route.ArtifactRetireRequest(path="sql_owned.lean")
     )
-    restored = projects_route.restore_project_artifact_by_slug(
+    restored = projects_route.restore_project_artifact_by_slug.worker(
         project["slug"],
         projects_route.ArtifactRestoreRequest(
             path="sql_owned.lean", retire_commit=retired["retire_commit"]
@@ -1186,19 +1208,19 @@ def test_artifact_restore_prefers_verified_sql_snapshot(tmp_path, monkeypatch):
 
 def test_artifact_restore_never_overwrites_an_occupied_path(tmp_path, monkeypatch):
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     repo = proofs / "Lea" / "Analysis"
     proof = repo / "kept.lean"
     proof.write_text("theorem kept : True := trivial\n")
     from app.gitstore import GitStore
     GitStore(repo.parent).commit_all(repo, "record kept")
-    retired = projects_route.retire_project_artifact_by_slug(
+    retired = projects_route.retire_project_artifact_by_slug.worker(
         project["slug"], projects_route.ArtifactRetireRequest(path="kept.lean")
     )
     # The failed retry left its own partial file at the path.
     proof.write_text("theorem kept : True := by sorry\n")
 
-    result = projects_route.restore_project_artifact_by_slug(
+    result = projects_route.restore_project_artifact_by_slug.worker(
         project["slug"],
         projects_route.ArtifactRestoreRequest(path="kept.lean", retire_commit=retired["retire_commit"]),
     )
@@ -1208,16 +1230,16 @@ def test_artifact_restore_never_overwrites_an_occupied_path(tmp_path, monkeypatc
 
 def test_artifact_retire_rejects_escapes_and_missing_files(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
 
     with pytest.raises(HTTPException) as escape:
-        projects_route.retire_project_artifact_by_slug(
+        projects_route.retire_project_artifact_by_slug.worker(
             project["slug"], projects_route.ArtifactRetireRequest(path="../../etc/passwd")
         )
     assert escape.value.status_code == 422
 
     with pytest.raises(HTTPException) as missing:
-        projects_route.retire_project_artifact_by_slug(
+        projects_route.retire_project_artifact_by_slug.worker(
             project["slug"], projects_route.ArtifactRetireRequest(path="never_recorded.lean")
         )
     assert missing.value.status_code == 404
@@ -1228,7 +1250,7 @@ def test_target_status_serves_ledger_evidence(tmp_path, monkeypatch):
     row, file existence, sorry scan, and the newest check verdict across all
     the project's sessions — for the companion's ledger status engine."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     repo = proofs / "Lea" / "Analysis"
     session = store.create_session("prove", project_id=project["id"])
     run = store.create_run(session["id"], "m", None, 3, project_id=project["id"])
@@ -1249,7 +1271,7 @@ def test_target_status_serves_ledger_evidence(tmp_path, monkeypatch):
                           declaration_name="retired_one", kind="proof",
                           path="retired_one.lean", module_name="Lea.Analysis.retired_one")
 
-    payload = projects_route.project_target_status_by_slug(
+    payload = projects_route.project_target_status_by_slug.worker(
         project["slug"], declarations="proved_one,stubbed_one,retired_one,never_seen"
     )
     by_name = {t["declaration_name"]: t for t in payload["targets"]}
@@ -1274,7 +1296,7 @@ def test_target_status_check_verdict_spans_sessions(tmp_path, monkeypatch):
     """A cascade/user re-check recorded in a DIFFERENT session of the same
     project supersedes the original run's verdict — the repo is shared (D24)."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     repo = proofs / "Lea" / "Analysis"
     (repo / "x.lean").write_text("theorem x : True := trivial\n")
 
@@ -1291,7 +1313,7 @@ def test_target_status_check_verdict_spans_sessions(tmp_path, monkeypatch):
     store.add_code_step(second["id"], None, "x.lean", content=(repo / "x.lean").read_text(),
                         author="cascade", check_status="error", check_detail="broke downstream")
 
-    payload = projects_route.project_target_status_by_slug(project["slug"], declarations="x")
+    payload = projects_route.project_target_status_by_slug.worker(project["slug"], declarations="x")
     target = payload["targets"][0]
     assert target["check_status"] == "error"
     assert target["check_detail"] == "broke downstream"
@@ -1304,7 +1326,7 @@ def test_artifacts_backfill_from_legacy_registry_markdown(tmp_path, monkeypatch)
     that predate 4.1. Backfilled rows have no run (session/run NULL); a second
     read adds nothing."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Analysis"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Analysis"))
     repo = proofs / "Lea" / "Analysis"
     (repo / "old_thm.lean").write_text("import Mathlib\n\ntheorem old_thm : True := by\n  trivial\n")
 
@@ -1317,6 +1339,7 @@ def test_artifacts_backfill_from_legacy_registry_markdown(tmp_path, monkeypatch)
         '<!-- lea:theorem name="gone_thm" proof="workspace/proofs/Lea/Analysis/gone_thm.lean" -->\n'
     )
 
+    projects_route._ensure_artifacts_backfilled(project)
     payload = projects_route.project_artifacts_by_slug(project["slug"])
     by_name = {row["declaration_name"]: row for row in payload["artifacts"]}
     assert by_name["old_thm"]["path"] == "old_thm.lean"
@@ -1329,7 +1352,7 @@ def test_artifacts_backfill_from_legacy_registry_markdown(tmp_path, monkeypatch)
     assert len(again["artifacts"]) == 2
 
     # And the ledger endpoint serves backfilled targets like any other.
-    status = projects_route.project_target_status_by_slug(project["slug"], declarations="old_thm,gone_thm")
+    status = projects_route.project_target_status_by_slug.worker(project["slug"], declarations="old_thm,gone_thm")
     by_status = {t["declaration_name"]: t for t in status["targets"]}
     assert by_status["old_thm"]["exists"] is True and by_status["old_thm"]["has_sorry"] is False
     assert by_status["gone_thm"]["recorded"] is True and by_status["gone_thm"]["exists"] is False
@@ -1349,14 +1372,14 @@ def test_retire_refuses_project_infrastructure(tmp_path, monkeypatch, infrastruc
     endpoint would unlink anything in the repo. It is a retry primitive for a proof
     artifact; project infrastructure has no restore path."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Infra"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Infra"))
     repo = proofs / "Lea" / "Infra"
     target = repo / infrastructure
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("important\n")
 
     with pytest.raises(HTTPException) as ei:
-        projects_route.retire_project_artifact_by_slug(
+        projects_route.retire_project_artifact_by_slug.worker(
             project["slug"], projects_route.ArtifactRetireRequest(path=infrastructure)
         )
 
@@ -1371,14 +1394,14 @@ def test_retire_still_accepts_a_legacy_proof_with_no_recorded_row(tmp_path, monk
     code_step. `/artifacts/restore` explicitly supports that case, so refusing it here
     would break the retry flow this endpoint exists for."""
     proofs = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Legacy"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Legacy"))
     repo = proofs / "Lea" / "Legacy"
     proof = repo / "old_theorem.lean"
     proof.write_text("theorem old_theorem : True := by trivial\n")
     from app.gitstore import GitStore
     GitStore(repo.parent).commit_all(repo, "record old_theorem")
 
-    result = projects_route.retire_project_artifact_by_slug(
+    result = projects_route.retire_project_artifact_by_slug.worker(
         project["slug"], projects_route.ArtifactRetireRequest(path="old_theorem.lean")
     )
 
@@ -1393,7 +1416,7 @@ def test_an_oversized_upload_is_refused_without_buffering_it(tmp_path, monkeypat
     25 MB cap, so a multi-GB POST could exhaust the adapter — and with it every
     in-flight run, since the prover runs in this same process."""
     _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Uploads"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Uploads"))
 
     read_calls = []
 
@@ -1418,7 +1441,7 @@ def test_an_oversized_upload_is_refused_without_buffering_it(tmp_path, monkeypat
 
 def test_a_normal_upload_still_works(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(ProjectCreate(title="Uploads OK"))
+    project = projects_route.create_project.worker(ProjectCreate(title="Uploads OK"))
 
     row = _upload(project["id"], "notes.md", b"# notes\n", "text/markdown")
 

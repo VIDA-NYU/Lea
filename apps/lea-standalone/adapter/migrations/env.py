@@ -70,6 +70,7 @@ def _force_real_begin(engine) -> None:
     @event.listens_for(engine, "connect")
     def _no_implicit_txn(dbapi_connection, _record):  # noqa: ANN001
         dbapi_connection.isolation_level = None
+        app_db.register_change_batch(dbapi_connection)
 
     @event.listens_for(engine, "begin")
     def _explicit_begin(conn):  # noqa: ANN001

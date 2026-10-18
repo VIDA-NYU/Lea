@@ -1,0 +1,144 @@
+name: Stage 8 release qualification
+
+on:
+  push:
+    branches: [codex/stage8-release-gates]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage8-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  production:
+    name: production-native-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            machine: x86_64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify native runner and reserve compiler build space
+        env:
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+        run: |
+          test "$(uname -m)" = "$EXPECTED_MACHINE"
+          test "$(docker info --format '{{.Architecture}}')" = "$EXPECTED_MACHINE"
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Prepare immutable strict baseline source
+        run: |
+          baseline=$(python3 -c 'import json;print(json.load(open(".github/stage8-release-baseline.json"))["source"])')
+          git cat-file -e "$baseline^{commit}"
+          mkdir -p "$RUNNER_TEMP/stage8-baseline" validation
+          git archive "$baseline" | tar -x -C "$RUNNER_TEMP/stage8-baseline"
+          echo "BASELINE_SOURCE=$baseline" >> "$GITHUB_ENV"
+      - name: Publication provenance guard regressions
+        run: python3 -m unittest discover -s tests/local_preparation -p test_release_bundle.py -v
+      - name: Build all baseline production roles
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -o pipefail
+          for role in worker api companion; do
+            docker build --platform "linux/$ARCH" --target "$role" \
+              --build-arg "LEA_BUILD_SOURCE=$BASELINE_SOURCE" \
+              --label "org.opencontainers.image.revision=$BASELINE_SOURCE" \
+              -t "lea-stage8-baseline-$role:$ARCH" \
+              -f "$RUNNER_TEMP/stage8-baseline/apps/lea-standalone/Dockerfile" "$RUNNER_TEMP/stage8-baseline" \
+              2>&1 | tee "validation/baseline-$role-build.log"
+          done
+      - name: Qualify baseline before permitting rollback to it
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -o pipefail
+          python3 tests/integration/stage8_release.py qualify --require-native \
+            --source "$BASELINE_SOURCE" --api-image "lea-stage8-baseline-api:$ARCH" \
+            --worker-image "lea-stage8-baseline-worker:$ARCH" --companion-image "lea-stage8-baseline-companion:$ARCH" \
+            --output validation/baseline.json 2>&1 | tee validation/baseline-runtime.log
+      - name: Build all candidate production roles
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -o pipefail
+          for role in worker api companion; do
+            docker build --platform "linux/$ARCH" --target "$role" --build-arg "LEA_BUILD_SOURCE=$GITHUB_SHA" \
+              -t "lea-stage8-candidate-$role:$ARCH" -f apps/lea-standalone/Dockerfile . \
+              2>&1 | tee "validation/candidate-$role-build.log"
+          done
+      - name: Qualify candidate production roles
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -o pipefail
+          python3 tests/integration/stage8_release.py qualify --require-native \
+            --source "$GITHUB_SHA" --api-image "lea-stage8-candidate-api:$ARCH" \
+            --worker-image "lea-stage8-candidate-worker:$ARCH" --companion-image "lea-stage8-candidate-companion:$ARCH" \
+            --output validation/candidate.json 2>&1 | tee validation/candidate-runtime.log
+      - name: Native production-code ownership and recovery regressions
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -o pipefail
+          docker run --rm --pull=never -w /app/adapter \
+            -v "$GITHUB_WORKSPACE/apps/lea-standalone/adapter/tests:/app/adapter/tests:ro" \
+            -e LEA_MODEL_CATALOG_OFFLINE=true -e LITELLM_LOCAL_MODEL_COST_MAP=True \
+            -e LEA_REQUIRE_SHARED_OWNERSHIP=0 \
+            --entrypoint bash "lea-stage8-candidate-worker:$ARCH" -c \
+            'uv sync --frozen --group dev && .venv/bin/python -m pytest -p no:cacheprovider tests/test_process_boundary.py tests/test_recovery.py tests/test_process_restart.py tests/test_runtime_restart.py tests/test_storage_access.py -q --tb=short -W error::pytest.PytestUnhandledThreadExceptionWarning' \
+            2>&1 | tee validation/native-regressions.log
+      - name: Rehearse candidate to baseline binary rollback on the same data
+        run: |
+          set -o pipefail
+          python3 tests/integration/stage8_release.py rollback --baseline validation/baseline.json \
+            --candidate validation/candidate.json --output validation/rollback.json 2>&1 | tee validation/rollback.log
+      - name: Retain the actual qualified binaries and their checksums
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -o pipefail
+          for role in worker api companion; do
+            python3 .github/scripts/verify-release-bundle.py --directory validation \
+              --source "$GITHUB_SHA" --arch "$ARCH" --role "$role"
+          done
+          mkdir -p release-binaries
+          docker save "lea-stage8-baseline-worker:$ARCH" "lea-stage8-baseline-api:$ARCH" \
+            "lea-stage8-baseline-companion:$ARCH" "lea-stage8-candidate-worker:$ARCH" \
+            "lea-stage8-candidate-api:$ARCH" "lea-stage8-candidate-companion:$ARCH" \
+            | gzip -1 > release-binaries/strict-bundles.tar.gz
+          git archive "$BASELINE_SOURCE" | gzip -1 > release-binaries/baseline-source.tar.gz
+          git archive "$GITHUB_SHA" | gzip -1 > release-binaries/candidate-source.tar.gz
+          (cd release-binaries && sha256sum strict-bundles.tar.gz baseline-source.tar.gz candidate-source.tar.gz > SHA256SUMS)
+          cp release-binaries/SHA256SUMS validation/binary-archive-SHA256SUMS
+          cp validation/baseline.json validation/candidate.json validation/rollback.json release-binaries/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage8-release-evidence-${{ matrix.arch }}
+          overwrite: true
+          path: validation
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage8-qualified-binaries-${{ matrix.arch }}
+          overwrite: true
+          path: release-binaries
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14

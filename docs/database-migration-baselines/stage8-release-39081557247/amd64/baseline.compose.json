@@ -1,0 +1,20 @@
+{
+  "services": {
+    "migrate": {
+      "image": "sha256:2ac9f772bd27c54793a26b1e24eeeb58de879cc49e07fb4f09a22934565210b5",
+      "pull_policy": "never"
+    },
+    "lea": {
+      "image": "sha256:6e7720ca9e7497c9ca7619b041a9f89582398f955f895e195ca03d8752348e25",
+      "pull_policy": "never"
+    },
+    "worker": {
+      "image": "sha256:2ac9f772bd27c54793a26b1e24eeeb58de879cc49e07fb4f09a22934565210b5",
+      "pull_policy": "never"
+    },
+    "companion": {
+      "image": "sha256:5e613b543f0ffb3f68155439c58e296ab13324c20fb0d40716255730574c4640",
+      "pull_policy": "never"
+    }
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "roles": {
+    "api": {
+      "image": "lea-stage8-baseline-api:arm64",
+      "id": "sha256:896cc8e8ee1f2c049ce5dc7ad2629456723b8c95df997d67ed48c31bd8dca2b5",
+      "architecture": "arm64",
+      "size_bytes": 424410129,
+      "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b"
+    },
+    "worker": {
+      "image": "lea-stage8-baseline-worker:arm64",
+      "id": "sha256:a1b07164f7a82c47f1efce7d92092ff22f965126a6b6a5a11637d5424d10e412",
+      "architecture": "arm64",
+      "size_bytes": 11326329220,
+      "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b"
+    },
+    "companion": {
+      "image": "lea-stage8-baseline-companion:arm64",
+      "id": "sha256:dcdb91d739740c85107ac2f33ed23cc92a3c6bab41d2c3f1063fc90ae1d3c671",
+      "architecture": "arm64",
+      "size_bytes": 249463986,
+      "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b"
+    }
+  },
+  "host_architecture": "arm64",
+  "docker_architecture": "arm64",
+  "native": true,
+  "runner_arch": "ARM64",
+  "github_run_id": "39081557247",
+  "binaries": {
+    "worker_node": {
+      "architecture": "arm64",
+      "version": "v22.23.3"
+    },
+    "companion_node": {
+      "architecture": "arm64",
+      "version": "v22.23.3"
+    },
+    "api_python": {
+      "architecture": "aarch64",
+      "version": "3.13.11",
+      "sqlite": "3.40.1"
+    }
+  },
+  "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b",
+  "qualification": {
+    "compiler": {
+      "lean": "Lean (version 4.29.0, aarch64-unknown-linux-gnu, commit 98dc76e3c0a9b856c9b98726b713fb04fab16740, Release)",
+      "complete_mathlib": true,
+      "real_compilation": true,
+      "safeverify_accepts_proof": true,
+      "safeverify_rejects_sorry": true,
+      "confined_execution": {
+        "available": false,
+        "reason": "This runtime has no supported filesystem executor."
+      },
+      "note": "Trusted packaging probes do not enable application execution on unsupported platforms."
+    },
+    "scenarios": [
+      {
+        "from_revision": "0019_custom_tools",
+        "production_role_entrypoints": true,
+        "read_only_api_without_workspace": true,
+        "legacy_storage_permissions_prepared": true,
+        "stateless_companion": true,
+        "retained_history": true,
+        "independent_restarts": true,
+        "durable_receipt_reused": true,
+        "shared_workspace_duplicate_refused": true,
+        "unsupported_execution_fail_closed": true,
+        "worker_drain_preserves_api": true
+      },
+      {
+        "from_revision": "0031_usage_details",
+        "production_role_entrypoints": true,
+        "read_only_api_without_workspace": true,
+        "legacy_storage_permissions_prepared": true,
+        "stateless_companion": true,
+        "retained_history": true,
+        "independent_restarts": true,
+        "durable_receipt_reused": true,
+        "shared_workspace_duplicate_refused": true,
+        "unsupported_execution_fail_closed": true,
+        "worker_drain_preserves_api": true
+      }
+    ]
+  },
+  "version": 1,
+  "captured_at": "2026-10-18T00:13:35.884674+00:00",
+  "passed": true
+}

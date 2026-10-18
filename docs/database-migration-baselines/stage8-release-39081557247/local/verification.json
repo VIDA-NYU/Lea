@@ -1,0 +1,51 @@
+{
+  "qualified_source": "c8dc8f62efa1ddc6ca5e333e29317ef30ea433af",
+  "checks": [
+    {
+      "scope": "workspace ownership, bootstrap, process and restart regressions",
+      "result": "30 passed, 1 skipped",
+      "log": "lea-stage8-release-lock-protocol-tests.log",
+      "log_sha256": "48f9ce14645fa09dd792ce18befe631cc465c48206fc08ddd48105b1d0e36d95"
+    },
+    {
+      "scope": "storage preparation, API isolation and schema regressions",
+      "result": "20 passed",
+      "log": "lea-stage8-storage-access-tests.log",
+      "log_sha256": "041a08ab82ab4cd51bf7d27e485c50588da0d354b803179ae3c12ea36e5cff76"
+    },
+    {
+      "scope": "publication provenance regressions",
+      "result": "10 passed",
+      "log": "lea-stage8-publication-guard-tests.log",
+      "log_sha256": "60cc437251088e7d352e6e1edbe1986baaa7cf87308c8d59aeb0410da12188c7"
+    },
+    {
+      "scope": "release workflow actionlint 1.7.7",
+      "result": "passed",
+      "log": "lea-stage8-release-workflow-final-lint.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "scope": "publication workflow actionlint 1.7.7",
+      "result": "passed",
+      "log": "lea-stage8-publication-workflow-final-lint.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "scope": "application workflow actionlint 1.7.7",
+      "result": "passed",
+      "log": "lea-stage8-application-workflow-lint.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "counts_overlap": true,
+  "source_comparison": {
+    "non_documentation_files_compared": 979,
+    "differences": []
+  },
+  "boundary_audit": {
+    "adapter_routes": 179,
+    "companion_dispatch_branches": 27
+  },
+  "git_diff_check": "passed"
+}

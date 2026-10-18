@@ -18,7 +18,8 @@ from fastapi import HTTPException
 from lea import execution
 from . import db, store
 
-_actor = ContextVar("reformalization_actor", default=None)
+from .reformalization_intake import _actor, _operation_claim
+
 _starting_lock = Lock()
 _starting_continuations = set()
 
@@ -36,6 +37,13 @@ def dumps(value):
 
 def digest(value):
     return hashlib.sha256(value if isinstance(value, bytes) else value.encode()).hexdigest()
+
+
+@contextmanager
+def claiming(command_token):
+    token=_operation_claim.set(command_token)
+    try:yield
+    finally:_operation_claim.reset(token)
 
 
 @contextmanager
@@ -74,27 +82,6 @@ def owner(project_id):
                 return None  # migrations/startup, not a preservation bypass
             raise
     return dict(row) if row else None
-
-
-def source_refresh_owner(project_id):
-    """Identify the owner whose pending editor acquisition needs the tex mirror.
-
-    The editor replies on a separate HTTP request, so it cannot inherit the
-    starter's ContextVar. Only the mirror route may use this identity, and only
-    before a solver segment starts (including a queued continuation).
-    """
-    current = owner(project_id)
-    if not current or current['state'] != 'active':
-        return None
-    if current['root_run_id'] and not (json.loads(current['result_json'] or '{}').get('continuation')):
-        return None
-    with db.connect() as conn:
-        pending = conn.execute("""select 1 from overleaf_source_requests r
-            join formalizations f on f.id=r.formalization_id
-            where r.formalization_id=? and f.project_id=? and f.origin='overleaf'
-            and r.state='pending' and r.expires_at>? limit 1""",
-            (current['formalization_id'], project_id, db.utc_now())).fetchone()
-    return current['id'] if pending else None
 
 
 def assert_writer(project_id):
@@ -201,29 +188,32 @@ def enqueue(request, project_id):
     if not session_id:
         sessions = store.session_ids_for_formalization(form['id'])
         session_id = sessions[0] if sessions else None
-    if not session_id:
-        session_id = store.create_session("Re-formalize " + form["display_title"], project_id=project_id)["id"]
-    session = store.get_session(session_id)
-    if not session or session.get("project_id") != project_id:
-        raise HTTPException(409, "Conversation belongs to another project.")
-    store.link_session_formalization(session_id, form['id'])
-    request = {**request, "session_id": session_id, "focus_formalization_id": form["id"],
-               "new_formalization": None}
+    request = {**request, "session_id": session_id, "focus_formalization_id": form["id"], "new_formalization": None}
     request_hash = digest(dumps({k: v for k, v in request.items() if k not in {"idempotency_key", "session_id"}}))
     now, operation_id = db.utc_now(), str(uuid4())
     with db.write() as conn:
         key = request.get("idempotency_key")
         old = conn.execute("select * from reformalization_operations where request_key=?", (key,)).fetchone() if key else None
         if old:
-            if old["request_hash"] != request_hash:
+            if old["request_hash"] != request_hash or (request.get('session_id') and request['session_id']!=old['session_id']):
                 raise HTTPException(409, "Idempotency key belongs to another reformalization request.")
             return get_after_transaction(dict(old))
         duplicate = conn.execute("select * from reformalization_operations where formalization_id=? and request_hash=? and state in ('queued','active','applying') order by rowid desc limit 1", (form["id"], request_hash)).fetchone()
         if duplicate:
             return get_after_transaction(dict(duplicate))
+        if not session_id:
+            session_id=str(uuid4())
+            conn.execute("insert into sessions(id,project_id,title,origin,created_at,updated_at) values (?,?,?,'ui',?,?)",
+                         (session_id,project_id,('Re-formalize '+form['display_title'])[:120],now,now))
+        session=conn.execute('select project_id from sessions where id=?',(session_id,)).fetchone()
+        if not session or session[0]!=project_id:raise HTTPException(409,'Conversation belongs to another project.')
+        conn.execute('insert or ignore into session_formalizations values (?,?,?)',(session_id,form['id'],now))
+        request={**request,'session_id':session_id}
         conn.execute("""insert into reformalization_operations(id,project_id,formalization_id,session_id,
             request_key,request_hash,request_json,state,queued_at,created_at,updated_at) values (?,?,?,?,?,?,?,'queued',?,?,?)""",
             (operation_id, project_id, form["id"], session_id, key, request_hash, dumps(request), now, now, now))
+        from . import run_commands
+        run_commands.attach_operation(conn,{'id':operation_id,'project_id':project_id,'session_id':session_id,'formalization_id':form['id']})
     return get(operation_id)
 
 
@@ -240,13 +230,18 @@ def response(op):
     bundle = store.get_run_submission(run['client_request_id']) if run and run.get('client_request_id') else None
     from .routes.runs import _creation_response
     details = _creation_response(bundle) if bundle else {}
+    if not details.get('command'):
+        from . import commands
+        with db.connect() as conn:
+            receipt=conn.execute('select c.* from operation_commands o join commands c on c.id=o.command_id where o.operation_id=? order by c.admission_id desc limit 1',(op['id'],)).fetchone()
+        if receipt:details['command']=commands.receipt(receipt)
     return {**details, "reformalization_id": op["id"], "run_id": None if awaiting_segment else op.get("root_run_id"),
         "session_id": op["session_id"], "focus_formalization_id": op["formalization_id"],
         "project_id": op["project_id"], "state": op["state"], "result": op.get("result"),
         "artifact_scope": "attempt" if op["state"] != "settled" else "canonical"}
 
 
-def dispatch(project_id):
+def dispatch(project_id,*,command_token=None):
     """Claim one operation. No pending solver row exists while another owns it."""
     from . import runtime
     if not runtime.accepting_work():
@@ -258,12 +253,19 @@ def dispatch(project_id):
             return
         if conn.execute("select 1 from runs where project_id=? and status in ('pending','running')", (project_id,)).fetchone():
             return
-        row = conn.execute("select * from reformalization_operations where project_id=? and state='queued' order by queued_at,rowid limit 1", (project_id,)).fetchone()
+        if command_token:
+            from . import run_commands
+            identity=json.loads(command_token['payload_json'])['operation_id']
+            if not run_commands.owns_operation(conn,identity,command_token):return
+            row=conn.execute("select * from reformalization_operations where id=? and project_id=? and state='queued'",(identity,project_id)).fetchone()
+        else:
+            row = conn.execute("select * from reformalization_operations where project_id=? and state='queued' order by queued_at,rowid limit 1", (project_id,)).fetchone()
         if not row:
             return
         conn.execute("update reformalization_operations set state='active',updated_at=? where id=?", (db.utc_now(), row["id"]))
         operation_id = row["id"]
     op = get(operation_id)
+    op['_command_token']=command_token
     try:
         if not (op.get('result') or {}).get('approval_id'):
             from . import runregistry
@@ -301,13 +303,16 @@ def _start_run(op):
         request = dict(op['request'])
         form = store.get_formalization(op['formalization_id'])
         if form.get('origin') == 'overleaf':
-            prepared = asyncio.run(overleaf_source.prepare(form['id']))
-            request.update(source_context_ref=prepared['source_context_ref'], source_bundle=None)
+            if not request.get('source_context_ref'):raise ValueError('This retained operation needs an explicit published source reference; publish and submit again.')
+            with db.connect() as conn:
+                from .source_publications import resolve
+                resolve(conn,request['source_context_ref'],form['id'],admission=False)
+            request.update(source_bundle=None)
         if get(op['id'])['state'] != 'active':
             runregistry.registry.release(op['id'])
             return
         request.update(artifact_operation=None, idempotency_key='reformalization:' + op['id'])
-        with acting(op['id']):
+        with acting(op['id']),claiming(op.get('_command_token')):
             create_run(RunRequest(**request))
     except Exception as exc:
         runregistry.registry.release(op['id'])
@@ -329,6 +334,30 @@ def attach_run(operation_id, run_id):
     from . import runregistry
     runregistry.registry.transfer_reservation(operation_id, run_id)
     return True
+
+
+def bind_run_command(conn,operation_id,run):
+    """Bind a staged run before the command can become visible to a consumer."""
+    raw=conn.execute('select * from reformalization_operations where id=?',(operation_id,)).fetchone()
+    parent=get_after_transaction(dict(raw)) if raw else None
+    token=_operation_claim.get()
+    if token:
+        from . import run_commands
+        if not run_commands.owns_operation(conn,operation_id,token):
+            raise ValueError('Source preparation lost its command claim before solver admission')
+    if not parent or parent['state'] not in {'active','worker'} or parent['request'].get('_cancelled'):
+        raise ValueError('This reformalization was cancelled before solver admission')
+    if run['purpose']=='project_dependency':
+        op_id,now=str(uuid4()),db.utc_now()
+        request={'_foreground_owner':parent['request'].get('_foreground_owner') or operation_id,'_parent_operation':operation_id}
+        conn.execute("""insert into reformalization_operations(id,project_id,formalization_id,session_id,
+            request_hash,request_json,state,root_run_id,created_at,updated_at) values (?,?,?,?,?,?,'worker',?,?,?)""",
+            (op_id,run['project_id'],run['focus_formalization_id'],run['session_id'],digest(dumps(request)),dumps(request),run['id'],now,now))
+    else:
+        op_id=operation_id
+        conn.execute('update reformalization_operations set root_run_id=?,updated_at=? where id=?',(run['id'],db.utc_now(),op_id))
+    conn.execute('update runs set reformalization_id=? where id=?',(op_id,run['id']))
+    return op_id
 
 
 def attach_dependency_worker(parent_id, run):
@@ -521,10 +550,11 @@ def retained_context(op):
     return paths
 
 
-def fresh(op, *, applied=None):
+def fresh(op, *, applied=None, snapshot=None):
     """Check the captured effective inputs, including new/deleted source paths."""
     from .project_library import lake_root, project_repo
     manifest = op["manifest"]
+    observe=(lambda path:snapshot.observation(path)[0]) if snapshot else (lambda path:digest(path.read_bytes()) if path.is_file() else None)
     foreground_id = op['request'].get('_foreground_owner')
     if foreground_id and (get(foreground_id) or {}).get('request', {}).get('_cancelled'):
         raise ValueError('The foreground reformalization was stopped; its helper draft is retained')
@@ -540,19 +570,24 @@ def fresh(op, *, applied=None):
     if any(form.get(k) != value for k, value in manifest.get('target_identity', {}).items()):
         raise ValueError('The requested target identity or statement changed during reformalization')
     for name, expected in manifest["configuration"].items():
-        if not (root / name).is_file() or digest((root / name).read_bytes()) != expected:
+        if not (root / name).is_file() or observe(root / name) != expected:
             raise ValueError("Lake configuration changed during reformalization")
     from .recovery import _dependency_fingerprints
-    if _dependency_fingerprints(root) != manifest.get('dependencies', {}):
+    dependencies=_dependency_fingerprints(root,snapshot=snapshot) if snapshot else _dependency_fingerprints(root)
+    if dependencies != manifest.get('dependencies', {}):
         raise ValueError('The installed compiler/dependency context changed during reformalization')
-    actual = {str(p.relative_to(root)): digest(p.read_bytes()) for p in lean_files(repo).values()}
+    if snapshot:
+        from lea.check_evidence import file_version
+        for directory in [repo,*[p for p in repo.rglob('*') if p.is_dir()]]:
+            snapshot.topology[str(directory)]=file_version(directory)
+    actual = {str(p.relative_to(root)): observe(p) for p in lean_files(repo).values()}
     for rel in manifest['source_hashes']:
         path = root / rel
         if not path.is_relative_to(repo):
-            actual[rel] = digest(path.read_bytes()) if path.is_file() else None
+            actual[rel] = observe(path)
     from lea.check_evidence import file_hash
     for path, expected_hash in manifest.get('dependency_files', {}).items():
-        if file_hash(Path(path)) != expected_hash:
+        if (observe(Path(path)) if snapshot else file_hash(Path(path))) != expected_hash:
             raise ValueError('An installed compiler/dependency input changed during reformalization')
     expected = dict(manifest["source_hashes"])
     for rel, content in (applied or {}).items():
@@ -643,22 +678,22 @@ def recover_operations():
 
 
 def dispatch_all():
-    with db.connect() as conn:
-        projects = [r[0] for r in conn.execute("select distinct project_id from reformalization_operations where state='queued'")]
-    for project_id in projects:
-        dispatch(project_id)
-    with db.connect() as conn:
-        resumable = [r[0] for r in conn.execute("select id from reformalization_operations where state in ('active','worker') and result_json like '%\"continuation\"%'")]
-    for operation_id in resumable:
-        wake(operation_id)
+    """Compatibility wakeup: enqueue retained domain intent, never execute it."""
+    from .run_commands import adopt_pending
+    adopt_pending()
 
 
-def wake(operation_id):
+def wake(operation_id,*,command_token=None):
     op = get(operation_id)
+    op['_command_token']=command_token
+    if command_token:
+        from . import run_commands
+        with db.connect() as conn:
+            if not run_commands.owns_operation(conn,operation_id,command_token):return
     if op['state'] in {'active', 'worker'} and (op.get('result') or {}).get('continuation'):
         _dispatch_continuation(op)
     else:
-        dispatch(op['project_id'])
+        dispatch(op['project_id'],command_token=command_token)
 
 
 def continuation_hash(run_id, request):
@@ -760,16 +795,14 @@ def queue_continuation(op, old, request, *, recovery_review=False):
             result = {**(current.get('result') or {}), 'continuation': payload}
             conn.execute('update reformalization_operations set state=?,request_json=?,result_json=?,queued_at=?,updated_at=? where id=?',
                 (state, dumps(current_request), dumps(result), current['queued_at'] if keep_owner else db.utc_now(), db.utc_now(), op['id']))
+            from . import run_commands
+            run_commands.attach_operation(conn,current,'continuation:'+request['idempotency_key'])
     if joined:
         submission = store.get_run_submission(request.get('idempotency_key'))
         if submission:
             from .routes.runs import _creation_response
             return {**response(get(op['id'])), **_creation_response(submission)}
         return response(get(op['id']))
-    if keep_owner:
-        _dispatch_continuation(get(op['id']))
-    else:
-        dispatch(op['project_id'])
     return response(get(op['id']))
 
 
@@ -788,7 +821,7 @@ def _dispatch_continuation(op):
 def _continue_reserved(op):
     from . import runregistry
     try:
-        with acting(op['id']):
+        with acting(op['id']),claiming(op.get('_command_token')):
             _start_continuation(op)
     except Exception as exc:
         runregistry.registry.release(op['id'])
@@ -832,10 +865,11 @@ def _start_continuation(op):
     source_ref = request.get('source_context_ref')
     if store.get_formalization(op['formalization_id']).get('origin') == 'overleaf':
         from . import overleaf_source
-        prepared = asyncio.run(overleaf_source.prepare(op['formalization_id']))
-        source_ref = prepared['source_context_ref']
+        source_ref = source_ref or old.get('source_context_ref')
+        if not source_ref:raise ValueError('This continuation needs an explicit published source reference')
         with db.connect() as conn:
-            source = overleaf_source.resolve(conn, source_ref, op['formalization_id'], bind_source=False)
+            from .source_publications import resolve
+            source = resolve(conn,source_ref,op['formalization_id'],admission=False)
         if source['sourceIdentityHash'] != op['manifest']['source_hash']:
             raise ValueError('The source changed while this continuation waited; the draft is retained')
     if get(op['id'])['state'] not in {'active', 'worker'}:
@@ -872,4 +906,3 @@ def _start_continuation(op):
     with db.write() as conn:
         conn.execute('update project_dependencies set owner_run_id=? where owner_run_id=?', (bundle['run']['id'], old['id']))
     update(op['id'], result={k: v for k, v in op['result'].items() if k != 'continuation'})
-    bridge.enqueue_run(bundle['run']['id'])

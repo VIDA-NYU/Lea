@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from app import db, store, reformalizations as ops, project_library
+from app import db, store, reformalizations as ops, project_library,run_commands
 from app import reformalization_apply as publication
 from app.gitstore import GitStore
 from lea import execution
@@ -55,6 +55,50 @@ def operation(project, monkeypatch, **request):
 
 def selection():
     return {'path': 'Shared.lean', 'declaration': 'Lea.Study.b', 'kind': 'proved'}
+
+
+def test_claimed_operation_transfers_capacity_and_scope_to_its_run(project,monkeypatch):
+    from app import commands,bridge,runregistry,runtime
+    from app.routes import runs
+    p,repo,form,_=project
+    monkeypatch.setattr(runregistry,'registry',runregistry.RunRegistry(max_concurrent=4))
+    monkeypatch.setattr(runtime,'accepting_work',lambda:True)
+    monkeypatch.setattr(runs,'load_config',config.load_config)
+    def forbidden(*a,**kw):raise AssertionError('Admission must not start a provider')
+    monkeypatch.setattr(bridge,'run_events',forbidden)
+    op=ops.enqueue({'message':'Retry B','focus_formalization_id':form['id']},p['id'])
+    epoch=commands.start_worker('operation-fixture')
+    token=commands.claim('operation-fixture',epoch,'compute',kinds={'operation.dispatch'})
+    ops.wake(op['id'],command_token=token)
+    current=ops.get(op['id']);run=store.get_run(current['root_run_id'])
+    try:
+        assert run['reformalization_id']==op['id'] and run['status']=='pending'
+        assert run_commands.for_run(run['id'])['state']=='queued'
+        with db.connect() as conn:
+            assert conn.execute('select state from commands where id=?',(token['id'],)).fetchone()[0]=='succeeded'
+            assert conn.execute("select count from command_capacity where key='compute:global'").fetchone()[0]==1
+            assert conn.execute("select count(*) from timeline where author='user'").fetchone()[0]==1
+    finally:runregistry.registry.release(run['id'])
+
+
+def test_command_cancellation_before_acceptance_restores_canonical_files(project,monkeypatch):
+    from app import commands,run_commands
+    op=operation(project,monkeypatch)
+    run_commands.ensure_run(op['root_run_id'])
+    epoch=commands.start_worker('publication-fixture')
+    token=commands.claim('publication-fixture',epoch,'compute',kinds={'run.execute'})
+    candidate=project[3].replace('theorem b : True := by sorry','theorem b : True := by trivial')
+    staged=Path(op['manifest']['repo'])/'Shared.lean';staged.write_text(candidate)
+    accept=publication._accept
+    def cancel_before_accept(*args):
+        run_commands.stop(op['root_run_id'])
+        return accept(*args)
+    monkeypatch.setattr(publication,'_accept',cancel_before_accept)
+    with pytest.raises(publication.PreservationConflict,match='cancelled or fenced'):
+        publication.apply(op['id'],selection(),'proved',command_token=token)
+    assert (project[1]/'Shared.lean').read_text()==project[3]
+    assert staged.read_text()==candidate
+    assert ops.get(op['id'])['state']=='retained'
 
 
 def test_real_shared_retry_preserves_a_and_unfinished_c(project, monkeypatch):
@@ -472,8 +516,6 @@ def test_fifo_second_capture_sees_first_publication(project, monkeypatch):
     monkeypatch.setattr(runtime, 'accepting_work', lambda: True)
     monkeypatch.setattr(runs, 'load_config', config.load_config)
     monkeypatch.setattr(runregistry, 'registry', runregistry.RunRegistry(max_concurrent=4))
-    admitted = []
-    monkeypatch.setattr(bridge, 'enqueue_run', admitted.append)
     ops.dispatch(p['id'])
     assert ops.get(queued['id'])['root_run_id'] is None
     with db.connect() as conn:
@@ -483,7 +525,7 @@ def test_fifo_second_capture_sees_first_publication(project, monkeypatch):
     publication.apply(op['id'], selection(), 'proved')
     ops.dispatch(p['id'])
     second = ops.get(queued['id'])
-    assert second['root_run_id'] in admitted
+    assert run_commands.for_run(second['root_run_id'])
     captured = ops.prepare(second['id'])
     assert store.blob_content(captured['files']['Shared.lean']['blob_id']) == candidate
     runregistry.registry.release(second['root_run_id'])
@@ -528,17 +570,14 @@ def test_overleaf_refresh_does_not_block_admission_and_cancel_starts_no_run(proj
         def start(self):
             starts.append(self)
     monkeypatch.setattr(bridge, 'Thread', DeferredThread)
-    async def refresh(fid):
-        ops.cancel(queued['id'])
-        assert not registry.is_active(queued['id'])
-        return {'source_context_ref': 'fresh-editor-snapshot'}
-    monkeypatch.setattr(overleaf_source, 'prepare', refresh)
-    monkeypatch.setattr(runs, 'create_run', lambda *_: pytest.fail('A cancelled source refresh must not start a solver'))
+    monkeypatch.setattr(overleaf_source, 'prepare', lambda *_: pytest.fail('Reverse source callbacks are retired'))
+    monkeypatch.setattr(runs, 'create_run', lambda *_: pytest.fail('A cancelled operation must not start a solver'))
     queued = ops.enqueue({'message': 'Retry B', 'focus_formalization_id': form['id']}, p['id'])
     ops.dispatch(p['id'])
     assert len(starts) == 1
     assert ops.response(ops.get(queued['id']))['run_id'] is None
     assert registry.is_active(queued['id'])
+    ops.cancel(queued["id"])
     starts[0].target(*starts[0].args)
     assert ops.get(queued['id'])['result']['outcome'] == 'cancelled'
     assert not registry.is_active(queued['id'])
@@ -563,8 +602,6 @@ def test_staged_continuation_waits_for_capacity_and_replays_admission(project, m
     registry = runregistry.RunRegistry(max_concurrent=1)
     monkeypatch.setattr(runregistry, 'registry', registry)
     monkeypatch.setattr(runtime, 'accepting_work', lambda: True)
-    admitted = []
-    monkeypatch.setattr(bridge, 'enqueue_run', admitted.append)
     assert registry.try_admit('another-run', 'another-session').ok
     request = {'idempotency_key': 'resume-staged', 'timeout_seconds': 90}
     queued = ops.queue_continuation(ops.get(op['id']), old, request)
@@ -575,7 +612,7 @@ def test_staged_continuation_waits_for_capacity_and_replays_admission(project, m
     ops.wake(op['id'])
     current = ops.get(op['id'])
     run = store.get_run(current['root_run_id'])
-    assert run['id'] in admitted and run['resumes_run_id'] == old['id']
+    assert run_commands.for_run(run['id']) and run['resumes_run_id'] == old['id']
     assert run['resume_checkpoint_id'] and run['max_turns'] == 12
     assert ops.queue_continuation(current, old, request)['run_id'] == run['id']
     with pytest.raises(HTTPException, match='409'):
@@ -696,6 +733,8 @@ def test_managed_worker_gets_own_stage_under_waiting_parent(project, monkeypatch
     ops.update(worker['id'], 'paused')
     resumed = ops.queue_continuation(ops.get(worker['id']), store.get_run(child['id']),
         {'idempotency_key': 'resume-worker', 'timeout_seconds': 90})
+    ops.wake(worker['id'])
+    resumed=ops.response(ops.get(worker['id']))
     assert resumed['run_id'] and resumed['run_id'] != child['id'], json.dumps(resumed)
     assert ops.get(worker['id'])['state'] == 'worker'
     assert ops.owner(p['id'])['id'] == op['id']
@@ -763,6 +802,8 @@ def test_public_continue_replays_same_admission_and_rejects_changed_inputs(proje
     first = runs.continue_run(old['id'], request)
     second = runs.continue_run(old['id'], request)
     assert first['run_id'] == second['run_id']
+    ops.wake(op['id'])
+    first=ops.response(ops.get(op['id']))
     with pytest.raises(HTTPException):
         runs.continue_run(old['id'], request.model_copy(update={'timeout_seconds': 91}))
     with db.connect() as conn:
@@ -787,6 +828,8 @@ def test_acknowledged_manual_recovery_starts_new_turn_with_same_draft(project, m
         conn.execute("insert into run_invocations(id,run_id,attempt_id,kind,name,turn,started_at) values (?,?,?,?,?,?,?)",
             ('uncertain-action', old['id'], uncertain_attempt, 'tool', 'bash', 3, db.utc_now()))
     resumed = runs.resume_run(old['id'], runs.ResumeRequest(acknowledge_uncertainty=True, idempotency_key='manual-recovery'))
+    ops.wake(op['id'])
+    resumed=ops.response(ops.get(op['id']))
     successor = store.get_run(resumed['run_id'])
     assert successor['resume_checkpoint_id'] is None
     assert successor['max_turns'] == 8
@@ -914,9 +957,9 @@ def test_standalone_retry_reuses_conversation_and_reload_observes_preparing(proj
     op = ops.enqueue({'message': 'Retry in the same conversation', 'focus_formalization_id': form['id']}, p['id'])
     assert op['session_id'] == prior['id']
     ops.update(op['id'], 'active')
-    assert sessions.session_detail(prior['id'])['queued_reformalizations'] == [{'id': op['id']}]
+    assert sessions.session_detail.worker(prior['id'])['queued_reformalizations'] == [{'id': op['id']}]
     ops.update(op['id'], result={'continuation': {'old_run_id': 'earlier'}})
-    assert sessions.session_detail(prior['id'])['queued_reformalizations'] == [{'id': op['id']}]
+    assert sessions.session_detail.worker(prior['id'])['queued_reformalizations'] == [{'id': op['id']}]
     with db.connect() as conn:
         assert conn.execute('select count(*) from sessions').fetchone()[0] == 1
 

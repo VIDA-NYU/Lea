@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Maximize2, Minimize2, Pencil } from 'lucide-react';
-import { getProjectDoc, putProjectDoc, type ProjectDocName } from '../lib/api';
+import { getProjectDocSnapshot, putProjectDoc, type ProjectDocName } from '../lib/api';
 import { MarkdownMessage } from './MarkdownMessage';
 
 // One reusable editor for a project's `.lea/*.md` docs (D39) — backs the Instructions
@@ -38,16 +38,21 @@ export function MarkdownDoc({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const loadedRevision=useRef<string | undefined>(undefined);
+  const draftRevision=useRef<string | undefined>(undefined);
+  const latestDraft=useRef(draft);latestDraft.current=draft;
+  const scope=useRef('');scope.current=projectId+':'+doc;
 
   // Load on mount / project change, and re-load on refreshSignal for agent-written
   // docs — but never clobber an in-progress edit.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    getProjectDoc(projectId, doc)
-      .then((text) => {
+    getProjectDocSnapshot(projectId, doc)
+      .then((snapshot) => {
         if (cancelled) return;
-        setContent(text);
+        setContent(snapshot.content);
+        loadedRevision.current=snapshot.file_revision;
         if (!editing) setError(null);
       })
       .catch((err) => !cancelled && setError(err instanceof Error ? err.message : String(err)))
@@ -60,13 +65,14 @@ export function MarkdownDoc({
 
   const startEdit = () => {
     setDraft(content);
+    draftRevision.current=loadedRevision.current;
     setError(null);
     setEditing(true);
   };
 
   // Expand opens the modal; from view mode it also enters the (shared) edit session.
   const openModal = () => {
-    if (!editing) setDraft(content);
+    if (!editing) {setDraft(content);draftRevision.current=loadedRevision.current;}
     setError(null);
     setEditing(true);
     setExpanded(true);
@@ -85,16 +91,21 @@ export function MarkdownDoc({
     if (busy) return;
     setBusy(true);
     setError(null);
+    const owned=scope.current;
+    const submitted=draft;
     try {
-      const result = await putProjectDoc(projectId, doc, draft);
+      const result = await putProjectDoc(projectId, doc, submitted,draftRevision.current);
+      if (owned!==scope.current)return;
       setContent(result.content);
-      setEditing(false);
-      setExpanded(false);
+      loadedRevision.current=result.file_revision;
+      draftRevision.current=result.file_revision;
+      if (latestDraft.current===submitted) {setEditing(false);setExpanded(false);}
       onSaved?.();
     } catch (err) {
+      if (owned!==scope.current)return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (owned===scope.current)setBusy(false);
     }
   };
 

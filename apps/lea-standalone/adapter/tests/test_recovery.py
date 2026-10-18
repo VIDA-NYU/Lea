@@ -225,7 +225,7 @@ def test_prover_finishes_saved_final_classification_without_second_model_call(tm
     assert events[0].cost == 0.03
 
 
-def test_data_directory_lock_refuses_second_adapter(tmp_path, monkeypatch):
+def test_data_directory_lock_refuses_second_worker(tmp_path, monkeypatch):
     import subprocess
     import sys
     from app import runtime
@@ -243,7 +243,7 @@ def test_data_directory_lock_refuses_second_adapter(tmp_path, monkeypatch):
         child = subprocess.run([sys.executable, "-c", script], capture_output=True,
                                text=True, timeout=10)
         assert child.returncode != 0
-        assert "Another adapter owns data directory" in child.stderr
+        assert "Another workspace worker owns data directory" in child.stderr
     finally:
         runtime.release_data_lock()
 
@@ -287,7 +287,8 @@ def test_stale_lean_process_receipt_is_reaped_only_with_matching_identity(tmp_pa
         real_lease = saved["lease"]
         saved["lease"] = "wrong.lease"
         receipt.write_text(json.dumps(saved))
-        assert process_ownership.reap_previous() == []
+        with pytest.raises(RuntimeError, match="Could not verify cleanup"):
+            process_ownership.reap_previous()
         assert proc.poll() is None
         saved["lease"] = real_lease
         receipt.write_text(json.dumps(saved))

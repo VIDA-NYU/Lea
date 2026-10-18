@@ -57,6 +57,7 @@ def test_migration_adds_scoped_tables_columns_constraints_and_indexes(
 ):
     path = _fresh(tmp_path, monkeypatch)
     with sqlite3.connect(path) as conn:
+        db.register_change_batch(conn)
         tables = {
             row[0]
             for row in conn.execute(

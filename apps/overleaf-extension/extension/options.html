@@ -29,12 +29,8 @@
               <input id="companion-url" name="companionUrl" type="url" required>
             </label>
             <label>
-              Local Lea repo path
-              <input id="lea-repo-path" name="leaRepoPath" type="text" required placeholder="/absolute/path/to/this-repo/apps/lea-standalone/prover">
-            </label>
-            <label>
-              Lea API URL
-              <input id="lea-api-base-url" name="leaApiBaseUrl" type="url" required placeholder="http://127.0.0.1:8001">
+              Lea API URL reported by the service
+              <input id="lea-api-base-url" name="leaApiBaseUrl" type="url" readonly placeholder="http://127.0.0.1:8001">
             </label>
           </div>
         </section>
@@ -61,7 +57,7 @@
         <section class="settings-section">
           <div class="section-intro">
             <h2>API keys</h2>
-            <p>Keys are written to the root <code>.env</code> by the companion and are never stored in Chrome.</p>
+            <p>Keys are stored by the local service and are never saved in Chrome.</p>
           </div>
           <fieldset class="section-controls">
             <legend class="ol-lean-sr-only">Model family API keys</legend>

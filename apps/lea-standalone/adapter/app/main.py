@@ -1,8 +1,13 @@
-"""FastAPI app construction + wiring only (D2). Endpoints live in `routes/`,
+"""FastAPI app construction + wiring only. Public endpoints live in `api_routes/`,
 split by resource; this module builds the app, registers the routers, and mounts
 the bundled frontend last so every `/api/*` route takes priority."""
 
 from __future__ import annotations
+
+from .api_boundary import install
+install()
+
+from . import peripheral_views
 
 import logging
 import os
@@ -13,11 +18,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from .db import init_db
-from .routes import (project_library, alignment_checks, lea_status, overleaf_source, formalize_batch_reports, custom_tools, formalizations, mcp_servers, projects, runs, search,
+
+from .api_routes import (workspace, observation, project_library, alignment_checks, lea_status, overleaf_source, formalize_batch_reports, custom_tools, formalizations, mcp_servers, projects, runs, search,
                      sessions, settings, skills, subagents)
-from . import alignment_store, bridge, formalize_batch_reports as batch_report_service, github_import_service, netguard, store, recovery, runtime
-from .config import load_config
+from . import netguard
+
 
 app = FastAPI(title="Lea Interface API")
 _startup_log = logging.getLogger("uvicorn.error")
@@ -37,7 +42,7 @@ async def enforce_local_boundary(request: Request, call_next):
     identity rather than an exact allowlist.
 
     The WebSocket endpoint is NOT covered here — HTTP middleware never sees a
-    handshake — so `routes/sessions.lsp_socket` performs the same check itself.
+    handshake. The retired direct LSP endpoint rejects every client before accept.
     """
     if not netguard.is_allowed_host(request.headers.get("host")):
         return JSONResponse(
@@ -49,7 +54,35 @@ async def enforce_local_boundary(request: Request, call_next):
             status_code=403,
             content={"detail": f"Requests from origin {request.headers['origin']} are not allowed."},
         )
-    return await call_next(request)
+    if request.method in {'POST','PUT','PATCH'} and request.url.path.startswith('/api/'):
+        limit=64*1024*1024
+        try:
+            if int(request.headers.get('content-length','0'))>limit:return JSONResponse(status_code=413,content={'detail':'Request exceeds its 64 MiB transport bound'})
+        except ValueError:return JSONResponse(status_code=400,content={'detail':'Invalid Content-Length'})
+        chunks=[];size=0
+        async for chunk in request.stream():
+            size+=len(chunk)
+            if size>limit:return JSONResponse(status_code=413,content={'detail':'Request exceeds its 64 MiB transport bound'},headers={'Connection':'close'})
+            chunks.append(chunk)
+        request._body=b''.join(chunks)
+    from . import db
+    epoch=request.headers.get('x-lea-worker-epoch')
+    if epoch or request.headers.get('x-lea-worker-parent') or request.headers.get('x-lea-batch-id'):
+        from .companion_service import authenticate
+        if not authenticate(epoch,request.headers.get('x-lea-worker-proof')):return JSONResponse(status_code=403,content={'detail':'A private worker credential is required'})
+        if request.method in {'POST','PUT','PATCH','DELETE'} and not request.headers.get('x-lea-worker-parent'):
+            return JSONResponse(status_code=409,content={'detail':'An accepted business intent is required before the worker may submit new work'})
+    marker=db.caller_worker_epoch.set(epoch)
+    parent=db.caller_parent_command.set(request.headers.get('x-lea-worker-parent'))
+    batch=db.caller_batch.set(request.headers.get('x-lea-batch-id'))
+    try:
+        response=await call_next(request)
+        response.headers['X-Lea-Database-Boundary']='1'
+        return response
+    finally:
+        db.caller_worker_epoch.reset(marker)
+        db.caller_parent_command.reset(parent)
+        db.caller_batch.reset(batch)
 
 
 # Kept for the response headers a browser needs on an allowed cross-origin call (the
@@ -65,58 +98,24 @@ app.add_middleware(
 
 
 @app.on_event("startup")
-def startup() -> None:
-    runtime.set_state("starting")
-    runtime.acquire_data_lock()
-    try:
-        from lea import process_ownership
-        os.environ["LEA_OWNED_PROCESS_DIR"] = str(runtime.owned_process_dir())
-        _startup_log.info("Startup: cleaning up previously owned workers.")
-        process_ownership.reap_previous()
-        _startup_log.info("Startup: preparing the database.")
-        init_db()
-        runtime.set_state("recovering")
-        _startup_log.info("Startup: recovering interrupted work.")
-        from .reformalization_apply import recover as recover_applications
-        recover_applications()
-        recovery.recover_running()
-        from . import reformalizations
-        reformalizations.recover_operations()
-        alignment_store.recover_interrupted()
-        batch_report_service.recover_interrupted()
-        bridge.recover_runs_at_startup()
-        from .project_dependencies import recover
-        recover()
-        from . import project_library, store
-        projects = store.list_projects()
-        _startup_log.info("Startup: indexing source files in %d projects; compiler checks deferred.", len(projects))
-        for project in projects:
-            project_library.refresh(project, resolve_environment=False)
-        config = load_config()
-        proofs_root = config.lea_root / "workspace" / "proofs" if config.lea_root else None
-        _startup_log.info("Startup: recovering interrupted GitHub imports.")
-        github_import_service.recover_github_imports_at_startup(proofs_root)
-        from .catalog_service import service as catalog_service
-        catalog_service().start()
-        runtime.set_state("ready")
-        reformalizations.dispatch_all()
-    except BaseException:
-        runtime.release_data_lock()
-        raise
+def startup():
+    from .bootstrap import require_schema
+    require_schema()
+
 
 
 @app.get("/api/health")
-def health() -> dict:
-    from .lea_status import admission_enabled
-    from .reformalizations import capability
-    return {"ok": True, **runtime.snapshot(), "capabilities": {"lea_status": {"version": 1, "admission_enabled": admission_enabled(), "independent_checks": False, "source_pause_policy": 1}, "overleaf_source_refresh": {"version": 1}, "project_library": {"version": 1, "dependency_coordination": True}, 'reformalization': capability()}}
+def health():
+    from .process_state import health
+    return health()
 
 
 @app.get("/api/ready")
-def readiness() -> dict:
-    if not runtime.accepting_work():
-        raise HTTPException(503, detail=runtime.snapshot(), headers={"Retry-After": "5"})
-    return runtime.snapshot()
+def readiness():
+    from .process_state import snapshot
+    value=snapshot()
+    if not value['ready']:raise HTTPException(503,detail=value,headers={'Retry-After':'5'})
+    return value
 
 
 class RestartRequest(BaseModel):
@@ -127,27 +126,26 @@ class RestartRequest(BaseModel):
 
 @app.post("/api/runtime/restart")
 def restart_adapter(request: RestartRequest) -> dict:
-    if request.cancel:
-        return runtime.cancel_drain()
-    return runtime.begin_drain(force=request.force, restart=not request.shutdown)
+    from . import run_commands
+    try:return run_commands.runtime_control(force=request.force,cancel=request.cancel,shutdown=request.shutdown)
+    except run_commands.commands.QueueError as exc:
+        raise HTTPException(exc.status,detail={'error':exc.code},headers={'Retry-After':'5'} if exc.status in {429,503} else None) from exc
 
 
 @app.on_event("shutdown")
-def shutdown_lean_checks() -> None:
-    from .catalog_service import service as catalog_service
-    catalog_service().close()
-    from lea.lsp_daemon import _shutdown_all
-    from lea.mcp import shutdown_pool
-    try:
-        try:
-            _shutdown_all()
-        finally:
-            shutdown_pool()
-    finally:
-        runtime.release_data_lock()
+def shutdown_api():
+    app.state.shutting_down=True
 
 
+from .api_routes import editor as editor_routes
+app.include_router(editor_routes.router)
+from .api_routes import commands as command_routes
+from .api_routes import companion as companion_routes
+app.include_router(companion_routes.router)
+app.include_router(command_routes.router)
+app.include_router(workspace.router)
 app.include_router(sessions.router)
+app.include_router(observation.router)
 app.include_router(runs.router)
 app.include_router(settings.router)
 app.include_router(projects.router)
@@ -180,7 +178,7 @@ if _WEB_DIST and Path(_WEB_DIST).is_dir():
             raise HTTPException(status_code=404, detail="Not found")
         # Serve a real built asset when it exists and stays inside the dist root.
         candidate = (_web_root / full_path).resolve()
-        if full_path and candidate.is_file() and candidate.is_relative_to(_web_root):
+        if full_path and candidate.is_relative_to(_web_root) and candidate.is_file():
             return FileResponse(candidate)
         # Otherwise hand back index.html for the SPA / client-side routing.
         return FileResponse(_web_root / "index.html")

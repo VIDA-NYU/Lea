@@ -130,6 +130,8 @@ def decide(fid, request):
             evidence_json=ops.dumps(files), approval_id=None, idempotency_key=request['idempotency_key'],
             request_digest=digest, actor='user', created_at=db.utc_now())
         with db.write() as conn:
+            from .workspace_commands import authorize
+            authorize(conn)
             current = conn.execute('select state from reformalization_operations where id=?', (op['id'],)).fetchone()
             if current[0] != 'review':
                 raise HTTPException(409, 'The attempt is no longer awaiting review')
@@ -144,6 +146,8 @@ def decide(fid, request):
             raise HTTPException(404, 'Approval not found')
         op = ops.for_run(previous_approval['run_id'])
         with db.write() as conn:
+            from .workspace_commands import authorize
+            authorize(conn)
             approved = conn.execute("select * from formalization_review_events where id=? and formalization_id=? and action='approve'", (request.get('approval_id'), fid)).fetchone()
             if not approved:
                 raise HTTPException(404, 'Approval not found')

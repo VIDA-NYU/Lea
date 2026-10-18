@@ -147,7 +147,7 @@ def test_create_run_persists_an_overleaf_solver_purpose(tmp_path, monkeypatch):
     result = runs_route.create_run(RunRequest(
         message="translate faithfully",
         autonomous=True,
-        purpose="overleaf_solver", source_bundle=__import__("test_lea_status").bundle(), lea_status_version=1,
+        purpose="overleaf_solver", source_context_ref=__import__("published_source_fixtures").publish_for(None,__import__("test_lea_status").bundle()), lea_status_version=1,
         new_formalization=NewFormalizationRequest(display_title="target", origin="overleaf", origin_key="doc:theorem:target"),
     ))
     assert store.get_run(result["run_id"])["purpose"] == "overleaf_solver"
@@ -157,7 +157,7 @@ def test_create_run_persists_source_pause_opt_in(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     opted_in = runs_route.create_run(RunRequest(
         message="translate with pauses", autonomous=True,
-        purpose="overleaf_solver", source_bundle=__import__("test_lea_status").bundle(), lea_status_version=1,
+        purpose="overleaf_solver", source_context_ref=__import__("published_source_fixtures").publish_for(None,__import__("test_lea_status").bundle()), lea_status_version=1,
         allow_source_pause=True,
         new_formalization=NewFormalizationRequest(display_title="target", origin="overleaf", origin_key="doc:theorem:target"),
     ))
@@ -273,11 +273,8 @@ def test_invalid_focus_rolls_back_the_whole_bundle(tmp_path, monkeypatch):
 def test_create_run_snapshots_explicit_model_over_config_default(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     seen = []
-    monkeypatch.setattr(
-        runs_route.settings_service,
-        "validate_configured_model",
-        lambda model: seen.append(model) or model.strip(),
-    )
+    from app.routes import settings as settings_routes
+    monkeypatch.setattr(settings_routes,'model_requirements',lambda model: seen.append(model) or {'satisfied':True})
 
     result = runs_route.create_run(
         RunRequest(message="use the picker", model="picker/model")
@@ -301,17 +298,9 @@ def test_create_run_without_explicit_model_uses_config_default(tmp_path, monkeyp
 def test_create_run_rejects_explicit_model_without_provider_key(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
 
-    def reject_model(model):
-        raise runs_route.settings_service.SettingsValidationError(
-            "A provider key is required.",
-            "api_keys.EXAMPLE_API_KEY",
-        )
-
-    monkeypatch.setattr(
-        runs_route.settings_service,
-        "validate_configured_model",
-        reject_model,
-    )
+    from app.routes import settings as settings_routes
+    monkeypatch.setattr(settings_routes,'model_requirements',lambda model: {'satisfied':False,
+        'required_keys':[{'env':'EXAMPLE_API_KEY','label':'Example API key','configured':False}]})
 
     try:
         runs_route.create_run(
@@ -320,7 +309,7 @@ def test_create_run_rejects_explicit_model_without_provider_key(tmp_path, monkey
     except Exception as exc:
         assert getattr(exc, "status_code", None) == 422
         assert getattr(exc, "detail", None) == {
-            "message": "A provider key is required.",
+            "message": "An API key (Example API key) is required before starting a run with this model.",
             "field": "api_keys.EXAMPLE_API_KEY",
         }
     else:
@@ -464,61 +453,58 @@ def test_queued_run_announces_position_before_broker_events(tmp_path, monkeypatc
     assert '"position": 1' in out
 
 
+def _consume_stop():
+    from app import commands,command_execution
+    epoch=commands.start_worker('control-fixture')
+    token=commands.claim('control-fixture',epoch,'control')
+    assert token and token['kind']=='run.stop'
+    commands.complete(token,command_execution.control(token))
+
+
 def test_interrupt_pending_unadmitted_run_finalizes_it(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     started = runs_route.create_run(RunRequest(message="prove it", autonomous=True))
     broker = runbroker.create(started["run_id"])
-    assert runs_route.interrupt_run(started["run_id"]) == {
-        "status": "interrupted", "stop_reason": "user_stop", "usage_status": "final"}
-    run = store.get_run(started["run_id"])
-    assert run["status"] == "cancelled"
+    accepted=runs_route.interrupt_run(started['run_id'])
+    assert accepted['status']=='interrupt_requested' and not accepted['worker_observed']
+    assert store.get_run(started['run_id'])['status']=='pending'
+    _consume_stop()
+    assert store.get_run(started['run_id'])['status']=='cancelled'
     assert broker.closed
 
 
 def test_interrupt_cancels_an_admitted_run_that_has_not_started(tmp_path, monkeypatch):
-    """A run whose slot is claimed but whose driver has not begun is cancelled
-    OUTRIGHT, not left for the cooperative path (AUDIT-2026-07-24 C7).
-
-    This asserts the opposite of what it used to. The old shape checked the registry
-    and returned 'interrupting' with the row still pending, on the theory that the
-    driver owned it — but the driver had not started, so the run went on to claim the
-    row, make a model call, and only then notice the stop flag. Now the row is
-    finalized atomically and `run_lea` refuses to start, so an interrupt at this
-    moment costs nothing. `store.claim_pending_run` is the same UPDATE from the
-    driver's side, so exactly one of them wins.
-    """
     reg = _setup(tmp_path, monkeypatch)
     started = runs_route.create_run(RunRequest(message="prove it", autonomous=True))
     reg.try_admit(started["run_id"], started["session_id"])
-
-    assert runs_route.interrupt_run(started["run_id"])["status"] == "interrupted"
-    assert store.get_run(started["run_id"])["status"] == "cancelled"
-    # ...and the driver, arriving late, must decline to run it.
-    assert store.claim_pending_run(started["run_id"]) is False
+    assert runs_route.interrupt_run(started['run_id'])['status']=='interrupt_requested'
+    # Durable cancellation fences the driver even before control delivery.
+    assert store.claim_pending_run(started['run_id']) is False
+    _consume_stop()
+    assert store.get_run(started['run_id'])['status']=='cancelled'
+    reg.release(started['run_id'])
 
 
 def test_interrupt_of_an_already_running_run_stays_cooperative(tmp_path, monkeypatch):
-    """Once the driver holds the row, the endpoint must NOT rewrite it — the run stops
-    at its next turn boundary and finalizes itself."""
     _setup(tmp_path, monkeypatch)
     started = runs_route.create_run(RunRequest(message="prove it", autonomous=True))
-    assert store.claim_pending_run(started["run_id"]) is True  # the driver got there first
-
-    assert runs_route.interrupt_run(started["run_id"]) == {
-        "status": "interrupting", "stop_reason": "user_stop", "usage_status": "pending"}
-    assert store.get_run(started["run_id"])["status"] == "running"
+    assert store.claim_pending_run(started['run_id'])
+    accepted=runs_route.interrupt_run(started['run_id'])
+    assert accepted['status']=='interrupt_requested' and accepted['usage_status']=='pending'
+    _consume_stop()
+    assert store.get_run(started['run_id'])['status']=='running'
 
 
 def test_queued_timeout_has_reason_and_confirmed_zero_usage(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     run_id = runs_route.create_run(RunRequest(message="queued"))["run_id"]
-    result = runs_route.interrupt_run(run_id, InterruptRequest(reason="timeout", source="companion"))
-    assert result == {"status": "interrupted", "stop_reason": "timeout", "usage_status": "final"}
+    accepted=runs_route.interrupt_run(run_id, InterruptRequest(reason="timeout", source="companion"))
+    assert accepted['status']=='interrupt_requested'
+    _consume_stop()
     row = store.get_run_status(run_id)
-    assert row["status"] == "cancelled"
-    assert row["cost_usd"] == 0
-    assert row["usage_revision"] == 1
-    assert runs_route._done_payload(row)["stop_reason"] == "timeout"
+    assert row['status']=='cancelled' and row['usage_status']=='final'
+    assert row['cost_usd']==0 and row['usage_revision']==1
+    assert runs_route._done_payload(row)['stop_reason']=='timeout'
 
 
 def test_first_stop_reason_wins_and_terminal_completion_survives(tmp_path, monkeypatch):

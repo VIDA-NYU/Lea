@@ -3,6 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 import json
+import hashlib
+from published_source_fixtures import publish_for
 from queue import Queue
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -22,7 +24,7 @@ from lea.providers import ToolCall, Done, Usage, TextDelta
 def source(statement="True.", proof=""):
     value = dict(version=2, targetKey="target", targetKind="theorem", statement=statement, proof=proof,
         proofAssociation=dict(status="associated" if proof else "missing", method="adjacent" if proof else "none",
-                              sourceFile="main.tex", proofHash=""),
+                              sourceFile="main.tex", proofHash=hashlib.sha256(proof.encode()).hexdigest() if proof else ""),
         statementLocation=dict(sourceFile="main.tex", sourceStartLine=1, sourceEndLine=4),
         uses=[], context="", relevantSource=[], mirror=None)
     value["bundleHash"] = source_hash(value)
@@ -73,7 +75,7 @@ def paused(tmp_path, monkeypatch):
 
 
 def request(**changes):
-    return runs.ContinueRequest(idempotency_key="continue-once", source_bundle=source(),
+    return runs.ContinueRequest(idempotency_key="continue-once", source_context_ref=publish_for(None,source()),
                                 timeout_seconds=90, **changes)
 
 
@@ -107,15 +109,14 @@ def test_prepared_source_continuation_replays_after_expiry_and_keeps_pause_polic
     assert detail["runs"][0]["available_recovery_action"] == "continue"
     with db.write() as conn:
         conn.execute("update runs set allow_source_pause = 1 where id = ?", (old["id"],))
-    ref = overleaf_source.new_request(old["focus_formalization_id"])
-    overleaf_source.respond(ref, source(), document_id="doc")
+    ref = publish_for(old["focus_formalization_id"],source())
     req = runs.ContinueRequest(idempotency_key="ui-continue-once", source_context_ref=ref)
     result = runs.continue_run(old["id"], req)
     new = store.get_run(result["run_id"])
     assert new["allow_source_pause"] and new["resume_checkpoint_id"] and new["autonomous"]
     assert new["source_context_ref"] == ref
     with db.write() as conn:
-        conn.execute("update overleaf_source_requests set expires_at = '2000' where id = ?", (ref,))
+        conn.execute("update source_publishers set lease_until=\'2000\' where document_id=\'doc\'")
     assert runs.continue_run(old["id"], req)["run_id"] == result["run_id"]
     assert recovery.available_action(store.get_run(old["id"])) is None
 
@@ -128,7 +129,8 @@ def dependency_pause(paused, monkeypatch, **budget_changes):
         conn.execute("""update runs set status='cancelled', stop_reason='dependency_wait',
             waiting_dependencies_json='["verified-child"]', automation_budget_json=? where id=?""",
             (json.dumps(budget), old["id"]))
-    monkeypatch.setattr(project_dependencies, "get", lambda *_: dict(ready=True, result=dict(module="Lea.Shared.Child")))
+    from app.queries import core
+    monkeypatch.setattr(core, "fact", lambda *_: dict(ready=True, result=dict(module="Lea.Shared.Child")))
     return store.get_run(old["id"]), cfg, repo, saved, budget
 
 
@@ -137,8 +139,7 @@ def test_dependency_continuation_checks_fresh_source_and_keeps_original_progress
     old, cfg, repo, saved, budget = dependency_pause(paused, monkeypatch)
     current = source()
     current["statementLocation"]["sourceStartLine"] = 4  # capture location only
-    ref = overleaf_source.new_request(old["focus_formalization_id"])
-    overleaf_source.respond(ref, current, document_id="doc")
+    ref = publish_for(old["focus_formalization_id"],current)
     req = runs.ContinueRequest(idempotency_key="dependency-once", source_context_ref=ref, dependency_resume=True)
     result = runs.continue_run(old["id"], req)
     child = store.get_run(result["run_id"])
@@ -152,7 +153,7 @@ def test_dependency_continuation_checks_fresh_source_and_keeps_original_progress
     assert restored["proof_state"] == saved["proof_state"]
     assert store.session_detail(old["session_id"])["runs"][-1]["client_request_id"] == "dependency-once"
     with db.write() as conn:
-        conn.execute("update overleaf_source_requests set expires_at='2000' where id=?", (ref,))
+        conn.execute("update source_publishers set lease_until=\'2000\' where document_id=\'doc\'")
     assert runs.continue_run(old["id"], req)["run_id"] == child["id"]
 
 
@@ -173,8 +174,7 @@ def test_dependency_continuation_never_grants_more_allowance_automatically(pause
 def test_dependency_continuation_blocks_actual_source_changes(paused, monkeypatch, current, reason):
     from app import overleaf_source
     old, *_ = dependency_pause(paused, monkeypatch)
-    ref = overleaf_source.new_request(old["focus_formalization_id"])
-    overleaf_source.respond(ref, current, document_id="doc")
+    ref = publish_for(old["focus_formalization_id"],current)
     req = runs.ContinueRequest(idempotency_key="changed-source", source_context_ref=ref, dependency_resume=True)
     with pytest.raises(HTTPException) as error:
         runs.continue_run(old["id"], req)
@@ -186,10 +186,12 @@ def test_dependency_continuation_blocks_actual_source_changes(paused, monkeypatc
 def test_dependency_continuation_requires_the_latest_attempt_and_verified_results(paused, monkeypatch):
     from app import project_dependencies
     old, *_ = dependency_pause(paused, monkeypatch)
-    monkeypatch.setattr(project_dependencies, "get", lambda *_: dict(ready=False))
+    from app.queries import core
+    monkeypatch.setattr(core,"fact",lambda *_:dict(ready=False))
     with pytest.raises(HTTPException, match="not verified"):
         runs.continue_run(old["id"], request(dependency_resume=True))
-    monkeypatch.setattr(project_dependencies, "get", lambda *_: dict(ready=True, result=dict(module="Lea.Shared.Child")))
+    from app.queries import core
+    monkeypatch.setattr(core, "fact", lambda *_: dict(ready=True, result=dict(module="Lea.Shared.Child")))
     store.create_run_bundle(message="A newer attempt", session_id=old["session_id"], project_id=None,
         session_origin="overleaf", session_origin_url=None, model="test", provider=None, max_turns=3,
         autonomous=True, purpose="overleaf_solver", source_bundle=source(),
@@ -222,7 +224,7 @@ def test_resume_next_turn_does_not_repeat_the_saved_write_or_prior_usage(paused,
 
 def test_changed_source_and_files_are_disclosed_and_invalidate_checks(paused):
     old, cfg, repo, _ = paused
-    changed = request().model_copy(update={"source_bundle": source("False.")})
+    changed = request().model_copy(update={"source_context_ref":publish_for(None,source("False."))})
     result = runs.continue_run(old["id"], changed)
     new = store.get_run(result["run_id"])
     (repo / "Target.lean").write_text("theorem target : False := by sorry\n")
@@ -244,7 +246,7 @@ def test_duplicate_and_concurrent_admission_create_one_successor(paused):
     assert len({item["run_id"] for item in results}) == 1
     with db.connect() as conn:
         assert conn.execute("select count(*) from runs where resumes_run_id = ?", (old["id"],)).fetchone()[0] == 1
-    changed = request().model_copy(update={"source_bundle": source("False.")})
+    changed = request().model_copy(update={"source_context_ref":publish_for(None,source("False."))})
     with pytest.raises(HTTPException) as error:
         runs.continue_run(old["id"], changed)
     assert error.value.status_code == 409
@@ -291,13 +293,11 @@ def test_runtime_change_rejects_restoration_before_paid_work(paused):
                                       lea_status.seed(new["id"]), "Continue")
 
 
-def test_incompatible_runtime_is_rejected_before_admission(paused, monkeypatch):
-    old, cfg, _, _ = paused
-    monkeypatch.setattr(runs, "load_config", lambda: replace(cfg, tools=["read_file"]))
-    with pytest.raises(HTTPException, match="incompatible") as error:
-        runs.continue_run(old["id"], request())
-    assert error.value.status_code == 409
-    assert store.get_run_submission("continue-once") is None
+def test_incompatible_runtime_is_rejected_by_worker_before_paid_work(paused, monkeypatch):
+    old,cfg,repo,_=paused
+    result=runs.continue_run(old['id'],request())
+    with pytest.raises(ValueError,match='incompatible'):
+        recovery.prepare_continuation(store.get_run(result['run_id']),replace(cfg,tools=['read_file']),repo,lea_status.seed(result['run_id']),'Continue')
 
 
 def test_expired_pause_receives_fresh_time_and_preserves_model(paused, monkeypatch):
@@ -346,7 +346,7 @@ def test_changed_dependency_source_requires_fresh_check(paused):
                                  "endLine": 2, "content": "New definition", "truncated": False}]
     bundle["bundleHash"] = source_hash(bundle)
     assert bundle["sourceIdentityHash"] == source()["sourceIdentityHash"]
-    row = runs.continue_run(old["id"], request().model_copy(update={"source_bundle": bundle}))
+    row = runs.continue_run(old["id"], request().model_copy(update={"source_context_ref":publish_for(None,bundle)}))
     state, changed = recovery.prepare_continuation(store.get_run(row["run_id"]), cfg, repo,
                                                   lea_status.seed(row["run_id"]), "Continue")
     assert changed and state["proof_state"]["latest_check_passed"] is None
@@ -480,7 +480,7 @@ def test_completion_reuses_only_current_saved_verification(paused, monkeypatch, 
     current_source = source("True, with an added clarification.") if revision == "source" else source()
     if revision == "dependencies":
         (repo / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n")
-    result = runs.continue_run(old["id"], request().model_copy(update={"source_bundle": current_source}))
+    result = runs.continue_run(old["id"], request().model_copy(update={"source_context_ref":publish_for(None,current_source)}))
     row = store.get_run(result["run_id"])
     cfg = replace(cfg, max_turns=row["max_turns"])
     if revision == "restart":
@@ -608,10 +608,15 @@ def test_migration_rejects_unreviewed_or_uncertain_state(paused, problem):
             conn.execute("insert into run_invocations(id,run_id,attempt_id,kind,name,turn,started_at) values ('uncertain',?,?,'model','stream',3,?)", (old["id"], "legacy-attempt", db.utc_now()))
     with db.write() as conn:
         conn.execute("update run_checkpoints set payload=?,manifest=? where id=?", (json.dumps(state), json.dumps(manifest), checkpoint_id))
-    with pytest.raises(HTTPException):
-        runs.continue_run(old["id"], request())
-    with db.connect() as conn:
-        assert conn.execute("select count(*) from runs where resumes_run_id=?", (old["id"],)).fetchone()[0] == 0
+    if problem in {'unknown_predecessor','different_tool'}:
+        result=runs.continue_run(old['id'],request())
+        with pytest.raises(ValueError,match='incompatible'):
+            recovery.prepare_continuation(store.get_run(result['run_id']),cfg,repo,lea_status.seed(result['run_id']),'Continue')
+    else:
+        with pytest.raises(HTTPException):runs.continue_run(old['id'],request())
+        with db.connect() as conn:
+            assert conn.execute('select count(*) from runs where resumes_run_id=?',(old['id'],)).fetchone()[0]==0
+
 
 
 # This module mocks compiler behavior; bind those mock verdicts to their inputs.

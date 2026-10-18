@@ -1,0 +1,316 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-16T20:47:05.357946+00:00",
+  "workload": "synthetic history and SQLite operations; no paid solver or compiler",
+  "environment": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "release": "25.5.0",
+    "python": "3.14.4",
+    "sqlite": "3.53.1"
+  },
+  "measurements": [
+    {
+      "requested_journal": "delete",
+      "actual_journal": "delete",
+      "projects": [
+        {
+          "name": "small",
+          "files": 16,
+          "revisions_per_file": 3,
+          "content_bytes": 98304,
+          "session_detail": {
+            "samples": 24,
+            "p50_ms": 4.457,
+            "p95_ms": 4.746,
+            "max_ms": 8.449
+          },
+          "session_list": {
+            "samples": 8,
+            "p50_ms": 2.473,
+            "p95_ms": 2.638,
+            "max_ms": 2.638
+          }
+        },
+        {
+          "name": "medium",
+          "files": 128,
+          "revisions_per_file": 3,
+          "content_bytes": 3145728,
+          "session_detail": {
+            "samples": 24,
+            "p50_ms": 4.578,
+            "p95_ms": 4.944,
+            "max_ms": 4.977
+          },
+          "session_list": {
+            "samples": 8,
+            "p50_ms": 5.931,
+            "p95_ms": 6.354,
+            "max_ms": 6.354
+          }
+        },
+        {
+          "name": "large",
+          "files": 512,
+          "revisions_per_file": 3,
+          "content_bytes": 12582912,
+          "session_detail": {
+            "samples": 24,
+            "p50_ms": 4.506,
+            "p95_ms": 5.04,
+            "max_ms": 5.041
+          },
+          "session_list": {
+            "samples": 8,
+            "p50_ms": 7.672,
+            "p95_ms": 8.537,
+            "max_ms": 8.537
+          }
+        }
+      ],
+      "four_writer_16k_progress": {
+        "samples": 128,
+        "p50_ms": 2.003,
+        "p95_ms": 11.942,
+        "max_ms": 205.967
+      },
+      "database_bytes": 20668416,
+      "wal_bytes_before_checkpoint": 0,
+      "integrity": "ok",
+      "wal_checkpoint": [
+        0,
+        -1,
+        -1
+      ],
+      "wal_bytes_after_passive_checkpoint": 0,
+      "queue_payload_sweep": [
+        {
+          "queued": 32,
+          "payload_bytes": 2097152,
+          "durable_insert": {
+            "samples": 32,
+            "p50_ms": 1.092,
+            "p95_ms": 1.3,
+            "max_ms": 1.406
+          }
+        },
+        {
+          "queued": 128,
+          "payload_bytes": 8388608,
+          "durable_insert": {
+            "samples": 128,
+            "p50_ms": 1.079,
+            "p95_ms": 1.685,
+            "max_ms": 3.953
+          }
+        },
+        {
+          "queued": 256,
+          "payload_bytes": 16777216,
+          "durable_insert": {
+            "samples": 256,
+            "p50_ms": 1.026,
+            "p95_ms": 1.277,
+            "max_ms": 1.713
+          }
+        }
+      ],
+      "blob_sweep": [
+        {
+          "bytes": 4194304,
+          "insert_ms": 84.105,
+          "read": {
+            "samples": 3,
+            "p50_ms": 1.826,
+            "p95_ms": 2.433,
+            "max_ms": 2.433
+          },
+          "sha256": "61d678b48de600e6922df82ac9fb5d208d19e98064d0d1d5c14a2ee50481c593"
+        },
+        {
+          "bytes": 26214400,
+          "insert_ms": 59.946,
+          "read": {
+            "samples": 3,
+            "p50_ms": 9.624,
+            "p95_ms": 9.64,
+            "max_ms": 9.64
+          },
+          "sha256": "35b97299a8fbb341bbed7a5d8e5cc7409b74c66b34c11a2af5f43e5f1e561ff8"
+        },
+        {
+          "bytes": 67108864,
+          "insert_ms": 137.971,
+          "read": {
+            "samples": 3,
+            "p50_ms": 22.534,
+            "p95_ms": 23.667,
+            "max_ms": 23.667
+          },
+          "sha256": "6bba1f5773aa9e34f743041898c265412d6681818dde9f1d54e348a813c6f4b4"
+        }
+      ]
+    },
+    {
+      "requested_journal": "wal",
+      "actual_journal": "wal",
+      "projects": [
+        {
+          "name": "small",
+          "files": 16,
+          "revisions_per_file": 3,
+          "content_bytes": 98304,
+          "session_detail": {
+            "samples": 24,
+            "p50_ms": 7.975,
+            "p95_ms": 9.323,
+            "max_ms": 9.762
+          },
+          "session_list": {
+            "samples": 8,
+            "p50_ms": 3.816,
+            "p95_ms": 4.342,
+            "max_ms": 4.342
+          }
+        },
+        {
+          "name": "medium",
+          "files": 128,
+          "revisions_per_file": 3,
+          "content_bytes": 3145728,
+          "session_detail": {
+            "samples": 24,
+            "p50_ms": 7.651,
+            "p95_ms": 8.992,
+            "max_ms": 9.058
+          },
+          "session_list": {
+            "samples": 8,
+            "p50_ms": 6.818,
+            "p95_ms": 7.112,
+            "max_ms": 7.112
+          }
+        },
+        {
+          "name": "large",
+          "files": 512,
+          "revisions_per_file": 3,
+          "content_bytes": 12582912,
+          "session_detail": {
+            "samples": 24,
+            "p50_ms": 7.787,
+            "p95_ms": 9.135,
+            "max_ms": 9.697
+          },
+          "session_list": {
+            "samples": 8,
+            "p50_ms": 9.132,
+            "p95_ms": 9.765,
+            "max_ms": 9.765
+          }
+        }
+      ],
+      "four_writer_16k_progress": {
+        "samples": 128,
+        "p50_ms": 2.073,
+        "p95_ms": 24.171,
+        "max_ms": 68.32
+      },
+      "database_bytes": 20209664,
+      "wal_bytes_before_checkpoint": 4128272,
+      "integrity": "ok",
+      "wal_checkpoint": [
+        0,
+        270,
+        270
+      ],
+      "wal_bytes_after_passive_checkpoint": 4128272,
+      "queue_payload_sweep": [
+        {
+          "queued": 32,
+          "payload_bytes": 2097152,
+          "durable_insert": {
+            "samples": 32,
+            "p50_ms": 1.616,
+            "p95_ms": 2.087,
+            "max_ms": 2.601
+          }
+        },
+        {
+          "queued": 128,
+          "payload_bytes": 8388608,
+          "durable_insert": {
+            "samples": 128,
+            "p50_ms": 1.589,
+            "p95_ms": 2.174,
+            "max_ms": 3.923
+          }
+        },
+        {
+          "queued": 256,
+          "payload_bytes": 16777216,
+          "durable_insert": {
+            "samples": 256,
+            "p50_ms": 1.48,
+            "p95_ms": 1.806,
+            "max_ms": 2.515
+          }
+        }
+      ],
+      "blob_sweep": [
+        {
+          "bytes": 4194304,
+          "insert_ms": 22.719,
+          "read": {
+            "samples": 3,
+            "p50_ms": 2.137,
+            "p95_ms": 2.296,
+            "max_ms": 2.296
+          },
+          "sha256": "61d678b48de600e6922df82ac9fb5d208d19e98064d0d1d5c14a2ee50481c593"
+        },
+        {
+          "bytes": 26214400,
+          "insert_ms": 131.804,
+          "read": {
+            "samples": 3,
+            "p50_ms": 9.683,
+            "p95_ms": 9.927,
+            "max_ms": 9.927
+          },
+          "sha256": "35b97299a8fbb341bbed7a5d8e5cc7409b74c66b34c11a2af5f43e5f1e561ff8"
+        },
+        {
+          "bytes": 67108864,
+          "insert_ms": 325.825,
+          "read": {
+            "samples": 3,
+            "p50_ms": 23.425,
+            "p95_ms": 23.433,
+            "max_ms": 23.433
+          },
+          "sha256": "6bba1f5773aa9e34f743041898c265412d6681818dde9f1d54e348a813c6f4b4"
+        }
+      ]
+    }
+  ],
+  "executor_capability": {
+    "available": true,
+    "backend": "macos-seatbelt",
+    "reason": null
+  },
+  "peak_rss_platform_units": 384876544,
+  "limitations": [
+    "Synthetic fixtures do not measure provider/Lean latency or production project throughput.",
+    "Queue sweep measures bounded storage cost; durable command scheduler ships in Stage 3.",
+    "WAL trial changes only the temporary database; current application journal policy is unchanged."
+  ],
+  "source_sha256": {
+    "scripts/benchmark-db-boundary.py": "26492d721fbda50e0cde1bf771c4091df5de84f8202b80e451990818e1701e4d",
+    "apps/lea-standalone/adapter/app/db.py": "cd62f5642da5b777ce1d87746456e98a7ec8c72f8075deffec4f9ca425b719a2",
+    "apps/lea-standalone/adapter/app/store.py": "811216320c2c057ea49c767e3b5c480eeee3b9c5a9ff080c242dc277fe1e771b",
+    "apps/lea-standalone/adapter/app/bridge.py": "23a5c3dd8fab55940d5ff7e86df028304246e5884ff123a40062b6136aecc7ac"
+  },
+  "source_sha256_note": "Recorded immediately after measurement, before Stage 1 adapter edits; benchmark diagnostics/provenance fields added after early captures."
+}

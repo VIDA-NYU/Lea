@@ -22,9 +22,11 @@ const detail = (id, active=false) => ({id, messages:[{id:`message-${id}`, conten
 async function setup() {
   const requests=[], operations=[], timers=new Map(), sources=[], effects=[], subscribers=[];
   let timerId=0;
-  const state={formalizationScope:'project', messages:[], runStatusById:{}, runResultKindById:{}};
+  const state={formalizationScope:'project', canvasRevisionMode:'current', codeSteps:[], codeIndex:0,
+    messages:[], runStatusById:{}, runResultKindById:{}, formalizationRefreshToken:0};
   const proxy=new Proxy(state,{get(t,k) {
     if(k==='resetSessionScoped') return ()=>{t.messages=[];};
+    if(k==='bumpFormalizationRefresh') return ()=>{t.formalizationRefreshToken+=1;};
     if(typeof k==='string' && k.startsWith('set')) {
       const field=k[3].toLowerCase()+k.slice(4);
       return value=>{const prev={...t}; t[field]=typeof value==='function'?value(t[field]):value; subscribers.forEach(fn=>fn(t,prev));};
@@ -38,7 +40,7 @@ async function setup() {
     constructor(url){this.url=url;sources.push(this);}
     close(){this.closed=true;}
     addEventListener(name,fn){this.listeners.set(name,fn);}
-    emit(name,payload={}){this.listeners.get(name)?.({data:JSON.stringify(payload)});}
+    emit(name,payload={},lastEventId=''){this.listeners.get(name)?.({data:JSON.stringify(payload),lastEventId});}
   }
   const context={module:{exports:{}},require,AbortController,EventSource:Source,effects,
     setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),
@@ -55,6 +57,112 @@ async function setup() {
     tick:async()=>{const entries=[...timers];timers.clear();for(const [,fn] of entries)fn();await flush();}};
 }
 const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
+
+test('retention reset replaces a future cursor and preserves historical selection',async()=>{
+  const x=await setup();x.hook.applyDetail(selectionDetail());selectHistory(x);
+  const before=selectedPresentation(x);
+  x.sources[0].emit('status',{},'attempt:9999');
+  x.sources[0].emit('resync',{attempt_id:'attempt',cursor:5,reload:true},'attempt:5');
+  assert.equal(x.sources[0].closed,true);
+  x.requests[0].resolve(selectionDetail());await flush();
+  assert.match(x.sources.at(-1).url,/since=attempt%3A5/);
+  assert.deepEqual(selectedPresentation(x),before);x.cleanup();
+});
+
+test('persisted partial replay is idempotent and finalizes the same bubble',async()=>{
+  const x=await setup();x.hook.applyDetail(detail('A',true));
+  const message={id:'42',session_id:'A',run_id:'run-A',role:'assistant',created_at:'now',
+    stream_sequence:1,stream_state:'streaming',live:true};
+  x.sources[0].emit('assistant_delta',{text:'Hello',message},'attempt:10');
+  x.sources[0].emit('assistant_delta',{text:'Hello',message},'attempt:10');
+  x.sources[0].emit('assistant_delta',{text:' world',message:{...message,stream_sequence:2}},'attempt:11');
+  assert.equal(x.state.messages.filter(m=>m.id==='42').length,1);
+  assert.equal(x.state.messages.find(m=>m.id==='42').content,'Hello world');
+  x.sources[0].emit('message',{...message,content:'Hello world',stream_sequence:3,stream_state:'final',live:false},'attempt:12');
+  x.sources[0].emit('assistant_delta',{text:' world',message:{...message,stream_sequence:2}},'attempt:11');
+  assert.equal(x.state.messages.find(m=>m.id==='42').live,false);
+  assert.equal(x.state.messages.find(m=>m.id==='42').content,'Hello world');x.cleanup();
+});
+
+test('partial gaps reload committed state and resume after the persisted event cursor',async()=>{
+  const x=await setup();x.hook.applyDetail(selectionDetail());selectHistory(x);
+  const before=selectedPresentation(x);
+  x.sources[0].emit('assistant_delta',{text:'missing prefix',message:{id:'42',stream_sequence:3}},'attempt:12');
+  assert.equal(x.sources[0].closed,true);
+  assert.equal(x.requests.length,1);
+  x.requests[0].resolve({...selectionDetail(),messages:[{id:'42',content:'committed prefix',stream_sequence:3}]});
+  await flush();
+  assert.match(x.sources[1].url,/since=attempt%3A12/);
+  assert.deepEqual(selectedPresentation(x),before);
+  assert.equal(x.state.messages.find(m=>m.id==='42').content,'committed prefix');x.cleanup();
+});
+
+test('hydrated partial ignores already committed replay chunks',async()=>{
+  const x=await setup();x.hook.applyDetail({...detail('A',true),messages:[{id:'42',content:'persisted',stream_sequence:5}]});
+  x.sources[0].emit('assistant_delta',{text:'duplicate',message:{id:'42',stream_sequence:2}});
+  assert.equal(x.state.messages[0].content,'persisted');x.cleanup();
+});
+
+const step = (id, seq, formalization_id = 'target-a', path = 'A.lean') => ({
+  id, seq, formalization_id, path, code:`-- ${id}`, created_at:'2026-10-16T12:00:00Z',
+});
+const selectionDetail = (active = true) => ({ ...detail('A', active),
+  formalizations:[{id:'target-a',activity:{status:'idle'}},{id:'target-b',activity:{status:'running'}}],
+  latest_focus_formalization_id:'target-a', code_steps:[step('old-a',2),step('old-b',4,'target-b','B.lean')],
+});
+function selectedPresentation(x) {
+  return {
+    scope:x.state.formalizationScope, mode:x.state.canvasRevisionMode,
+    step:x.state.codeSteps[x.state.codeIndex]?.id, override:x.state.composerScopeOverride,
+    snapshot:x.state.currentFormalizationSnapshot, goal:x.state.goalSurface, edited:x.state.editedPath,
+  };
+}
+function selectHistory(x) {
+  x.proxy.setFormalizationScope('target-a');
+  x.proxy.setCanvasRevisionMode('historical');
+  x.proxy.setCodeIndex(0);
+  x.proxy.setComposerScopeOverride('target-b');
+  x.proxy.setCurrentFormalizationSnapshot({revision_token:'chosen-revision'});
+  x.proxy.setGoalSurface({rendered:'chosen goal',line:5});
+  x.proxy.setEditedPath('A.lean');
+}
+
+test('live steps, replay, and backfill update data without changing target or historical selection',async()=>{
+  const x=await setup();x.hook.applyDetail(selectionDetail());selectHistory(x);
+  const before=selectedPresentation(x);
+  x.sources[0].emit('code_step',step('new-b',6,'target-b','B.lean'));
+  x.sources[0].emit('code_step',step('earlier',1,'target-b','B.lean'));
+  x.sources[0].emit('code_step',{...step('old-a',2),check_status:'ok'});
+  assert.deepEqual(selectedPresentation(x),before);
+  assert.equal(x.state.codeSteps.length,4);
+  assert.equal(x.state.codeSteps[x.state.codeIndex].check_status,'ok');
+  assert.equal(x.state.formalizationRefreshToken,3);x.cleanup();
+});
+
+for(const scope of ['project','new','target-a']) {
+  test(`incoming work does not navigate from the ${scope} view`,async()=>{
+    const x=await setup();x.hook.applyDetail(selectionDetail());x.proxy.setFormalizationScope(scope);
+    const index=x.state.codeIndex;
+    x.sources[0].emit('code_step',step('new-b',6,'target-b','B.lean'));
+    assert.equal(x.state.formalizationScope,scope);assert.equal(x.state.codeIndex,index);x.cleanup();
+  });
+}
+
+for(const refresh of ['reconcile','resync','reconnect','done']) {
+  test(`${refresh} keeps presentation selected while refreshing authoritative history`,async()=>{
+    const x=await setup();x.hook.applyDetail(selectionDetail());selectHistory(x);
+    const before=selectedPresentation(x);
+    let pending;
+    if(refresh==='reconcile') pending=x.hook.reconcile('A');
+    else if(refresh==='reconnect') {x.sources[0].onerror();await x.tick();}
+    else x.sources[0].emit(refresh,refresh==='done'?{status:'proved'}:{});
+    x.requests[0].resolve({...selectionDetail(refresh!=='done'),latest_focus_formalization_id:'target-b',
+      code_steps:[step('earlier',1),...selectionDetail().code_steps,step('new-b',6,'target-b','B.lean')]});
+    await pending;await flush();
+    assert.deepEqual(selectedPresentation(x),before);
+    assert.equal(x.state.codeSteps.length,4);x.cleanup();
+  });
+}
 
 test('a late reconciliation cannot change the selected session',async()=>{
   const x=await setup();const pending=x.hook.reconcile('A');x.hook.applyDetail(detail('B'));

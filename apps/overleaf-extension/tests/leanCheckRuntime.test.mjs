@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fetchApiLeanCheckRuntime } from '../companion/leaApiClient.mjs';
 import { toChatSessionResponse } from '../companion/chatPrompt.mjs';
-import { handleLeanCheckRuntime } from '../companion/server.mjs';
+import { handleLeanCheckRuntime } from '../companion/workerService.mjs';
 
 test('runtime client queries the adapter session without starting a check', async () => {
   let request;

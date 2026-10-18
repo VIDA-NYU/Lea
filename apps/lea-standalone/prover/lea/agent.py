@@ -1240,7 +1240,7 @@ def _run_events_inner(
             around a broken tool. `diagnostics.report` is the human's copy; the loop
             drains it in Phase 4. Reporting (not yielding) is what lets this stay a
             plain function callable from an E3 worker thread."""
-            invocation_id = uuid.uuid4().hex
+            invocation_id = tc.get('_invocation_id') or uuid.uuid4().hex
             _record("invocation_start", {"id": invocation_id, "kind": "tool",
                                          "name": tc["name"], "turn": turn,
                                          "call_index": tc.get("_index"),
@@ -1305,7 +1305,8 @@ def _run_events_inner(
                 continue
             approved = True
             if gate is not None and gate(tc["name"], tc["args"]):
-                decision = yield ToolApprovalRequested(tc["name"], tc["args"])
+                tc['_invocation_id']=uuid.uuid4().hex
+                decision = yield ToolApprovalRequested(tc["name"], tc["args"],tc['_invocation_id'])
                 approved = decision in ("allow", "always_session")
             if not approved:
                 refused_idx.add(idx)
@@ -1346,7 +1347,7 @@ def _run_events_inner(
                 if isinstance(plan, str):
                     results_by_idx[idx] = plan  # refused → no child, no started event
                 else:
-                    tc["_invocation_id"] = uuid.uuid4().hex
+                    tc["_invocation_id"] = tc.get('_invocation_id') or uuid.uuid4().hex
                     _record("invocation_start", {"id": tc["_invocation_id"], "kind": "tool",
                                                  "name": "spawn_subagent", "turn": turn,
                                                  "call_index": idx, "input": tc["args"]})

@@ -29,6 +29,7 @@ playwright-report/
 .overleaf-lean-stub/
 lea.local.toml
 data/
+/apps/lea-standalone/workspace-state/
 
 # LaTeX build artifacts (docs/ testing fixtures are compiled locally;
 # only the .tex sources belong in git)
@@ -48,5 +49,6 @@ CLAUDE.md
 /.agents/skills/impeccable/
 /.codex/hooks.json
 /.impeccable/
+/.release-artifacts/
 /PRODUCT.md
 /DESIGN.md

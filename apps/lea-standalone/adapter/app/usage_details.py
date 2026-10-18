@@ -1,6 +1,6 @@
 """Shared normalization for historical and current accounting surfaces."""
 import json
-from lea.usage import legacy_details, merge_details
+from .queries.usage import legacy_details, merge_details
 
 
 def decode(row: dict) -> dict:

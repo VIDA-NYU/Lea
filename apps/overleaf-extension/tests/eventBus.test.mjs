@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { createEventBus, publishEvent } from "../companion/eventBus.mjs";
-import { createServer } from "../companion/server.mjs";
+import { createServer } from "../companion/workerService.mjs";
 
 test("bus fans out to every subscriber and unsubscribe detaches", () => {
   const bus = createEventBus();
