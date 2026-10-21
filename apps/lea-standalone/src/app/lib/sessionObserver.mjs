@@ -1,7 +1,7 @@
 /** Snapshot first, then one cursor-addressed observer. Never owns UI selection. */
 export function observeSessionList({ refresh, readCursor, onChanged = () => {},
   createSource = url => new EventSource(url), setTimer = setTimeout, clearTimer = clearTimeout }) {
-  let source, timer, stopped = false, refreshing = false, dirty = false, delay = 1000;
+  let source, timer, connectedOnce = false, stopped = false, refreshing = false, dirty = false, delay = 1000;
   const retry = () => {
     if (stopped || timer) return;
     timer = setTimer(() => { timer = undefined; void connect(); }, delay);
@@ -23,8 +23,12 @@ export function observeSessionList({ refresh, readCursor, onChanged = () => {},
     try {
       await refresh();
       if (stopped) return;
+      // Initial navigation owns its detail load. Reconnect must invalidate any
+      // already-open detail before advancing past changes missed offline.
+      if (connectedOnce) onChanged();
       const cursor = readCursor();
       const owned = source = createSource(`/api/sessions/events${cursor === undefined ? '' : `?after=${cursor}`}`);
+      connectedOnce = true;
       owned.onopen = () => { if (!stopped && source === owned) delay = 1000; };
       owned.addEventListener('sessions_changed', () => {
         if (!stopped && source === owned) void update().catch(() => {

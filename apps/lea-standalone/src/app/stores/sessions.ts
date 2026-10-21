@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { sessionListSnapshot, type SessionSummary } from '../lib/api';
+import { useProjects } from './projects';
 
 /**
  * The sessions store (v2.0.1 R3) — the session list + which one is open.
@@ -32,6 +33,7 @@ export const useSessions = create<SessionsState>((set) => ({
     // legitimately have a lower watermark after restoring a database backup.
     if (version === refreshVersion) {
       set(snapshot);
+      if (snapshot.projects) useProjects.getState().applySnapshot(snapshot.projects, snapshot.sessions);
     }
     return snapshot.sessions;
   },

@@ -21,8 +21,8 @@ function makeHarness({ url = () => "http://c/events" } = {}) {
     close() {
       this.closed = true;
     }
-    emit(type, data) {
-      this.listeners.get(type)?.({ data: JSON.stringify(data) });
+    emit(type, data, lastEventId = '') {
+      this.listeners.get(type)?.({ data: JSON.stringify(data), lastEventId });
     }
   }
   const timers = new Map();
@@ -128,4 +128,26 @@ test("events from a superseded source are ignored", () => {
   h.fireNextTimer();
   first.emit("jobs-changed", {});
   assert.equal(h.events.length, 0, "stale source events are dropped");
+});
+
+test('reconnect resumes cursor-only frames and accepts authoritative backwards resets',()=>{
+  const h=makeHarness({url:()=> 'http://c/events?projectId=A'});h.client.start();
+  h.sources[0].emit('jobs-changed',{},'10');
+  h.sources[0].emit('cursor',{},'20');
+  assert.equal(h.events.length,1);
+  h.sources[0].onerror();h.fireNextTimer();
+  assert.equal(new URL(h.sources[1].target).searchParams.get('after'),'20');
+  h.sources[1].emit('resync',{watermark:5},'5');
+  h.sources[1].onerror();h.fireNextTimer();
+  assert.equal(new URL(h.sources[2].target).searchParams.get('after'),'5');
+  h.client.stop();
+});
+
+test('project changes use independent cursors and retired sources cannot advance them',()=>{
+  let project='A';const h=makeHarness({url:()=>`http://c/events?projectId=${project}`});h.client.start();
+  h.sources[0].emit('cursor',{},'20');h.sources[0].onerror();project='B';h.fireNextTimer();
+  assert.equal(new URL(h.sources[1].target).searchParams.has('after'),false);
+  h.sources[0].emit('cursor',{},'999');h.sources[1].emit('cursor',{},'30');
+  h.sources[1].onerror();project='A';h.fireNextTimer();
+  assert.equal(new URL(h.sources[2].target).searchParams.get('after'),'20');h.client.stop();
 });

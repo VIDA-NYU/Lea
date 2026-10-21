@@ -126,6 +126,11 @@
       lastLeanPaneManifest = null;
       deferredLeanPaneManifest = null;
       leanPaneBlueprintGraph = null;
+      closeLeanPaneChat();
+      // Overleaf can navigate between projects without reloading this script.
+      // A scoped stream must follow that navigation immediately.
+      eventsClient?.stop();
+      eventsClient?.start();
     }
     renderRenameNotice();
     renderLeaActivity();
@@ -377,6 +382,7 @@
   // polling entirely, freezing the panel on "Lea is working…". We now retry
   // with backoff up to this cap before giving up and surfacing the error.
   let leanPaneChatPollFailures = 0;
+  let leanPaneChatPollInFlight = null;
   const LEAN_PANE_CHAT_POLL_MAX_FAILURES = 5;
   // Manual edit (docs/FEATURE-overleaf-lean-pane-manual-edit.md): at most one
   // item's edit view is open at a time, tracked by item id the same way
@@ -2285,8 +2291,11 @@
   // live buffer overlaid — a cheap, no-blink background refresh (no project download).
   function scheduleLeanPaneRefresh() {
     if (projectRenaming) { scheduleRenameReconciliation(); return; }
-    clearTimeout(leanPaneRefreshTimer);
+    // Bound the wait from the first notification. Continuous run events must
+    // not keep postponing the graph/inventory refresh indefinitely.
+    if (leanPaneRefreshTimer !== null) return;
     leanPaneRefreshTimer = setTimeout(() => {
+      leanPaneRefreshTimer = null;
       refreshLeanPaneNow({ background: true }).catch(renderLeanPaneError);
     }, LEAN_PANE_REFRESH_DELAY_MS);
   }
@@ -2323,13 +2332,9 @@
     leanPaneRefreshTimer = null;
     clearTimeout(leanPanePollTimer);
     leanPanePollTimer = null;
-    // Blueprint view has its own (Items-independent) fetch + render — no file
-    // archive, manifest, or in-progress poll. The blueprint is derived from
-    // .lea/blueprint.md + Lean state, NOT the .tex buffer, so edit-/poll-driven
-    // background refreshes can't change it — skip them. Explicit refreshes (the
-    // header ↻ and initial open, both non-background) still re-fetch.
+    // Database notifications can change graph status even without a TeX edit.
     if (leanPaneMainView === "blueprint") {
-      if (!background) await renderLeanPaneBlueprint({});
+      await renderLeanPaneBlueprint({ background });
       return;
     }
     await ensureLeanPaneView();
@@ -3605,6 +3610,13 @@
 
     const checks = document.createElement("span");
     checks.className = "ol-lean-project-checks";
+    if (item.status === "needs-review") {
+      const outcome = document.createElement("span");
+      outcome.className = "ol-lean-project-check-chip ol-lean-project-check-chip-needs-review";
+      outcome.textContent = "Needs review · Result not certified";
+      outcome.title = item.review?.reason || item.message || item.leanCheck?.detail || "Review the checked artifact against the requested statement.";
+      checks.appendChild(outcome);
+    }
     if (item.status === "disproved") {
       const outcome = document.createElement("span");
       outcome.className = "ol-lean-project-check-chip ol-lean-project-check-chip-disproved";
@@ -4516,8 +4528,9 @@
         ? ["formalized", "disproved"]
         : ["repaired"]);
     const attentionStates = new Set(["failed", "incomplete", "skipped", "canceled", "needs_review", "disproved"]);
-    const completedEntries = batch.items.filter((entry) => completedStates.has(entry.state));
-    const attentionEntries = batch.items.filter((entry) => attentionStates.has(entry.state));
+    const reusedEntry = entry => operation === "formalize" && entry.state === "skipped" && entry.reason === "existing_proof";
+    const completedEntries = batch.items.filter((entry) => completedStates.has(entry.state) || reusedEntry(entry));
+    const attentionEntries = batch.items.filter((entry) => attentionStates.has(entry.state) && !reusedEntry(entry));
     const reportedActiveEntry = batch.items.find((entry) => ["running", "waiting"].includes(entry.state)) || null;
     // The launch response can land after the batch loop is marked running but
     // just before its first entry flips pending → running. Show that first
@@ -4541,14 +4554,15 @@
     }
     const activeIndex = activeEntry ? batch.items.indexOf(activeEntry) : -1;
     const total = batch.items.length;
-    const completedCount = batch.items.filter((entry) => successfulStates.has(entry.state)).length;
+    const completedCount = batch.items.filter((entry) => successfulStates.has(entry.state) || reusedEntry(entry)).length;
     const processedCount = batch.items.filter((entry) => !["pending", "running", "waiting"].includes(entry.state)).length;
     const verifiedCount = batch.items.filter((entry) => entry.state === "formalized").length;
     const disprovedCount = batch.items.filter((entry) => entry.state === "disproved").length;
     const incompleteCount = batch.items.filter((entry) => entry.state === "incomplete").length;
     const reviewCount = batch.items.filter((entry) => entry.state === "needs_review").length;
     const failedCount = batch.items.filter((entry) => entry.state === "failed").length;
-    const skippedCount = batch.items.filter((entry) => entry.state === "skipped").length;
+    const alreadyVerifiedCount = batch.items.filter(reusedEntry).length;
+    const skippedCount = batch.items.filter((entry) => entry.state === "skipped" && !reusedEntry(entry)).length;
     const canceledCount = batch.items.filter((entry) => entry.state === "canceled").length;
 
     const panel = document.createElement("div");
@@ -4593,7 +4607,7 @@
       canceledCount,
       total
     });
-    if (operation === "formalize") count.textContent = `${verifiedCount} verified · ${disprovedCount} disproved · ${incompleteCount} incomplete · ${failedCount} failed · ${skippedCount} skipped${reviewCount ? ` · ${reviewCount} need review` : ""}${canceledCount ? ` · ${canceledCount} stopped` : ""}`;
+    if (operation === "formalize") count.textContent = `${verifiedCount} verified · ${disprovedCount} disproved · ${incompleteCount} incomplete · ${failedCount} failed · ${skippedCount} skipped${alreadyVerifiedCount ? ` · ${alreadyVerifiedCount} already verified` : ""}${reviewCount ? ` · ${reviewCount} need review` : ""}${canceledCount ? ` · ${canceledCount} stopped` : ""}`;
     header.appendChild(count);
     panel.appendChild(header);
 
@@ -4616,6 +4630,7 @@
       const segment = document.createElement("span");
       const stateClass = entry === activeEntry
         ? "active"
+        : reusedEntry(entry) ? "success"
         : entry.state === "failed"
           ? "failed"
           : entry.state === "skipped"
@@ -6043,7 +6058,26 @@
     }, delayMs);
   }
 
-  async function pollChatSession() {
+  function pollChatSession() {
+    if (!leanPaneChatSessionId || !leanPaneChatPanel || document.hidden) return Promise.resolve();
+    if (leanPaneChatPollInFlight?.token === leanPaneChatToken) {
+      leanPaneChatPollInFlight.dirty = true;
+      return leanPaneChatPollInFlight.promise;
+    }
+    const entry = { token: leanPaneChatToken, promise: null, dirty: false };
+    entry.promise = (async () => {
+      do {
+        entry.dirty = false;
+        await performChatSessionPoll();
+      } while (entry.dirty && entry.token === leanPaneChatToken && leanPaneChatPanel && !document.hidden);
+    })().finally(() => {
+      if (leanPaneChatPollInFlight === entry) leanPaneChatPollInFlight = null;
+    });
+    leanPaneChatPollInFlight = entry;
+    return entry.promise;
+  }
+
+  async function performChatSessionPoll() {
     if (!leanPaneChatSessionId || !leanPaneChatPanel || document.hidden) return;
     const token = leanPaneChatToken;
     let payload = null;
@@ -6051,6 +6085,7 @@
       const baseUrl = await chatCompanionBaseUrl();
       const response = await companionFetch(`${baseUrl}/lean-pane/chat/session/${encodeURIComponent(leanPaneChatSessionId)}`);
       payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw companionRequestError(response, payload);
     } catch {
       // Transient failure (companion restarting, network blip). AUDIT M2: do
       // NOT stop polling and strand the panel on "Lea is working…" — retry
@@ -7472,7 +7507,8 @@
     ));
     const enrichedTarget = manifestTarget ? { ...manifestTarget, ...target } : target;
     const sourceFile = normalizeDocPath(enrichedTarget?.sourceFile || latestActiveTexPath);
-    const candidates = [
+    const candidates = leanPaneSourceCoverage === "complete" && lastLeanPaneProjectId === capturedDocument
+      ? (lastLeanPaneFiles || []) : [
       ...(Array.isArray(lastMirrorFiles) ? lastMirrorFiles : []),
       ...(Array.isArray(lastLeanPaneFiles) ? lastLeanPaneFiles : [])
     ];
@@ -7814,15 +7850,37 @@
         assertTargetBatchSource(pending);
         pending.baseUrl = await chatCompanionBaseUrl();
         assertTargetBatchSource(pending);
-        const mirrorResult = await syncTexMirrorNow({ force: true });
+        // The initial pane may show only the active file while the archive is
+        // loading. Freeze the project-wide inventory after acquiring all files,
+        // never the partial set captured by the displayed button's closure.
+        const mirrorResult = await syncTexMirrorNow({ force: true, freshArchive: true });
         assertTargetBatchSource(pending);
+        const files = await getLeanPaneProjectFiles({ projectId: pending.projectId,
+          forceFetch: false, deferArchiveFetch: false });
+        assertTargetBatchSource(pending);
+        if (leanPaneSourceCoverage !== "complete") {
+          throw Object.assign(new Error("Waiting for the complete project archive before queuing every target."), { status: 503 });
+        }
+        const inventory = await queuedCompanionQuery(pending.baseUrl, "/lean-pane/manifest", {
+          overleafProjectId: pending.projectId, activePath: pending.activePath,
+          sourceCoverage: "complete", files
+        });
+        assertTargetBatchSource(pending);
+        if (inventory.inventorySync?.state === "pending" || leanPaneView.hasPendingPaneObservations(inventory.items)) {
+          throw Object.assign(new Error("Waiting for current project statuses before preparing the complete batch."), { status: 503 });
+        }
+        pending.items = (inventory.items || []).filter(item => item.formalizable
+          && !item.inProgress && item.status !== "in-progress"
+          && (pending.endpoint !== "/stub/all" || leanPaneView.canStubPaneItem(item)));
+        if (!pending.items.length) throw new Error("The complete project inventory has no targets available for this batch.");
         const payloads = await buildBatchTargetPayloads(pending.items, {
           verifyMirror: mirrorResult?.disabled !== true, mirrorSnapshot: mirrorResult
         });
         assertTargetBatchSource(pending);
         // Freeze bytes and destination once. Every ambiguous retry uses these
         // exact bytes and the original key; it cannot create a second batch.
-        pending.body = JSON.stringify({ overleafProjectId: pending.projectId, items: payloads });
+        pending.body = JSON.stringify({ overleafProjectId: pending.projectId,
+          scope: pending.endpoint === "/formalize/all" ? "project" : "selection", items: payloads });
       }
       let payload;
       if (pending.command) {
@@ -8206,6 +8264,9 @@
       }
       lastMirrorFiles = files;
       lastMirrorProjectId = projectId;
+      lastLeanPaneFiles = files.map(file => ({ ...file }));
+      lastLeanPaneProjectId = projectId;
+      leanPaneSourceCoverage = "complete";
       texMirrorSyncedOnce = true;
       texMirrorDirty = false;
       if (needFetch) lastTexMirrorFullSyncAt = Date.now();
@@ -9398,9 +9459,7 @@
         url: () => {
           refreshUrlCache();
           const projectId = extractOverleafProjectId();
-          const query = projectId && projectId !== "unknown"
-            ? `?projectId=${encodeURIComponent(projectId)}`
-            : "";
+          const query = `?projectId=${encodeURIComponent(projectId || "unknown")}`;
           return `${companionUrlCache}/events${query}`;
         },
         onEvent: handlePushEvent,
@@ -9411,6 +9470,7 @@
             // Reconcile once on (re)connect: anything that changed while the
             // stream was down is picked up now instead of on the slow poll.
             scheduleStatusRefresh();
+            if (leanPaneChatPanel) pollChatSession().catch(() => {});
             if (leanPaneMainView === "blueprint" && leanPane) renderLeanPaneBlueprint({ background: true }).catch(renderLeanPaneError);
             else if (leanPane) scheduleLeanPaneRefresh();
           }
@@ -9431,6 +9491,14 @@
   }
 
   function handlePushEvent(type, data) {
+    if (data?.overleafProjectId && data.overleafProjectId !== extractOverleafProjectId()) return;
+    if (type === "resync") {
+      scheduleStatusRefresh();
+      if (leanPane) scheduleLeanPaneRefresh();
+      if (leanPaneChatPanel) pollChatSession().catch(() => {});
+      if (batchNeedsPolling()) startRepairBatchPolling({ immediate: true });
+      return;
+    }
     if (type === "project-identity-changed") {
       if (data?.overleafProjectId !== extractOverleafProjectId()) return;
       if (data.phase === "started") markProjectRenaming(data.overleafProjectId, true);
@@ -9450,6 +9518,7 @@
     if (type === "jobs-changed") {
       scheduleStatusRefresh();
       if (leanPane) scheduleLeanPaneRefresh();
+      if (leanPaneChatPanel) pollChatSession().catch(() => {});
       if (batchNeedsPolling()) startRepairBatchPolling({ immediate: true });
       return;
     }

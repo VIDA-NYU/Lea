@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from uuid import uuid4
 from datetime import datetime, timedelta, timezone
 
 from . import db
@@ -25,7 +26,8 @@ def _record_event(conn, run_id, attempt, event_id, event_type, payload):
         return
     if event_type == "subagent_progress" and payload.get("kind") == "text":
         return
-    key = str(payload.get("approval_id") or payload.get("id") or payload.get("child_id") or "latest")
+    key = ("latest" if event_type == "status" else
+           str(payload.get("approval_id") or payload.get("id") or payload.get("child_id") or "latest"))
     conn.execute("""insert into run_observation_records values (?,?,?,?,?,?)
         on conflict(run_id,attempt_id,type,record_key) do update set
         event_id=excluded.event_id,payload=excluded.payload where excluded.event_id>event_id""",
@@ -107,17 +109,26 @@ def session_snapshot(session_id: str) -> dict | None:
 def append_run_event(run_id: str, event_type: str, payload: dict) -> dict:
     """Commit before any legacy or durable subscriber can observe the event."""
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    if len(encoded.encode()) > CHANGE_PAGE_BYTES:
-        # Canonical code/messages are already stored. Do not duplicate huge blobs
-        # into the replay log; clients reload their committed snapshot instead.
-        event_type, payload = "resync", {"run_id": run_id, "reload": True,
-                                        "reason": "event_payload_exceeds_replay_budget"}
-        encoded = json.dumps(payload)
     with db.write() as conn:
-        run = conn.execute("select attempt_id from runs where id=?", (run_id,)).fetchone()
+        run = conn.execute("select attempt_id,session_id from runs where id=?", (run_id,)).fetchone()
         if run is None:
             raise ValueError("Cannot publish an event for a missing run")
         attempt = run[0] or ""
+        if event_type == 'status':
+            payload = {**payload, 'id': payload.get('id') or str(uuid4()),
+                       'session_id': run['session_id'], 'run_id': run_id,
+                       'created_at': payload.get('created_at') or db.utc_now()}
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            conn.execute('''insert or ignore into status_events
+                (id,session_id,run_id,step_number,status,message,created_at,payload)
+                values (?,?,?,?,?,?,?,?)''',
+                (payload['id'], run['session_id'], run_id, payload.get('turn'), payload.get('status'),
+                 payload.get('message') or payload.get('status') or 'status update', payload['created_at'], encoded))
+        if len(encoded.encode()) > CHANGE_PAGE_BYTES:
+            # Canonical text/code/status is retained independently of replay.
+            event_type, payload = "resync", {"run_id": run_id, "reload": True,
+                                            "reason": "event_payload_exceeds_replay_budget"}
+            encoded = json.dumps(payload)
         cursor = conn.execute("insert into run_events(run_id,attempt_id,type,payload) values (?,?,?,?)",
                               (run_id, attempt, event_type, encoded)).lastrowid
         conn.execute("""insert into run_event_retention(run_id,attempt_id,high_water) values (?,?,?)

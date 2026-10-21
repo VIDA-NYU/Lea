@@ -38,6 +38,46 @@ the companion; only the unpacked extension is loaded separately in Chrome.
 - `shared/`: theorem parser and Lean path helpers used by the companion and tests.
 - `tests/`: Node test suite.
 
+Accepted workflows retain the same request identity while admission is busy or
+a response is lost. The SQL scheduler waits behind unfinished file publication;
+it does not turn that wait into a proof failure. Job execution phase, certified
+result and registry publication state are recorded independently. Registry,
+usage, dependency and batch reconciliation run independently, and unchanged
+inventory synchronization is acknowledged once per project/source revision.
+
+[test_workflow_hardening.py](../lea-standalone/adapter/tests/test_workflow_hardening.py) drives the real API, SQLite commands,
+Node orchestration, report facts and UI stores with a scripted prover. It covers
+publication overlap, busy admission, lost responses, process restart and an
+unrelated project progressing while publication is blocked. The live five-target
+Overleaf run separately exercises real Lean verification.
+
+SQLite contention is handled at transaction boundaries and initial SQL reads or
+independent writes. A waiting commit retains its existing transaction; no prover
+or tool call is replayed. Database-backed contention tests cover write admission,
+reader-blocked commits, single invocation and worker ownership loss.
+The private companion distinguishes an unavailable ownership read from a lost
+lease: contention pauses new work, while an expired lease stops execution.
+Workflow tests also hold an exclusive SQL lock between proof verification and
+job publication, including cancellation reads and restart recovery.
+Runtime heartbeat delays return retryable availability errors, distinct from
+invalid credentials or expired execution ownership. Heartbeat lifetimes start
+after acquiring the writer, and the registry outbox revalidates the exact checked
+run before recovering an older save blocked by a temporary credential observation.
+Completed batch facts also retain their report identity across restart; report
+publication retries without rerunning the prover or changing target outcomes.
+
+Project-wide Formalize all waits for the complete Overleaf archive and current
+inventory before freezing its target list. The worker checks that list against
+the accepted SQL archive, including targets in input files. Existing verified
+targets are recorded as already verified rather than attention-required skips.
+Structured Lean source blocks compare declaration headers consistently and
+request named compiler evidence on both Overleaf and conversational runs.
+The pane keeps an explicit uncertified-result warning visible beside the file's
+Lean check and the model's confidence assessment.
+[test_overleaf_batch_completion.py](../lea-standalone/adapter/tests/test_overleaf_batch_completion.py)
+covers publication, compiler selection, job/report delivery and both UI SQL
+projections, including a ten-target archive and rejected incomplete batches.
+
 Generated Lean work happens under:
 
 ```text
@@ -71,8 +111,8 @@ Initially supported environments are `theorem`, `lemma`, `proposition`, and
 Use `uses={...}` when a theorem should depend on earlier theorems from the same
 Overleaf project. Values may be existing Lea labels or unique LaTeX labels
 (such as `uses={thm:finite-tree-leaves}`); they are not Lean theorem names. Each
-referenced theorem must already be formalized, or at least have a saved sorry
-stub from an older build, before Lea starts the new run.
+referenced theorem must already be formalized, or at least have a saved checked
+sorry stub, before Lea starts the new run.
 
 ```tex
 \begin{lemma}

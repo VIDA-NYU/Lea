@@ -1770,6 +1770,35 @@ def test_each_bookkeeping_step_is_independent(tmp_path, monkeypatch):
     assert store.get_run(ctx.run_id)["status"] == "proved"
 
 
+@pytest.mark.parametrize('publication_fails', [False, True])
+def test_target_publication_follows_artifact_registration_and_precedes_done(tmp_path, monkeypatch, publication_fails):
+    from app import target_observations
+    ctx, queue = _finishing_run(tmp_path, monkeypatch)
+    registered, published = [], []
+    record = bridge._record_run_artifacts
+    emit = bridge.emit
+    def record_artifacts(*args, **kwargs):
+        result = record(*args, **kwargs)
+        registered.append(True)
+        return result
+    def publish(run_id):
+        assert run_id == ctx.run_id and registered
+        assert store.get_run(run_id)['status'] == 'proved'
+        published.append(True)
+        if publication_fails:
+            raise RuntimeError('Observation publication temporarily unavailable')
+    def emit_after_publication(events, kind, payload):
+        if kind == 'done':
+            assert published
+        return emit(events, kind, payload)
+    monkeypatch.setattr(bridge, '_record_run_artifacts', record_artifacts)
+    monkeypatch.setattr(target_observations, 'publish_run', publish)
+    monkeypatch.setattr(bridge, 'emit', emit_after_publication)
+    bridge.run_lea(ctx)
+    assert store.get_run(ctx.run_id)['status'] == 'proved'
+    assert _drain(queue)[-1]['payload']['status'] == 'proved'
+
+
 # --- AUDIT-2026-07-24 C10: a turn that left no transcript must not vanish ------
 
 def _run_with_transcript(session_id, task, messages):

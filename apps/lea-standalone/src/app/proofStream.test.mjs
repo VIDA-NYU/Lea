@@ -3,6 +3,7 @@ import test from 'node:test';
 import { build } from 'esbuild';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
+import { deriveCodeStepProofStatus } from './lib/proofDisplay.mjs';
 const require = createRequire(import.meta.url);
 const bundle = build({
   entryPoints: [new URL('./hooks/useProofStream.ts', import.meta.url).pathname],
@@ -23,7 +24,7 @@ async function setup() {
   const requests=[], operations=[], timers=new Map(), sources=[], effects=[], subscribers=[];
   let timerId=0;
   const state={formalizationScope:'project', canvasRevisionMode:'current', codeSteps:[], codeIndex:0,
-    messages:[], runStatusById:{}, runResultKindById:{}, formalizationRefreshToken:0};
+    messages:[], subagentProgress:{}, runStatusById:{}, runResultKindById:{}, formalizationRefreshToken:0};
   const proxy=new Proxy(state,{get(t,k) {
     if(k==='resetSessionScoped') return ()=>{t.messages=[];};
     if(k==='bumpFormalizationRefresh') return ()=>{t.formalizationRefreshToken+=1;};
@@ -57,6 +58,51 @@ async function setup() {
     tick:async()=>{const entries=[...timers];timers.clear();for(const [,fn] of entries)fn();await flush();}};
 }
 const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
+
+test('a snapshot replay barrier prevents historical checks from certifying stale code',async()=>{
+  const x=await setup();
+  const checked={...step('proof',1),check_status:'ok',artifact_kind:'theorem',code:'theorem t : True := by trivial'};
+  x.hook.applyDetail({...detail('A',true),run_event_cursors:{'run-A':'attempt:20'},
+    code_steps:[{...checked,check_current:false,check_stale_reason:'dependency_changed'}]});
+  // Keep transient subagent/approval replay while fencing canonical code.
+  assert.doesNotMatch(x.sources[0].url,/since=/);
+  x.sources[0].emit('subagent_progress',{child_id:'child',kind:'tool',tool:'read_file'},'attempt:9');
+  assert.equal(x.state.subagentProgress.child.tool,'read_file');
+  x.sources[0].emit('code_step',{...checked,check_current:true},'attempt:10');
+  assert.equal(deriveCodeStepProofStatus(x.state.codeSteps[0]),'unchecked');
+  x.sources[0].emit('code_step',{...checked,check_current:true},'attempt:21');
+  assert.equal(deriveCodeStepProofStatus(x.state.codeSteps[0]),'proved');
+  x.sources[0].emit('code_step',{...checked,check_current:false},'attempt:21');
+  x.sources[0].emit('code_step',{...checked,check_current:false},'old-attempt:99');
+  assert.equal(x.state.codeSteps[0].check_current,true);
+  x.sources[0].emit('resync',{attempt_id:'attempt',cursor:5},'attempt:5');
+  x.requests[0].resolve({...detail('A',true),run_event_cursors:{'run-A':'attempt:5'},
+    code_steps:[{...checked,check_current:false}]});await flush();
+  x.sources.at(-1).emit('code_step',{...checked,check_current:true},'attempt:6');
+  assert.equal(x.state.codeSteps[0].check_current,true,'a restored snapshot replaces the old barrier');x.cleanup();
+});
+
+test('same-session idle reconciliations reject superseded successes and failures',async()=>{
+  const x=await setup();x.hook.applyDetail(detail('A'));
+  const first=x.hook.reconcile('A'),second=x.hook.reconcile('A');
+  x.requests[1].resolve({...detail('A'),messages:[{id:'new',content:'latest'}]});await second;
+  x.requests[0].resolve({...detail('A'),messages:[{id:'old',content:'stale'}]});await first;
+  assert.equal(x.state.messages[0].id,'new');
+  const old=x.hook.reconcile('A'),fresh=x.hook.reconcile('A');
+  x.requests[3].resolve({...detail('A'),messages:[{id:'newest',content:'latest'}]});await fresh;
+  x.requests[2].reject(new Error('obsolete failure'));await old;
+  assert.equal(x.state.messages[0].id,'newest');x.cleanup();
+});
+
+test('snapshot status identities survive hydration without duplicate replay',async()=>{
+  const x=await setup();
+  const status={id:'saved-status',status:'lean_check',message:'lean_check: ok',check_status:'ok'};
+  x.hook.applyDetail({...detail('A',true),status_events:[status],run_event_cursors:{'run-A':'attempt:10'}});
+  x.sources[0].emit('status',status,'attempt:10');
+  assert.equal(x.state.statusEvents.length,1);
+  x.hook.applyDetail({...detail('A'),status_events:[status]},{preservePresentation:true});
+  assert.equal(x.state.statusEvents[0].id,'saved-status');x.cleanup();
+});
 
 test('retention reset replaces a future cursor and preserves historical selection',async()=>{
   const x=await setup();x.hook.applyDetail(selectionDetail());selectHistory(x);

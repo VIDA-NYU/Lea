@@ -12,6 +12,7 @@ def decorate(rows):
     for raw in rows:
         row=dict(raw);fid=row['id'];scope=core.scope_for(formalization_id=fid)
         observed=core.fact(scope,'formalization',fid)
+        projection=core.metadata(scope,fid)
         with db.connect() as conn:
             files=[dict(r) for r in conn.execute('select * from formalization_files where formalization_id=? order by case role when \'primary\' then 0 else 1 end,path',(fid,))]
             active=conn.execute("select id,status,pending_approval from runs where focus_formalization_id=? and status in ('pending','running') order by created_at desc,id desc limit 1",(fid,)).fetchone()
@@ -34,17 +35,17 @@ def decorate(rows):
             # current while another target invalidates the shared observation.
             last_result=({'validity_status':recorded['validity_status'],
                           'source_hash':recorded.get('source_hash'),
-                          'observed_at':core.metadata(scope)['observed_at']}
+                          'observed_at':projection['observed_at']}
                          if (unformalized or recorded.get('check_current') and recorded.get('validity_status') in {'proved','defined','disproved'}
                              and recorded.get('source_hash')==row.get('source_hash')) else None)
             item={**row,'validity_status':'unchecked' if files else 'planned' if row.get('declaration_name') else 'draft',
-                'validity_reason':'Current proof observation is unavailable: '+core.metadata(scope)['state'],
+                'validity_reason':'Current proof observation is unavailable: '+projection['state'],
                 'check_current':False,'certification':None,'completion_run_id':None,'declaration_kind':None,
                 'review':{'eligible':False,'approval':None,'reason':'Wait for a current worker observation.','allowed_outcomes':[]},
                 'safe_verify':None,'latest_check':None,'latest_run':None,'artifact':None,'reformalization':None,
                 'primary_path':next((f['path'] for f in files if f['role']=='primary'),None),
                 'last_observed_result':last_result}
-        item.update(files=files,activity=activity,sessions=conversations,projection=core.metadata(scope))
+        item.update(files=files,activity=activity,sessions=conversations,projection=projection)
         result.append(item)
     return result
 

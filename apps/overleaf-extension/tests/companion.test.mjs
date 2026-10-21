@@ -2290,6 +2290,37 @@ test("finished formalizations awaiting fresh SQL evidence remain synchronizing i
   assert.equal(current.body.items[0].leanCheck.status, 'checked');
 });
 
+test('Formalize all displays a completed target while an unrelated target and project projection are still running', async () => {
+  const calls = [], fallback = makeAdapterApiFetch(calls);
+  let completedIsCurrent = true;
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+    if (String(url).includes('/target-status?')) return jsonResponse(200, {
+      projection: { state: 'inputs_changed' },
+      targets: [ledgerEntry('completed', { projection: { state: completedIsCurrent ? 'observed' : 'inputs_changed' } }),
+        ledgerEntry('working', { check_current: false, validity_status: 'unchecked', projection: { state: 'capturing' } })]
+    });
+    return fallback(url, options);
+  } });
+  state.jobs.working = { jobId: 'working', jobKey: 'project-1:theorem:working', status: 'in_progress',
+    targetKind: 'theorem', targetLabel: 'working', declarationName: 'working',
+    overleafProjectId: 'project-1', batchId: 'still-active-batch',
+    startedAt: '2026-01-01T00:00:00.000Z', apiRunId: 'running-proof' };
+  const payload = { overleafProjectId: 'project-1', files: [{ path: 'main.tex', content:
+    ['completed', 'working'].map(name => `\\begin{theorem}\n% lea: formalize label=${name}\nTrue.\n\\end{theorem}`).join('\n') }] };
+  for (let edit = 0; edit < 3; edit++) {
+    const result = await handleLeanPaneManifest(payload, state);
+    const completed = result.body.items.find(item => item.label === 'completed');
+    const working = result.body.items.find(item => item.label === 'working');
+    assert.equal(completed.status, 'valid');
+    assert.equal(completed.leanCheck.status, 'checked');
+    assert.equal(working.status, 'in-progress');
+    assert.equal(state.jobs.working.status, 'in_progress');
+  }
+  completedIsCurrent = false;
+  const changed = await handleLeanPaneManifest(payload, state);
+  assert.equal(changed.body.items.find(item => item.label === 'completed').leanCheck.status, 'synchronizing');
+});
+
 for (const [status, code, deferred] of [[409, 'project_busy', true], [503, 'database_busy', true],
   [503, 'retry_database_busy', true], [403, 'access_denied', false]]) {
   test(`inventory sync ${code} preserves proof results and ${deferred ? 'retries as pending' : 'shows a real error'}`, async () => {
@@ -3260,6 +3291,7 @@ test("a verified run that never self-registered still records proof path, module
     const job = state.jobs[result.body.jobId];
     assert.equal(job.recordedProofPath, proofPath);
     assert.equal(job.moduleName, "Lea.Project1.compactness_criterion");
+    await waitFor(() => job.registryUpdate?.state === "saved");
     const markdown = await fs.readFile(path.join(leaRepo, "workspace", "projects", "project-1.md"), "utf8");
     assert.match(markdown, /lea:theorem name="compactness_criterion"/);
   } finally {
@@ -3309,6 +3341,7 @@ test("a verified unregistered run whose file name differs from the label is reco
     assert.equal(job.declarationName, "even_square_of_even");
     assert.equal(job.recordedProofPath, proofPath);
     assert.equal(job.moduleName, "Lea.Project1.even_square_of_even");
+    await waitFor(() => job.registryUpdate?.state === "saved");
     const markdown = await fs.readFile(path.join(leaRepo, "workspace", "projects", "project-1.md"), "utf8");
     assert.match(markdown, /lea:theorem name="even_square_of_even"/);
   } finally {
@@ -3532,6 +3565,8 @@ test("formalize allows theorem uses backed by sorry stubs", async () => {
       moduleName: "Lea.Project1.stub_support",
       status: "sorry_stub"
     }]);
+    // The certified outcome is persisted before optional import enrichment.
+    await waitFor(() => state.jobs[result.body.jobId].stubbedTheoremUses?.length === 1);
     assert.deepEqual(state.jobs[result.body.jobId].stubbedTheoremUses, [{ targetKind: "theorem", targetLabel: "stub_support",
       declarationName: "stub_support",
       moduleName: "Lea.Project1.stub_support",
@@ -3756,6 +3791,8 @@ test("formalize allows theorem uses backed by failed sorry stubs", async () => {
       moduleName: "Lea.Project1.failed_stub_support",
       status: "sorry_stub"
     }]);
+    // Verification is published before the optional import enrichment finishes.
+    await waitFor(() => state.jobs[result.body.jobId].stubbedTheoremUses?.length === 1);
     assert.deepEqual(state.jobs[result.body.jobId].stubbedTheoremUses, [{ targetKind: "theorem", targetLabel: "failed_stub_support",
       declarationName: "failed_stub_support",
       moduleName: "Lea.Project1.failed_stub_support",
@@ -4343,14 +4380,14 @@ test("formalize keeps the previous Lean artifact and registry entry while retryi
   }
 });
 
-test("formalize all rechecks completed proofs before starting a queued item", async () => {
+for (const recorded of [true, false]) test(`formalize all rechecks completed proofs before starting a queued item (recorded=${recorded})`, async () => {
   const leaRepo = await makeLeaRepo();
   const calls = [];
   const state = await makeState({
     leaRepoPath: leaRepo,
     env: { OPENAI_API_KEY: "test-key" },
     fetchImpl: makeAdapterApiFetch(calls, {
-      targetStatus: { already_proved: ledgerEntry("already_proved") }
+      targetStatus: { already_proved: ledgerEntry("already_proved", { recorded }) }
     })
   });
 
@@ -4770,6 +4807,116 @@ test("startup recovery pauses legacy jobs lacking an adapter identity", async ()
   assert.equal(statuses.body.statuses["theorem:interrupted_status_test"].status, "paused");
 });
 
+for (const mode of ['single', 'batch']) test(`${mode} completion waits beyond its old timeout and saves only the current proof result`, async t => {
+  const calls = [], reports = [], fallback = makeAdapterApiFetch(calls);
+  let completed = false, ready = false, pendingReads = 0;
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), leaJobTimeoutSeconds: 1,
+    env: { OPENAI_API_KEY: 'test-key' }, fetchImpl: async (url, options = {}) => {
+      const u = String(url);
+      if (u.includes('/events')) completed = true;
+      if (u.includes('/target-status') && completed) {
+        if (!ready) pendingReads++;
+        return jsonResponse(200, { targets: [mockCompletedTarget('observed_late', 'proved')].map(entry => ({
+          ...entry, projection: { state: ready ? 'observed' : 'inputs_changed' },
+          validity_status: ready ? 'proved' : 'unchecked', check_current: ready,
+          validity_reason: ready ? null : 'Current proof observation is unavailable: inputs_changed'
+        })) });
+      }
+      if (u.endsWith('/formalize-batch-reports') && options.method === 'POST') {
+        reports.push(JSON.parse(options.body));
+        return jsonResponse(200, { batch_id: reports.at(-1).batchId, state: 'ready' });
+      }
+      return fallback(url, options);
+    } });
+  state.repairBatchesPath = path.join(path.dirname(state.jobsPath), 'batches.json');
+  const target = { targetKind: 'theorem', targetLabel: 'observed_late', targetText: 'True.' };
+  const result = mode === 'batch'
+    ? await handleFormalizeAll({ overleafProjectId: 'project-1', items: [target] }, state)
+    : await handleFormalize({ overleafProjectId: 'project-1', ...target }, state);
+  assert.equal(result.statusCode, 200);
+  await waitFor(() => pendingReads >= 2 && Object.values(state.jobs).some(job => job.waitingForObservation));
+  const job = Object.values(state.jobs)[0];
+  const saved = JSON.parse(await fs.readFile(state.jobsPath, 'utf8'))[job.jobId];
+  assert.equal(saved.status, 'in_progress');
+  assert.equal(saved.finishedAt, null);
+  assert.equal(saved.pendingProofOutcome.resultKind, 'proved');
+
+  // Advance beyond both the former finalizer timeout and the batch's solver
+  // timeout. The already completed solver must neither rerun nor need review.
+  const now = Date.now.bind(Date);
+  t.mock.method(Date, 'now', () => now() + 30 * 60 * 1000);
+  await waitFor(() => pendingReads >= 3);
+  assert.equal(job.status, 'in_progress');
+  assert.equal(job.finishedAt, null);
+  const batch = mode === 'batch' ? state.repairBatches[result.body.batchId] : null;
+  if (batch) {
+    assert.equal(batch.done, false);
+    assert.equal(batch.items[0].state, 'running');
+  }
+  assert.equal(reports.length, 0);
+  ready = true;
+  await waitFor(() => job.status !== 'in_progress');
+  assert.equal(job.status, 'formalized', job.resultDetail || job.error);
+  assert.equal(job.waitingForObservation, undefined);
+  assert.equal(job.pendingProofOutcome, undefined);
+  if (batch) {
+    await waitFor(() => batch.done);
+    await batch.reportSubmission;
+    assert.equal(batch.items[0].state, 'formalized');
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].items[0].state, 'formalized');
+    assert.equal(reports[0].items[0].reason, null);
+  }
+  // The in-memory result can settle before its asynchronous persistence ends.
+  await waitFor(async () => JSON.parse(await fs.readFile(state.jobsPath, 'utf8'))[job.jobId]?.status === 'formalized');
+  const persisted = JSON.parse(await fs.readFile(state.jobsPath, 'utf8'))[job.jobId];
+  assert.equal(persisted.status, 'formalized');
+  assert.equal(calls.filter(call => String(call.url).endsWith('/api/runs') && call.options.method === 'POST').length, 1);
+});
+
+test('restart recovery finishes a durable observation wait without replaying or creating a solver run', async () => {
+  const calls = [], fallback = makeAdapterApiFetch(calls);
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+    if (String(url).includes('/events') || String(url).endsWith('/api/runs')) assert.fail('Only publication checking should resume');
+    if (String(url).includes('/target-status')) return jsonResponse(200, {
+      targets: [{ ...mockCompletedTarget('saved_observation', 'proved'), projection: { state: 'observed' } }] });
+    return fallback(url, options);
+  } });
+  state.jobs.saved = { jobId: 'saved', jobKey: 'project-1:theorem:saved_observation', status: 'in_progress',
+    mode: 'formalization', targetKind: 'theorem', targetLabel: 'saved_observation', declarationName: 'saved_observation',
+    overleafProjectId: 'project-1', projectSlug: 'project-1', apiRunId: 'api-run-1', leaSessionId: 'sess-api-1',
+    leaApiBaseUrl: 'http://127.0.0.1:8001', logPath: path.join(path.dirname(state.jobsPath), 'saved.log'),
+    startedAt: '2026-01-01', finishedAt: null, waitingForObservation: true,
+    pendingProofOutcome: { ok: true, resultKind: 'proved', doneStatus: 'proved', apiRunId: 'api-run-1' } };
+  await fs.writeFile(state.jobsPath, JSON.stringify(state.jobs));
+  state.jobs = JSON.parse(await fs.readFile(state.jobsPath, 'utf8'));
+  await recoverInterruptedJobs(state);
+  await waitFor(() => state.jobs.saved.status === 'formalized');
+  assert.equal(state.jobs.saved.waitingForObservation, undefined);
+  assert.equal(state.jobs.saved.apiRunId, 'api-run-1');
+});
+
+test('cancelling a batch during completion publication settles as stopped and never needs review', async () => {
+  let completed = false;
+  const fallback = makeAdapterApiFetch([]);
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), env: { OPENAI_API_KEY: 'test-key' },
+    fetchImpl: async (url, options) => {
+      if (String(url).includes('/events')) completed = true;
+      if (String(url).includes('/target-status') && completed) return jsonResponse(200, {
+        targets: [{ ...mockCompletedTarget('cancel_wait', 'proved'), projection: { state: 'inputs_changed' } }] });
+      return fallback(url, options);
+    } });
+  const result = await handleFormalizeAll({ overleafProjectId: 'project-1', items: [
+    { targetKind: 'theorem', targetLabel: 'cancel_wait', targetText: 'True.' }] }, state);
+  const batch = state.repairBatches[result.body.batchId];
+  await waitFor(() => Object.values(state.jobs).some(job => job.waitingForObservation));
+  await handleBatchCancel({ batchId: batch.batchId }, state);
+  await waitFor(() => batch.done);
+  assert.equal(batch.items[0].state, 'canceled');
+  assert.ok(Object.values(state.jobs).every(job => job.status !== 'needs_review' && !job.waitingForObservation));
+  await batch.reportSubmission;
+});
+
 test("startup recovery reattaches to the exact adapter run without creating another", async () => {
   const leaRepo = await makeLeaRepo();
   const calls = [];
@@ -4891,6 +5038,8 @@ async function makeState(overrides = {}) {
   if (!overrides.fetchImpl) {
     const providerFetch = state.fetchImpl;
     state.fetchImpl = async (url, requestOptions) => {
+      if(String(url).endsWith('/formalize-batch-reports')&&requestOptions?.method==='POST')return jsonResponse(200,{
+        batch_id:JSON.parse(requestOptions.body).batchId,state:'ready'});
       if (!String(url).includes("/target-status")) return providerFetch(url, requestOptions);
       const requested = (new URL(String(url)).searchParams.get("declarations") || "").split(",").filter(Boolean);
       const targets = await Promise.all(requested.map(async (name) => {
@@ -4962,6 +5111,8 @@ function makeLeaApiFetch(calls, options = {}) {
   let interrupted = false;
   const initialTargets = new Set(Object.keys(options.targetStatus || {}));
   return async (url, requestOptions = {}) => {
+    if(String(url).endsWith('/formalize-batch-reports')&&requestOptions.method==='POST')return jsonResponse(200,{
+      batch_id:JSON.parse(requestOptions.body).batchId,state:'ready'});
     if (String(url).endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, independent_checks: false, source_pause_policy: 1 } } });
     if (String(url).endsWith("/api/settings")) {
       return jsonResponse(404, { detail: "not found" });
@@ -5198,10 +5349,10 @@ function jsonResponse(status, body) {
   };
 }
 
-async function waitFor(predicate, { timeoutMs = 3000 } = {}) {
-  const started = Date.now();
-  while (!predicate()) {
-    if (Date.now() - started > timeoutMs) {
+async function waitFor(predicate, { timeoutMs = 10000 } = {}) {
+  const started = performance.now();
+  while (!(await predicate())) {
+    if (performance.now() - started > timeoutMs) {
       throw new Error("Timed out waiting for condition.");
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -5225,6 +5376,8 @@ function makeAdapterApiFetch(calls, options = {}) {
   let runFinished = false;
   const initialTargets = new Set(Object.keys(options.targetStatus || {}));
   return async (url, requestOptions = {}) => {
+    if(String(url).endsWith('/formalize-batch-reports')&&requestOptions.method==='POST')return jsonResponse(200,{
+      batch_id:JSON.parse(requestOptions.body).batchId,state:'ready'});
     if (String(url).endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, independent_checks: false, source_pause_policy: 1 } } });
     const body = requestOptions.body ? JSON.parse(requestOptions.body) : null;
     calls.push({ url, options: requestOptions, body });
@@ -5315,8 +5468,9 @@ async function pausedContinuationFixture(fetchOverride) {
   return { state, calls, payload };
 }
 
-for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates L once, resumes A, and B reuses L`, async () => {
+for (const delayedProjection of [false,true]) for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates L once, resumes A, and B reuses L${delayedProjection?' after delayed SQL readiness':''}`, async () => {
   const calls = [], segments = [], admissions = [];
+  let pendingReads=0;
   const completed = new Map();
   let current = "A:0";
   const dep = { id: "L", ready: false, state: "pending", path: "Shared/L_123.lean",
@@ -5332,7 +5486,14 @@ for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates 
         admissions.push("L"); dep.state = "running"; dep.owner_run_id = "L:0";
         return jsonResponse(200, { run_id: "L:0", session_id: "shared-session" });
       }
-      if (u.endsWith("/dependencies/L")) return jsonResponse(200, dep);
+      if (u.endsWith("/dependencies/L")) {
+        if(delayedProjection&&segments.includes('L:0')&&!dep.ready){
+          pendingReads++;
+          if(pendingReads===1)return jsonResponse(503,{detail:'projection_unavailable'});
+          if(pendingReads>=3){dep.ready=true;dep.state='ready';delete dep.projection;}
+        }
+        return jsonResponse(200, dep);
+      }
       if (u.endsWith("/formalize-batch-reports") && options.method === "POST") {
         assert.equal(body.items.length, 2);
         assert.equal(body.dependencies.length, 1);
@@ -5355,7 +5516,10 @@ for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates 
         const id = decodeURIComponent(u.split("/runs/")[1].split("/")[0]);
         segments.push(id);
         if (["A:1", "B:0"].includes(id)) completed.set(id.split(":")[0], id);
-        if (id === "L:0") { dep.ready = true; dep.state = "ready"; dep.owner_run_id = null; }
+        if (id === "L:0") {
+          dep.ready = !delayedProjection; dep.state = delayedProjection?'stale':'ready'; dep.owner_run_id = null;
+          if(delayedProjection)dep.projection={state:'inputs_changed'};
+        }
         return adapterSseResponse(id === "A:0" ? [
           { type: "project_dependency", data: { outcome: "deferred", dependency: dep } },
           { type: "done", data: { status: "cancelled", stop_reason: "dependency_wait", recoverable: true, waiting_dependencies: ["L"] } }
@@ -5395,6 +5559,7 @@ for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates 
     assert.equal(state.jobs[result.body.jobId].status, "formalized", state.jobs[result.body.jobId].resultDetail || state.jobs[result.body.jobId].error);
   }
   assert.deepEqual(admissions, ["L"]);
+  if(delayedProjection)assert.equal(pendingReads,3);
   assert.deepEqual(segments, ["A:0", "L:0", "A:1", "B:0"]);
   const jobs = Object.values(state.jobs);
   assert.equal(jobs.length, 2);
@@ -7757,6 +7922,11 @@ test("formalize resolves the artifact from the adapter index, no agent markdown 
 
     // The registry markdown got a consistency entry (until 4.3 demotes it to a
     // view, markdown-dependent readers still need one).
+    // Certified completion is published before optional registry enrichment.
+    await waitFor(async () => {
+      try { return (await fs.readFile(buildLeaProjectMarkdownPath({ leaRepoPath: leaRepo, overleafProjectId: "project-1" }), "utf8")).includes('lea:theorem name="adapter_index_test"'); }
+      catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+    });
     const markdown = await fs.readFile(
       buildLeaProjectMarkdownPath({ leaRepoPath: leaRepo, overleafProjectId: "project-1" }),
       "utf8"

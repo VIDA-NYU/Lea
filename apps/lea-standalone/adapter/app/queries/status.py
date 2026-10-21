@@ -75,7 +75,7 @@ def current(formalization_id, source_identity_hash=None, source_bundle_hash=None
             result["freshness"] = "dependency_changed"
     result["reporting_incomplete"] = run.get("status") not in {"pending", "running"} and (not update or update["kind"] != "final")
     result["previous_assessment"] = storage.get(ctx["inherited_update_id"]) if not update and ctx.get("inherited_update_id") else None
-    result["projection"]=core.metadata(core.scope_for(formalization_id=formalization_id))
+    result["projection"]=core.metadata(core.scope_for(formalization_id=formalization_id),formalization_id)
     if result["projection"]["state"]!="observed" and result["freshness"] not in {"source_changed","evidence_changed"}: result["freshness"]="unknown"
     return result
 

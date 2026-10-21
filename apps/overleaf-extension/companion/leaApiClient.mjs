@@ -1,4 +1,5 @@
 import { workspaceResult, submitWithRecovery } from '../../../packages/lea-workspace-client/index.mjs';
+import { awaitAdmission, requestFailure } from './workflowPolicy.mjs';
 // Lea standalone adapter client for the Overleaf companion.
 //
 // The API (:8001) admits commands and serves SQL projections/receipts. A separate
@@ -136,7 +137,9 @@ async function readJson(fetchImpl, url, options) {
       rawDetail && typeof rawDetail === "object"
         ? rawDetail.message || JSON.stringify(rawDetail)
         : rawDetail;
-    return { ok: false, status: response.status, error: `HTTP ${response.status}: ${detail}`, body };
+    return { ok: false, status: response.status, error: `HTTP ${response.status}: ${detail}`, body,
+      code: rawDetail?.code || rawDetail?.error || body?.error,
+      retryAfterMs: Number(response.headers?.get?.('Retry-After')) * 1000 || 0 };
   }
   return { ok: true, status: response.status, body };
 }
@@ -489,11 +492,15 @@ export async function startApiRun({
   // `origin` / `originUrl` record session providence: 'overleaf' + the canonical
   // Overleaf document URL, so the Lea UI can show an origin indicator and open/focus
   // the source document. Independent of the project usage-namespace above.
-  if (["overleaf_solver", "overleaf_continuation"].includes(purpose)) {
+  if (["overleaf_solver", "overleaf_continuation", "overleaf_stub"].includes(purpose)) {
     const health = await fetchAdapterHealth({ fetchImpl, baseUrl, apiKey });
     const capability = health.body?.capabilities?.lea_status;
     if (!health.ok || capability?.version !== 1 || !capability.admission_enabled || capability.source_pause_policy !== 1) {
-      return { ok: false, status: 409, error: "Update/start compatible Lea components: live Lea Status v1 and source pause policy support are required." };
+      if (!health.ok) return health;
+      if (health.body?.ready === false || ['worker_unavailable', 'recovering', 'draining'].includes(health.body?.lifecycle_state)) {
+        return { ok: false, status: 503, code: 'worker_unavailable', error: 'Waiting for the worker.' };
+      }
+      return { ok: false, status: 409, code: 'incompatible_components', error: "Update/start compatible Lea components: live Lea Status v1 and source pause policy support are required." };
     }
     if (!sourceBundle?.bundleHash) return { ok: false, status: 422, error: "Current LaTeX source context is required. Refresh the Overleaf pane before continuing." };
   }
@@ -884,12 +891,14 @@ export async function runApiProofJob({
   onRunStarted = null,
   onProgressUpdated = null,
   observerSignal = null,
+  onAdmissionWait = async () => {},
+  shouldCancelAdmission = () => false,
 }) {
   const log = async (line) => {
     if (appendLog && logPath) await appendLog(logPath, line);
   };
 
-  let start = startResponse || (existingReformalizationId && !existingRunId
+  let start = startResponse || await awaitAdmission(async () => (existingReformalizationId && !existingRunId
     ? await fetchJson(fetchImpl, `${baseUrl}/api/reformalizations/${encodeURIComponent(existingReformalizationId)}`, { headers: buildHeaders(apiKey) })
     : existingRunId ? { ok: true, body: { run_id: existingRunId, session_id: sessionId } } : await startApiRun({
     fetchImpl,
@@ -914,8 +923,9 @@ export async function runApiProofJob({
     allowSourcePause,
     idempotencyKey,
     timeoutSeconds: timeoutMs / 1000,
-  }));
-  if (!start.ok) return { ok: false, timedOut: false, error: start.error };
+  })), { onWait: onAdmissionWait, shouldCancel: () => observerSignal?.aborted || shouldCancelAdmission(),
+    retryDelayMs: busyRetryDelayMs, safeToRetry: Boolean(idempotencyKey || existingRunId || existingReformalizationId) });
+  if (!start.ok) return { ...start, ...requestFailure(start), ok: false, timedOut: false, phase: 'admission' };
 
   if (start.body?.reformalization_id && onOperationQueued) await onOperationQueued(start.body);
   while (start.body?.reformalization_id && !start.body.run_id) {

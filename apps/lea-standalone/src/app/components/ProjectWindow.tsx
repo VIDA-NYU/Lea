@@ -11,6 +11,7 @@ import { FilesCard } from './FilesCard';
 import { BlueprintTab } from './BlueprintTab';
 import { FilesystemTab } from './FilesystemTab';
 import { SkillsMcpTab } from './SkillsMcpTab';
+import { useProofSession } from '../stores/proofSession';
 
 type Tab = 'overview' | 'formalizations' | 'blueprint' | 'filesystem' | 'skills-mcp';
 
@@ -43,6 +44,7 @@ export function ProjectWindow({
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [importSignal, setImportSignal] = useState(0);
+  const observationToken = useProofSession(state => state.formalizationRefreshToken);
   const allSessions = project.sessions ?? [];
   // ROOTS only. A sub-agent is a session row (`parent_id` = the coordinator that
   // spawned it), and the project payload returns children alongside roots so callers
@@ -59,7 +61,7 @@ export function ProjectWindow({
   const docSignal = allSessions.reduce(
     (max, s) => Math.max(max, Date.parse(s.updated_at) || 0),
     0,
-  ) + importSignal;
+  ) + importSignal + observationToken;
 
   const submit = async () => {
     const message = draft.trim();
@@ -216,13 +218,16 @@ function FormalizationsTab({
   const [error, setError] = useState<string>();
 
   useEffect(() => {
+    let current = true;
     listProjectFormalizations(projectId)
       .then((result) => {
+        if (!current) return;
         setItems(result.formalizations);
         setSummary(result.summary);
         setError(undefined);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+      .catch((err) => { if (current) setError(err instanceof Error ? err.message : String(err)); });
+    return () => { current = false; };
   }, [projectId, refreshSignal]);
 
   const filtered = useMemo(() => {

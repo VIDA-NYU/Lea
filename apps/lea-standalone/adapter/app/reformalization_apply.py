@@ -70,7 +70,7 @@ def _retain_displaced(entry, displaced):
 
 def _stage_assessment(op, selection, *, contents=None, target_name=None):
     manifest = op['manifest']
-    stage = Path(manifest['repo'])
+    stage = Path(manifest['repo']).resolve()
     before = {p: _content(v['blob_id']) for p, v in manifest['files'].items()}
     after = contents if contents is not None else {p: f.read_bytes().decode('utf-8') for p, f in operations.lean_files(stage).items()}
     changed = {p: after.get(p) for p in before.keys() | after.keys() if before.get(p) != after.get(p)}
@@ -84,7 +84,7 @@ def _stage_assessment(op, selection, *, contents=None, target_name=None):
             checks[rel] = checked
             for entry in ((checked.execution or {}).get('environment') or {}).get('files', {}).values():
                 dependency = Path(entry['path']).resolve()
-                workspace = Path(manifest['workspace'])
+                workspace = Path(manifest['workspace']).resolve()
                 if entry.get('kind') == 'source' and dependency.is_relative_to(workspace) and not dependency.is_relative_to(stage):
                     canonical_dependency = Path(manifest['canonical_root']) / dependency.relative_to(workspace)
                     if not canonical_dependency.is_file() or operations.digest(canonical_dependency.read_bytes()) != entry['sha256']:
@@ -189,7 +189,7 @@ def _extract_source_target(op, selection):
 
 def _canonical_checks(op, journal):
     m = op['manifest']
-    repo, root = Path(m['canonical_repo']), Path(m['canonical_root'])
+    repo, root = Path(m['canonical_repo']).resolve(), Path(m['canonical_root']).resolve()
     selection = journal['selection']
     checks, reports = {}, {}
     # Finished is yielded while the agent's run context is still active. Bind
@@ -214,7 +214,7 @@ def _canonical_checks(op, journal):
                     if item.get('kind') != 'source':
                         continue
                     path = Path(item['path']).resolve()
-                    candidate_root = Path(journal.get('candidate_workspace') or m['workspace'])
+                    candidate_root = Path(journal.get('candidate_workspace') or m['workspace']).resolve()
                     if staged and path.is_relative_to(candidate_root):
                         path = root / path.relative_to(candidate_root)
                     values[str(path)] = item['sha256']

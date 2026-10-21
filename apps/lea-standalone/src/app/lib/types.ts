@@ -780,6 +780,8 @@ export interface Diagnostic {
 }
 
 export interface SessionDetail extends SessionSummary {
+  /** Per-attempt replay barriers captured with this SQL snapshot. */
+  run_event_cursors?: Record<string, string>;
   // Includes source preparation and continuations awaiting execution capacity.
   queued_reformalizations?: Array<{ id: string }>;
   lean_check_runtime?: LeanCheckRuntime;

@@ -241,7 +241,10 @@ class SubagentFinished:
 
 @dataclass(frozen=True)
 class Finished:
-    """Terminal event. `reason` is "completed" or "max_turns".
+    """Terminal event, including "stubbed" for a checked statement placeholder.
+
+    "stubbed" carries no proof result_kind and is validated independently by
+    the host before it can be saved as an intentionally incomplete artifact.
 
     `result_kind` is set for completed proof artifacts:
       'proved'       — the user's stated claim was verified

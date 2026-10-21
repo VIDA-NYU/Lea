@@ -89,7 +89,11 @@ def declaration_signature(declaration: LeanDeclaration) -> str | None:
     Binder defaults may themselves contain ':='. Comments and strings must not
     create a delimiter, and declaration names are indexed separately from types.
     """
-    source = declaration.span
+    return _declaration_header(declaration.span)
+
+
+def _declaration_header(source: str) -> str | None:
+    """Ignore the body delimiter inside binders, comments and strings."""
     clean = scrub_lean_source(source)
     depth = 0
     for index, char in enumerate(clean):
@@ -103,6 +107,10 @@ def declaration_signature(declaration: LeanDeclaration) -> str | None:
 
 
 def declaration_type(signature: str) -> str:
+    # Overleaf leacode targets can contain a complete proof/definition, whereas
+    # conversational targets usually contain only the agreed header. Compare
+    # the same part of either input without erasing binder defaults or strings.
+    signature = _declaration_header(signature) or signature
     clean = scrub_lean_source(signature, preserve_strings=True)
     match = _DECLARATION_RE.match(clean)
     # Keep adjacent identifiers distinct: `f x` and `fx` may both elaborate,

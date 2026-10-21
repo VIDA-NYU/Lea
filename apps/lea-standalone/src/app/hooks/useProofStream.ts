@@ -49,11 +49,13 @@ function reconnectDelay(attempt: number): number {
 export function useProofStream() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const runCursorsRef = useRef(new Map<string, string>());
+  const snapshotCursorsRef = useRef(new Map<string, string>());
   // Highest seq seen + a counter, so an approval (which has no server seq) can be
   // stamped with a synthetic seq just after the latest item — interleaving it
   // into the thread at the point it actually happened, before the step it gates.
   const lastSeqRef = useRef(0);
   const approvalCounterRef = useRef(0);
+  const statusCounterRef = useRef(0);
   // Item 14 backoff state: consecutive failed reattach attempts, keyed by run so a
   // session switch to a different run starts backoff fresh (rather than inheriting
   // the previous run's count) while consecutive failures for the SAME run keep
@@ -67,6 +69,7 @@ export function useProofStream() {
   const streamGeneration = useRef(0);
   const applyingDetail = useRef(false);
   const pendingRequests = useRef(new Set<AbortController>());
+  const detailRequestVersion = useRef(0);
 
   // Ownership survives renders, but expires on every navigation (including A→B→A).
   const captureSelection = (includeScope = true) => {
@@ -83,9 +86,16 @@ export function useProofStream() {
     return () => owned() && generation === streamGeneration.current;
   };
   const fetchDetail = async (sessionId: string) => {
+    const version = ++detailRequestVersion.current;
     const controller = new AbortController();
     pendingRequests.current.add(controller);
-    try { return await getSession(sessionId, controller.signal); }
+    try {
+      const detail = await getSession(sessionId, controller.signal);
+      return version === detailRequestVersion.current ? detail : null;
+    } catch (error) {
+      if (version !== detailRequestVersion.current) return null;
+      throw error;
+    }
     finally { pendingRequests.current.delete(controller); }
   };
   useEffect(() => useProofSession.subscribe((state, previous) => {
@@ -123,6 +133,7 @@ export function useProofStream() {
   const closeStream = (invalidateSelection = true) => {
     streamGeneration.current += 1;
     if (invalidateSelection) {
+      detailRequestVersion.current += 1;
       selectionGeneration.current += 1;
       for (const controller of pendingRequests.current) controller.abort();
       pendingRequests.current.clear();
@@ -153,6 +164,14 @@ export function useProofStream() {
   const applyDetail = (detail: SessionDetail, { preservePresentation = false } = {}) => {
     const preserve = preservePresentation && useSessions.getState().selectedSessionId === detail.id;
     if (useSessions.getState().selectedSessionId !== detail.id) closeStream();
+    // Canonical code has a snapshot barrier. Other events still replay because
+    // they carry transient child/approval state absent from the timeline.
+    const snapshotRunId = detail.active_run?.id;
+    const snapshotCursor = snapshotRunId && detail.run_event_cursors?.[snapshotRunId];
+    if (snapshotRunId && snapshotCursor) {
+      snapshotCursorsRef.current.set(snapshotRunId, snapshotCursor);
+      if (snapshotCursorsRef.current.size > 128) snapshotCursorsRef.current.delete(snapshotCursorsRef.current.keys().next().value!);
+    }
     const previousScope = useProofSession.getState().formalizationScope;
     const {
       setMessages,
@@ -287,7 +306,7 @@ export function useProofStream() {
     const owned = captureSelection(false);
     try {
       const detail = await fetchDetail(sessionId);
-      if (!owned()) return null;
+      if (!detail || !owned()) return null;
       applyDetail(detail);
       for (const queued of detail.queued_reformalizations || []) {
         void awaitReformalization({ reformalization_id: queued.id }, undefined, owned)
@@ -304,10 +323,10 @@ export function useProofStream() {
   const reconcile = async (sessionId: string) => {
     if (useSessions.getState().selectedSessionId !== sessionId) return;
     const owned = captureStream();
-    let detail: SessionDetail;
+    let detail: SessionDetail | null;
     try { detail = await fetchDetail(sessionId); }
     catch (error) { if (!owned()) return; throw error; }
-    if (!owned()) return;
+    if (!detail || !owned()) return;
     // The store is the live source of truth (no stale-closure issue), so read the
     // just-finished status straight from it and re-apply it after applyDetail
     // (which would otherwise clear it, since the run is no longer active).
@@ -355,7 +374,7 @@ export function useProofStream() {
       if (!owned()) return;
       fetchDetail(sessionId)
         .then((detail) => {
-          if (!owned()) return;
+          if (!detail || !owned()) return;
           const active = detail.active_run;
           if (active && (active.status === 'running' || active.status === 'pending')) {
             // Still live → applyDetail reattaches; the new stream's onopen resets
@@ -389,6 +408,8 @@ export function useProofStream() {
             const previous = runCursorsRef.current.get(runId);
             const split = id.lastIndexOf(':');
             const sameAttempt = previous && previous.slice(0, previous.lastIndexOf(':')) === id.slice(0, split);
+            if (type !== 'resync' && previous && (!sameAttempt ||
+                Number(id.slice(split + 1)) <= Number(previous.slice(previous.lastIndexOf(':') + 1)))) return;
             if (!sameAttempt || Number(id.slice(split + 1)) > Number(previous!.slice(previous!.lastIndexOf(':') + 1))) {
               runCursorsRef.current.set(runId, id);
             }
@@ -408,7 +429,7 @@ export function useProofStream() {
         `${payload.attempt_id || 'pending'}:${payload.cursor || 0}`);
       source.close();
       eventSourceRef.current = null;
-      fetchDetail(sessionId).then((detail) => { if (owned()) applyDetail(detail, { preservePresentation: true }); })
+      fetchDetail(sessionId).then((detail) => { if (detail && owned()) applyDetail(detail, { preservePresentation: true }); })
         .catch(() => { if (owned()) scheduleReconnect(runId, sessionId); });
     });
 
@@ -446,7 +467,7 @@ export function useProofStream() {
           // A gap is recovered from committed state, preserving presentation.
           source.close();
           eventSourceRef.current = null;
-          fetchDetail(sessionId).then((detail) => { if (owned()) applyDetail(detail, { preservePresentation: true }); })
+          fetchDetail(sessionId).then((detail) => { if (detail && owned()) applyDetail(detail, { preservePresentation: true }); })
             .catch(() => { if (owned()) scheduleReconnect(runId, sessionId); });
           return;
         }
@@ -496,6 +517,14 @@ export function useProofStream() {
     });
 
     listen('code_step', (event) => {
+      const barrier = snapshotCursorsRef.current.get(runId);
+      const eventId = (event as MessageEvent).lastEventId;
+      if (barrier && eventId) {
+        const split = barrier.lastIndexOf(':');
+        const eventSplit = eventId.lastIndexOf(':');
+        if (barrier.slice(0, split) !== eventId.slice(0, eventSplit) ||
+            Number(eventId.slice(eventSplit + 1)) <= Number(barrier.slice(split + 1))) return;
+      }
       const payload = JSON.parse((event as MessageEvent).data) as CodeStep;
       if (payload.artifact_scope === 'attempt') {
         useProofSession.getState().bumpFormalizationRefresh();
@@ -514,10 +543,12 @@ export function useProofStream() {
 
     listen('status', (event) => {
       const payload = JSON.parse((event as MessageEvent).data) as Partial<StatusEvent>;
-      setStatusEvents((current) => [
+      const eventId = (event as MessageEvent).lastEventId;
+      const id = payload.id || (eventId ? `run-status:${runId}:${eventId}` : `${runId}-${++statusCounterRef.current}-${Date.now()}`);
+      setStatusEvents((current) => current.some(item => item.id === id) ? current : [
         ...current,
         {
-          id: payload.id || `${runId}-${current.length}-${Date.now()}`,
+          id,
           session_id: payload.session_id || sessionId,
           run_id: payload.run_id || runId,
           status: payload.status || null,
@@ -525,6 +556,7 @@ export function useProofStream() {
           turn: payload.turn ?? null,
           check_status: payload.check_status ?? null,
           check_detail: payload.check_detail ?? null,
+          execution: payload.execution,
           created_at: payload.created_at || new Date().toISOString(),
         },
       ]);

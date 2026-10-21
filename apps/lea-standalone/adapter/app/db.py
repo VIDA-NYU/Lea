@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 import os
+import time
+import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -27,11 +29,29 @@ def utc_now() -> str:
 # is set explicitly because `write()` depends on it (with it at 0, BEGIN IMMEDIATE
 # fails ~90% of concurrent attempts instead of queueing).
 BUSY_TIMEOUT_MS = 5000
+WRITE_WAIT_SECONDS = 30
 _snapshot_connection: ContextVar[sqlite3.Connection | None] = ContextVar("db_snapshot", default=None)
 _write_connection: ContextVar[sqlite3.Connection | None] = ContextVar("db_writer", default=None)
 caller_worker_epoch: ContextVar[str | None] = ContextVar('caller_worker_epoch',default=None)
 caller_parent_command: ContextVar[str | None] = ContextVar('caller_parent_command',default=None)
 caller_batch: ContextVar[str | None] = ContextVar('caller_batch',default=None)
+_read_dependencies: ContextVar[set[str] | None] = ContextVar('db_read_dependencies', default=None)
+
+
+@contextmanager
+def capture_read_dependencies():
+    """Record expanded SELECTs used by one worker observation.
+
+    Replaying these reads in a query-only transaction fences the exact SQL
+    inputs, including absent rows and import lookups, rather than every write
+    in the project. Parameters are quoted by SQLite's trace API.
+    """
+    statements: set[str] = set()
+    token = _read_dependencies.set(statements)
+    try:
+        yield statements
+    finally:
+        _read_dependencies.reset(token)
 
 
 def register_change_batch(conn: sqlite3.Connection) -> None:
@@ -47,9 +67,36 @@ def register_change_batch(conn: sqlite3.Connection) -> None:
         nonlocal batch
         if statement.lstrip().upper().startswith("BEGIN"):
             batch = uuid4().hex
+        dependencies = _read_dependencies.get()
+        if dependencies is not None and statement.lstrip().upper().startswith(('SELECT', 'WITH')):
+            dependencies.add(statement)
 
     conn.create_function("lea_change_batch", 0, lambda: batch)
     conn.set_trace_callback(trace)
+
+
+def _wait_for_sql(operation):
+    until = time.monotonic() + WRITE_WAIT_SECONDS
+    while True:
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            if (getattr(exc, 'sqlite_errorcode', 0) & 255) not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED} or time.monotonic() >= until:
+                raise
+            time.sleep(.05)
+
+
+class _Connection(sqlite3.Connection):
+    def execute(self, statement, parameters=()):
+        execute = super().execute
+        # A pending rollback-journal COMMIT can block new readers and an initial
+        # independent INSERT too. Retry that SQL statement, never a tool/body.
+        # Do not retry a deferred transaction's write upgrade: it may already
+        # hold a read lock and must roll back instead of deadlocking the writer.
+        kind = statement.lstrip().upper()
+        if kind.startswith(('SELECT', 'WITH')) or (not self.in_transaction and kind.startswith(('INSERT', 'UPDATE', 'DELETE'))):
+            return _wait_for_sql(lambda: execute(statement, parameters))
+        return execute(statement, parameters)
 
 
 def _open(isolation_level: str | None = "") -> sqlite3.Connection:
@@ -69,7 +116,7 @@ def _open(isolation_level: str | None = "") -> sqlite3.Connection:
     `write()`, and on its own merits.
     """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=isolation_level)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=isolation_level, factory=_Connection)
     conn.row_factory = sqlite3.Row
     register_change_batch(conn)
     conn.execute(f"pragma busy_timeout = {BUSY_TIMEOUT_MS}")
@@ -89,9 +136,19 @@ def connect() -> Iterator[sqlite3.Connection]:
     conn = _open()
     try:
         yield conn
-        conn.commit()
+        if conn.in_transaction:_transaction_boundary(conn, 'commit')
     finally:
         conn.close()
+
+
+def _transaction_boundary(conn, statement):
+    """Wait for a transaction boundary, never replay its business operations.
+
+    BEGIN has not executed the body yet. A BUSY COMMIT leaves the same transaction
+    open, so retrying it preserves generated results and trigger identities.
+    The rollback journal can briefly block either boundary behind readers.
+    """
+    return _wait_for_sql(lambda: conn.execute(statement))
 
 
 @contextmanager
@@ -131,7 +188,7 @@ def write() -> Iterator[sqlite3.Connection]:
     conn = _open(isolation_level=None)
     token = _write_connection.set(conn)
     try:
-        conn.execute("begin immediate")
+        _transaction_boundary(conn, "begin immediate")
         try:
             epoch=caller_worker_epoch.get()
             if epoch and not conn.execute("select 1 from command_workers where id='lea-command-host' and epoch=? and lease_until>?",(epoch,utc_now())).fetchone():
@@ -151,10 +208,10 @@ def write() -> Iterator[sqlite3.Connection]:
                     from fastapi import HTTPException
                     raise HTTPException(409,'The batch was cancelled before this new admission')
             yield conn
+            _transaction_boundary(conn, "commit")
         except BaseException:
-            conn.execute("rollback")
+            if conn.in_transaction:conn.execute("rollback")
             raise
-        conn.execute("commit")
     finally:
         _write_connection.reset(token)
         conn.close()
@@ -173,6 +230,7 @@ def read_snapshot() -> Iterator[sqlite3.Connection]:
         return
     conn = _open(isolation_level=None)
     token = _snapshot_connection.set(conn)
+    started = time.monotonic()
     try:
         conn.execute("pragma query_only = on")
         conn.execute("begin")
@@ -180,6 +238,9 @@ def read_snapshot() -> Iterator[sqlite3.Connection]:
     finally:
         _snapshot_connection.reset(token)
         conn.close()
+        elapsed = time.monotonic() - started
+        if elapsed > 1:
+            logging.getLogger(__name__).warning('Database read snapshot held for %.2fs', elapsed)
 
 
 def init_db() -> None:

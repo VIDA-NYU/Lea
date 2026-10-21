@@ -19,8 +19,6 @@ def _imported_modules(code: str) -> list[str]:
 def _transitive_project_dependencies(project_id: str | None, roots: list[dict]) -> list[dict]:
     if not project_id:
         return []
-    artifacts = store.list_artifacts_for_scope(project_id)
-    by_module = {item.get("module_name"): item for item in artifacts if item.get("module_name")}
     queued = [module for item in roots for module in _imported_modules(item.get("code") or "")]
     seen_modules: set[str] = set()
     seen_paths = {str(item.get("path") or "") for item in roots}
@@ -30,7 +28,14 @@ def _transitive_project_dependencies(project_id: str | None, roots: list[dict]) 
         if module in seen_modules:
             continue
         seen_modules.add(module)
-        artifact = by_module.get(module)
+        # Record only actual import lookups, including missing modules. Reading
+        # the entire registry would make unrelated artifact publication a
+        # dependency of every target observation.
+        from . import db
+        with db.connect() as conn:
+            row = conn.execute('select * from artifacts where scope=? and module_name=? order by updated_at desc,id desc limit 1',
+                               (project_id, module)).fetchone()
+        artifact = dict(row) if row else None
         if not artifact:
             continue
         path = str(artifact.get("path") or "")

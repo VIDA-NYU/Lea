@@ -77,6 +77,10 @@ def observation(scope):
 
 @read_query
 def fact(scope,kind,entity_id):
+    from . import target_observations
+    handled, value = target_observations.fact(scope, kind, entity_id)
+    if handled:
+        return value
     observed,reason=observation(scope)
     if reason: return None
     with db.connect() as conn:
@@ -86,7 +90,12 @@ def fact(scope,kind,entity_id):
     return json.loads(row[0]) if row else None
 
 
-def metadata(scope):
+def metadata(scope,formalization_id=None):
+    if formalization_id:
+        from . import target_observations
+        value = target_observations.metadata(formalization_id)
+        if value:
+            return value
     value,reason=observation(scope)
     return {'version':1,'state':reason or 'observed','observation_id':value['id'] if value else None,
             'observed_at':value['observed_at'] if value else None,
@@ -112,9 +121,10 @@ def apply_step(step,scope=None):
            current.get('check_evidence_id')==step.get('check_evidence_id') and
            current.get('sha256')==hashlib.sha256(step.get('code','').encode()).hexdigest())
     valid=bool(exact and current.get('check_current'))
-    return {**step,'check_current':valid,'projection':metadata(scope),
+    projection = metadata(scope, step.get('formalization_id'))
+    return {**step,'check_current':valid,'projection':projection,
         'check_stale_reason':(current.get('check_stale_reason') if exact else None) or
-            (None if valid else metadata(scope)['state'] if metadata(scope)['state']!='observed' else 'missing_evidence'),
+            (None if valid else projection['state'] if projection['state']!='observed' else 'missing_evidence'),
         **({'selected_result':current['selected_result']} if exact and current.get('selected_result') else {})}
 
 

@@ -1,5 +1,5 @@
 """Private Node business worker ownership and execution."""
-import json,os,re,secrets,subprocess
+import json,os,re,secrets,subprocess,sqlite3,time
 from pathlib import Path
 from threading import Lock
 from urllib.request import Request,urlopen
@@ -55,13 +55,24 @@ def execute(token):
     try:body=json.loads(raw)
     except ValueError:body={'error':'invalid_worker_response'};status=502
     result={'statusCode':status,'body':body}
-    with db.write() as conn:
-        owned=commands._owned(conn,token)
-        if not owned:return
-        conn.execute('update companion_requests set result_json=? where command_id=?',(json.dumps(result),token['id']))
-        # A domain rejection is an observed operation result, not an execution
-        # transport failure. Preserve its original HTTP status and detail.
-        commands._settle(conn,owned,'succeeded',{'companion_request':token['id']})
+    _publish_result(token,result)
+
+
+def _publish_result(token,result):
+    # Retain the observed response while waiting for the SQL writer. Never send
+    # the request to Node again merely because publication encountered BUSY.
+    until=time.monotonic()+30
+    while True:
+        try:
+            with db.write() as conn:
+                owned=commands._owned(conn,token)
+                if not owned:return
+                conn.execute('update companion_requests set result_json=? where command_id=?',(json.dumps(result),token['id']))
+                commands._settle(conn,owned,'succeeded',{'companion_request':token['id']})
+            return
+        except sqlite3.OperationalError as exc:
+            if (getattr(exc,'sqlite_errorcode',0)&255) not in {sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED} or time.monotonic()>=until:raise
+            time.sleep(.1)
 
 
 def _close():

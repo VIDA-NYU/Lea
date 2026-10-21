@@ -13,7 +13,7 @@ import sys
 PRIVATE={'worker','worker_diagnostics','runtime','bridge','target_contexts','command_host','command_execution','editor_worker','companion_worker',
     'recovery','workspace_effects','workspace_files','proof_files','proof_evidence','project_library','project_dependencies',
     'reformalizations','reformalization_apply','gitstore','filesystem','uploads','projects','settings','catalog_service',
-    'runbroker','runregistry','observation_maintenance','core_observer','workspace_observer','artifact_snapshots','target_completion','github_import_service','formalize_batch_reports','formalizations','lea_status'}
+    'runbroker','runregistry','observation_maintenance','core_observer','target_observations','workspace_observer','artifact_snapshots','target_completion','github_import_service','formalize_batch_reports','formalizations','lea_status'}
 _installed=False
 
 class PrivateImportDenied(ImportError):pass

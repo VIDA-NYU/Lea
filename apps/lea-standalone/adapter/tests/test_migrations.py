@@ -30,6 +30,33 @@ BASELINE_TABLES = {
 }
 
 
+def test_status_history_upgrade_recovers_retained_and_compacted_events(tmp_path, monkeypatch):
+    import json
+    from alembic import command
+    from app import store
+    from app.queries.sessions import session_detail
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'status-history.sqlite')
+    command.upgrade(migrations._config(), '0048_process_boundary')
+    session = store.create_session('Legacy event history')
+    run = store.create_run(session['id'], 'fixture', None, 3)
+    tool = json.dumps({'status': 'tool_call', 'message': 'Running read_file', 'turn': 2})
+    checked = json.dumps({'status': 'lean_check', 'message': 'lean_check: ok', 'check_status': 'ok'})
+    with db.write() as conn:
+        event_id = conn.execute("insert into run_events(run_id,attempt_id,type,payload) values (?,'','status',?)",
+                                (run['id'], tool)).lastrowid
+        conn.execute("insert into run_observation_records values (?,'','status','tool',?,?)", (run['id'], event_id, tool))
+        conn.execute("insert into run_observation_records values (?,'','status','latest',?,?)", (run['id'], event_id + 1, checked))
+    command.upgrade(migrations._config(), 'head')
+    from app import bootstrap, release_info
+    bootstrap.require_schema()
+    assert release_info.identity()['schema'] == migrations.head_revision()
+    history = session_detail(session['id'])['status_events']
+    assert len(history) == 2
+    assert history[0]['message'] == 'Running read_file'
+    assert history[0]['turn'] == 2
+    assert history[1]['check_status'] == 'ok'
+
+
 def test_overleaf_policy_backfills_only_recorded_provenance(tmp_path, monkeypatch):
     from alembic import command
     from app import store

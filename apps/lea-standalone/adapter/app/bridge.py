@@ -662,6 +662,7 @@ class _DeltaStream:
 # as a completed proof.
 _FINISH_STATUS = {
     "assistant": "answered",
+    "stubbed": "answered",
     "max_turns": "max_turns",
     "max_cost": "max_turns",
     "interrupted": "cancelled",
@@ -2044,12 +2045,18 @@ def _run_lea(context: RunnerContext) -> None:
         if target_context:
             focused_formalization = formalization_service.get(focus_formalization_id)
             cfg = replace(cfg, mathematical_request=target_context)
-            # A structured Lean target activates compiler result selection;
-            # prose-only/imported targets retain their established gates.
-            from .artifacts import declaration_type
-            if declaration_type(target_context.get('statement') or '') and not cfg.selected_result:
-                cfg = replace(cfg, selected_result={
-                    'declaration': target_context['declaration_name'], 'kind': target_context['kind']})
+        # Overleaf uses immutable source publications instead of conversational
+        # confirmation, so prepare() deliberately returns None for that origin.
+        # Its structured Lean targets still need declaration-level compiler
+        # evidence, just like an agreed target from the standalone UI.
+        cfg = replace(cfg, stub_generation=run_row.get("purpose") == "overleaf_stub")
+        structured_target = target_context or focused_formalization
+        from .artifacts import declaration_type
+        if (structured_target and structured_target.get('declaration_name')
+                and declaration_type(structured_target.get('statement') or '')
+                and not cfg.selected_result and not cfg.stub_generation):
+            cfg = replace(cfg, selected_result={
+                'declaration': structured_target['declaration_name'], 'kind': structured_target['kind']})
         from . import overleaf_source
         try:
             overleaf_source.validate_run(run_id, proofs_root)
@@ -2132,6 +2139,7 @@ def _run_lea(context: RunnerContext) -> None:
                           allow_source_pause=context.allow_source_pause,
                           narrate_tool_steps=False,
                           prompt_variant=(
+                              "overleaf_stub" if cfg.stub_generation else
                               "interactive_overleaf" if context.purpose == "overleaf_continuation" and (not context.autonomous or run_row.get("source_context_ref"))
                               else "overleaf_continuation" if context.purpose == "overleaf_continuation" else "overleaf_faithful"),
                           extra_tools=list(dict.fromkeys([*cfg.extra_tools, "update_lea_status"])),
@@ -2709,7 +2717,21 @@ def _run_lea(context: RunnerContext) -> None:
                     if ev.reason == 'completed' and result_kind in {'proved', 'defined', 'disproved'} and not produced_clean:
                         final_status = final_result_kind = 'needs_review'
                         final_result_detail = 'The current proof inputs have no fresh passing Lean check.'
-                    if focus_formalization_id and ev.reason == "completed" and result_kind != "disproved":
+                    if cfg.stub_generation and ev.reason in {"stubbed", "assistant", "completed"}:
+                        from .target_completion import checked_stub
+                        checked_steps = [step for step in current_checks if step and step.get("run_id") == run_id
+                            and step.get("id") == str(step_id_by_path.get(step["path"]))]
+                        stub, reason = checked_stub(focused_formalization or {}, checked_steps)
+                        if stub:
+                            try:
+                                if (repo / stub["path"]).read_bytes().decode("utf-8") != stub.get("code"):
+                                    stub, reason = None, "The checked stub changed before completion."
+                            except (OSError, UnicodeDecodeError):
+                                stub, reason = None, "The checked stub is unavailable."
+                        final_status = "answered" if stub else "needs_review"
+                        final_result_kind = None if stub else "needs_review"
+                        final_result_detail = "Checked statement stub; proof intentionally incomplete." if stub else reason
+                    if not cfg.stub_generation and focus_formalization_id and ev.reason == "completed" and result_kind != "disproved":
                         # A successful file check is evidence only for the declaration it
                         # contains. The run must have checked the current target snapshot.
                         checked_steps = []
@@ -2819,7 +2841,7 @@ def _run_lea(context: RunnerContext) -> None:
                                  lambda: store.set_run_transcript(run_id, ev.transcript.get("messages", [])))
                     # Structured artifact index (4.1): record which declarations this
                     # run's checked files hold, keyed to the run's own FileChanged set.
-                    review_candidate_path = None
+                    review_candidate_path = stub["path"] if cfg.stub_generation and final_status == "answered" else None
                     if focus_formalization_id and ev.reason == "completed" and final_result_kind == "needs_review":
                         # Preserve a technically checked target independently of the
                         # classifier's human-review outcome. Different-name results
@@ -2989,6 +3011,11 @@ def _run_lea(context: RunnerContext) -> None:
                     "checkpoint_at", "input_tokens", "output_tokens", "cost_usd",
                     "usage_status", "usage_revision", "usage_updated_at"):
             done_payload[key] = settled.get(key)
+        # Completion inputs (including artifact registration and dependency
+        # settlement) are now committed. Publish this target before notifying
+        # clients, independently of the broad observation maintenance queue.
+        from . import target_observations
+        _best_effort("target observation", run_id, lambda: target_observations.publish_run(run_id))
         emit(events, "done", done_payload)
         # The run has ended: retire its broker. Subscribers already draining hold
         # their own reference and exit on `done`; a late observer gets a synthesized

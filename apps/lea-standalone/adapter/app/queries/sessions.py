@@ -295,9 +295,13 @@ def session_detail(session_id: str) -> dict | None:
             (session_id,),
         ).fetchall()
         status_events = conn.execute(
-            "select * from status_events where session_id = ? order by created_at asc",
+            "select * from status_events where session_id = ? order by created_at asc, rowid asc",
             (session_id,),
         ).fetchall()
+        run_event_cursors = {row['id']: f"{row['attempt_id'] or 'pending'}:{row['high_water']}"
+            for row in conn.execute('''select r.id,r.attempt_id,coalesce(e.high_water,0) as high_water
+                from runs r left join run_event_retention e on e.run_id=r.id
+                and e.attempt_id=coalesce(r.attempt_id,'') where r.session_id=?''', (session_id,))}
         active_run = conn.execute(
             """
             select *
@@ -400,7 +404,9 @@ def session_detail(session_id: str) -> dict | None:
         "messages": messages,
         "code_steps": [_normalize_code_step(step) for step in code_steps],
         "diagnostics": diagnostics_out,
-        "status_events": [row_to_dict(row) for row in status_events],
+        "status_events": [{**json.loads(row['payload'] or '{}'),
+                           **{k: v for k, v in dict(row).items() if k != 'payload'}} for row in status_events],
+        "run_event_cursors": run_event_cursors,
         "approval_events": approval_events_for_session(session_id),
         "review_events": review_events_for_session(session_id),
         "usage_breakdown": usage_breakdown_for_session(session_id),

@@ -101,6 +101,34 @@ def test_command_cancellation_before_acceptance_restores_canonical_files(project
     assert ops.get(op['id'])['state']=='retained'
 
 
+@pytest.mark.parametrize('new_helper', [False, True])
+def test_retry_publishes_importing_consumers_with_a_symlinked_data_directory(project, monkeypatch, tmp_path, new_helper):
+    # macOS /tmp resolves to /private/tmp. Staged source inputs are resolved by
+    # Lean even when the application's configured data path uses an alias.
+    alias = tmp_path / 'data-alias'
+    alias.symlink_to(db.DB_PATH.parent, target_is_directory=True)
+    monkeypatch.setattr(db, 'DB_PATH', alias / db.DB_PATH.name)
+    _, repo, _, original = project
+    consumer = 'import Lea.Study.Shared\nnamespace Lea.Study\ntheorem downstream : True := by trivial\nend Lea.Study\n'
+    (repo / 'Consumer.lean').write_text(consumer)
+    op = operation(project, monkeypatch)
+    assert str(alias) in op['manifest']['workspace']
+    stage = Path(op['manifest']['repo'])
+    candidate = original.replace('theorem b : True := by sorry', 'theorem b : True := by trivial')
+    helper = 'namespace Lea.Study\ntheorem support : True := by trivial\nend Lea.Study\n'
+    if new_helper:
+        (stage / 'NewHelper.lean').write_text(helper)
+        candidate = 'import Lea.Study.NewHelper\n' + candidate.replace('theorem b : True := by trivial', 'theorem b : True := by exact support')
+    (stage / 'Shared.lean').write_text(candidate)
+    receipt = publication.apply(op['id'], selection(), 'proved')
+    assert receipt['outcome'] == 'proved'
+    assert ops.get(op['id'])['state'] == 'settled'
+    assert (repo / 'Shared.lean').read_text() == candidate
+    assert (repo / 'Consumer.lean').read_text() == consumer
+    if new_helper:
+        assert (repo / 'NewHelper.lean').read_text() == helper
+
+
 def test_real_shared_retry_preserves_a_and_unfinished_c(project, monkeypatch):
     started = time.monotonic()
     op = operation(project, monkeypatch)

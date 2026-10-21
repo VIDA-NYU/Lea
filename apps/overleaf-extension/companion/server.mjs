@@ -37,20 +37,52 @@ export async function createServer({env=process.env,fetchImpl=fetch}={}) {
       const url=new URL(request.url,'http://localhost');const pathname=url.pathname;
       if(pathname==='/events'&&request.method==='GET') {
         if(!compatible)await api('/api/health');
+        const documentId=url.searchParams.get('projectId');
+        if(!documentId||documentId==='unknown')return send(response,400,{error:'project_required'});
         const abort=new AbortController();request.on('close',()=>abort.abort());
-        const cursor=request.headers['last-event-id']||url.searchParams.get('after')||'0';
-        const upstream=await fetchImpl(base+'/api/changes?stream=true&after='+encodeURIComponent(cursor),{signal:abort.signal});
+        let cursor=request.headers['last-event-id']||url.searchParams.get('after');
+        let reset=false;
+        // Start from a committed watermark, not the beginning of a prunable log.
+        if(cursor==null){
+          const snapshot=await fetchImpl(base+'/api/changes?after=0&limit=1',{signal:abort.signal});
+          const value=await snapshot.json();
+          if(!snapshot.ok&&snapshot.status!==409)return send(response,snapshot.status,value);
+          cursor=String(snapshot.ok?value.watermark:value.detail.watermark);reset=true;
+        }
+        let projectId=null;
+        async function resolveProject(){
+          try{const identity=await api('/api/projects/by-slug/'+encodeURIComponent(slug(documentId))+'/identity');projectId=identity.projectId||null;}
+          catch(error){if(error.status!==404)throw error;projectId=null;}
+        }
+        await resolveProject();
+        const openStream=()=>fetchImpl(base+'/api/changes?stream=true&after='+encodeURIComponent(cursor),{signal:abort.signal});
+        let upstream=await openStream();
+        if(upstream.status===409){
+          const value=await upstream.json();cursor=String(value.detail.watermark);reset=true;
+          upstream=await openStream();
+        }
         if(!upstream.ok)return send(response,upstream.status,await upstream.json());
-        response.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache'});response.write('event: hello\ndata: {"ok":true}\n\n');
+        response.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache','X-Accel-Buffering':'no'});
+        response.write('event: hello\ndata: {"ok":true}\n\n');
+        if(reset)response.write('id: '+cursor+'\nevent: resync\ndata: '+JSON.stringify({watermark:Number(cursor),overleafProjectId:documentId,reload:true})+'\n\n');
         let pending='';const decoder=new TextDecoder();
-        const relevant=new Set(['companion_jobs','companion_associations','formalizations','runs','timeline','proof_checks','formalization_reviews','project_dependencies','reformalization_operations']);
+        // Query caches/command receipts must not invalidate the reads that create
+        // them. All other project-scoped domain changes include future tables.
+        const noise=new Set(['run_events','run_observation_records','peripheral_views','commands','command_attempts','command_workers','download_artifacts']);
         for await(const bytes of upstream.body){pending+=decoder.decode(bytes,{stream:true});let end;
           while((end=pending.indexOf('\n\n'))>=0){const frame=pending.slice(0,end);pending=pending.slice(end+2);const id=frame.match(/^id: (.+)$/m)?.[1];const data=frame.match(/^data: (.+)$/m)?.[1];
             const event=frame.match(/^event: (.+)$/m)?.[1];
-            if(event==='resync'){response.write('event: resync\ndata: '+(data||'{}')+'\n\n');continue;}
+            if(event==='resync'){
+              const value=JSON.parse(data||'{}');
+              response.write('id: '+value.watermark+'\nevent: resync\ndata: '+JSON.stringify({...value,overleafProjectId:documentId})+'\n\n');continue;
+            }
             const page=data?JSON.parse(data):{};
-            const changes=(page.changes||[]).filter(change=>relevant.has(change.entity_type)||(change.entity_type==='companion_documents'&&String(change.entity_id).includes('batches')));
-            if(changes.length)response.write((id?'id: '+id+'\n':'')+'event: jobs-changed\ndata: '+JSON.stringify({...page,changes})+'\n\n');
+            const previousProjectId=projectId;
+            if((page.changes||[]).some(change=>change.entity_type==='projects'))await resolveProject();
+            const changes=(page.changes||[]).filter(change=>!noise.has(change.entity_type)&&(
+              (projectId&&change.project_id===projectId)||(previousProjectId&&change.project_id===previousProjectId)||
+              change.entity_type==='application_settings'));
+            if(changes.length)response.write((id?'id: '+id+'\n':'')+'event: jobs-changed\ndata: '+JSON.stringify({...page,changes,overleafProjectId:documentId})+'\n\n');
             else response.write((id?'id: '+id+'\n':'')+'event: cursor\ndata: {}\n\n');
           }
         }

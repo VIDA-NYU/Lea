@@ -86,11 +86,12 @@ export async function listSessions(): Promise<SessionSummary[]> {
   return (await sessionListSnapshot()).sessions;
 }
 
-export async function sessionListSnapshot(): Promise<{ sessions: SessionSummary[]; cursor?: number }> {
+export async function sessionListSnapshot(): Promise<{ sessions: SessionSummary[]; projects?: Project[]; cursor?: number }> {
   const response = await fetch('/api/sessions');
   if (!response.ok) throw new Error(`Failed to load sessions: ${response.statusText}`);
   const data = await readWorkspaceResponse(response);
   return { sessions: Array.isArray(data.sessions) ? data.sessions : [],
+    projects: Array.isArray(data.projects) ? data.projects : undefined,
     cursor: Number.isSafeInteger(data.cursor) ? data.cursor : undefined };
 }
 

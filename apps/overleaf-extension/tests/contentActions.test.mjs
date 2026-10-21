@@ -6,6 +6,11 @@ import test from "node:test";
 import vm from "node:vm";
 import { buildLeanPaneManifest } from "../shared/leanPaneManifest.mjs";
 
+// A successful project download is a real (empty main.tex) ZIP; the harness
+// overlays its live buffer just as the browser does. Tests for unavailable or
+// delayed archives override this response explicitly.
+const projectZip = Buffer.from("UEsDBBQAAAAAAPW5TV0AAAAAAAAAAAAAAAAIAAAAbWFpbi50ZXhQSwECFAMUAAAAAAD1uU1dAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAgAEAAAAAbWFpbi50ZXhQSwUGAAAAAAEAAQA2AAAAJgAAAAAA", "base64");
+
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const contentScriptPath = path.join(repoRoot, "apps/overleaf-extension/extension/content.js");
 const contentScript = fs.readFileSync(contentScriptPath, "utf8");
@@ -3007,7 +3012,7 @@ test("Formalize all renders an accessible, collapsible queue with active turn pr
     { status: "unformalized" },
     {},
     {
-      locationPath: "/project/unknown",
+      locationPath: "/project/project-1",
       manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
       targetBatch: {
         ok: true,
@@ -3075,13 +3080,104 @@ function queuePaneItem(label, overrides = {}) {
   };
 }
 
+class DeliveryEventSource {
+  static instances = [];
+  constructor(url) { this.url=url;this.listeners=new Map();DeliveryEventSource.instances.push(this); }
+  addEventListener(type, fn) { this.listeners.set(type,fn); }
+  close() { this.closed=true; }
+  emit(type, payload={}) { this.listeners.get(type)?.({data:JSON.stringify(payload)}); }
+}
+
+async function deliveryPane(options={}) {
+  const h=createContentHarness({status:'unformalized'}, {}, {EventSource:DeliveryEventSource,
+    manifest:{ok:true,rootFile:'main.tex',items:[queuePaneItem('demo_theorem')],diagnostics:[]},...options});
+  await h.loadVisibleTheorems();h.clickPaneTrigger();await flushPromises();
+  return {h,events:DeliveryEventSource.instances.at(-1)};
+}
+
+test('database changes and resync refresh an open Blueprint while unrelated projects are ignored',async()=>{
+  const {h,events}=await deliveryPane();h.clickButtonText('Blueprint');await flushPromises();
+  const reads=()=>h.fetchCalls.filter(call=>call.url.includes('/project/graph')).length;
+  const initial=reads();assert.equal(initial,1);
+  events.emit('jobs-changed',{overleafProjectId:'project-1',changes:[{entity_type:'core_observations'}]});
+  await h.runTimersAt(1500);await flushPromises();assert.equal(reads(),initial+1);
+  events.emit('resync',{overleafProjectId:'project-1',watermark:100});
+  await h.runTimersAt(1500);await flushPromises();assert.equal(reads(),initial+2);
+  events.emit('jobs-changed',{overleafProjectId:'other-project'});
+  events.emit('resync',{overleafProjectId:'other-project'});
+  await h.runTimersAt(1500);await flushPromises();assert.equal(reads(),initial+2);
+});
+
+test('continuous database notifications cannot starve Blueprint refresh',async()=>{
+  const {h,events}=await deliveryPane();h.clickButtonText('Blueprint');await flushPromises();
+  const initial=h.fetchCalls.filter(call=>call.url.includes('/project/graph')).length;
+  for(let i=0;i<4;i++){
+    events.emit('jobs-changed',{overleafProjectId:'project-1'});
+    await h.advanceTime(500);
+  }
+  assert.ok(h.fetchCalls.filter(call=>call.url.includes('/project/graph')).length>initial);
+});
+
+test('project navigation replaces its scoped stream and ignores late notifications',async()=>{
+  const {h,events}=await deliveryPane();
+  h.window.location.pathname='/project/project-2';await h.loadVisibleTheorems();
+  const current=DeliveryEventSource.instances.at(-1);
+  assert.equal(events.closed,true);assert.notEqual(current,events);
+  assert.equal(new URL(current.url).searchParams.get('projectId'),'project-2');
+  current.onopen();await h.runTimersAt(1500);
+  const reads=()=>h.fetchCalls.filter(call=>call.url.endsWith('/lean-pane/manifest')).length;
+  const before=reads();events.emit('jobs-changed',{overleafProjectId:'project-1'});
+  await h.runTimersAt(1500);assert.equal(reads(),before);
+  current.emit('jobs-changed',{overleafProjectId:'project-2'});
+  await h.runTimersAt(1500);assert.ok(reads()>before);
+});
+
+test('chat retains its saved transcript through HTTP 503 and catches up on retry',async()=>{
+  let polls=0;
+  const {h}=await deliveryPane({fetchOverride:async url=>{
+    if(url.endsWith('/lean-pane/chat/session'))return admissionResponse({ok:true,leaSessionId:'delivery-session',
+      activeRun:{id:'delivery-run',status:'running'},messages:[{id:'old',role:'assistant',content:'Saved answer'}]});
+    if(url.endsWith('/lean-pane/chat/session/delivery-session')){
+      polls++;
+      return polls===1?admissionResponse({error:'adapter_operation_failed',message:'Temporarily unavailable'},503):
+        admissionResponse({ok:true,leaSessionId:'delivery-session',activeRun:null,messages:[{id:'new',role:'assistant',content:'Completed answer'}]});
+    }
+  }});
+  h.clickPaneTreeRowText('main.tex');h.clickFirstPaneItem();h.clickButtonLabel('Chat');await flushPromises();
+  await h.runTimersAt(5000);await flushPromises();
+  assert.equal(polls,1);assert.match(h.bodyText(),/Saved answer/);
+  assert.ok(h.pendingTimers().includes(8000));
+  await h.runTimersAt(8000);await flushPromises();
+  assert.equal(polls,2);assert.match(h.bodyText(),/Completed answer/);
+});
+
+test('job notifications refresh idle chat and coalesce reads while SQL is slow',async()=>{
+  let polls=0,release;
+  const {h,events}=await deliveryPane({fetchOverride:async url=>{
+    if(url.endsWith('/lean-pane/chat/session'))return admissionResponse({ok:true,leaSessionId:'delivery-idle',activeRun:null,messages:[]});
+    if(url.endsWith('/lean-pane/chat/session/delivery-idle')){
+      polls++;return new Promise(resolve=>{release=()=>resolve(admissionResponse({ok:true,leaSessionId:'delivery-idle',activeRun:null,
+        messages:[{id:'new',role:'assistant',content:'Committed update'}]}));});
+    }
+  }});
+  h.clickPaneTreeRowText('main.tex');h.clickFirstPaneItem();h.clickButtonLabel('Chat');await flushPromises();
+  events.emit('jobs-changed',{overleafProjectId:'other-project'});await flushPromises();assert.equal(polls,0);
+  for(let i=0;i<5;i++)events.emit('jobs-changed',{overleafProjectId:'project-1'});
+  await flushPromises();assert.equal(polls,1);release();await flushPromises();
+  assert.equal(polls,2,'a notification during a slow read requires one catch-up read');
+  release();await flushPromises();
+  assert.match(h.bodyText(),/Committed update/);
+  events.emit('resync',{overleafProjectId:'project-1'});await flushPromises();assert.equal(polls,3);
+  release();await flushPromises();
+});
+
 async function startNavigationQueue(items, entries, options = {}) {
   const batch = {
     ok: true, batchId: "navigation-batch", operation: "formalize", done: false,
     running: true, pausedOn: null, items: entries
   };
   const harness = createContentHarness({ status: "unformalized" }, {}, {
-    locationPath: "/project/unknown",
+    locationPath: "/project/project-1",
     manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
     targetBatch: batch, repairStatus: batch, ...options
   });
@@ -3425,7 +3521,7 @@ test("Formalize all limits cost-cap failures to five statements until expanded",
     { status: "unformalized" },
     {},
     {
-      locationPath: "/project/unknown",
+      locationPath: "/project/project-1",
       manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
       targetBatch: {
         ok: true,
@@ -3490,7 +3586,7 @@ test("completed Formalize all shows its saved synthesis", async () => {
     leanDeclarationName: label, formalizable: true
   }));
   const harness = createContentHarness({ status: "unformalized" }, {}, {
-    locationPath: "/project/unknown",
+    locationPath: "/project/project-1",
     manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
     targetBatch: {
       ok: true, batchId: report.batch_id, operation: "formalize", done: true,
@@ -3605,7 +3701,7 @@ test("stopping a batch preserves a completed race winner and reports stopped ite
     { status: "unformalized" },
     {},
     {
-      locationPath: "/project/unknown",
+      locationPath: "/project/project-1",
       manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
       targetBatch: {
         ok: true,
@@ -4231,6 +4327,54 @@ test("a displayed batch button retains its target set across a manifest refresh"
   assert.equal(JSON.parse(calls[0].options.body).items[0].targetLabel, "queued_target");
 });
 
+test("Formalize all waits for the complete inventory and includes all ten targets, including saved results", async () => {
+  const items = Array.from({ length: 10 }, (_, i) => ({ ...queuePaneItem(`target_${i}`),
+    sourceFile: i < 6 ? 'main.tex' : 'sections/more.tex', status: i === 0 ? 'valid' : 'missing-stub' }));
+  const h = await batchAdmissionHarness({ fetchOverride(url, options) {
+    if (url.endsWith('/lean-pane/manifest')) {
+      const complete = JSON.parse(options.body).sourceCoverage === 'complete';
+      return admissionResponse({ ok: true, items: complete ? items : items.slice(0, 6), diagnostics: [] });
+    }
+  } });
+  h.document.body.querySelector('.ol-lean-formalize-all-button').click();
+  await flushPromises();
+  const call = h.fetchCalls.find(call => call.url.endsWith('/formalize/all'));
+  assert.ok(call);
+  const submitted = JSON.parse(call.options.body);
+  assert.equal(submitted.scope, 'project');
+  assert.deepEqual(submitted.items.map(item => item.targetLabel), items.map(item => item.label));
+  assert.equal(submitted.items.length, 10);
+  assert.ok(submitted.items.every(item => item.source_context_ref));
+});
+
+test("a collapsed review card exposes the uncertified outcome beside a passing check and high confidence", async () => {
+  const h = await batchAdmissionHarness({ manifest: { ok: true, diagnostics: [], items: [{
+    ...queuePaneItem('review_target'), status: 'needs-review',
+    leanCheck: { status: 'checked' }, review: { eligible: true, reason: 'The selected declaration does not match.' },
+    leaStatus: { confidence: 'high', assessment: { confidence: 'high', scope: 'statement_and_proof' } }
+  }] } });
+  h.clickPaneTreeRowText('main.tex');
+  assert.match(h.paneText(), /Needs review · Result not certified/);
+  assert.match(h.paneText(), /Lean Check:\s*checked/);
+  assert.match(h.paneText(), /High confidence/);
+  const warning = h.document.body.querySelector('.ol-lean-project-check-chip-needs-review');
+  assert.equal(warning.title, 'The selected declaration does not match.');
+  assert.ok(!h.document.body.querySelector('.ol-lean-project-item-header').attributes['aria-expanded']
+    || h.document.body.querySelector('.ol-lean-project-item-header').attributes['aria-expanded'] === 'false');
+});
+
+test('a project batch counts reused proofs separately and keeps them out of needs attention', async () => {
+  const items = ['saved', 'new'].map(queuePaneItem);
+  const h = await startNavigationQueue(items, [
+    { targetKind: 'theorem', targetLabel: 'saved', state: 'skipped', reason: 'existing_proof' },
+    { targetKind: 'theorem', targetLabel: 'new', state: 'formalized' }
+  ]);
+  assert.match(h.batchQueue().text, /1 verified.*0 skipped.*1 already verified/);
+  assert.doesNotMatch(h.batchQueue().text, /Needs attention/);
+  h.clickButtonText('Show 2 completed');
+  assert.equal(h.batchQueue().completedCount, 2);
+});
+
 test("a disconnected click retries then shows SQL acceptance while the worker is unavailable", async () => {
   let offline = false, failRead = false, complete = false;
   const h = await batchAdmissionHarness({ fetchOverride: async url => {
@@ -4457,6 +4601,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
     hasRecordedProofs: true
   };
   let nextTimerId = 1;
+  let timerNow = 0;
 
   const window = {
     innerWidth: 1024,
@@ -4555,6 +4700,9 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
           async arrayBuffer() { return new ArrayBuffer(0); }
         };
       }
+      if (String(url).includes("/download/zip")) return {
+        ok: true, arrayBuffer: async () => projectZip.buffer.slice(projectZip.byteOffset, projectZip.byteOffset + projectZip.byteLength)
+      };
       const failingRepairStart = Boolean(options.failRepairStart) && String(url).includes("/lean-pane/repair/start");
       const formalizeRequest = String(url).endsWith("/formalize");
       const formalizeFailure = formalizeRequest
@@ -4724,7 +4872,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
     globalThis: null,
     setTimeout(callback, delay) {
       const id = nextTimerId++;
-      timers.push({ id, callback, delay });
+      timers.push({ id, callback, delay, due: timerNow + delay });
       return id;
     },
     window,
@@ -5062,6 +5210,15 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
       for (const timer of ready) timers.splice(timers.indexOf(timer), 1);
       for (const timer of ready) timer.callback();
       await flushPromises();
+    },
+    async advanceTime(ms) {
+      const until=timerNow+ms;
+      while(true){
+        const next=timers.filter(timer=>timer.due<=until).sort((a,b)=>a.due-b.due)[0];
+        if(!next)break;
+        timers.splice(timers.indexOf(next),1);timerNow=next.due;next.callback();await flushPromises();
+      }
+      timerNow=until;
     },
     fetchCalls,
     promptCalls,

@@ -176,7 +176,6 @@ export default function App() {
   useEffect(() => {
     const restore = async () => {
       const loaded = await refreshSessions();
-      refreshProjects().catch(() => {});
       useModel.getState().syncFromSettings();
       useModel.getState().loadCatalog();
       // The Overleaf extension's "View in Lea UI" action opens <ui>/?session=<id>;

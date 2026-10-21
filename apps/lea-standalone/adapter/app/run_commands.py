@@ -58,7 +58,9 @@ def _enqueue(conn,kind,payload,*,key,project_id=None,session_id=None,formalizati
             raise HTTPException(409,detail={'code':'workspace_reconciliation_required','message':'Reconcile the interrupted workspace operation before starting more project work.'})
         from .workspace_commands import current as workspace_command
         actor=workspace_command()
-        if conn.execute("select 1 from workspace_effects where project_id=? and state in ('prepared','installed') and command_id is not ? limit 1",
+        # Solver intent is durable even while a file is being published. The
+        # scheduler fences execution in blocks_solver until publication settles.
+        if kind not in SOLVER_KINDS and conn.execute("select 1 from workspace_effects where project_id=? and state in ('prepared','installed') and command_id is not ? limit 1",
             (project_id,actor['id'] if actor else None)).fetchone():
             raise commands.QueueError('project_busy',503)
     conn.execute('insert or ignore into command_producers values (?,?,?,?,1,?)',

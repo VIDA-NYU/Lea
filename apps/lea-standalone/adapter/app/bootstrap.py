@@ -4,7 +4,7 @@ import os
 import stat
 from pathlib import Path
 from . import db
-SCHEMA='0048_process_boundary'
+SCHEMA='0050_target_observations'
 MAX_INTAKE_ENTRIES=10000
 
 

@@ -19,8 +19,9 @@ def record_start(identity,pid):
 
 
 def publish(identity,value,capabilities):
-    now=datetime.now(timezone.utc)
     with db.write() as conn:
+        # Queuing for the writer must not consume the heartbeat's new lifetime.
+        now=datetime.now(timezone.utc)
         changed=conn.execute('''update worker_process set lifecycle_state=?,heartbeat_at=?,expires_at=?,
             capabilities_json=?,snapshot_json=? where id=1 and runtime_id=?''',
             (value['lifecycle_state'],now.isoformat(),(now+timedelta(seconds=LIFETIME_SECONDS)).isoformat(),

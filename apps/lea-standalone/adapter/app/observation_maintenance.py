@@ -5,6 +5,7 @@ from . import db, observation
 
 _stop = Event()
 _worker = None
+_target_worker = None
 
 
 def sweep():
@@ -39,10 +40,23 @@ def sweep():
 
 
 def start():
-    global _worker
+    global _worker, _target_worker
     if _worker and _worker.is_alive():
         return
     _stop.clear()
+    def observe_targets():
+        from . import target_observations
+        while not _stop.is_set():
+            try:
+                result = target_observations.maintain()
+            except Exception:
+                logging.getLogger(__name__).exception('Target observation failed')
+                result = {}
+            # Target publication must never queue behind broad inventory,
+            # peripheral views, editor maintenance or retention work.
+            _stop.wait(0.1 if result.get('state') in {'observed', 'retry'} else 1)
+    _target_worker = Thread(target=observe_targets, name='lea-target-observation', daemon=True)
+    _target_worker.start()
     def work():
         while not _stop.is_set():
             try:
@@ -61,10 +75,11 @@ def start():
 
 
 def close():
-    global _worker
+    global _worker, _target_worker
     _stop.set()
-    if _worker:
-        _worker.join(timeout=10)
-        if _worker.is_alive():
+    for worker in (_worker, _target_worker):
+        if worker:
+            worker.join(timeout=10)
+        if worker and worker.is_alive():
             raise RuntimeError('Observation maintenance did not stop')
-        _worker = None
+    _worker = _target_worker = None

@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import time
 
 from lea import execution, interface, result_selection
 from lea.check_evidence import (ReadSnapshot, freshness, file_hash,
@@ -35,11 +36,21 @@ def _implementation():
 def _topology(root, budget):
     """New shadowing modules invalidate cached compiler resolution, too."""
     result = []
+    next_poll = 0.0
+    def poll():
+        nonlocal next_poll
+        # This loop only reads directory metadata. Thousands of directories must
+        # not each open SQL snapshots to check cancellation/worker ownership.
+        # Keep scanning cancellable; execution still has its own fresh gates.
+        if time.monotonic() >= next_poll:
+            budget.remaining('dependencies')
+            next_poll = time.monotonic() + .1
     roots = [root / 'proofs', root / '.lake/build/lib/lean', root / '.lake/packages']
+    poll()
     for base in roots:
         visited = set()
         for directory, dirs, files in os.walk(base, followlinks=True):
-            budget.remaining('dependencies')
+            poll()
             resolved = str(Path(directory).resolve())
             if resolved in visited:
                 dirs[:] = []
@@ -52,12 +63,14 @@ def _topology(root, budget):
                 result.append(('directory', str(child), str(child.resolve())))
             dirs[:] = [d for d in children if str((Path(directory) / d).resolve()) not in visited]
             for name in sorted(files):
+                poll()
                 if name.endswith(('.lean', '.olean')):
                     path = Path(directory) / name
                     result.append((str(path), str(path.resolve())))
                 elif name.endswith(('.ir', '.so', '.dylib', '.dll', '.a')):
                     path = Path(directory) / name
                     result.append((str(path), str(path.resolve()), file_version(path)))
+    budget.remaining('dependencies')
     return _digest(result)
 
 

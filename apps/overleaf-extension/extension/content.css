@@ -1513,6 +1513,7 @@ body.ol-lean-pane-resizing {
 }
 
 .ol-lean-project-check-chip-warning,
+.ol-lean-project-check-chip-needs-review,
 .ol-lean-project-check-chip-stubbed,
 .ol-lean-project-check-chip-paused {
   color: var(--ol-amber);

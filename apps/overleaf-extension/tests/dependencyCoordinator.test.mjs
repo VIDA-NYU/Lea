@@ -93,3 +93,66 @@ test("another owner is awaited and shared counts never become target counts", as
   assert.equal(facts.length, 1);
   assert.equal(facts[0].reused, false);
 });
+
+test('a proved run waits for stale projections and temporary unavailability without being relaunched',async()=>{
+  const h=harness({L:{state:'pending',generation:1}});
+  let observations=0,waits=0,unavailable=true;
+  h.callbacks.observeRun=async id=>{
+    observations++;h.rows.set(id,{status:'proved',result_detail:'PROVED'});
+    Object.assign(h.deps.get('L'),{state:'stale',owner_run_id:null,projection:{state:'inputs_changed'}});
+  };
+  const read=h.callbacks.getDependency;
+  h.callbacks.getDependency=async id=>{
+    if(observations&&unavailable){unavailable=false;return {unavailable:true};}
+    return read(id);
+  };
+  h.callbacks.wait=async()=>{
+    if(++waits===3)Object.assign(h.deps.get('L'),{state:'ready',ready:true,projection:{state:'observed'}});
+    assert.ok(waits<5);
+  };
+  const result=await resolveSharedDependencies(['L'],h.callbacks);
+  assert.equal(result.ok,true);assert.equal(result.dependencies[0].reused,false);
+  assert.deepEqual(h.attempts,['L']);assert.equal(observations,1);assert.equal(waits,3);
+});
+
+test('a terminal success retains its run identity while publication clears the owner',async()=>{
+  const h=harness();let waits=0,observations=0;
+  h.callbacks.observeRun=async id=>{
+    observations++;h.rows.set(id,{status:'proved',result_detail:'PROVED'});
+    Object.assign(h.deps.get('L'),{state:'pending',owner_run_id:null});
+  };
+  h.callbacks.wait=async()=>{
+    if(++waits===2)Object.assign(h.deps.get('L'),{state:'ready',ready:true});
+    assert.ok(waits<4);
+  };
+  assert.equal((await resolveSharedDependencies(['L'],h.callbacks)).ok,true);
+  assert.deepEqual(h.attempts,['L']);assert.equal(observations,1);
+});
+
+test('genuine stale evidence remains blocked after its projection is observed',async()=>{
+  const h=harness({L:{state:'stale',projection:{state:'observed'},blocker:{detail:'source changed'}}});
+  assert.equal((await resolveSharedDependencies(['L'],h.callbacks)).reason,'source changed');
+  assert.deepEqual(h.attempts,[]);
+});
+
+test('a proved execution cannot bypass a registry failure for its canonical artifact',async()=>{
+  const h=harness();
+  h.callbacks.observeRun=async id=>{
+    h.rows.set(id,{status:'proved',result_detail:'PROVED'});
+    Object.assign(h.deps.get('L'),{state:'failed',blocker:{detail:'canonical declaration is not verified'}});
+  };
+  const result=await resolveSharedDependencies(['L'],h.callbacks);
+  assert.equal(result.ok,false);assert.equal(result.reason,'canonical declaration is not verified');
+  assert.deepEqual(h.attempts,['L']);
+});
+
+test('cancellation interrupts a projection wait without continuing or admitting another attempt',async()=>{
+  const h=harness();let canceled=false;
+  h.callbacks.observeRun=async id=>{
+    h.rows.set(id,{status:'proved'});
+    Object.assign(h.deps.get('L'),{state:'stale',projection:{state:'synchronizing'}});
+  };
+  h.callbacks.wait=async()=>{canceled=true;};h.callbacks.isCanceled=()=>canceled;
+  assert.equal((await resolveSharedDependencies(['L'],h.callbacks)).canceled,true);
+  assert.deepEqual(h.attempts,['L']);
+});

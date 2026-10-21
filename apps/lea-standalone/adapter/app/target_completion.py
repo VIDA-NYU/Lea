@@ -2,8 +2,41 @@
 
 from __future__ import annotations
 
+import re
+
 from .artifacts import (LeanDeclaration, declaration_contains_sorry, scan_lean_declarations,
-                        declaration_signature, declaration_type)
+                        declaration_signature, declaration_type, contains_sorry_marker, scrub_lean_source)
+
+
+def checked_stub(formalization: dict, steps: list[dict]) -> tuple[dict | None, str]:
+    """A fresh compiling theorem with its own placeholder, never proof success."""
+    name = formalization.get('declaration_name')
+    if formalization.get('kind') != 'theorem' or not name:
+        return None, 'Stub generation requires a named theorem.'
+    candidates = [(step, declaration) for step in steps
+                  if (declaration := target_declaration(step.get('code'), name, 'theorem'))]
+    if len(candidates) != 1:
+        return None, 'The requested stub is missing or ambiguous across artifacts.'
+    step, declaration = candidates[0]
+    if step.get('check_status') != 'ok' or not step.get('check_current'):
+        return None, 'The requested stub has no current passing Lean check.'
+    header = declaration_signature(declaration)
+    # A later command such as `#check (sorry : True)` is outside this theorem.
+    span = declaration.span
+    indent = len(span.splitlines()[0]) - len(span.splitlines()[0].lstrip())
+    offset = 0
+    for index, line in enumerate(scrub_lean_source(span).splitlines(keepends=True)):
+        if index and len(line) - len(line.lstrip()) <= indent and re.match(
+                r'\s*(?:#|(?:namespace|section|end|open|variable|universe|attribute|set_option|example|axiom)\b)', line):
+            span = span[:offset]
+            break
+        offset += len(line)
+    if not header or header not in span or not contains_sorry_marker(span[span.index(header) + len(header):]):
+        return None, 'The requested theorem must retain its own sorry or admit body.'
+    confirmed = declaration_type(formalization.get('statement') or '')
+    if confirmed and confirmed != declaration_type(header):
+        return None, 'The checked stub differs from the confirmed Lean statement.'
+    return step, ''
 
 
 def compiler_result(step, name, kind=None):

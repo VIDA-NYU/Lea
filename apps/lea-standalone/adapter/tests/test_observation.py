@@ -177,6 +177,74 @@ def test_partial_commits_before_delivery_and_finishes_same_identity(fixture):
     assert len(observation.session_snapshot(session["id"])["timeline"]) == 1
 
 
+def test_ui_detail_keeps_status_history_and_replay_barrier_after_retention(fixture):
+    from app.queries.sessions import session_detail
+    session, run = fixture
+    broker = runbroker.create(run['id'])
+    try:
+        broker.put({'type': 'status', 'payload': {'status': 'tool_call', 'message': 'Running read_file', 'turn': 1}})
+        broker.put({'type': 'status', 'payload': {'status': 'lean_check', 'message': 'lean_check: ok',
+                    'check_status': 'ok', 'check_detail': 'checked bytes', 'turn': 1}})
+        events = broker.events_after(0)
+        assert len([item for item in observation.run_records(run['id']) if item['type'] == 'status']) == 1
+        detail = session_detail(session['id'])
+        assert [item['id'] for item in detail['status_events']] == [item['payload']['id'] for item in events]
+        assert detail['status_events'][-1]['check_detail'] == 'checked bytes'
+        assert detail['status_events'][-1]['turn'] == 1
+        assert detail['run_event_cursors'][run['id']] == f"pending:{events[-1]['seq']}"
+        with db.write() as conn:
+            conn.execute("update runs set status='answered' where id=?", (run['id'],))
+        observation.compact_run_events(now=datetime.now(timezone.utc) + timedelta(days=8))
+        after = session_detail(session['id'])
+        assert after['status_events'] == detail['status_events']
+        assert after['run_event_cursors'] == detail['run_event_cursors']
+    finally:
+        runbroker.drop(run['id'])
+
+
+def test_ui_replay_barrier_and_history_share_sql_snapshot(fixture):
+    from app.queries.sessions import session_detail
+    session, run = fixture
+    first = observation.append_run_event(run['id'], 'status', {'message': 'first'})
+    with db.read_snapshot():
+        # Nested reads retain this version even when a writer is waiting to commit.
+        before = session_detail(session['id'])
+        started = threading.Event()
+        def write():
+            started.set()
+            observation.append_run_event(run['id'], 'status', {'message': 'second'})
+        worker = threading.Thread(target=write)
+        worker.start()
+        assert started.wait(2)
+        same = session_detail(session['id'])
+        assert same['status_events'] == before['status_events']
+        assert same['run_event_cursors'][run['id']] == f"pending:{first['seq']}"
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    latest = session_detail(session['id'])
+    assert len(latest['status_events']) == 2
+    assert latest['run_event_cursors'] != before['run_event_cursors']
+
+
+def test_status_history_rolls_back_with_its_event_and_preserves_oversized_status(fixture, monkeypatch):
+    from app.queries.sessions import session_detail
+    from app.migration_limits import CHANGE_PAGE_BYTES
+    session, run = fixture
+    record = observation._record_event
+    def fail(*args):
+        raise RuntimeError('failed publication')
+    monkeypatch.setattr(observation, '_record_event', fail)
+    with pytest.raises(RuntimeError, match='failed publication'):
+        observation.append_run_event(run['id'], 'status', {'message': 'must roll back'})
+    assert session_detail(session['id'])['status_events'] == []
+    assert observation.run_events(run['id'], None, 0) == []
+    monkeypatch.setattr(observation, '_record_event', record)
+    text = 'x' * CHANGE_PAGE_BYTES
+    event = observation.append_run_event(run['id'], 'status', {'message': text})
+    assert event['type'] == 'resync'
+    assert session_detail(session['id'])['status_events'][0]['message'] == text
+
+
 def test_failed_partial_persistence_never_publishes(fixture, monkeypatch):
     session, run = fixture
     stream = _DeltaStream(Queue(), session["id"], run["id"])

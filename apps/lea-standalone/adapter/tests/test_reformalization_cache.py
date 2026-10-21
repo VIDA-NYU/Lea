@@ -11,6 +11,41 @@ from lea.check_runtime import CheckBudget
 from test_reformalization_operations import project, operation, selection
 
 
+def test_dependency_scan_bounds_sql_stop_polls_and_still_detects_shadowing(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    for i in range(100):
+        directory = tmp_path / 'proofs' / str(i)
+        directory.mkdir(parents=True)
+        (directory / 'A.lean').write_text('def a := 0\n')
+    monkeypatch.setattr(cache, 'time', SimpleNamespace(monotonic=lambda: 1.0))
+    polls = []
+    budget = CheckBudget(should_stop=lambda: polls.append(True) or False)
+    before = cache._topology(tmp_path, budget)
+    assert len(polls) == 2  # Entry and exit, not one SQL snapshot per directory.
+    (tmp_path / 'proofs/Shadow.lean').write_text('def shadow := 0\n')
+    assert cache._topology(tmp_path, CheckBudget()) != before
+
+
+def test_dependency_scan_remains_cancellable_during_large_directory_reads(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from lea.check_runtime import CheckFailure
+    directory = tmp_path / 'proofs'
+    directory.mkdir()
+    for i in range(100):
+        (directory / f'A{i}.lean').write_text('def a := 0\n')
+    clock = [0.0]
+    def tick():
+        clock[0] += .02
+        return clock[0]
+    monkeypatch.setattr(cache, 'time', SimpleNamespace(monotonic=tick))
+    polls = []
+    budget = CheckBudget(should_stop=lambda: polls.append(True) or len(polls) >= 3)
+    with pytest.raises(CheckFailure) as failure:
+        cache._topology(tmp_path, budget)
+    assert failure.value.kind == 'cancelled'
+    assert len(polls) == 3
+
+
 def retire(op):
     store.update_run(op['root_run_id'], 'failed')
     ops.update(op['id'], 'retained')

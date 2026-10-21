@@ -7,7 +7,7 @@ from published_source_fixtures import publish_for
 
 import pytest
 from fastapi import HTTPException
-from app import bridge, db, lea_status, lea_status_store, overleaf_source, store, uploads
+from app import bridge, commands, db, lea_status, lea_status_store, overleaf_source, run_commands, store, uploads
 from app.config import LeaConfig
 from app.routes import runs
 from lea import agent
@@ -42,6 +42,21 @@ def refresh(original, source=None, **kwargs):
 def chat(original, reference=None, **kwargs):
     return runs.RunRequest(message="Inspect the missing case", session_id=original["session"]["id"],
         focus_formalization_id=original["formalization"]["id"], source_context_ref=reference, **kwargs)
+
+
+def claim_run(run_id):
+    """Source materialization runs under the same ownership as the real worker."""
+    import json
+    epoch = commands.start_worker("handoff-test-worker")
+    run_commands.ensure_run(run_id)
+    while token := commands.claim("handoff-test-worker", epoch, "compute", kinds={"run.execute"}):
+        selected = json.loads(token["payload_json"])["run_id"]
+        if selected == run_id:
+            return token
+        # The fixture's original run was already cancelled before this follow-up.
+        assert store.get_run(selected)["status"] not in {"pending", "running"}
+        commands.complete(token, {"run_id": selected, "already_terminal": True})
+    pytest.fail("The admitted run has no execution command")
 
 
 def test_prepare_looks_up_published_source_without_browser_or_run(target):
@@ -99,11 +114,12 @@ def test_newer_source_rejects_old_snapshot_at_admission_and_dispatch(target, mon
     with pytest.raises(HTTPException) as error:
         runs.create_run(chat(original, reference))
     assert error.value.status_code == 409
-    with pytest.raises(ValueError, match="changed"):
+    token = claim_run(admitted["run_id"])
+    with run_commands.executing(token), pytest.raises(ValueError, match="changed"):
         overleaf_source.validate_run(admitted["run_id"], cfg.lea_root / "workspace" / "proofs")
     monkeypatch.setattr(bridge, "run_events", lambda *_args, **_kwargs: pytest.fail("Stale source must never reach the model"))
     bridge.run_lea(bridge.RunnerContext(session_id=admitted["session_id"], run_id=admitted["run_id"],
-        task="Inspect", config=cfg, events=Queue(), purpose="overleaf_continuation"))
+        task="Inspect", config=cfg, events=Queue(), purpose="overleaf_continuation", command_token=token))
     row = store.get_run(admitted["run_id"])
     assert row["status"] == "failed" and row["stop_reason"] == "source_changed"
     assert row["cost_usd"] == 0 and row["usage_status"] == "final"
@@ -179,7 +195,8 @@ def test_interactive_tool_publication_is_durable_and_approval_gate_is_preserved(
             result["session_id"], "test", Usage(1, 1), 0, {})
     monkeypatch.setattr(bridge, "run_events", fake)
     bridge.run_lea(bridge.RunnerContext(session_id=result["session_id"], run_id=result["run_id"],
-        task="Inspect the missing case", config=cfg, events=events, purpose="overleaf_continuation"))
+        task="Inspect the missing case", config=cfg, events=events, purpose="overleaf_continuation",
+        command_token=claim_run(result["run_id"])))
     assert len(lea_status.history(original["formalization"]["id"])["updates"]) == 1
     assert any(event["type"] == "lea_status_updated" for event in list(events.queue))
 

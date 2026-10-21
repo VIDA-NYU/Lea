@@ -100,12 +100,20 @@ def lookup(key):
     return receipt(row[0])
 
 
-def authenticate(epoch,proof):
-    if not epoch or not proof:return False
+def authentication_failure(epoch,proof):
+    denied=(403,'worker_credential_required','A private worker credential is required')
+    if not epoch or not proof:return denied
     with db.connect() as conn:
-        row=conn.execute("select p.bridge_hash,p.expires_at,w.epoch,w.lease_until from worker_process p join command_workers w on w.id='lea-command-host' where p.id=1 and p.lifecycle_state='ready'").fetchone()
-    return bool(row and row['epoch']==epoch and row['expires_at']>db.utc_now() and row['lease_until']>db.utc_now()
-        and row['bridge_hash'] and secrets.compare_digest(commands._hash(proof),row['bridge_hash']))
+        row=conn.execute("select p.bridge_hash,p.expires_at,p.lifecycle_state,w.epoch,w.lease_until from worker_process p join command_workers w on w.id='lea-command-host' where p.id=1").fetchone()
+    if not row or row['epoch']!=epoch or not row['bridge_hash'] or not secrets.compare_digest(commands._hash(proof),row['bridge_hash']):return denied
+    if row['lease_until']<=db.utc_now():return (409,'worker_fenced','The business worker lost ownership')
+    if row['lifecycle_state']!='ready' or row['expires_at']<=db.utc_now():
+        return (503,'worker_unavailable','Waiting for current runtime observation')
+    return None
+
+
+def authenticate(epoch,proof):
+    return authentication_failure(epoch,proof) is None
 
 
 def retain(limit=25):

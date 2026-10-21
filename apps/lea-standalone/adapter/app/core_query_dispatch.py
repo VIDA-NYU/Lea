@@ -42,7 +42,8 @@ def database_query(kind):
 @core.read_query
 def _query(kind,a):
     sid=a.get('session_id');fid=a.get('formalization_id');pid=a.get('project_id')
-    if kind=='sessions': return {'sessions':sessions.list_sessions(),'cursor':observation.watermark(_connection())}
+    if kind=='sessions': return {'sessions':sessions.list_sessions(),'projects':sessions.list_projects(),
+        'cursor':observation.watermark(_connection())}
     if kind=='stats': return sessions.usage_stats(include_proof_status=a.get('include_proof_status',True))
     if kind=='projects': return {'projects':sessions.list_projects()}
     if kind=='project':
@@ -107,7 +108,8 @@ def _library(kind,a):
         items=[]
         for row in rows:
             value=core.fact(scope,'dependency',row['id'])
-            items.append(value or {**row,'ready':False,'state':'stale' if row['state']=='ready' else row['state'],'projection':core.metadata(scope)})
+            items.append(value or {**row,'ready':False,'state':'stale' if row['state']=='ready' else row['state'],
+                'projection':core.metadata(scope,row.get('formalization_id'))})
         if kind=='dependencies':return {'dependencies':items}
         value=next((i for i in items if i['id']==a['dependency_id']),None)
         if value is None:raise LookupError('Dependency not found in this project')

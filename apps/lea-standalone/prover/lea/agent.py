@@ -411,7 +411,8 @@ def _meaning_events(tool_name: str, args: dict, result: str) -> list:
 class ProofVerificationState:
     """Track whether the latest Lean proof file has passed a fresh check."""
 
-    def __init__(self, selection=None):
+    def __init__(self, selection=None, *, allow_sorry=False):
+        self.allow_sorry = allow_sorry
         self.latest_proof_path: str | None = None
         self.unchecked_write = False
         self.latest_check_path: str | None = None
@@ -460,7 +461,7 @@ class ProofVerificationState:
             passed = not _lean_check_has_error(result) and (
                 bool(matches_selection and selected.get("content_sha256") ==
                      (getattr(result, "execution", None) or {}).get("content_sha256"))
-                if self.selection else not _lean_check_has_sorry(result))
+                if self.selection else self.allow_sorry or not _lean_check_has_sorry(result))
             self.selected_evidence = selected
             self.latest_proof_path = self.latest_proof_path or path
             self.latest_check_execution = getattr(result, "execution", None)
@@ -796,9 +797,11 @@ def _run_events_inner(
         total_usage.usage_details = resume_state.get("usage_details")
     total_cost = float(resume_state.get("cost_usd", 0.0)) if resume_state else 0.0
     from .check_runtime import serialize_result, restore_result
-    proof_state = ProofVerificationState(config.selected_result)
+    proof_state = ProofVerificationState(config.selected_result, allow_sorry=config.stub_generation)
     if resume_state:
         proof_state.__dict__.update(resume_state.get("proof_state", {}))
+    # Saved state cannot grant an ordinary proof run the stub completion policy.
+    proof_state.allow_sorry = config.stub_generation
     stall = StallDetector(resume_state.get("stall_detector") if resume_state else None)
     dependency_evidence = resume_state.get("dependency_evidence", {}) if resume_state else {}
     resuming_model = bool(resume_state and resume_state.get("stage") == "model_complete")
@@ -1110,7 +1113,7 @@ def _run_events_inner(
 
         if not tool_calls:
             text = "".join(p["text"] for p in assistant_parts if p["type"] == "text")
-            if assistant_mode or (config.prompt_variant in {"overleaf_continuation", "interactive_overleaf"} and not proof_state.latest_proof_path):
+            if not config.stub_generation and (assistant_mode or (config.prompt_variant in {"overleaf_continuation", "interactive_overleaf"} and not proof_state.latest_proof_path)):
                 # Chat/assistant turn — not a formalization run, so skip the
                 # final proof gate entirely.
                 yield Finished("assistant", text or "(no response)", turn, session_id, model,
@@ -1129,7 +1132,9 @@ def _run_events_inner(
                     return
                 if (yield from failed_gate()):
                     return
-                messages.append({"role": "user", "content": _NO_PROOF_ARTIFACT_MESSAGE})
+                messages.append({"role": "user", "content": (
+                    "Write the requested theorem with a sorry body and run lean_check before stopping."
+                    if config.stub_generation else _NO_PROOF_ARTIFACT_MESSAGE)})
                 save_position("turn_boundary")
                 continue
             if proof_state.needs_final_check():
@@ -1204,9 +1209,19 @@ def _run_events_inner(
                 if (yield from failed_gate()):
                     return
                 diagnostic = proof_state.latest_check_output or "No successful lean_check was observed."
-                messages.append({"role": "user", "content": f"{_FINAL_GATE_FAILURE_MESSAGE}\n\n{diagnostic}"})
+                instruction = ("The statement stub needs a current passing lean_check. Fix compilation errors and retain its sorry body."
+                               if config.stub_generation else _FINAL_GATE_FAILURE_MESSAGE)
+                messages.append({"role": "user", "content": f"{instruction}\n\n{diagnostic}"})
                 save_position("turn_boundary")
                 continue
+
+            if config.stub_generation:
+                # The adapter binds this fresh check to the named theorem and its
+                # own sorry body. Never invoke the proof-outcome classifier here.
+                yield Finished("stubbed", text or "Checked statement stub.", turn, session_id,
+                               model, total_usage, total_cost, transcript(turn),
+                               candidate_path=proof_state.latest_proof_path)
+                return
 
             final_text = text or "(no response)"
             result_kind, result_detail, result_usage, result_cost = _classify_final_result(

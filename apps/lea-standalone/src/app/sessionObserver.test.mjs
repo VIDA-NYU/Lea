@@ -14,11 +14,13 @@ test('session observer closes dropped streams, snapshots before resume and ignor
       addEventListener(k,fn){this.listeners[k]=fn;}};sources.push(s);return s;},
     setTimer:fn=>{timers.set(1,fn);return 1;},clearTimer:id=>timers.delete(id)});
   await flush();assert.equal(sources[0].url,'/api/sessions/events?after=5');
+  assert.equal(changes,0,'initial navigation owns its detail load');
   sources[0].listeners.sessions_changed();await flush();
   assert.equal(changes,1);assert.equal(refreshes,2);
   sources[0].onerror();assert.equal(sources[0].closed,true);
   timers.get(1)();timers.clear();await flush();
   assert.equal(sources.length,2);assert.equal(sources[1].url,'/api/sessions/events?after=7');
+  assert.equal(changes,2,'reconnecting snapshots invalidate the selected conversation too');
   sources[0].listeners.sessions_changed();sources[0].onerror();await flush();
   assert.equal(refreshes,3);assert.equal(timers.size,0);
   stop();sources[1].listeners.sessions_changed();await flush();
@@ -27,7 +29,7 @@ test('session observer closes dropped streams, snapshots before resume and ignor
 
 test('session store rejects reordered responses and preserves user selection across reset watermarks',async()=>{
   const requests=[];
-  const bundled=await build({entryPoints:[new URL('./stores/sessions.ts',import.meta.url).pathname],
+  const bundled=await build({stdin:{contents:"export {useSessions} from './stores/sessions';export {useProjects} from './stores/projects';",resolveDir:new URL('.',import.meta.url).pathname},
     bundle:true,write:false,platform:'node',format:'cjs',external:['zustand'],
     plugins:[{name:'snapshot',setup(b){
       b.onResolve({filter:/^\.\.\/lib\/api$/},()=>({path:'api',namespace:'fake'}));
@@ -38,11 +40,15 @@ test('session store rejects reordered responses and preserves user selection acr
   context.exports=context.module.exports;context.globalThis=context;
   vm.runInNewContext(bundled.outputFiles[0].text,context);
   const store=context.module.exports.useSessions;
+  const projects=context.module.exports.useProjects;
+  projects.getState().setSelectedProjectId('user-project');
   store.getState().setSelectedSessionId('user-choice');
   const first=store.getState().refreshSessions(),second=store.getState().refreshSessions();
-  requests[1]({sessions:[{id:'new'}],cursor:30});await second;
-  requests[0]({sessions:[{id:'old'}],cursor:10});await first;
+  requests[1]({sessions:[{id:'new'}],projects:[{id:'external-project'}],cursor:30});await second;
+  requests[0]({sessions:[{id:'old'}],projects:[{id:'obsolete-project'}],cursor:10});await first;
   assert.equal(store.getState().sessions[0].id,'new');
+  assert.equal(projects.getState().projects[0].id,'external-project');
+  assert.equal(projects.getState().selectedProjectId,'user-project');
   const reset=store.getState().refreshSessions();requests[2]({sessions:[{id:'restored'}],cursor:2});await reset;
   assert.equal(store.getState().cursor,2);
   assert.equal(store.getState().sessions[0].id,'restored');

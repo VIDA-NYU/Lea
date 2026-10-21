@@ -68,8 +68,13 @@ async def enforce_local_boundary(request: Request, call_next):
     from . import db
     epoch=request.headers.get('x-lea-worker-epoch')
     if epoch or request.headers.get('x-lea-worker-parent') or request.headers.get('x-lea-batch-id'):
-        from .companion_service import authenticate
-        if not authenticate(epoch,request.headers.get('x-lea-worker-proof')):return JSONResponse(status_code=403,content={'detail':'A private worker credential is required'})
+        from .companion_service import authentication_failure
+        from starlette.concurrency import run_in_threadpool
+        failure=await run_in_threadpool(authentication_failure,epoch,request.headers.get('x-lea-worker-proof'))
+        if failure:
+            status,code,message=failure
+            return JSONResponse(status_code=status,content={'detail':{'error':code,'message':message}},
+                headers={'Retry-After':'1'} if status==503 else None)
         if request.method in {'POST','PUT','PATCH','DELETE'} and not request.headers.get('x-lea-worker-parent'):
             return JSONResponse(status_code=409,content={'detail':'An accepted business intent is required before the worker may submit new work'})
     marker=db.caller_worker_epoch.set(epoch)

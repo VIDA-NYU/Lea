@@ -305,10 +305,10 @@ def entries(project: dict, *, repo: Path | None = None, path: str | None = None)
         rows = conn.execute("select * from project_library_modules where project_id=? and (? is null or path=?) order by path",
                             (project["id"], path, path)).fetchall()
         owners = {r["path"]: dict(r) for r in conn.execute(
-            "select * from project_dependencies where project_id=?", (project["id"],))}
+            "select * from project_dependencies where project_id=? and (? is null or path=?)", (project["id"], path, path))}
         historical = {r["path"]: dict(r) for r in conn.execute("""select ff.path,f.id,f.origin,
             f.origin_key,f.statement from formalization_files ff join formalizations f
-            on f.id=ff.formalization_id where f.project_id=?""", (project["id"],))}
+            on f.id=ff.formalization_id where f.project_id=? and (? is null or ff.path=?)""", (project["id"], path, path))}
     result = []
     for row in rows:
         from lea.check_evidence import freshness

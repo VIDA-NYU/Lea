@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { workspaceResult } from '../../../packages/lea-workspace-client/index.mjs';
+import { retrySqliteWrite } from './workflowPolicy.mjs';
 
 const SECRET = /^(?:.*(?:api_?key|auth_?token|access_?token|refresh_?token|password|secret|credential)s?|authorization|github_?token)$/i;
 export function redact(value) {
@@ -16,12 +17,21 @@ export function redact(value) {
 }
 
 export function openWorkerDatabase({filename,owner,epoch,baseUrl,leaRoot,fetchImpl=fetch}) {
-  const db=new DatabaseSync(filename);db.exec('pragma busy_timeout=5000');
+  // Synchronous waits block every business loop in this process. Keep them short;
+  // persistence retries asynchronously and ownership probes fail closed while busy.
+  const db=new DatabaseSync(filename);db.exec('pragma busy_timeout=500');
   const context=new AsyncLocalStorage();
   let batch=randomUUID();db.function('lea_change_batch',()=>batch);
   function fence() {
-    if (!db.prepare("select 1 from command_workers where id=? and epoch=? and julianday(lease_until)>julianday('now')").get(owner,epoch))
-      throw new Error('Companion worker epoch expired; restart and reconcile before execution.');
+    let live;
+    try { live=db.prepare("select 1 from command_workers where id=? and epoch=? and julianday(lease_until)>julianday('now')").get(owner,epoch); }
+    catch(error) {
+      if (![5,6].includes((error.errcode||error.sqlite_errorcode||0)&255))throw error;
+      throw Object.assign(new Error('Worker ownership could not yet be observed; the database is busy.'),
+        {code:'database_busy',status:503,errcode:error.errcode||error.sqlite_errorcode,cause:error});
+    }
+    if (!live)
+      throw Object.assign(new Error('Companion worker epoch expired; restart and reconcile before execution.'), {code:'worker_fenced'});
   }
   function write(fn) {
     db.exec('begin immediate');batch=randomUUID();
@@ -51,7 +61,8 @@ export function openWorkerDatabase({filename,owner,epoch,baseUrl,leaRoot,fetchIm
     fence();
     const response=await fetchImpl(baseUrl+route,{method:body?'POST':'GET',headers:{'Content-Type':'application/json',...headers()},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(30000)});
     const value=await response.json();
-    if (!response.ok) throw Object.assign(new Error(value.detail?.message||value.detail||'Worker API operation failed'),{status:response.status});
+    if (!response.ok) throw Object.assign(new Error(value.detail?.message||value.detail||'Worker API operation failed'),
+      {status:response.status,detail:value.detail,code:value.detail?.code||value.detail?.error});
     return value;
   }
   function projectFile(absolute) {
@@ -88,11 +99,11 @@ export function openWorkerDatabase({filename,owner,epoch,baseUrl,leaRoot,fetchIm
       if(name==='jobs.json') {
         if(Object.keys(value).length>10000)throw new Error('Companion job count exceeds its migration bound');
         for(const [id,job] of Object.entries(value)) {
-          const run=job.apiRunId?db.prepare('select * from runs where id=?').get(job.apiRunId):null;
+          const run=job.apiRunId?db.prepare('select r.*,s.project_id as session_project_id from runs r join sessions s on s.id=r.session_id where r.id=?').get(job.apiRunId):null;
           const session=job.leaSessionId||job.recorderSessionId||run?.session_id||null;
           const form=job.formalizationId||run?.focus_formalization_id||null;
-          db.prepare('insert into companion_jobs values(?,?,?,?,?,?,?,?,?) on conflict(id) do update set document_id=excluded.document_id,job_key=excluded.job_key,project_id=excluded.project_id,session_id=excluded.session_id,run_id=excluded.run_id,formalization_id=excluded.formalization_id,payload=excluded.payload,updated_at=excluded.updated_at')
-            .run(id,job.overleafProjectId||null,job.jobKey||null,run?.project_id||null,session,job.apiRunId||null,form,JSON.stringify(job),now);
+          db.prepare('insert into companion_jobs values(?,?,?,?,?,?,?,?,?) on conflict(id) do update set document_id=excluded.document_id,job_key=excluded.job_key,project_id=excluded.project_id,session_id=excluded.session_id,run_id=excluded.run_id,formalization_id=excluded.formalization_id,payload=excluded.payload,updated_at=excluded.updated_at where companion_jobs.payload is not excluded.payload or companion_jobs.project_id is not excluded.project_id or companion_jobs.session_id is not excluded.session_id or companion_jobs.formalization_id is not excluded.formalization_id')
+            .run(id,job.overleafProjectId||null,job.jobKey||null,run?.project_id||run?.session_project_id||null,session,job.apiRunId||null,form,JSON.stringify(job),now);
         }
         for(const row of db.prepare('select id,payload from companion_jobs').all())if(!Object.hasOwn(value,row.id)) {
           const oldJob=JSON.parse(row.payload);
@@ -103,13 +114,14 @@ export function openWorkerDatabase({filename,owner,epoch,baseUrl,leaRoot,fetchIm
       if(name==='chatSessions.json')for(const [targetKey,entry] of Object.entries(value)) {
         const session=entry.leaSessionId||entry.sessionId||null;
         const project=session?db.prepare('select project_id from sessions where id=?').get(session)?.project_id:null;
-        db.prepare('insert into companion_associations values(?,?,?,?,?,?,?) on conflict(target_key) do update set session_id=excluded.session_id,formalization_id=excluded.formalization_id,payload=excluded.payload,updated_at=excluded.updated_at')
+        db.prepare('insert into companion_associations values(?,?,?,?,?,?,?) on conflict(target_key) do update set session_id=excluded.session_id,formalization_id=excluded.formalization_id,payload=excluded.payload,updated_at=excluded.updated_at where companion_associations.payload is not excluded.payload or companion_associations.session_id is not excluded.session_id or companion_associations.formalization_id is not excluded.formalization_id')
           .run(targetKey,targetKey.split(':')[0],project||null,session,entry.formalizationId||null,JSON.stringify(entry),now);
       }
     });
   }
   return {
     fence,put,headers,
+    persist(name,value){return retrySqliteWrite(()=>put(name,value),fence);},
     runCommand(identity,fn){return runAccepted(identity,fn,{claimed:true});},
     runAccepted,
     currentCommand(){return context.getStore()?.commandId;},
@@ -117,6 +129,25 @@ export function openWorkerDatabase({filename,owner,epoch,baseUrl,leaRoot,fetchIm
       fence();const row=db.prepare(`select p.* from companion_source_bindings b join source_publications p on p.id=b.publication_id
         where b.command_id=? and p.document_id=? and json_extract(p.bundle_json,'$.targetKind')=? and json_extract(p.bundle_json,'$.targetKey')=?`).get(context.getStore()?.commandId||'',document,kind,key);
       return row?{source_context_ref:row.id,sourceBundle:JSON.parse(row.bundle_json)}:null;
+    },
+    batchSourceInventory(document, items) {
+      fence();
+      let inventory = null;
+      for (const item of items) {
+        const pinned = this.sourceFor(document, item.targetKind, item.targetLabel);
+        const row = pinned && db.prepare('select coverage,files_json from source_publications where id=?').get(pinned.source_context_ref);
+        if (!row || row.coverage !== 'complete' || pinned.source_context_ref !== item.source_context_ref) return null;
+        if (inventory !== null && inventory !== row.files_json) return null;
+        inventory = row.files_json;
+      }
+      if (inventory === null) return null;
+      let files = JSON.parse(inventory);
+      if (files.$archive) {
+        const archive = db.prepare('select files_json from source_archives where id=? and document_id=?').get(files.$archive, document);
+        if (!archive) return null;
+        files = JSON.parse(archive.files_json);
+      }
+      return Object.entries(files).map(([path, content]) => ({ path, content }));
     },
     stampBatch(batch) {
       if(batch.migrationBlocked)return;

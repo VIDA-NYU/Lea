@@ -365,7 +365,7 @@ def decorate(rows: list[dict]) -> list[dict]:
         sessions = _rows_for_ids(
             conn,
             """
-            select sf.formalization_id, s.id, s.title, s.updated_at
+            select sf.formalization_id, s.id, s.title as _display_title, s.updated_at as _display_updated_at
             from session_formalizations sf
             join sessions s on s.id = sf.session_id
             where sf.formalization_id in ({marks})
@@ -389,8 +389,8 @@ def decorate(rows: list[dict]) -> list[dict]:
         by_sessions.setdefault(str(item["formalization_id"]), []).append(
             {
                 "id": item["id"],
-                "title": item["title"],
-                "updated_at": item["updated_at"],
+                "title": item["_display_title"],
+                "updated_at": item["_display_updated_at"],
             }
         )
     first_artifact: dict[str, dict] = {}

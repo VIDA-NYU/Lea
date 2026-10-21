@@ -31,6 +31,8 @@ class LeaConfig:
     max_turns: int | None       # None → run until the proof is done
 
     # --- agent loop knobs (defaulted; the UI omits them) ---
+    # Worker-selected statement translation; completion retains a checked sorry body.
+    stub_generation: bool = False
     status_reporting: bool = False
     project_library: bool = False
     project_context: dict = field(default_factory=dict)

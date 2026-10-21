@@ -113,6 +113,8 @@ def manifest(*, run: dict, config, repo: Path) -> dict:
     settings = asdict(config)
     skill_paths = settings.pop("skills", [])
     role_roots = settings.pop("agent_dirs", [])
+    if not settings.get("stub_generation"):
+        settings.pop("stub_generation", None)
     settings.pop("status_context", None)  # the saved execution position owns this mutable context
     settings.pop("project_context", None)  # fresh reservations belong to the current execution segment
     settings.pop("skills_root", None)

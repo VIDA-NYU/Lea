@@ -126,7 +126,7 @@ def get(dependency_id: str, *, reconcile: bool = True, validate: bool = True) ->
     if reconcile:
         project = store.get_project(result["project_id"])
         if project:
-            records = library.refresh(project) if validate else library.entries(project)
+            records = library.refresh(project) if validate else library.entries(project, path=result['path'])
             if validate and result["state"] == "ready" and not result["owner_run_id"]:
                 # Recheck changed bytes/environment, using the module cache.
                 # This refreshes evidence without creating another attempt.
@@ -135,7 +135,7 @@ def get(dependency_id: str, *, reconcile: bool = True, validate: bool = True) ->
                 except (ValueError, OSError):
                     # Missing/removed modules have no current certification.
                     pass
-                records = library.entries(project)
+                records = library.entries(project, path=result['path'])
             match = next((d for d in records if d["path"] == result["path"]
                           and d["user_name"] == result["declaration_name"]
                           and d.get("semantic_key") == result["semantic_key"] and d["reusable"]), None)
