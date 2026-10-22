@@ -685,6 +685,14 @@ def _run_events_inner(
     # tools register, then select per config (None → all registered tools).
     import_tool_modules(config.tool_modules)
     tools_schema, tool_handlers = build_toolset(config.tools, config.extra_tools)
+    if "select_result" in tool_handlers:
+        system += ("\n\n## Explicit checked result\n"
+                   "If the requested claim is false and you produce a negation or counterexample, "
+                   "call select_result with its path, exact declaration name, and outcome=disproved, "
+                   "then run lean_check on that file before finishing. A differently named disproof "
+                   "must be selected explicitly; prose in your final answer or Lea Status does not "
+                   "set the run outcome. For a proof of the original target use outcome=proved; "
+                   "for its definition use outcome=defined. Never select a helper as the target.")
     if config.status_reporting:
         tools_schema = [schema for schema in tools_schema if schema["name"] != "spawn_subagent"]
         tool_handlers.pop("spawn_subagent", None)

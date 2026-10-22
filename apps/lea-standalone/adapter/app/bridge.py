@@ -966,6 +966,7 @@ def _record_run_artifacts(
     source_hash: str | None = None,
     completion_verified: bool = True,
     review_candidate_path: str | None = None,
+    selected_disproof: dict | None = None,
 ) -> None:
     """Write the structured artifact index rows for this run's checked files
     (PLAN-system-hardening 4.1). Only files whose latest step verdict is ok
@@ -994,15 +995,26 @@ def _record_run_artifacts(
             )
             named_target = target_declaration(code, focused_declaration, focused.get("kind") or "theorem") if focused else None
             review_candidate = rel == review_candidate_path
+            disproof = None
+            if selected_disproof and rel == selected_disproof['path'] and step.get('check_current'):
+                from .target_completion import compiler_result
+                selected_name = selected_disproof['declaration']
+                if compiler_result(step, selected_name, 'theorem'):
+                    disproof = target_declaration(code, selected_name, 'theorem')
             if focus_formalization_id and (
-                (not completion_verified and not review_candidate) or not focused_declaration
-                or (not named_target and not review_candidate)
+                (not completion_verified and not review_candidate and not disproof) or not focused_declaration
+                or (not named_target and not review_candidate and not disproof)
             ):
                 store.link_formalization_file(
                     focus_formalization_id, rel, "support"
                 )
                 continue
-            declaration = focused_declaration if named_target else extract_declaration_name(code)
+            if disproof:
+                declaration = disproof.full_name
+            elif named_target:
+                declaration = focused_declaration
+            else:
+                declaration = extract_declaration_name(code)
             if not declaration:
                 continue
             formalization = focused
@@ -1698,6 +1710,28 @@ def _project_library_config(cfg, project, run):
                    tools=list(dict.fromkeys([*cfg.tools, *names])) if cfg.tools is not None else None)
 
 
+def _result_selection_config(cfg, target, run=None):
+    """Allow a checked disproof to select a different declaration in ordinary runs."""
+    if cfg.stub_generation or not target or not target.get('declaration_name'):
+        return cfg
+    from .artifacts import declaration_type
+    selection = dict(cfg.selected_result)
+    if run and run.get('resume_checkpoint_id'):
+        saved = recovery.continuation_checkpoint(run['resumes_run_id'], run['resume_checkpoint_id'])
+        selection = saved[0].get('proof_state', {}).get('selection') or selection
+    elif run and run.get('recovery_state') == 'recovering':
+        saved = recovery.load_checkpoint(run['id'])
+        selection = (saved[0].get('proof_state', {}).get('selection') if saved else None) or selection
+    # Keep natural-language runs free to check helpers before selecting their
+    # final result. A confirmed Lean signature can already pin the declaration.
+    if not selection and declaration_type(target.get('statement') or ''):
+        selection = {'declaration': target['declaration_name'],
+                     'kind': 'defined' if target['kind'] == 'definition' else 'proved'}
+    return replace(cfg, target_declaration=target['declaration_name'], selected_result=dict(selection),
+                   extra_tools=list(dict.fromkeys([*cfg.extra_tools, 'select_result'])),
+                   tools=list(dict.fromkeys([*cfg.tools, 'select_result'])) if cfg.tools is not None else None)
+
+
 def validate_continuation_runtime(old: dict, config: LeaConfig, checkpoint_id: int,
                                   source: dict | None, allow_source_pause: bool) -> None:
     """Check the same executable inputs as the driver before admitting a run.
@@ -1722,6 +1756,8 @@ def validate_continuation_runtime(old: dict, config: LeaConfig, checkpoint_id: i
                       tools=(list(dict.fromkeys([*config.tools, "update_lea_status"])) if config.tools is not None else None))
         if old.get("purpose") == "project_dependency":
             cfg = replace(config, model=old["model"], prompt_variant="default")
+        cfg = _result_selection_config(cfg, store.get_formalization(old.get('focus_formalization_id')),
+                                       {**old, 'resumes_run_id': old['id'], 'resume_checkpoint_id': checkpoint_id})
         cfg = _project_library_config(cfg, project, old)
         if paths:
             cfg = replace(cfg, skills=paths, skills_root=tempdir)
@@ -2047,16 +2083,10 @@ def _run_lea(context: RunnerContext) -> None:
             cfg = replace(cfg, mathematical_request=target_context)
         # Overleaf uses immutable source publications instead of conversational
         # confirmation, so prepare() deliberately returns None for that origin.
-        # Its structured Lean targets still need declaration-level compiler
-        # evidence, just like an agreed target from the standalone UI.
+        # Both natural-language and structured targets can explicitly select a
+        # checked disproof; structured Lean targets also pin compiler identity.
         cfg = replace(cfg, stub_generation=run_row.get("purpose") == "overleaf_stub")
-        structured_target = target_context or focused_formalization
-        from .artifacts import declaration_type
-        if (structured_target and structured_target.get('declaration_name')
-                and declaration_type(structured_target.get('statement') or '')
-                and not cfg.selected_result and not cfg.stub_generation):
-            cfg = replace(cfg, selected_result={
-                'declaration': structured_target['declaration_name'], 'kind': structured_target['kind']})
+        cfg = _result_selection_config(cfg, target_context or focused_formalization, run_row)
         from . import overleaf_source
         try:
             overleaf_source.validate_run(run_id, proofs_root)
@@ -2857,6 +2887,10 @@ def _run_lea(context: RunnerContext) -> None:
                                     review_candidate_path = candidate_path
                             except (OSError, UnicodeDecodeError):
                                 pass
+                    selected_disproof = None
+                    if final_result_kind == 'disproved' and ev.candidate_path and ev.selected_result:
+                        selected_disproof = {'path': _relativize(ev.candidate_path, repo),
+                                             'declaration': ev.selected_result['user_name']}
                     _best_effort("artifact index", run_id,
                                  lambda: _record_run_artifacts(
                                      session_id, run_id, project, namespace,
@@ -2864,6 +2898,7 @@ def _run_lea(context: RunnerContext) -> None:
                                      focus_formalization_id=focus_formalization_id,
                                      completion_verified=final_result_kind in {"proved", "defined"},
                                      review_candidate_path=review_candidate_path,
+                                     selected_disproof=selected_disproof,
                                      source_hash=focus_source_hash))
 
     except recovery.CheckpointWriteError as exc:

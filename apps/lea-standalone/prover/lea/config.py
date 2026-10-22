@@ -36,7 +36,9 @@ class LeaConfig:
     status_reporting: bool = False
     project_library: bool = False
     project_context: dict = field(default_factory=dict)
-    # Explicit result identity for scoped retries; updated only by select_result.
+    # Known target name, even when its statement is still natural-language source.
+    target_declaration: str | None = None
+    # Explicit checked result identity; updated only by select_result.
     selected_result: dict = field(default_factory=dict)
     # Immutable worker-supplied SQL target context, independent of chat phrasing
     # and of Overleaf's optional status-reporting source bundle.

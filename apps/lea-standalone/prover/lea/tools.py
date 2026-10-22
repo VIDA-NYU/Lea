@@ -877,12 +877,12 @@ def _select_result(args):
     from .check_runtime import CheckText
     from .result_selection import inspect_selected
     config = current_config()
-    if not config or not config.selected_result:
+    if not config or not (config.selected_result or config.target_declaration):
         return "Error: explicit result selection is unavailable for this run"
     try:
         path = _sandboxed_write_path(args["path"])
         outcome = args["outcome"]
-        target = config.selected_result.get("target_declaration", config.selected_result.get("declaration"))
+        target = config.selected_result.get("target_declaration", config.selected_result.get("declaration")) or config.target_declaration
         if outcome != "disproved" and args["declaration"].rsplit(".", 1)[-1] != target.rsplit(".", 1)[-1]:
             raise ValueError("A proof must select the requested target; use disproved for a counterexample")
         evidence = inspect_selected(path, args["declaration"], outcome)

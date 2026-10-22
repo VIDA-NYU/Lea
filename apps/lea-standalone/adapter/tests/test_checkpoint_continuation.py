@@ -48,6 +48,7 @@ def paused(tmp_path, monkeypatch):
         new_formalization=dict(origin="overleaf", origin_key="doc:theorem:target",
                               display_title="target", declaration_name="target"))
     old = bundle["run"]
+    cfg = bridge._result_selection_config(cfg, store.get_formalization(old['focus_formalization_id']))
     assert store.claim_pending_run(old["id"])
     attempt = recovery.start_attempt(old["id"])
     (tmp_path / "Target.lean").write_text("theorem target : True := by sorry\n")

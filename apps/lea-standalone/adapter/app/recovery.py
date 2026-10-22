@@ -120,6 +120,8 @@ def manifest(*, run: dict, config, repo: Path) -> dict:
     settings.pop("skills_root", None)
     if not settings.get('selected_result'):
         settings.pop('selected_result', None)  # canonical checkpoints retain their existing config contract
+    if not settings.get('target_declaration'):
+        settings.pop('target_declaration', None)
     if not settings.get('mathematical_request'):
         settings.pop('mathematical_request', None)
     settings["lea_root"] = str(settings.get("lea_root") or "")

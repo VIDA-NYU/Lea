@@ -547,7 +547,7 @@ def prepare_spawn(args: dict) -> "SpawnPlan | str":
     _child_stops[agent_id] = threading.Event()
 
     child_config = _child_config(parent_config, profile)
-    child_config = dataclasses.replace(child_config, mathematical_request={})
+    child_config = dataclasses.replace(child_config, mathematical_request={}, target_declaration=None)
     if parent_config.selected_result:
         # A child proposes code inside its own scratch directory. Only the
         # coordinator's selected-result gate and host application can publish it.
