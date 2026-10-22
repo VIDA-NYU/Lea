@@ -54,13 +54,18 @@ function harness(options = {}) {
       return { changed: false, message: "Installed", manual: Boolean(options.manual) };
     }
   });
-  return { slot, win, controls, copied, downloads, messages, get calls() { return calls; }, release: () => release?.() };
+  const disclosure = slot.children[0];
+  return { slot, disclosure, content: disclosure.children.slice(1), win, controls, copied, downloads, messages, get calls() { return calls; }, release: () => release?.() };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 test("setup row is accessible, prevents concurrent clicks, and ignores unrelated replies", async () => {
   const h = harness({ pending: true });
-  const [button, hint, status, fallback] = h.slot.children;
+  const [button, hint, status, fallback] = h.content;
+  assert.equal(h.disclosure.tagName, "details");
+  assert.equal(h.disclosure.open, true);
+  assert.equal(h.disclosure.children[0].tagName, "summary");
+  assert.equal(h.disclosure.children[0].textContent, "Lea tags setup");
   assert.equal(button.textContent, "Add Lea tags");
   assert.match(hint.textContent, /Create the style file/);
   assert.equal(status.attributes["aria-live"], "polite");
@@ -80,8 +85,8 @@ test("setup row is accessible, prevents concurrent clicks, and ignores unrelated
 
 test("manual completion offers a working bundled download and clipboard package line", async () => {
   const h = harness({ manual: true });
-  await h.slot.children[0].click();
-  const fallback = h.slot.children[3];
+  await h.content[0].click();
+  const fallback = h.content[3];
   assert.equal(fallback.hidden, false);
   await fallback.children[0].click();
   assert.equal(await h.downloads[0].text(), "bundled style");
@@ -92,7 +97,7 @@ test("manual completion offers a working bundled download and clipboard package 
 
 test("closing the pane cancels pending work and does not restore the editor", async () => {
   const h = harness({ pending: true });
-  const pending = h.slot.children[0].click();
+  const pending = h.content[0].click();
   await flush();
   h.controls.dispose();
   await pending;
@@ -102,10 +107,10 @@ test("closing the pane cancels pending work and does not restore the editor", as
 
 test("failed setup retains actionable manual controls", async () => {
   const h = harness({ error: "Read-only project" });
-  await h.slot.children[0].click();
-  assert.equal(h.slot.children[2].textContent, "Read-only project");
-  assert.equal(h.slot.children[3].hidden, false);
-  assert.equal(h.slot.children[0].disabled, false);
+  await h.content[0].click();
+  assert.equal(h.content[2].textContent, "Read-only project");
+  assert.equal(h.content[3].hidden, false);
+  assert.equal(h.content[0].disabled, false);
   h.controls.dispose();
 });
 

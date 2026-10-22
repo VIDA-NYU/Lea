@@ -4,6 +4,12 @@ export function mountLeaTagsSetup({ slot, window: win, document: doc, chrome: ex
   let operation = null;
   let disposed = false;
   let styleText = "";
+  const disclosure = doc.createElement("details");
+  disclosure.className = "ol-lean-tags-setup-disclosure";
+  disclosure.open = true;
+  const summary = doc.createElement("summary");
+  summary.className = "ol-lean-tags-setup-summary";
+  summary.textContent = "Lea tags setup";
   const button = doc.createElement("button");
   button.type = "button";
   button.className = "ol-lean-pane-action";
@@ -31,7 +37,8 @@ export function mountLeaTagsSetup({ slot, window: win, document: doc, chrome: ex
   code.textContent = PACKAGE_LINE;
   fallback.append(download, copy, code);
   slot.className = "ol-lean-tags-setup";
-  slot.append(button, hint, status, fallback);
+  disclosure.append(summary, button, hint, status, fallback);
+  slot.append(disclosure);
 
   const setStatus = (message, error = false) => {
     if (disposed) return;

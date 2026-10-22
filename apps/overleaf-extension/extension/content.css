@@ -3801,6 +3801,17 @@ body.ol-lean-settings-resizing {
   padding: 10px 14px;
   border-bottom: 1px solid var(--ol-line);
 }
+.ol-lean-tags-setup-summary {
+  color: var(--ol-ink-2);
+  font: 600 12px/1.5 var(--ol-sans);
+  cursor: pointer;
+}
+.ol-lean-tags-setup-summary:hover { color: var(--ol-ink); }
+.ol-lean-tags-setup-summary:focus-visible {
+  outline: 2px solid var(--ol-focus-ring);
+  outline-offset: 3px;
+}
+.ol-lean-tags-setup-disclosure[open] > .ol-lean-tags-setup-summary { margin-bottom: 8px; }
 .ol-lean-tags-setup-hint,
 .ol-lean-tags-setup-status {
   margin: 5px 0 0;
