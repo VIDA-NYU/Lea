@@ -192,7 +192,7 @@ def test_prover_resumes_saved_model_result_without_repeating_request(tmp_path, m
 
 
 @pytest.mark.parametrize('evidence', ['legacy', 'current', 'changed'])
-def test_prover_finishes_saved_final_classification_without_second_model_call(tmp_path, monkeypatch, evidence):
+def test_prover_finishes_saved_completion_without_second_model_call(tmp_path, monkeypatch, evidence):
     from lea import agent
     from lea.config import LeaConfig
     from lea.events import Finished
@@ -221,7 +221,10 @@ def test_prover_finishes_saved_final_classification_without_second_model_call(tm
                                    checkpoint_callback=lambda *_: None))
     assert len(events) == 1
     assert isinstance(events[0], Finished)
-    assert events[0].result_kind == ('proved' if evidence == 'current' else 'needs_review')
+    assert events[0].result_kind == ('proved' if evidence == 'current' else 'incomplete')
+    assert events[0].reason == ('completed' if evidence == 'current' else 'assistant')
+    if evidence != 'current':
+        assert 'no current proof evidence' in events[0].result_detail
     assert events[0].cost == 0.03
 
 

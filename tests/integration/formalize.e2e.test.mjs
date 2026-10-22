@@ -469,12 +469,22 @@ test("Overleaf manual edits preserve the adapter's pinned proof history", async 
   const started = await postJson(`${companionBaseUrl}/formalize`, identity);
   assert.equal(started.status, 200);
   assert.equal((await pollStatus(identity.overleafProjectId, target, ["formalized", "failed"])).status, "formalized");
+  await waitFor(async () => (await readCompanionJobs())[started.body.jobId]?.finishedAt,
+    { label: 'manual-edit target business settlement' });
   const opened = await postJson(`${companionBaseUrl}/lean-pane/edit/start`, identity);
   assert.equal(opened.status, 200);
   const original = opened.body.content;
   const broken = original.replace("trivial", "bad_tactic");
   assert.notEqual(broken, original);
-  const saved = await postJson(`${companionBaseUrl}/lean-pane/edit/save`, {...identity, content: broken});
+  const saveAfterWork = content => waitFor(async () => {
+    const result = await postJson(`${companionBaseUrl}/lean-pane/edit/save`, { ...identity, content });
+    // This exact rejection occurs before publication. Retry as a new action
+    // only after that definite failure; revision conflicts still fail the test.
+    if (result.status === 409 && result.body?.error === 'edit_write_failed'
+        && result.body?.message === 'Wait for active project work before editing files.') return null;
+    return result;
+  }, { label: 'project work to release the edit reservation' });
+  const saved = await saveAfterWork(broken);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const detail = await fetchApiSessionDetail({fetchImpl: fetch, baseUrl: adapterBaseUrl, sessionId: opened.body.leaSessionId});
   assert.equal(detail.body.code_steps.at(-1).code, broken);
@@ -488,7 +498,7 @@ test("Overleaf manual edits preserve the adapter's pinned proof history", async 
   const afterRepair=(await fetchApiSessionDetail({fetchImpl:fetch,baseUrl:adapterBaseUrl,sessionId:opened.body.leaSessionId})).body;
   assert.equal(afterRepair.code_steps.at(-1).code,original,'Preservation-checked body repair restores the original claim');
   assert.ok(afterRepair.code_steps.some(step=>step.code===broken),'The manually broken revision remains in canonical history');
-  const restored = await postJson(`${companionBaseUrl}/lean-pane/edit/save`, {...identity, content: original});
+  const restored = await saveAfterWork(original);
   assert.equal(restored.status, 200, JSON.stringify(restored.body));
   const history = await fetchApiSessionDetail({fetchImpl: fetch, baseUrl: adapterBaseUrl, sessionId: opened.body.leaSessionId});
   assert.equal(history.body.code_steps.at(-1).code, original);

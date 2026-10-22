@@ -83,9 +83,10 @@ def test_inflight_solver_survives_sql_reader_longer_than_busy_timeout(tmp_path, 
         assert current.get('diagnostics', {}).get('events')
         Path(env['LEA_TEST_RELEASE']).write_text('finish')
         settled = wait(lambda: (value if (value:=request(base, '/api/runs/'+rid))['status'] not in {'pending','running'} else None))
-        # The fixture emits no Lean evidence. Normal completion must retain the
-        # production review gate rather than certify its scripted "answered".
-        assert settled['status'] == 'needs_review', settled
+        # The fixture emits no Lean evidence. It may answer, but cannot publish
+        # a checked proof outcome or reopen the retired human-review flow.
+        assert settled['status'] == 'answered', settled
+        assert settled['result_kind'] == 'incomplete', settled
         assert 'no fresh passing Lean check' in settled['result_detail']
         assert settled['attempt_id'] == attempt and settled['recovery_count'] == 0
     finally:
@@ -164,7 +165,19 @@ def test_public_contracts_match_private_route_schemas():
                 if isinstance(call,ast.Call) and isinstance(call.func,ast.Attribute)
                 and isinstance(call.func.value,ast.Name) and call.func.value.id=='workspace_commands'
                 and call.func.attr==decorator}
-        assert actions(source,'intake')==actions(root/'routes'/source.name,'register'),source.name
+        registered = actions(root/'routes'/source.name,'register')
+        if source.stem == 'formalizations':
+            # Public review admission is retired. Keep the private registration
+            # so commands accepted before the upgrade still settle with 410.
+            assert registered.pop('review_decision') == 'formalization.review'
+            from fastapi import HTTPException
+            for module in (public, private):
+                with pytest.raises(HTTPException) as error:
+                    inspect.unwrap(module.review_decision)('missing', module.ReviewDecision(
+                        action='approve', idempotency_key='retained-review'))
+                assert error.value.status_code == 410
+                assert error.value.detail['code'] == 'formalization_review_retired'
+        assert actions(source,'intake')==registered,source.name
         for name,cls in vars(public).items():
             if isinstance(cls,type) and issubclass(cls,BaseModel) and cls.__module__==public.__name__:
                 assert cls.model_json_schema()==getattr(private,name).model_json_schema(),(source.name,name)

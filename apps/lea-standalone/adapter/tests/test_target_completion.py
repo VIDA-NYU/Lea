@@ -73,7 +73,8 @@ def test_partial_helper_is_unchecked_until_successful_target_run(tmp_path, monke
 
     initial_read = formalizations.get(target["id"])
     assert initial_read["validity_status"] == "unchecked"
-    assert initial_read["check_current"] is False
+    assert initial_read["check_current"] is True  # The helper's file check is independent of target certification.
+    assert initial_read["certification"] is None
     partial = status()
     assert partial["validity_status"] == "unchecked"
     assert partial["recorded"] is False
@@ -82,7 +83,7 @@ def test_partial_helper_is_unchecked_until_successful_target_run(tmp_path, monke
     assert partial["check_current"] is True  # The helper itself passed Lean.
     assert project_target_status_by_slug.worker(project["slug"], declarations="thmB")["targets"][0]["validity_status"] == "unchecked"
 
-    # A later chat turn and a manual check cannot clear the review verdict.
+    # A later chat turn and a helper check cannot certify the missing target.
     chat = store.create_run(session["id"], "model", None, 3,
                             project_id=project["id"], focus_formalization_id=target["id"])
     store.update_run(chat["id"], "answered", result_kind="answered")
@@ -194,7 +195,7 @@ def test_disproof_evidence_does_not_require_original_declaration(tmp_path, monke
     assert status()["exists"] is False
 
 
-def test_historical_compile_promoted_definition_is_now_reviewed_without_rewriting_history(tmp_path, monkeypatch):
+def test_historical_compile_promoted_definition_stays_unchecked_without_rewriting_history(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
     db.init_db()
     session = store.create_session("Formalize thmD")
@@ -223,8 +224,11 @@ def test_historical_compile_promoted_definition_is_now_reviewed_without_rewritin
                         content="theorem thmD : True := by trivial", check_status="ok",
                         artifact_kind="proof", formalization_id=target["id"])
     store.update_run(second["id"], "proved", result_kind="defined")
-    assert formalizations.get(target["id"])["validity_status"] == "needs_review"
-    assert formalizations.get(target["id"])["review"]["eligible"]
+    current = formalizations.get(target["id"])
+    assert current["validity_status"] == "unchecked"
+    assert current["certification"] is None
+    assert current["review"]["eligible"] is False
+    assert store.get_run(second["id"])["result_kind"] == "defined"
 
 
 # This module mocks compiler behavior; bind those mock verdicts to their inputs.
