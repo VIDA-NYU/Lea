@@ -277,7 +277,7 @@ fix that before compiling, since an undefined command fails the whole Overleaf b
 **A formalization is blocked on an upstream theorem.** That is `uses={…}` doing its job: the
 named theorem is not formalized yet. Do it first, or drop it from `uses`.
 
-Still stuck? Ask in [Discord](https://discord.gg/CtEJvUTjm) or
+Still stuck? Ask in [Discord](https://discord.gg/58ZWUXU8FM) or
 [open an issue](https://github.com/VIDA-NYU/Lea/issues) — a transcript link and the
 output of `npm run doctor` make it much faster to help.
 

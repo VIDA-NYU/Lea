@@ -48,6 +48,29 @@ def test_tool_contract_reserves_blocking_for_semantic_changes():
     assert "non-blocking warning instead of blocking again" in description
 
 
+def test_finding_fields_say_which_resolution_needs_which_text():
+    fields = TOOL_SCHEMA["input_schema"]["properties"]["finding_updates"]["items"]["properties"]
+    assert "REQUIRE `correction`" in fields["lean_resolution"]["description"]
+    assert "REQUIRE `resolution_explanation`" in fields["source_resolution"]["description"]
+    assert "put those in `correction`" in fields["resolution_explanation"]["description"]
+    assert all(field.get("description") for field in fields.values())
+
+
+def test_finding_errors_name_the_finding_and_the_missing_field():
+    # The applied fix was rejected with resolution_explanation and no correction.
+    applied = finding(key="depth_cutoff_offbyone", severity="caveat", lean_resolution="applied",
+                      source_resolution="not_applicable", correction="", resolution_explanation="Shifted the cutoff.")
+    with pytest.raises(ValueError, match=r"finding 'depth_cutoff_offbyone': lean_resolution 'applied' requires a non-empty 'correction'"):
+        validate_payload(payload(finding_updates=[applied]))
+    with pytest.raises(ValueError, match=r"finding 'gap': source_resolution 'retracted' requires a non-empty 'resolution_explanation'"):
+        validate_payload(payload(finding_updates=[finding(source_resolution="retracted")]))
+    with pytest.raises(ValueError, match=r"finding 'gap': a warning finding cannot have both"):
+        validate_payload(payload(finding_updates=[finding(lean_resolution="not_applicable", source_resolution="not_applicable")]))
+    caveat = merge_assessment(None, payload(finding_updates=[finding(severity="caveat", source_resolution="not_applicable")]), "old")
+    with pytest.raises(ValueError, match=r"finding 'gap': lowering severity from 'caveat' to 'info' requires 'resolution_explanation'"):
+        merge_assessment(caveat, payload(finding_updates=[finding(severity="info", source_resolution="not_applicable")]), "old")
+
+
 def admit(source=None, form=None, session=None, purpose="overleaf_solver", project=None, allow_source_pause=False):
     return store.create_run_bundle(message="Formalize target", session_id=session, project_id=project,
         session_origin="overleaf", session_origin_url=None, model="test", provider=None,

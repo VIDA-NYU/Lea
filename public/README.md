@@ -132,8 +132,9 @@ changes.
 
 ## Deploying
 
-`.github/workflows/site.yml` builds and publishes to GitHub Pages on every push to
-`main` that touches `public/`.
+`.github/workflows/site.yml` builds and publishes to GitHub Pages when the
+**Publish website** workflow is run manually from GitHub Actions. Select `main`
+after merging the website changes. A push to `main` alone does not deploy the site.
 
 **One-time setup:** a repository admin must turn Pages on under **Settings → Pages →
 Source → GitHub Actions**. Until then the workflow fails at `configure-pages` with
