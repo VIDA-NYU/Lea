@@ -9,7 +9,7 @@
 #
 # Pass --fresh (or -f) to first clear ALL previous session data (the adapter
 # SQLite DB — sessions/runs/code steps — plus proof files, project entries, and
-# companion job logs) via `npm run reset:local`.
+# companion job logs) via `npm run reset:local`, after confirmation.
 #
 # --keep-data (-k) is accepted for backward compatibility; it is now the default.
 #
@@ -30,7 +30,7 @@ for arg in "$@"; do
     -h|--help)
       echo "Usage: $(basename "$0") [--fresh|-f]"
       echo "  (default)     keep previous session data and start everything"
-      echo "  --fresh, -f   clear previous session data first (proofs, sessions, logs)"
+      echo "  --fresh, -f   confirm, then clear previous session data (proofs, sessions, logs)"
       exit 0
       ;;
     *)
@@ -44,6 +44,26 @@ done
 # Check before --fresh as well as before spawning services. A duplicate launch
 # must not clear the data of a stack that is still running.
 node scripts/dev-stack-preflight.mjs stack
+
+if [[ "$FRESH" -eq 1 ]]; then
+  echo "[start] WARNING: --fresh will delete your local data, including proofs, projects, sessions, and logs."
+  while true; do
+    printf '[start] Delete this data and continue? [y/n] '
+    if ! IFS= read -r confirmation; then
+      echo
+      echo "[start] Cancelled. Your data has been kept."
+      exit 0
+    fi
+    case "$confirmation" in
+      y|Y) break ;;
+      n|N)
+        echo "[start] Cancelled. Your data has been kept."
+        exit 0
+        ;;
+      *) echo "[start] Please enter y or n." ;;
+    esac
+  done
+fi
 
 LOCAL_CONFIG="apps/lea-standalone/config/lea.local.toml"
 LOCAL_CONFIG_EXAMPLE="apps/lea-standalone/config/lea.local.example.toml"
