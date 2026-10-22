@@ -447,9 +447,10 @@ test('current SQL runtime status replaces an old inventory alarm and recovers wi
     const range = document.createRange(); range.selectNodeContents(tree);
     getSelection().removeAllRanges(); getSelection().addRange(range);
     fixture.selectedTree = tree; fixture.selectedSource = getSelection().toString();
+    fixture.runtimeRequestsBeforeReady = fixture.calls.filter(call => call.pathname === '/lean-pane/check-runtime/runtime-session').length;
     fixture.runtimePhase = 'ready';
   });
-  await page.waitForFunction(() => fixture.calls.filter(call => call.pathname === '/lean-pane/check-runtime/runtime-session').length >= 2);
+  await page.waitForFunction(() => fixture.calls.filter(call => call.pathname === '/lean-pane/check-runtime/runtime-session').length > fixture.runtimeRequestsBeforeReady);
   expect(await page.evaluate(() => document.querySelector('.ol-lean-project-tree') === fixture.selectedTree)).toBe(true);
   expect(await page.evaluate(() => getSelection().toString())).toBe(await page.evaluate(() => fixture.selectedSource));
   // Clearing selection permits the existing deferred snapshot repaint.
