@@ -398,12 +398,6 @@ export function Canvas({
             {step?.author === 'user' ? <span className="stepname"> · your edit</span> : null}
           </span>
           <span className="spacer" />
-          {showingCurrent && currentSnapshot?.review?.reason && (
-            <span className={`verdict ${currentSnapshot.certification?.source === 'user_review' ? 'ok' : 'idle'}`}>
-              {currentSnapshot.validity_status === 'needs_review' ? 'Needs review' : currentSnapshot.validity_status}
-              {currentSnapshot.certification?.source === 'user_review' ? ' · Approved by user' : ''}
-            </span>
-          )}
           <span className={`verdict ${verdict.cls}`} title={step?.projection?.observed_at ? `Workspace observed at ${step.projection.observed_at}; observation expires at ${step.projection.expires_at}.` : undefined}>{verdict.text}</span>
         </div>
       )}

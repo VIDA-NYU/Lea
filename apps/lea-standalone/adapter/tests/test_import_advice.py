@@ -78,7 +78,6 @@ def test_agent_completes_after_advice_timeout_and_remembers_attempt_on_resume(tm
         return 'Import analysis skipped: budget exhausted. Complete using the passing check.'
     monkeypatch.setattr(agent,'stream',stream)
     monkeypatch.setattr(agent,'load_system_prompt',lambda *a,**k:'Test')
-    monkeypatch.setattr(agent,'_classify_final_result',lambda *a,**k:('proved',None,Usage(),0))
     monkeypatch.setitem(registry.REGISTRY,'lean_check',replace(registry.REGISTRY['lean_check'],handler=checked))
     monkeypatch.setitem(registry.REGISTRY,'suggest_imports',replace(registry.REGISTRY['suggest_imports'],handler=analyze))
     cfg=LeaConfig(model='offline',max_turns=4,mcp_servers={},narrate_tool_steps=False)

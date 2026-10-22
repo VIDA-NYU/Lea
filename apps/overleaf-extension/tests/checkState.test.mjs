@@ -32,3 +32,11 @@ test("normalizes missing semantic evidence to an explained N/A", () => {
     leaCheck: normalizeLeaCheck({ status: "warning" })
   }), true);
 });
+
+test("a current file check is independent of target completion", () => {
+  for (const paneStatus of ["unknown", "unavailable"]) {
+    assert.equal(projectLeanCheck({ paneStatus, statusInfo: { leanCheck: { status: "ok" } } }).status, "checked");
+    assert.equal(projectLeanCheck({ paneStatus, statusInfo: { leanCheck: { status: "error" } } }).status, "error");
+    assert.equal(projectLeanCheck({ paneStatus, statusInfo: { projection: { state: "inputs_changed" }, leanCheck: { status: "ok" } } }).status, "synchronizing");
+  }
+});

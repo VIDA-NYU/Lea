@@ -129,26 +129,6 @@ conversation about existing work.
 Output only the single word FORMALIZE or ASSISTANT, with no other text."""
 
 
-_RESULT_CLASSIFIER_PROMPT = """\
-You classify the mathematical outcome of a verified Lean artifact for Lea.
-
-The Lean artifact has already passed the final checker. Your job is only to decide
-what it verified relative to the user's original request.
-
-Reply with exactly one word:
-- PROVED — the artifact proves the user's stated theorem/lemma/conjecture as written.
-- DISPROVED — the artifact proves a negation, contradiction, or counterexample showing
-  the user's stated theorem/lemma/conjecture is false.
-- NEEDS_REVIEW — the relationship is ambiguous, the artifact proves a related but
-  different statement, or you are not certain.
-
-Be conservative. If the user asked for a counterexample and the artifact verifies
-one, reply DISPROVED. If the user asked for a proof but the artifact verifies the
-negation or a counterexample, reply DISPROVED. If unsure, reply NEEDS_REVIEW.
-
-Output only PROVED, DISPROVED, or NEEDS_REVIEW."""
-
-
 def _text_only_history(messages: list, limit: int = 8) -> list[dict]:
     """Flatten messages to a cheap text-only {role, content} list for classification.
 
@@ -283,70 +263,6 @@ def _latest_user_request(messages: list) -> str:
         if text:
             return text
     return ""
-
-
-def _theorem_signature(path: str | None) -> str:
-    if not path:
-        return ""
-    try:
-        return safeverify.theorem_signature(Path(path).read_text()) or ""
-    except Exception:
-        return ""
-
-
-def _parse_result_kind(text: str) -> str:
-    return {"PROVED": "proved", "DISPROVED": "disproved", "NEEDS_REVIEW": "needs_review"}.get(
-        (text or "").strip().upper(), "needs_review")
-
-
-def _classify_final_result(
-    *,
-    model: str,
-    messages: list,
-    final_text: str,
-    theorem_signature: str,
-    config: LeaConfig,
-) -> tuple[str, str | None, Usage, float]:
-    """Classify a checked artifact relative to the user's request.
-
-    This is intentionally conservative: parse failures, provider errors, or any
-    non-conforming answer become needs_review, not proof success.
-    """
-    source = config.status_context.get("source_bundle") if config.status_reporting else None
-    request = json.dumps(source or config.mathematical_request, ensure_ascii=False) if source or config.mathematical_request else _latest_user_request(messages)
-    classifier_messages = [{
-        "role": "user",
-        "content": (
-            "User request:\n"
-            f"{request or '(unavailable)'}\n\n"
-            "Verified Lean theorem signature:\n"
-            f"{theorem_signature or '(unavailable)'}\n\n"
-            "Final assistant message:\n"
-            f"{final_text or '(unavailable)'}"
-        ),
-    }]
-    text = ""
-    usage = Usage()
-    cost = 0.0
-    try:
-        for event in stream(
-            model,
-            _RESULT_CLASSIFIER_PROMPT,
-            classifier_messages,
-            [],
-            config.model_kwargs,
-            streaming=config.stream,
-        ):
-            if isinstance(event, TextDelta):
-                text += event.text
-            elif isinstance(event, Done):
-                usage.add(event.usage)
-                cost += event.cost
-    except Exception as exc:
-        return "needs_review", f"Result classification failed ({type(exc).__name__}). Review the result or retry.", usage, cost
-    kind = _parse_result_kind(text)
-    detail = text.strip() or None
-    return kind, detail, usage, cost
 
 
 def _domain_cascade_for_check(args: dict, working_dir: str | None, surfaced: set[str]) -> str | None:
@@ -903,9 +819,11 @@ def _run_events_inner(
     if resume_state and resume_state.get("stage") == "final_result":
         final = resume_state["final_result"]
         kind, detail = final['kind'], final['detail']
+        if kind == 'needs_review':
+            kind = 'incomplete'
         if kind in {'proved', 'disproved', 'defined'} and not proof_state.latest_proof_verified():
-            kind, detail = 'needs_review', 'Saved completion has no current proof evidence. Recheck the current revision.'
-        yield Finished("completed", final["text"], turn, session_id, model,
+            kind, detail = 'incomplete', 'Saved completion has no current proof evidence. Recheck the current revision.'
+        yield Finished("assistant" if kind == "incomplete" else "completed", final["text"], turn, session_id, model,
                        total_usage, total_cost, transcript(turn),
                        result_kind=kind, result_detail=detail,
                        candidate_path=proof_state.latest_proof_path,
@@ -1217,27 +1135,23 @@ def _run_events_inner(
 
             if config.stub_generation:
                 # The adapter binds this fresh check to the named theorem and its
-                # own sorry body. Never invoke the proof-outcome classifier here.
+                # own sorry body. Stub completion carries no proof outcome.
                 yield Finished("stubbed", text or "Checked statement stub.", turn, session_id,
                                model, total_usage, total_cost, transcript(turn),
                                candidate_path=proof_state.latest_proof_path)
                 return
 
             final_text = text or "(no response)"
-            result_kind, result_detail, result_usage, result_cost = _classify_final_result(
-                model=model,
-                messages=messages,
-                final_text=final_text,
-                theorem_signature=(proof_state.selected_evidence or {}).get("signature") or
-                    safeverify.theorem_signature(proof_state.latest_check_content or "") or "",
-                config=config,
-            )
-            total_usage.add(result_usage)
-            total_cost += result_cost
-            if result_usage.input_tokens or result_usage.output_tokens or result_cost or result_usage.usage_details:
-                yield UsageUpdated(result_usage.input_tokens, result_usage.output_tokens, result_cost, result_usage.usage_details)
+            # Lean verifies the selected outcome. Correspondence and any caveats
+            # are already reported through Lea Status and its description.
+            result_kind = proof_state.selection.get("kind") or "proved"
+            result_detail = None
             if not proof_state.latest_proof_verified():
-                result_kind, result_detail = "needs_review", "Proof inputs changed after the final check. Recheck the current revision."
+                yield Finished("assistant", final_text, turn, session_id, model,
+                               total_usage, total_cost, transcript(turn),
+                               result_kind="incomplete",
+                               result_detail="Proof inputs changed after the final check.")
+                return
             save_position("final_result", final_result={
                 "text": final_text, "kind": result_kind, "detail": result_detail,
             })

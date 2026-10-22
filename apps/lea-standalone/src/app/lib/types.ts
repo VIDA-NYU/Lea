@@ -33,7 +33,7 @@ export type SessionStatus =
   | 'disproved'
   | 'needs_review';
 // ── Run-level status (a single proof attempt) ─────────────────────────────────
-// 'proved' / 'disproved' are checked-artifact outcomes; 'needs_review' is
+// 'proved' / 'disproved' are checked-artifact outcomes; legacy 'needs_review' is
 // preserved as classifier metadata, not a primary session/code status.
 // 'answered' = a chat / QA / sketch turn that finished cleanly but proved nothing.
 export type RunStatus =
@@ -160,7 +160,6 @@ export type FormalizationValidity =
   | 'proved'
   | 'defined'
   | 'disproved'
-  | 'needs_review'
   | 'stale';
 
 export interface FormalizationFile {

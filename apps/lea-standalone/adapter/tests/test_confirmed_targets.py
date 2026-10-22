@@ -188,22 +188,6 @@ def test_child_tasks_do_not_inherit_the_coordinators_confirmed_target(tmp_path):
         _child_stops.pop(plan.result_id, None)
 
 
-def test_classifier_uses_persisted_request_and_statement_instead_of_yes(conversation, monkeypatch):
-    _, _, context = confirm(conversation)
-    captured = []
-    def stream(model, system, messages, *args, **kwargs):
-        captured.append(messages[0]['content'])
-        yield TextDelta('PROVED')
-        yield Done(Usage(), 0)
-    monkeypatch.setattr(agent, 'stream', stream)
-    result = agent._classify_final_result(model='test', messages=[{'role':'user','content':'Yes, it does'}],
-        final_text='It compiles.', theorem_signature=SIGNATURE,
-        config=LeaConfig(model='test', max_turns=3, mathematical_request=context))
-    assert result[0] == 'proved'
-    assert 'Prove every multiple' in captured[0] and SIGNATURE in captured[0]
-    assert 'User request:\nYes' not in captured[0]
-    assert 'multiple_of_even_is_even' in agent._latest_user_request([
-        {'role':'user','mathematical_request':context,'content':'Target'}, {'role':'user','content':'Yes'}])
 
 
 def test_target_check_requires_exact_confirmed_statement_and_current_evidence(conversation):
@@ -276,8 +260,9 @@ def test_conversation_completes_through_worker_with_a_pinned_target(conversation
     bridge.run_lea(bridge.RunnerContext(session_id=session['id'],run_id=run['id'], task='Yes, it does',
         config=LeaConfig(model='test', max_turns=5, lea_root=tmp_path), events=Queue(), autonomous=True))
     result = store.get_run(run['id'])
-    assert result['status'] == ('needs_review' if retarget else 'proved'), result['result_detail']
+    assert result['status'] == ('answered' if retarget else 'proved'), result['result_detail']
     if retarget:
+        assert result['result_kind'] == 'incomplete'
         assert 'changed during' in result['result_detail']
     else:
         assert store.list_formalization_files(target['id'])[0]['role'] == 'primary'

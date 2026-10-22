@@ -415,47 +415,6 @@ def test_explicit_disproof_keeps_source_target_identity(project, monkeypatch):
     assert store.list_artifacts_for_scope(project[0]['id'])[0]['declaration_name'] == 'Lea.Study.b_counterexample'
 
 
-@pytest.mark.parametrize('changed_after_approval', [False, True])
-def test_review_applies_exact_draft_without_another_run(project, monkeypatch, changed_after_approval):
-    from app import reformalization_review as review
-    from lea.interface import check
-    op = operation(project, monkeypatch)
-    _, repo, form, original = project
-    candidate = original.replace('theorem b : True := by sorry', 'theorem b : True := by trivial')
-    staged = Path(op['manifest']['repo'])
-    (staged / 'Shared.lean').write_text(candidate)
-    with execution.scope(ops.workspace_policy(op['manifest']['workspace'])):
-        checked = check(str(staged / 'Shared.lean'), cold=True)
-    ops.save_draft(op['id'], op['root_run_id'], 'Shared.lean', candidate,
-        {'status': checked.status, 'execution': checked.execution})
-    store.update_run(op['root_run_id'], 'needs_review', result_kind='needs_review')
-    ops.update(op['id'], 'review', result={'selection': selection(), 'outcome': 'needs_review'})
-    info = review.context(ops.get(op['id']), store.get_formalization(form['id']))
-    assert info['review']['eligible']
-    assert info['artifacts'][0]['artifact_scope'] == 'attempt'
-    monkeypatch.setattr(ops, 'dispatch', lambda _: None)
-    decision = review.decide(form['id'], {'action': 'approve', 'revision_token': info['review']['revision_token'],
-        'outcome': 'proved', 'idempotency_key': 'approve-exact'})
-    assert ops.get(op['id'])['state'] == 'queued'
-    if changed_after_approval:
-        (staged / 'Shared.lean').write_text(candidate.replace('theorem b : True := by trivial', 'theorem b : True := by exact True.intro'))
-    ops.update(op['id'], 'active')
-    review.apply_approved(ops.get(op['id']))
-    if changed_after_approval:
-        assert ops.get(op['id'])['state'] == 'retained'
-        assert (repo / 'Shared.lean').read_text() == original
-        return
-    assert ops.get(op['id'])['state'] == 'settled'
-    assert (repo / 'Shared.lean').read_text() == candidate
-    with db.connect() as conn:
-        assert conn.execute('select count(*) from runs').fetchone()[0] == 1
-    from app import formalizations
-    assert store.get_run(op['root_run_id'])['result_kind'] == 'needs_review'
-    assert formalizations.get(form['id'])['validity_status'] == 'proved'
-    review.decide(form['id'], {'action': 'withdraw', 'approval_id': decision['decision']['id'],
-        'idempotency_key': 'withdraw-exact'})
-    assert formalizations.get(form['id'])['validity_status'] == 'needs_review'
-    assert (repo / 'Shared.lean').read_text() == candidate
 
 
 def test_exact_protected_relocation_keeps_mapping_and_completion(project, monkeypatch):
@@ -493,7 +452,8 @@ def test_exact_protected_relocation_keeps_mapping_and_completion(project, monkey
     assert (repo / 'Preserved.lean').read_text().count(command) == 1
 
 
-def test_scripted_solver_keeps_drafts_out_of_canonical_history(project, monkeypatch):
+@pytest.mark.parametrize('reported_outcome', ['proved', 'needs_review'])
+def test_scripted_solver_publishes_checked_selection_without_review(project, monkeypatch, reported_outcome):
     from app import bridge
     from app.reformalization_runner import run as run_attempt
     from lea.events import FileChanged, Finished, CheckResult
@@ -516,7 +476,7 @@ def test_scripted_solver_keeps_drafts_out_of_canonical_history(project, monkeypa
         yield checked
         selected = inspect_selected(path, 'Lea.Study.b')
         yield Finished('completed', 'Done', 1, op['session_id'], 'fixture', Usage(), 0,
-            {'messages': messages}, result_kind='proved', result_detail='PROVED',
+            {'messages': messages}, result_kind=reported_outcome, result_detail=None,
             candidate_path=str(path), selected_result=selected)
     def scripted(cfg, messages, **options):
         from lea.runctx import run_context
@@ -946,24 +906,6 @@ def test_unaffected_proved_neighbor_keeps_completion_across_source_update(projec
         assert conn.execute('select count(*) from formalization_review_events').fetchone()[0] == 0
 
 
-def test_review_publication_joins_fifo_at_approval_time(project, monkeypatch):
-    from app import reformalization_review as review
-    op = operation(project, monkeypatch)
-    store.update_run(op['root_run_id'], 'needs_review', result_kind='needs_review')
-    ops.update(op['id'], 'review', result={'selection': selection(), 'outcome': 'needs_review'})
-    with db.write() as conn:
-        conn.execute("update reformalization_operations set queued_at='2000-01-01' where id=?", (op['id'],))
-    c = store.create_formalization(project_id=project[0]['id'], loose_session_id=None,
-        display_title='C', declaration_name='Lea.Study.c', statement='True')
-    store.link_formalization_file(c['id'], 'Shared.lean', 'primary')
-    first = ops.enqueue({'message': 'already waiting', 'focus_formalization_id': c['id']}, project[0]['id'])
-    monkeypatch.setattr(review, 'context', lambda *_: {'review': {'eligible': True, 'revision_token': 'reviewed', 'allowed_outcomes': ['proved']}})
-    monkeypatch.setattr(review, 'binding', lambda *_: ('reviewed', []))
-    monkeypatch.setattr(ops, 'dispatch', lambda _: None)
-    review.decide(project[2]['id'], {'action': 'approve', 'revision_token': 'reviewed', 'outcome': 'proved', 'idempotency_key': 'fifo-approval'})
-    with db.connect() as conn:
-        ids = [r[0] for r in conn.execute("select id from reformalization_operations where state='queued' order by queued_at,rowid")]
-    assert ids == [first['id'], op['id']]
 
 
 def test_logical_owner_excludes_rename_and_delete_between_segments(project, monkeypatch):

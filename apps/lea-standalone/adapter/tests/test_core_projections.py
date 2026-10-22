@@ -69,7 +69,7 @@ def test_fresh_projection_matches_legacy_and_all_core_http_reads_are_sql_only(fi
             '/api/projects/by-slug/observed/library']
         for path in paths:
             response=client.get(path)
-            assert response.status_code==200,(path,response.text)
+            assert response.status_code==(410 if path.endswith('/review') else 200),(path,response.text)
         detail=client.get(f"/api/sessions/{x['session']['id']}").json()
         assert detail['code_steps'][0]['check_current'] is True
         assert detail['formalizations'][0]['certification']['source']=='run'
@@ -145,26 +145,6 @@ def test_scope_move_invalidates_both_scopes_and_query_writes_fail(fixture):
     with pytest.raises(Exception,match='readonly'):illegal()
 
 
-def test_user_review_lineage_is_preserved_and_expiry_never_creates_approval(fixture):
-    from app import formalization_reviews
-    x=fixture
-    store.update_run(x['run']['id'],'needs_review',result_kind='needs_review',result_detail='Check correspondence')
-    context=formalization_reviews.context(x['fid'])
-    assert context['review']['eligible']
-    decision=formalization_reviews.decide(x['fid'],{'action':'approve','outcome':'proved',
-        'revision_token':context['review']['revision_token'],'idempotency_key':'approved'})
-    finish(x)
-    current=proofs.get(x['fid'])
-    assert current['certification']['source']=='user_review'
-    assert current['review']['approval']['id']==decision['decision']['id']
-    with db.write() as conn:conn.execute("update core_observations set expires_at='2000-01-01T00:00:00+00:00'")
-    assert proofs.get(x['fid'])['certification'] is None
-    assert not proofs.review_context(x['fid'])['review']['eligible']
-    with db.connect() as conn:assert conn.execute('select count(*) from formalization_review_events').fetchone()[0]==1
-    formalization_reviews.decide(x['fid'],{'action':'withdraw','approval_id':decision['decision']['id'],'idempotency_key':'withdraw'})
-    finish(x)
-    assert proofs.get(x['fid'])['validity_status']=='needs_review'
-    assert sessions.session_detail(x['session']['id'])['review_events'][-1]['action']=='withdraw'
 
 
 def test_bounded_backfill_and_legacy_log_import_are_persisted_not_get_fallbacks(fixture,monkeypatch,tmp_path):

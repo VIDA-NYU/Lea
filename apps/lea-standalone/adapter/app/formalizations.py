@@ -118,7 +118,7 @@ def _validity(
     result_kind = (latest_run or {}).get("result_kind")
     classifier_detail = (latest_run or {}).get('result_detail')
     if result_kind in {'proved', 'disproved'} and classifier_detail and classifier_detail.strip().upper() != result_kind.upper():
-        return 'needs_review', 'The earlier completion classification needs review.', False, None
+        result_kind = 'incomplete'
     if result_kind == "disproved":
         current_steps = steps or []
         if any(s.get('check_current') and s.get('check_status') == 'error' for s in current_steps):
@@ -144,7 +144,7 @@ def _validity(
             certified = {**dict(row), 'code': row['blob_content'] or ''}
             if any(_certified_namespace_revision(formalization, certified, current) for current in fresh):
                 return 'disproved', 'A verified disproof was reported.', True, None
-        return 'needs_review', 'The successful disproof run did not check this artifact revision.', True, None
+        return 'unchecked', 'The successful disproof run did not check this artifact revision.', True, None
     current_steps = steps or []
     name = formalization.get("declaration_name")
     declaration = next(
@@ -155,9 +155,6 @@ def _validity(
     match, reason = checked_target(formalization, current_steps)
     check_current = any(step.get("check_status") == "ok" and step.get("check_current") for step in current_steps)
     kind = declaration.kind if declaration else None
-    # Review decisions are projected below, independently of run history.
-    if result_kind == "needs_review":
-        return "needs_review", (latest_run or {}).get("result_detail") or reason or "Lea requested review.", check_current, kind
     if not current_steps:
         if result_kind in {"proved", "defined"}:
             return "planned", "No current checked artifact contains the requested declaration.", False, kind
@@ -209,7 +206,7 @@ def _validity(
             certified, _ = checked_target({**formalization, 'declaration_name': formalization['declaration_name'].rsplit('.', 1)[-1]},
                                          run_steps, require_current=False)
         if not certified or not _certified_namespace_revision(formalization, certified, match):
-            return "needs_review", "The successful run did not check this target revision.", True, kind
+            return "unchecked", "The successful run did not check this target revision.", True, kind
     return ("defined" if formalization.get("kind") == "definition" else "proved"), "The requested declaration passed Lean in a successful target run.", True, kind
 
 
@@ -418,12 +415,13 @@ def decorate(rows: list[dict]) -> list[dict]:
         completion_run = completion_by_id.get(fid)
         current_steps = store.current_code_steps_for_formalization(fid)
         # A partial run may only have support files and no artifact-index entry.
-        # Its own snapshots still provide evidence for Needs review.
-        if not current_steps and completion_run:
+        # Its own snapshots still provide independent Lean check evidence.
+        snapshot_run = completion_run or latest_run
+        if not current_steps and snapshot_run:
             with connect() as conn:
                 raw_steps = conn.execute(
                     store.TIMELINE_WITH_BLOB + " where t.kind = 'code' and t.run_id = ? order by t.created_at desc, t.id desc",
-                    (completion_run["id"],),
+                    (snapshot_run["id"],),
                 ).fetchall()
             seen_paths = set()
             for raw_step in raw_steps:
@@ -434,23 +432,12 @@ def decorate(rows: list[dict]) -> list[dict]:
             item, primary=primary, artifact=artifact,
             latest_step=step, latest_run=completion_run, steps=current_steps,
         )
-        from . import formalization_reviews
-        review, _, _, technical = formalization_reviews.project(
-            {**item, 'files': item_files}, current_steps, primary, artifact, completion_run, active,
-            requested=validity == 'needs_review')
-        if technical is not None:
-            validity, validity_reason, check_current, declaration_kind = technical
-        from .reformalization_review import published_approval
-        accepted_review = published_approval(item, current_steps)
-        if accepted_review and check_current:
-            review = {**review, 'approval': accepted_review, 'eligible': False,
-                'run_id': (completion_run or {}).get('id'), 'reason': 'Approved draft published after current canonical checks.'}
-            validity, validity_reason = accepted_review['outcome'], 'Approved by user.'
+        # Correspondence is described by Lea Status. Human approval no longer
+        # gates or overrides the artifact's independently checked outcome.
+        review = {'eligible': False, 'requested': False, 'reason': '',
+                  'revision_token': None, 'allowed_outcomes': [], 'approval': None}
         certification = None
-        if review.get('approval'):
-            certification = {'source': 'user_review', 'outcome': review['approval']['outcome'],
-                'review_event_id': review['approval']['id'], 'run_id': review.get('run_id')}
-        elif validity in {'proved', 'defined', 'disproved'}:
+        if validity in {'proved', 'defined', 'disproved'}:
             certification = {'source': 'run', 'outcome': validity, 'run_id': (completion_run or {}).get('id')}
         verification = verify_by_id.get(fid)
         retry = retry_by_id.get(fid)

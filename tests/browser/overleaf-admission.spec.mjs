@@ -46,25 +46,7 @@ async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, 
       const f = window.fixture;
       f.calls.push({ pathname, method: options.method || 'GET', input });
       const json = (value, status = 200) => Response.json(value, { status });
-      if (pathname.startsWith('/lean-pane/review/')) {
-        if (input.decision?.action !== 'withdraw' && !f.publications.some(p => p.ref === input.target?.source_context_ref)) {
-          return json({ message: 'Published source is stale. Publish it again from Overleaf before sending.' }, 409);
-        }
-        if (pathname.endsWith('/context')) {
-          if (f.reviewPhase === 'offline') { f.reviewPhase = 'ready'; return json({ message: 'Review service temporarily unavailable.' }, 503); }
-          return json({ ok: true, review: { eligible: true, revision_token: 'review-' + f.reviewVersion,
-            allowed_outcomes: ['defined'], candidate_declaration: 'Lea.BatchNotes.Ua', reason: 'Lean check passed. Confirm that this definition matches the source.' },
-            source_snapshot: { statement: input.target.sourceBundle.statement },
-            artifacts: [{ path: 'Ua.lean', content: 'namespace Lea.BatchNotes\n\n/-- A checked definition. -/\ndef Ua : Nat := 0\n\nend Lea.BatchNotes' }] });
-        }
-        f.decisions.push(input);
-        if (f.reviewPhase === 'changed') {
-          f.reviewPhase = 'ready'; f.reviewVersion++;
-          return json({ message: 'The reviewed inputs changed. Refresh and review the current result.' }, 409);
-        }
-        f.reviewPhase = 'approved';
-        return json({ ok: true, formalization: { validity_status: 'defined' } });
-      }
+      if (pathname.startsWith('/lean-pane/review/')) return json({ message: 'Result review is retired.' }, 410);
       if (pathname === '/settings') return window.fixture.offline ? json({ message: 'API starting' }, 503)
         : json({ leaTexMirrorEnabled: false });
       if (pathname === '/source-context/publisher') {
@@ -92,7 +74,8 @@ async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, 
         sourceFile: 'main.tex', sourceStartLine: 1, sourceEndLine: 4, naturalLanguageLatex: target.targetText,
         leanKind: f.reviewPhase ? 'def' : 'theorem', leanDeclarationName: f.reviewPhase ? 'Ua' : target.targetLabel, formalizable: true,
         ...(f.reviewPhase ? { status: f.reviewPhase === 'approved' ? 'defined' : 'needs-review',
-          leanCheck: { status: 'checked' }, review: { eligible: true, requested: true } } : {}),
+          leanCheck: { status: 'checked' }, review: { eligible: false, requested: false },
+          leaStatus: { confidence: 'medium', attention: 'warning', assessment: { confidence: 'medium', scope: 'statement_and_proof', summary: 'The definition checks; the source omits a boundary case.' } } } : {}),
         ...(f.completionPhase ? { inProgress: false, status: f.completionPhase === 'pending' ? 'synchronizing' : 'valid',
           projection: { state: f.completionPhase === 'pending' ? 'inputs_changed' : 'observed' },
           leanCheck: { status: f.completionPhase === 'pending' ? 'synchronizing' : 'checked' } } : {}),
@@ -168,52 +151,32 @@ async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, 
     targets: window.fixture.targets, diagnostics: [] }, '*'));
 }
 
-for (const width of [1280, 760]) test(`definition approval stays in the pane and republishes idle source at ${width}px`, async ({ page }) => {
+for (const width of [1280, 760]) test(`Lea Status describes a checked definition without review at ${width}px`, async ({ page }, info) => {
   await page.setViewportSize({ width, height: 900 });
-  await setup(page, { reviewPhase: 'ready' });
+  await setup(page, { reviewPhase: 'approved' });
   await page.getByRole('button', { name: /Lean project pane/ }).click();
   if (width === 760) await page.getByRole('separator', { name: 'Resize Lean pane' }).press('Home');
   await page.locator('.ol-lean-project-tree-row').filter({ hasText: 'main.tex' }).click();
-  await page.getByRole('button', { name: 'Review result', exact: true }).click();
-  const panel = page.getByRole('region', { name: 'Review result' });
-  await expect(panel).toBeVisible();
-  await expect(page.getByRole('dialog')).toHaveCount(0);
-  await expect(panel.getByRole('button', { name: 'Approve definition', exact: true })).toBeEnabled();
-  await expect(panel.locator('fieldset')).toBeHidden();
-  await expect(panel).toContainText('Lea.BatchNotes.Ua');
-  await expect.poll(() => panel.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
-  await page.screenshot({ path: `/tmp/lea-review-inline-${width}.png` });
-  await page.evaluate(() => { fixture.leaseUntil = 0; });
-  await panel.getByRole('button', { name: 'Approve definition', exact: true }).click();
-  await expect(panel).toHaveCount(0);
-  const result = await page.evaluate(() => ({ decisions: fixture.decisions, publications: fixture.publications,
-    runs: fixture.calls.filter(c => c.pathname === '/formalize' || c.pathname === '/api/runs') }));
-  expect(result.runs).toHaveLength(0);
-  expect(result.decisions).toHaveLength(1);
-  expect(result.publications.length).toBeGreaterThanOrEqual(2);
-  expect(result.decisions[0].target.targetLabel).toBe('demo_theorem');
-  expect(result.decisions[0].target.sourceBundle.targetKey).toBe('demo_theorem');
-  expect(result.decisions[0].decision.outcome).toBe('defined');
+  await page.locator('.ol-lean-project-item-header').click();
+  const pane = page.locator('.ol-lean-project-pane');
+  await expect(pane).toContainText(/Lean Check:\s*checked/);
+  await expect(pane).toContainText('Medium confidence');
+  await expect(pane).toContainText('The definition checks; the source omits a boundary case.');
+  await expect(pane).not.toContainText(/Needs review|Review result|Approve definition|awaits approval/);
+  await expect(page.locator('.ol-lean-review-panel')).toHaveCount(0);
+  await expect.poll(() => pane.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath('lea-status-without-review.png') });
+  expect(await page.evaluate(() => fixture.calls.filter(c => /review\/(context|decision)|^\/formalize(?:\/all)?$|^\/api\/runs$/.test(c.pathname)))).toHaveLength(0);
 });
 
-test('review retries refresh source and revision changes require another explicit approval', async ({ page }) => {
-  await setup(page, { reviewPhase: 'offline' });
+test('a saved review result has no approval action or new review request', async ({ page }) => {
+  await setup(page, { reviewPhase: 'ready' });
   await page.getByRole('button', { name: /Lean project pane/ }).click();
   await page.locator('.ol-lean-project-tree-row').filter({ hasText: 'main.tex' }).click();
-  await page.getByRole('button', { name: 'Review result', exact: true }).click();
-  const panel = page.getByRole('region', { name: 'Review result' });
-  await expect(panel.getByRole('alert')).toContainText('Review service temporarily unavailable');
-  await expect(panel.locator('fieldset')).toBeHidden();
-  await panel.getByRole('button', { name: 'Refresh source and retry' }).click();
-  await expect(panel.getByRole('button', { name: 'Approve definition' })).toBeEnabled();
-  await page.evaluate(() => { fixture.reviewPhase = 'changed'; });
-  await panel.getByRole('button', { name: 'Approve definition' }).click();
-  await expect(panel).toContainText('reviewed inputs changed');
-  await expect(panel.getByRole('button', { name: 'Approve definition' })).toBeEnabled();
-  expect(await page.evaluate(() => fixture.decisions.length)).toBe(1);
-  await panel.getByRole('button', { name: 'Approve definition' }).click();
-  await expect(panel).toHaveCount(0);
-  expect(await page.evaluate(() => fixture.decisions.map(d => d.decision.revision_token))).toEqual(['review-1', 'review-2']);
+  await expect(page.getByRole('button', { name: 'Review result', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Re-formalize', exact: true }).first()).toBeVisible();
+  await expect(page.locator('.ol-lean-project-pane')).not.toContainText(/Needs review|awaits approval/);
+  expect(await page.evaluate(() => fixture.calls.filter(c => c.pathname.startsWith('/lean-pane/review/')))).toHaveLength(0);
 });
 
 test('known LaTeX tag states do not change when SQL snapshots refresh or expire',async({page},info)=>{

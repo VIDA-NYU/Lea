@@ -93,7 +93,7 @@ const PANE_STATUS_LABELS = {
   disproved: "counterexample",
   "in-progress": "in progress",
   paused: "paused",
-  "needs-review": "Needs review",
+  "needs-review": "unchecked",
   invalid: "invalid",
   stale: "out of date",
   error: "error",
@@ -809,9 +809,7 @@ export function paneItemActions(item, { editing = false } = {}) {
   const bestEffortAction = { id: "best-effort", label: "Continue best effort" };
 
   let primary = null;
-  if (!editing && item?.status === 'needs-review') {
-    primary = { id: 'approve-result', label: 'Review result' };
-  } else if (!editing && wait) {
+  if (!editing && wait) {
     primary = dependencyWaitAction(wait);
   } else if (!editing && canRepairPaneItem(item)) {
     primary = { id: "repair", label: "Repair with Lea" };
@@ -826,10 +824,6 @@ export function paneItemActions(item, { editing = false } = {}) {
   if (canViewPaneItemInLeaUi(item)) rail.push({ id: "view-in-lea", label: "Open in LeaChat" });
 
   const overflow = [];
-  if (item?.reformalization?.has_drafts && item.reformalization.state !== 'settled') {
-    overflow.push({ id: 'approve-result', label: item.reformalization.state === 'review' ? 'Review draft' : 'View retained draft' });
-  }
-  if (item?.review?.approval) overflow.push({ id: 'withdraw-approval', label: 'Withdraw approval' });
   if (wait && !editing) {
     if (primary?.id !== "dependency-view") overflow.push({ id: "dependency-view", label: "View supporting result" });
     if (primary?.id !== "dependency-refresh") overflow.push({ id: "dependency-refresh", label: "Refresh status" });

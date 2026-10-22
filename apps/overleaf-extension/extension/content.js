@@ -389,7 +389,6 @@
   // leanPaneExpandedItemIds tracks expansion -- module state survives the
   // pane's full replaceChildren re-render.
   let leanPaneEditingItemId = "";
-  let activeResultReview = null;
   let leanPaneEditDraft = "";
   let leanPaneEditPreSaveDependents = [];
   let leanPaneEditError = "";
@@ -883,7 +882,6 @@
   }
 
   function closeLeanPane() {
-    activeResultReview?.close(false);
     deferredLeanPaneManifest = null;
     leaTagsSetupControls?.dispose();
     leaTagsSetupControls = null;
@@ -3612,13 +3610,6 @@
 
     const checks = document.createElement("span");
     checks.className = "ol-lean-project-checks";
-    if (item.status === "needs-review") {
-      const outcome = document.createElement("span");
-      outcome.className = "ol-lean-project-check-chip ol-lean-project-check-chip-needs-review";
-      outcome.textContent = "Needs review · Result not certified";
-      outcome.title = item.review?.reason || item.message || item.leanCheck?.detail || "Review the checked artifact against the requested statement.";
-      checks.appendChild(outcome);
-    }
     if (item.status === "disproved") {
       const outcome = document.createElement("span");
       outcome.className = "ol-lean-project-check-chip ol-lean-project-check-chip-disproved";
@@ -3633,13 +3624,12 @@
 
     const summaryActions = document.createElement("div");
     summaryActions.className = "ol-lean-project-summary-actions";
-    const reviewing = item.status === 'needs-review';
-    const formalizeAction = reviewing ? { id: 'approve-result', label: 'Review result' } : leanPaneView.paneItemFormalizeAction(item);
+    const formalizeAction = leanPaneView.paneItemFormalizeAction(item);
     const formalizeButton = renderPaneItemPrimaryAction(item, formalizeAction);
     formalizeButton.className += " ol-lean-project-summary-formalize";
     const editing = leanPaneEditingItemId === item.id;
     const waiting = leanPaneView.dependencyWait(item);
-    formalizeButton.disabled = editing || (!reviewing && !waiting && !leanPaneView.canFormalizePaneItem(item));
+    formalizeButton.disabled = editing || (!waiting && !leanPaneView.canFormalizePaneItem(item));
     if (!waiting && (item.inProgress || item.status === "in-progress")) {
       formalizeButton.textContent = "Formalizing…";
       formalizeButton.title = "Formalization is already running";
@@ -3649,7 +3639,6 @@
       formalizeButton.title = "This item has no formalization target";
     }
     summaryActions.appendChild(formalizeButton);
-    if (reviewing) summaryActions.appendChild(renderFormalizeButton(item, { id: 'reformalize', label: 'Re-formalize' }));
     summaryActions.appendChild(renderPaneItemIconAction(item, { id: "go-to-source", label: "Go to source" }));
     if (leanPaneView.canViewPaneItemInLeaUi(item)) {
       summaryActions.appendChild(renderPaneItemIconAction(item, { id: "view-in-lea", label: "Open in LeaChat" }));
@@ -3855,11 +3844,6 @@
   function renderLeanPaneItemDetail(item, useRelationships) {
     const detail = document.createElement("div");
     detail.className = "ol-lean-project-detail";
-    if (activeResultReview?.itemId === item.id) {
-      detail.appendChild(activeResultReview.panel);
-      return detail;
-    }
-
     const source = renderLeanPaneDetailSection("Source statement");
     const natural = document.createElement("p");
     natural.className = "ol-lean-project-natural";
@@ -3932,12 +3916,7 @@
       progress.appendChild(review);
     }
     if (item.leaCheck?.report) progress.appendChild(renderLeaCheckReport(item));
-    if (item.review?.approval) {
-      const approved = document.createElement('p');
-      approved.className = 'ol-lean-review-provenance';
-      approved.textContent = reviewApprovalText(item.review.approval);
-      progress.appendChild(approved);
-    }
+
     detail.appendChild(progress);
 
     const editing = leanPaneEditingItemId === item.id;
@@ -3947,7 +3926,7 @@
     actions.className = "ol-lean-project-detail-actions";
     // Formalize, Go to source and Open in LeaChat live in the compact summary.
     // Repair and best-effort continuation remain here when they apply.
-    if (primary && !['formalize', 'approve-result'].includes(primary.id)) actions.appendChild(renderPaneItemPrimaryAction(item, primary));
+    if (primary && primary.id !== 'formalize') actions.appendChild(renderPaneItemPrimaryAction(item, primary));
     const railElement = document.createElement("div");
     railElement.className = "ol-lean-icon-rail";
     for (const action of rail.filter((entry) => !["go-to-source", "view-in-lea"].includes(entry.id))) {
@@ -4484,8 +4463,7 @@
     const projectId = extractOverleafProjectId();
     const stubbable = leanPaneView.stubbableItems(items);
     const formalizable = leanPaneView.formalizableItems(items);
-    const awaiting = items.filter(item => item.status === 'needs-review').length;
-    if (stubbable.length === 0 && formalizable.length === 0 && awaiting === 0) return null;
+    if (stubbable.length === 0 && formalizable.length === 0) return null;
     const row = document.createElement("div");
     row.className = "ol-lean-project-batch-actions";
     if (stubbable.length > 0) {
@@ -4505,11 +4483,6 @@
       formalizeAll.title = "Run Lea to formalize every theorem and definition that has no verified proof yet.";
       formalizeAll.addEventListener("click", () => { formalizeAllItems(formalizable, projectId); });
       row.appendChild(formalizeAll);
-    }
-    if (awaiting) {
-      const note = document.createElement('span');
-      note.textContent = `${awaiting} ${awaiting === 1 ? 'result awaits' : 'results await'} approval.`;
-      row.appendChild(note);
     }
     return row;
   }
@@ -5651,23 +5624,6 @@
   };
 
   function renderPaneItemPrimaryAction(item, action) {
-    if (action.id === 'approve-result') {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'ol-lean-primary-button ol-lean-item-primary-action';
-      button.textContent = action.label;
-      button.addEventListener('click', async event => {
-        event.preventDefault();
-        event.stopPropagation();
-        try {
-          await showResultReview(paneItemReviewTarget(item), button);
-        } catch (error) {
-          rememberLeanPaneActionError(item, error, action.id);
-          revealLeanPaneItem(item);
-        }
-      });
-      return button;
-    }
     if (action.id.startsWith("dependency-")) {
       const button = document.createElement("button");
       button.type = "button";
@@ -5822,14 +5778,6 @@
   // Formalize/stub reuse the same companion paths as the primary button and
   // the in-document popover.
   async function runPaneOverflowAction(item, action) {
-    if (action.id === 'approve-result') {
-      await showResultReview(paneItemReviewTarget(item));
-      return;
-    }
-    if (action.id === 'withdraw-approval') {
-      await withdrawResultApproval(paneItemReviewTarget(item), item.review.approval);
-      return;
-    }
     if (action.id.startsWith("dependency-")) return runDependencyAction(item, action);
     if (action.id === "edit") {
       openLeanPaneEdit(item);
@@ -6502,10 +6450,6 @@
     renderTargetActions(actions, target, currentStatus, status, leanStatement, actionStatus, statusInfo);
     if (currentStatus === "in_progress") {
       status.textContent = inProgressMessage(latestStatuses[key], target);
-    } else if (currentStatus === 'needs_review') {
-      status.textContent = resultReviewNotice(statusInfo);
-    } else if (statusInfo.review?.approval) {
-      status.textContent = reviewApprovalText(statusInfo.review.approval);
     } else if (isExtensionContextInvalidated()) {
       status.textContent = "Extension was reloaded. Refresh this Overleaf tab.";
     }
@@ -6575,12 +6519,6 @@
       button.disabled = disabled;
       if (spec.disabled) button.disabled = true;
       button.addEventListener("click", async () => {
-        if (spec.review) {
-          renderPopoverActionStatus(status, 'Opening result review…');
-          try { await showResultReview(target, button); }
-          catch (error) { renderPopoverActionError(status, error); }
-          return;
-        }
         for (const actionButton of actions.querySelectorAll("button")) {
           actionButton.disabled = true;
         }
@@ -6652,239 +6590,6 @@
     closeButton.textContent = "Close";
     closeButton.addEventListener("click", closePopover);
     actions.appendChild(closeButton);
-  }
-
-  function reviewApprovalText(approval) {
-    const outcome = { proved: 'formalized', defined: 'defined', disproved: 'counterexample found' }[approval.outcome] || approval.outcome;
-    return `Approved by user · ${outcome} · ${new Date(approval.created_at).toLocaleString()}`;
-  }
-
-  function paneItemReviewTarget(item) {
-    return { ...leanPaneView.paneItemToChatTarget(item, extractOverleafProjectId()),
-      targetLabel: item.label || item.leanDeclarationName, labelSource: item.labelSource };
-  }
-
-  function resultReviewNotice(statusInfo) {
-    const reason = String(statusInfo.review?.reason || '').trim();
-    if (reason && reason.toUpperCase() !== 'NEEDS_REVIEW') return reason;
-    return statusInfo.review?.eligible
-      ? 'Open Review result in the Lean pane to compare the checked Lean code with the current LaTeX.'
-      : 'Review requested. Open Review result in the Lean pane to see what is blocking approval.';
-  }
-
-  async function resultReviewRequest(route, target, decision) {
-    const baseUrl = await chatCompanionBaseUrl();
-    let current = target;
-    if (!decision || decision.action === 'approve') {
-      current = await currentResumeTarget(target);
-      current = { ...current, ...await buildFormalizationSourceContext(current, { verifyMirror: false, forcePublish: true }) };
-    }
-    const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/lean-pane/review/${route}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target: { ...current, overleafProjectId: current.overleafProjectId || extractOverleafProjectId(),
-        naturalLanguageLatex: current.naturalLanguageLatex || current.targetText || '' }, ...(decision ? { decision } : {}) })
-    }, { timeoutMs: 65000, timeoutMessage: 'Result approval timed out. Retry without starting another formalization.' });
-    if (!response.ok || payload.ok === false) {
-      if (response.status === 404) {
-        payload.message = 'Result approval requires the updated Lea companion and adapter. Update and restart them, then retry.';
-      }
-      const error = companionRequestError(response, payload);
-      error.status = response.status;
-      throw error;
-    }
-    return payload;
-  }
-
-  async function refreshResultReviewSurfaces() {
-    await refreshStatusesNow();
-    if (leanPane) await refreshLeanPaneNow({ background: true });
-  }
-
-  async function withdrawResultApproval(target, approval) {
-    const result = await resultReviewRequest('decision', target, {
-      action: 'withdraw', approval_id: approval.id,
-      idempotency_key: `withdraw:${approval.id}`
-    });
-    await refreshResultReviewSurfaces();
-    return { ...result, status: 'needs_review' };
-  }
-
-  async function showResultReview(target, trigger) {
-    if (activeResultReview) activeResultReview.close(false);
-    const item = await showTargetInLeanPane(target);
-    target = { ...target, targetLabel: item.label || target.targetLabel, labelSource: item.labelSource || target.labelSource,
-      sourceFile: item.sourceFile || target.sourceFile };
-    const triggerItemId = trigger?.closest('.ol-lean-project-item')?.dataset.itemId;
-    const panel = document.createElement('section');
-    panel.className = 'ol-lean-review-panel';
-    panel.setAttribute('role', 'region');
-    panel.setAttribute('aria-labelledby', 'ol-lean-review-title');
-    const title = document.createElement('h2');
-    title.id = 'ol-lean-review-title';
-    title.textContent = 'Review result';
-    title.tabIndex = -1;
-    const explanation = document.createElement('p');
-    explanation.textContent = 'Compare the current LaTeX with the checked Lean code. Approval records your judgment without rerunning Lea.';
-    const evidence = document.createElement('div');
-    evidence.className = 'ol-lean-review-evidence';
-    const choices = document.createElement('fieldset');
-    const legend = document.createElement('legend');
-    legend.textContent = 'What does the checked artifact establish?';
-    choices.appendChild(legend);
-    choices.hidden = true;
-    const status = document.createElement('p');
-    status.className = 'ol-lean-review-status';
-    status.setAttribute('role', 'status');
-    status.setAttribute('aria-live', 'polite');
-    const actions = document.createElement('div');
-    actions.className = 'ol-lean-review-actions';
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.className = 'ol-lean-secondary-button';
-    cancel.textContent = 'Back to details';
-    const retry = document.createElement('button');
-    retry.type = 'button';
-    retry.className = 'ol-lean-secondary-button';
-    retry.textContent = 'Refresh source and retry';
-    retry.hidden = true;
-    const submit = document.createElement('button');
-    submit.type = 'button';
-    submit.className = 'ol-lean-primary-button';
-    submit.textContent = 'Loading review…';
-    submit.disabled = true;
-    actions.append(cancel, retry, submit);
-    panel.append(title, explanation, status, evidence, choices, actions);
-    let context = null;
-    let selected = '';
-    let busy = false;
-    let closed = false;
-    let submission = null;
-    let loadGeneration = 0;
-    const close = (restoreFocus = true) => {
-      closed = true;
-      if (activeResultReview?.panel === panel) activeResultReview = null;
-      document.body.classList.remove('ol-lean-review-open');
-      panel.remove();
-      if (lastLeanPaneManifest) renderLeanPaneManifest(lastLeanPaneManifest);
-      if (!restoreFocus) return;
-      if (trigger?.isConnected !== false) trigger?.focus?.();
-      else {
-        const card = [...document.querySelectorAll('.ol-lean-project-item')].find(card => card.dataset.itemId === (triggerItemId || item.id));
-        const replacement = card?.querySelector('.ol-lean-project-summary-formalize')
-          || activePopover?.querySelector('[data-primary="true"]')
-          || [...document.querySelectorAll('.ol-lean-status')].find(badge => badge.dataset.targetKey === targetKey(target))
-          || document.querySelector('.ol-lean-pane-trigger');
-        replacement?.focus?.();
-      }
-    };
-    cancel.addEventListener('click', () => close());
-    panel.addEventListener('cancel', event => { event.preventDefault(); close(); });
-    panel.addEventListener('keydown', event => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      event.stopPropagation();
-      close();
-    });
-    panel.addEventListener('click', event => event.stopPropagation());
-    const update = () => {
-      submit.textContent = busy ? 'Saving approval…' : { proved: 'Approve proof', defined: 'Approve definition', disproved: 'Approve counterexample' }[selected] || (context?.review?.eligible ? 'Choose an outcome' : 'Approval unavailable');
-      submit.disabled = busy || !context?.review?.eligible || !selected;
-      for (const input of choices.querySelectorAll('input')) input.disabled = busy;
-    };
-    const block = (label, content) => {
-      if (!content) return;
-      const heading = document.createElement('h3');
-      heading.textContent = label;
-      const pre = document.createElement('pre');
-      pre.textContent = content;
-      evidence.append(heading, pre);
-    };
-    const load = async (changed = false) => {
-      const generation = ++loadGeneration;
-      context = null;
-      submit.disabled = true;
-      retry.hidden = true;
-      retry.disabled = true;
-      choices.hidden = true;
-      evidence.replaceChildren();
-      selected = '';
-      status.setAttribute('role', 'status');
-      status.textContent = changed ? 'The source or result changed. Loading the current evidence for another review.' : 'Refreshing source and loading the checked result…';
-      try {
-        const loaded = await resultReviewRequest('context', target);
-        if (closed || generation !== loadGeneration) return;
-        context = loaded;
-        evidence.replaceChildren();
-        const source = context.source_snapshot || {};
-        block('Current LaTeX statement', source.statement);
-        block('Associated proof', source.proof);
-        block('Source context', source.context);
-        block('Checked declaration', context.review.candidate_declaration);
-        for (const artifact of context.artifacts || []) block(
-          artifact.artifact_scope === 'attempt' ? `Draft: ${artifact.path}` : artifact.path, artifact.content);
-        choices.replaceChildren(legend);
-        choices.hidden = !context.review.eligible || context.review.allowed_outcomes.length <= 1;
-        selected = '';
-        submission = null;
-        if (context.review.allowed_outcomes.length === 1) selected = context.review.allowed_outcomes[0];
-        for (const [outcome, label] of [['proved', 'Proof of the stated claim'], ['disproved', 'Counterexample to the stated claim'], ['defined', 'Definition']]) {
-          if (!context.review.allowed_outcomes.includes(outcome)) continue;
-          if (outcome === 'defined') {
-            selected = outcome;
-            const definition = document.createElement('p');
-            definition.textContent = label;
-            choices.appendChild(definition);
-          } else {
-            const option = document.createElement('label');
-            const radio = document.createElement('input');
-            radio.type = 'radio';
-            radio.name = 'ol-lean-review-outcome';
-            radio.value = outcome;
-            radio.addEventListener('change', () => { selected = outcome; submission = null; update(); });
-            option.append(radio, document.createTextNode(label));
-            choices.appendChild(option);
-          }
-        }
-        const reason = context.review.reason && context.review.reason.trim().toUpperCase() !== 'NEEDS_REVIEW'
-          ? context.review.reason : context.review.eligible ? 'Ready for your review.' : 'Approval is unavailable for the current result.';
-        status.textContent = (changed ? 'The reviewed inputs changed. Review the current evidence and choose again. ' : '') + reason;
-        if (!context.review.eligible) retry.hidden = false;
-        update();
-      } catch (error) {
-        if (closed || generation !== loadGeneration) return;
-        status.setAttribute('role', 'alert');
-        status.textContent = `Could not load the review. ${normalizeErrorMessage(error).replace(/^HTTP \d+:\s*/, '')}`;
-        submit.textContent = 'Approval unavailable';
-        retry.hidden = false;
-      } finally { if (!closed && generation === loadGeneration) retry.disabled = false; }
-    };
-    retry.addEventListener('click', () => load());
-    submit.addEventListener('click', async () => {
-      if (submit.disabled || busy || !context) return;
-      submission ||= { action: 'approve', outcome: selected, revision_token: context.review.revision_token,
-        idempotency_key: globalThis.crypto?.randomUUID?.() || `review:${Date.now()}:${Math.random()}` };
-      busy = true;
-      update();
-      try {
-        await resultReviewRequest('decision', target, submission);
-        await refreshResultReviewSurfaces();
-        if (!closed) close();
-      } catch (error) {
-        if (closed) return;
-        if (error.status === 409) await load(true);
-        else {
-          status.setAttribute('role', 'alert');
-          status.textContent = normalizeErrorMessage(error);
-        }
-      } finally { busy = false; if (!closed) update(); }
-    });
-    activeResultReview = { itemId: item.id, panel: panel, close };
-    document.body.classList.add('ol-lean-review-open');
-    closePopover();
-    renderLeanPaneManifest(lastLeanPaneManifest);
-    title.focus?.();
-    panel.scrollIntoView?.({ block: 'start' });
-    load();
   }
 
   function renderPopoverActionStatus(status, message) {
@@ -6998,17 +6703,6 @@
 
   function actionSpecsForStatus(status, target, statusInfo = {}) {
     const definition = isDefinitionTarget(target);
-    if (status === 'needs_review') {
-      return [{ role: 'approve-result', label: 'Review result', primary: true, review: true },
-      { role: 'theorem-reformalize-action', label: definition ? 'Regenerate definition' : 'Re-formalize',
-        pendingText: 'Starting Lea...', run: formalize }];
-    }
-    if (statusInfo.review?.approval) {
-      return [{ role: 'theorem-action', label: definition ? 'Regenerate definition' : 'Re-formalize',
-        primary: true, pendingText: 'Starting Lea...', run: formalize },
-      { role: 'withdraw-result-approval', label: 'Withdraw approval', pendingText: 'Withdrawing approval…',
-        run: current => withdrawResultApproval(current, statusInfo.review.approval) }];
-    }
     const wait = statusInfo.dependencyWait;
     if (wait) {
       const action = wait.state === "stopped" ? { id: "dependency-arm", label: "Continue when ready" }
@@ -7534,10 +7228,7 @@
     if (detail) {
       if (isExtensionContextInvalidated()) {
         detail.textContent = "Extension was reloaded. Refresh this Overleaf tab.";
-      } else if (statusInfo.review?.approval) {
-        detail.textContent = reviewApprovalText(statusInfo.review.approval);
-      } else if (currentStatus === 'needs_review') {
-        detail.textContent = resultReviewNotice(statusInfo);
+
       } else if (statusInfo.message) {
         detail.textContent = statusInfo.message;
       } else if (statusInfo.relativePath) {
@@ -8628,15 +8319,10 @@
       }
       const stubbedUsesLabel = hasStubbedTheoremUses(statusInfo) ? " warning: proof uses sorry-stubbed support" : "";
       const statusLabel = `${formatStatus(status, statusInfo)}${turnProgress.label ? ` ${turnProgress.label}` : ""}${stubbedUsesLabel}`;
-      badge.title = status === "needs_review"
-        ? statusInfo.message || `The requested ${targetDisplayName(target)} needs review.`
-        : statusInfo.sourceFreshness === "stale"
+      badge.title = statusInfo.sourceFreshness === "stale"
         ? statusInfo.sourceFreshnessMessage
           || "The LaTeX source changed after this Lean artifact was generated. Re-formalize to synchronize it."
         : statusInfo.message || `Lean status for ${targetDisplayName(target)}: ${statusLabel}`;
-      if (status === "needs_review" && statusInfo.leanCheckPassed === true) {
-        badge.title += " Lean check passed for the current file.";
-      }
       if (statusInfo.statusReadError) badge.title = `Status refresh delayed: ${statusInfo.statusReadError} Last known state: ${statusLabel}. Retrying automatically.`;
       badge.setAttribute("aria-label", `Open Lea popover for ${targetDisplayName(target)}. Status: ${statusLabel}.`);
       badge.style.top = `${coords.top}px`;
@@ -8685,7 +8371,7 @@
       case "disproved":
         return "Counterexample found";
       case "needs_review":
-        return "Needs review";
+        return "unchecked";
       case "sorry_stub":
         return "sorry stub";
       case "failed":
@@ -8803,7 +8489,7 @@
       case "unknown":
         return "Check status";
       case "needs_review":
-        return 'Approve result';
+        return definition ? 'Regenerate definition' : 'Re-formalize';
       case "sorry_stub":
       case "unformalized":
       default:
@@ -8812,7 +8498,7 @@
   }
 
   function getActionStatus(statusInfo) {
-    if (statusInfo?.status === "needs_review") return "needs_review";
+    if (statusInfo?.status === "needs_review") return "unavailable";
     if (statusInfo?.status === "paused") return "paused";
     if (statusInfo?.sourceFreshness === "stale") {
       return "stale";
@@ -8830,7 +8516,7 @@
   }
 
   function getDisplayStatus(statusInfo) {
-    if (statusInfo?.status === "needs_review") return "needs_review";
+    if (statusInfo?.status === "needs_review") return "unavailable";
     if (statusInfo?.sourceFreshness === "stale") return "stale";
     const status=statusInfo?.status || "unknown";
     return status === "unknown" ? recordedDisplayStatus(statusInfo) || status : status;

@@ -5,13 +5,14 @@ export function projectLeanCheck({ paneStatus = "", statusInfo = {} } = {}) {
   const status = String(paneStatus || "").toLowerCase();
   let value = "unformalized";
   if (statusInfo.projection && statusInfo.projection.state !== "observed" || status === "synchronizing") value = "synchronizing";
-  else if (["unknown", "unavailable"].includes(status)) value = "unconfirmed";
+  else if (["unknown", "unavailable", "needs-review"].includes(status)) {
+    value = statusInfo.leanCheck?.status === "error" ? "error"
+      : statusInfo.leanCheck?.status === "ok" || statusInfo.leanCheckPassed === true ? "checked"
+      : "unconfirmed";
+  }
   else if (status === "stub-generated") value = "stubbed";
   else if (status === "in-progress") value = "in-progress";
   else if (["valid", "defined", "disproved", "stale"].includes(status)) value = "checked";
-  else if (status === "needs-review" && statusInfo?.leanCheck?.status === "error") value = "error";
-  else if (status === "needs-review" && statusInfo?.leanCheckPassed === true) value = "checked";
-  else if (status === "needs-review") value = "unconfirmed";
   else if (status === "paused") value = "paused";
   else if (["invalid", "error"].includes(status)) value = "error";
   return {

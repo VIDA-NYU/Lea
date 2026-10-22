@@ -251,7 +251,6 @@ function FormalizationsTab({
         {!!summary.proved && <span className="ok">{summary.proved} proved</span>}
         {!!summary.failing && <span className="fail">{summary.failing} failing</span>}
         {!!summary.stale && <span className="warn">{summary.stale} stale</span>}
-        {!!summary.needs_review && <span className="warn">{summary.needs_review} Needs review</span>}
         {!!summary.active_run_count && <span>{summary.active_run_count} active</span>}
       </div>
       <div className="pw-form-controls">
@@ -262,7 +261,7 @@ function FormalizationsTab({
         />
         <select value={status} onChange={(event) => setStatus(event.target.value)}>
           <option value="all">All statuses</option>
-          {['draft', 'planned', 'unchecked', 'failing', 'proved', 'defined', 'disproved', 'needs_review', 'stale']
+          {['draft', 'planned', 'unchecked', 'failing', 'proved', 'defined', 'disproved', 'stale']
             .map((value) => <option key={value} value={value}>{value.replace('_', ' ')}</option>)}
         </select>
       </div>
@@ -290,10 +289,8 @@ function FormalizationsTab({
                 </span>
                 <span className="pw-form-state" title={item.validity_reason || undefined}>
                   {item.activity.status !== 'idle'
-                    ? `${item.activity.status} · ${item.validity_status === 'needs_review' ? 'Needs review' : item.validity_status}`
-                    : item.validity_status === 'needs_review' ? 'Needs review' : item.validity_status}
-                  {item.validity_status === 'needs_review' && item.check_current ? ' · Lean check passed' : ''}
-                  {item.certification?.source === 'user_review' ? ' · Approved by user' : ''}
+                    ? `${item.activity.status} · ${item.validity_status}`
+                    : item.validity_status}
                 </span>
               </button>
               <button
@@ -318,7 +315,6 @@ function formalizationDotClass(item: Formalization): string {
   if (item.activity.status !== 'idle') return 'run';
   if (item.validity_status === 'proved' || item.validity_status === 'defined') return 'ok';
   if (item.validity_status === 'failing') return 'fail';
-  if (item.validity_status === 'needs_review') return 'warn';
   return 'idle';
 }
 
@@ -326,6 +322,6 @@ function sessionDotClass(status: SessionStatus | string): string {
   if (status === 'ok' || status === 'proved' || status === 'defined') return 'ok';
   if (status === 'error') return 'fail';
   if (status === 'running' || status === 'disproved') return 'run';
-  if (status === 'needs_review') return 'warn';
+  if (status === 'needs_review') return 'idle';
   return 'idle';
 }

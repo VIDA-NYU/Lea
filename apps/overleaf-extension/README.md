@@ -72,8 +72,10 @@ the accepted SQL archive, including targets in input files. Existing verified
 targets are recorded as already verified rather than attention-required skips.
 Structured Lean source blocks compare declaration headers consistently and
 request named compiler evidence on both Overleaf and conversational runs.
-The pane keeps an explicit uncertified-result warning visible beside the file's
-Lean check and the model's confidence assessment.
+The pane shows the file's Lean check alongside Lea Status and its assessment
+description. Correspondence findings do not create a separate Needs review
+status or require user approval. Checked selections publish automatically; stale
+or failing artifacts retain their technical check status.
 [test_overleaf_batch_completion.py](../lea-standalone/adapter/tests/test_overleaf_batch_completion.py)
 covers publication, compiler selection, job/report delivery and both UI SQL
 projections, including a ten-target archive and rejected incomplete batches.

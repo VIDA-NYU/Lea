@@ -24,7 +24,6 @@ import { matchSlashCommands } from '../lib/slashCommands.js';
 import {
   deriveCodeStepProofStatus,
   deriveRunCompletionStatus,
-  deriveRunReviewNotice,
   hasSorryLikeCheckDetail,
   latestCodeStep,
 } from '../lib/proofDisplay.mjs';
@@ -420,20 +419,14 @@ export function ChatThread({
   const headChip = isRunning
     ? { cls: 'run', text: currentRunId && runRecoveryById[currentRunId]?.state === 'recovering'
       ? '● recovering saved progress' : '● proving' }
-    : currentTarget?.review?.reason
-    ? { cls: formalizationStatusClass(currentTarget.validity_status, 'idle'),
-        text: (currentTarget.validity_status === 'needs_review' ? 'Needs review' : currentTarget.validity_status)
-          + (currentTarget.certification?.source === 'user_review' ? ' · Approved by user' : '') }
-    : (session?.status === 'needs_review' || formalizations.some((item) =>
-        item.validity_status === 'needs_review' &&
-        (formalizationScope === item.id || (formalizationScope === 'project' && formalizations.length === 1))))
-    ? { cls: 'warn', text: 'Needs review' }
+    : currentTarget && currentTarget.activity.status === 'idle'
+    ? { cls: formalizationStatusClass(currentTarget.validity_status, 'idle'), text: currentTarget.validity_status }
     : latestProofStatus === 'stubbed'
     ? { cls: 'run', text: '○ stubbed' }
     : latestRunOutcome === 'disproved' && latestProofStatus === 'proved'
     ? { cls: 'warn', text: '⊘ disproved' }
     : latestRunOutcome === 'needs_review'
-    ? { cls: 'warn', text: 'Needs review' }
+    ? { cls: 'idle', text: 'unchecked' }
     : (latestRunOutcome === 'proved' || latestRunOutcome === 'success') &&
         latestRunResultKind === 'defined' &&
         (latestProofStatus === 'proved' || latestProofStatus === 'defined')
@@ -688,11 +681,6 @@ export function ChatThread({
                 {finished && completion === 'defined' && <DefinedCard steps={steps} session={session} />}
                 {finished && completion === 'disproved' && <DisprovedCard steps={steps} session={session} />}
                 {finished && completion === 'stubbed' && <StubCard steps={steps} session={session} />}
-                {finished && resultKind === 'needs_review' && (
-                  <div className="final review">
-                    <div className="fhead">{deriveRunReviewNotice(group.runId, focused)}</div>
-                  </div>
-                )}
               </Fragment>
             );
           })}
@@ -951,9 +939,7 @@ function FormalizationScope({ session }: { session?: SessionSummary }) {
                 box to clip, which is how a whole prompt ended up spilling across the rail. */}
             <span className="form-label">{item.declaration_name || item.display_title}</span>
             <small title={item.validity_reason || undefined}>
-              {item.activity.status !== 'idle' ? item.activity.status : item.validity_status === 'needs_review' ? 'Needs review' : item.validity_status}
-              {item.validity_status === 'needs_review' && item.check_current ? ' · Lean check passed' : ''}
-              {item.certification?.source === 'user_review' ? ' · Approved by user' : ''}
+              {item.activity.status !== 'idle' ? item.activity.status : item.validity_status}
             </small>
           </button>
         ))}
@@ -1086,7 +1072,7 @@ function formalizationStatusClass(validity: string, activity: string): string {
   if (activity !== 'idle') return 'run';
   if (validity === 'proved' || validity === 'defined') return 'ok';
   if (validity === 'failing') return 'fail';
-  if (validity === 'stale' || validity === 'needs_review') return 'warn';
+  if (validity === 'stale') return 'warn';
   return 'idle';
 }
 

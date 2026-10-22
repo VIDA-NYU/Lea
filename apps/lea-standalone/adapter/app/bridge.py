@@ -656,8 +656,8 @@ class _DeltaStream:
         return row
 
 
-# A run's final status. "proved" / "disproved" / "needs_review" are terminal
-# checked-artifact outcomes. "answered" is a chat / QA / sketch-pause turn that
+# A run's final status. "proved" / "disproved" are checked-artifact outcomes.
+# "answered" is a chat / QA / incomplete turn that
 # finished cleanly but proved nothing, so the UI never marks a conversational turn
 # as a completed proof.
 _FINISH_STATUS = {
@@ -736,11 +736,11 @@ def _finished_status(ev: Finished) -> str:
 def _completed_artifact_result(ev: Finished, artifact_kind: str) -> tuple[str, str | None]:
     """Return persisted run status + result kind for a completed Lea artifact."""
     if ev.reason != "completed":
-        return _finished_status(ev), None
+        return _finished_status(ev), "incomplete" if ev.result_kind == "incomplete" else None
     if ev.result_kind == "disproved":
         return "disproved", "disproved"
     if ev.result_kind == "needs_review":
-        return "needs_review", "needs_review"
+        return "answered", "incomplete"
     if artifact_kind == "definition":
         return "proved", "defined"
     result_kind = ev.result_kind if ev.result_kind in _COMPLETED_RESULTS else "proved"
@@ -2618,7 +2618,7 @@ def _run_lea(context: RunnerContext) -> None:
                         _flush_child_narration(child_broker, started)
                         child_step = store.latest_code_step_for_path(started['child_id'], Path(ev.candidate_path).name) if ev.candidate_path else None
                         child_current = bool(child_step and child_step.get('check_current') and child_step.get('check_status') == 'ok')
-                        emit(child_broker, "done", {"status": 'proved' if child_current else 'needs_review'})
+                        emit(child_broker, "done", {"status": 'proved' if child_current else 'answered'})
                     runbroker.drop(started["run_id"])
                     child_id, child_title = started["child_id"], started["title"]
                 else:
@@ -2715,7 +2715,7 @@ def _run_lea(context: RunnerContext) -> None:
                     final_result_kind = result_kind
                     final_result_detail = None if result_kind == "defined" else ev.result_detail
                     if ev.reason == 'completed' and result_kind in {'proved', 'defined', 'disproved'} and not produced_clean:
-                        final_status = final_result_kind = 'needs_review'
+                        final_status, final_result_kind = 'answered', 'incomplete'
                         final_result_detail = 'The current proof inputs have no fresh passing Lean check.'
                     if cfg.stub_generation and ev.reason in {"stubbed", "assistant", "completed"}:
                         from .target_completion import checked_stub
@@ -2728,8 +2728,8 @@ def _run_lea(context: RunnerContext) -> None:
                                     stub, reason = None, "The checked stub changed before completion."
                             except (OSError, UnicodeDecodeError):
                                 stub, reason = None, "The checked stub is unavailable."
-                        final_status = "answered" if stub else "needs_review"
-                        final_result_kind = None if stub else "needs_review"
+                        final_status = "answered"
+                        final_result_kind = None if stub else "incomplete"
                         final_result_detail = "Checked statement stub; proof intentionally incomplete." if stub else reason
                     if not cfg.stub_generation and focus_formalization_id and ev.reason == "completed" and result_kind != "disproved":
                         # A successful file check is evidence only for the declaration it
@@ -2750,7 +2750,7 @@ def _run_lea(context: RunnerContext) -> None:
                             focused_formalization.get("kind") == "definition" and ev.result_kind == "defined"
                         )
                         if ev.result_kind == "needs_review" or not successful_result or match is None:
-                            final_status = final_result_kind = "needs_review"
+                            final_status, final_result_kind = "answered", "incomplete"
                             final_result_detail = reason or (
                                 ev.result_detail if ev.result_detail != 'NEEDS_REVIEW' else None
                             ) or "Lea could not match the checked result to the confirmed request."
@@ -2758,7 +2758,7 @@ def _run_lea(context: RunnerContext) -> None:
                             final_status = "proved"
                             final_result_kind = "defined" if focused_formalization.get("kind") == "definition" else "proved"
                     if ev.reason == 'completed' and not target_contexts.unchanged(target_context):
-                        final_status = final_result_kind = 'needs_review'
+                        final_status, final_result_kind = 'answered', 'incomplete'
                         final_result_detail = 'The confirmed target changed during this run. Confirm and check the current target.'
                     if context.purpose == "project_dependency" and ev.reason == "completed":
                         from . import project_dependencies
@@ -2770,7 +2770,7 @@ def _run_lea(context: RunnerContext) -> None:
                                 emit(events, "project_dependency", {"outcome": "published", "dependency": published})
                                 dependency = published
                         if not dependency or not dependency.get("ready"):
-                            final_status = final_result_kind = "needs_review"
+                            final_status, final_result_kind = "answered", "incomplete"
                             final_result_detail = "The canonical dependency has not passed its pinned statement and verification checks."
                     if spend_capped and ev.reason != "completed":
                         # Our own cap-triggered stop, not a user cancel: label it. A
@@ -2842,9 +2842,9 @@ def _run_lea(context: RunnerContext) -> None:
                     # Structured artifact index (4.1): record which declarations this
                     # run's checked files hold, keyed to the run's own FileChanged set.
                     review_candidate_path = stub["path"] if cfg.stub_generation and final_status == "answered" else None
-                    if focus_formalization_id and ev.reason == "completed" and final_result_kind == "needs_review":
+                    if focus_formalization_id and ev.reason == "completed" and final_result_kind == "incomplete":
                         # Preserve a technically checked target independently of the
-                        # classifier's human-review outcome. Different-name results
+                        # run's incomplete outcome. Different-name results
                         # require the prover's explicit final artifact association.
                         candidate_path = _relativize(ev.candidate_path, repo) if ev.candidate_path else None
                         target_step, _ = checked_target(focused_formalization or {}, [s for s in current_checks if s])

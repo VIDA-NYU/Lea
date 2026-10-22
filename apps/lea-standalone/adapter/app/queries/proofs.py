@@ -1,4 +1,4 @@
-"""Database-only formalization, review and target projections."""
+"""Database-only formalization and target projections."""
 import hashlib
 import json
 from collections import Counter
@@ -45,6 +45,14 @@ def decorate(rows):
                 'safe_verify':None,'latest_check':None,'latest_run':None,'artifact':None,'reformalization':None,
                 'primary_path':next((f['path'] for f in files if f['role']=='primary'),None),
                 'last_observed_result':last_result}
+        # Old observations may still contain retired review metadata. Reads
+        # never reopen approval or treat a historical user decision as a check.
+        if item.get('validity_status') == 'needs_review':
+            item.update(validity_status='unchecked', certification=None)
+        item['review'] = {'eligible': False, 'requested': False, 'reason': '',
+                          'revision_token': None, 'allowed_outcomes': [], 'approval': None}
+        if (item.get('certification') or {}).get('source') == 'user_review':
+            item.update(validity_status='unchecked', certification=None)
         item.update(files=files,activity=activity,sessions=conversations,projection=projection)
         result.append(item)
     return result
@@ -95,43 +103,8 @@ def current_snapshot(formalization_id,*,conversation_session_id=None):
 
 @core.read_query
 def review_context(fid,source_context_ref=None):
-    form=get(fid)
-    if not form:return None
-    scope=core.scope_for(formalization_id=fid)
-    source=None
-    if source_context_ref:
-        with db.connect() as conn:
-            from .sources import resolve
-            published=conn.execute('select 1 from source_publications where id=?',(source_context_ref,)).fetchone()
-            if published:source=resolve(conn,source_context_ref,fid)
-            row=conn.execute('select * from overleaf_source_requests where id=?',(source_context_ref,)).fetchone()
-            if not published and (not row or row['formalization_id']!=fid or row['state']!='ready' or row['expires_at']<=db.utc_now()):
-                raise ValueError('Current source is unavailable or expired')
-            if not published:source=json.loads(row['source_bundle_json'])
-            latest=conn.execute("select source_bundle_json from overleaf_source_requests where formalization_id=? and state='ready' order by captured_at desc limit 1",(fid,)).fetchone()
-            if form.get('source_hash')!=source['sourceIdentityHash'] or (not published and latest and json.loads(latest[0])['bundleHash']!=source['bundleHash']):
-                raise ValueError('The selected source changed')
-            if row and row['mirror_files_json']:
-                from . import files
-                indexed=files.listing(form['project_id'])
-                actual={i['path'].split('/overleaf/',1)[-1]:i for i in indexed['files'] if '/overleaf/' in i['path'] and i['state']!='deleted'}
-                expected=json.loads(row['mirror_files_json'])
-                hashes={path:conn.execute('select sha256 from artifact_blobs where id=?',(i['blob_id'],)).fetchone()[0]
-                        for path,i in actual.items() if i['blob_id']}
-                if hashes!=expected:raise ValueError('Published source mirror observation changed')
-    observed=core.fact(scope,'review_context',fid)
-    if observed:
-        observed['formalization']={**form,'review':observed['review']}
-        with db.connect() as conn:
-            for artifact in observed['artifacts']:
-                blob=conn.execute('select content from artifact_blobs where id=?',(artifact.get('blob_id'),)).fetchone()
-                artifact['content']=blob[0] if blob else None
-                artifact['content_state']='present' if blob else 'unavailable'
-        if source:observed['source_snapshot']=source
-        return observed
-    current=current_snapshot(fid)
-    return {'formalization':form,'review':form['review'],'source_snapshot':source or {'statement':form.get('statement') or ''},
-            'artifacts':[{'path':s['path'],'blob_id':s.get('blob_id'),'content':s['code']} for s in current['files']]}
+    from ..formalization_reviews import retired
+    retired()
 
 
 @core.read_query
@@ -194,7 +167,7 @@ def target_status(project,declarations='',formalization_ids=''):
             'check_status':step.get('check_status') if step else None,'check_detail':step.get('check_detail') if step else None,
             'check_author':step.get('author') if step else None,'check_created_at':step.get('created_at') if step else None,
             # File-check freshness and target certification are separate facts.
-            # A blocked review must not erase a current passing file check.
+            # Target completion is independent of a current passing file check.
             'check_current':bool(step and step.get('check_current')),
             'validity_status':form['validity_status'],'validity_reason':form['validity_reason'],
             'review':form['review'],'certification':form['certification'],'completion_run_id':form.get('completion_run_id'),

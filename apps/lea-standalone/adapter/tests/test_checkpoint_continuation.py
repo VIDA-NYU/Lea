@@ -335,20 +335,6 @@ def test_distinct_concurrent_requests_create_at_most_one_successor(paused):
     assert sum(result == 409 for result in results) == 3
 
 
-def test_compacted_history_classifier_uses_current_mathematical_source(paused, monkeypatch):
-    _, cfg, _, _ = paused
-    seen = []
-    def classifier(*args, **kwargs):
-        seen.append(args[2])
-        yield TextDelta("PROVED")
-        yield Done(Usage(), 0.0)
-    monkeypatch.setattr(agent, "stream", classifier)
-    result = agent._classify_final_result(model="test", messages=[{"role": "user", "content": "Compacted resume summary"}],
-        final_text="Done", theorem_signature="theorem target : True",
-        config=replace(cfg, status_context={"source_bundle": source("Current mathematical statement.")}))
-    assert result[0] == "proved"
-    assert "Current mathematical statement." in seen[0][0]["content"]
-    assert "Compacted resume summary" not in seen[0][0]["content"]
 
 
 def test_changed_dependency_source_requires_fresh_check(paused):
@@ -516,7 +502,6 @@ def test_completion_reuses_only_current_saved_verification(paused, monkeypatch, 
         yield TextDelta("The proof is complete.")
         yield Done(Usage(9, 3), 0.01)
     monkeypatch.setattr(agent, "_provider_stream", provider)
-    monkeypatch.setattr(agent, "_classify_final_result", lambda **_: ("proved", None, Usage(), 0.0))
     monkeypatch.setitem(registry.REGISTRY, "lean_check", replace(registry.REGISTRY["lean_check"],
         handler=lambda args: checks.append(args) or CheckText("Lean check passed.", mock_execution(args["path"]), Path(args["path"]).read_text())))
     queue = Queue()

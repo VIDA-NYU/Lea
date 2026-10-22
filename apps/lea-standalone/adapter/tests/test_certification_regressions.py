@@ -16,18 +16,8 @@ def reproduce(name):
     return json.loads(result.stdout)
 
 
-@pytest.mark.parametrize('text', ['NOT PROVED', 'NEEDS_REVIEW: this is not PROVED',
-                                 '```PROVED```', 'PROVED DISPROVED', 'unknown', ''])
-def test_classifier_fails_closed(text):
-    from lea.agent import _parse_result_kind
-    assert _parse_result_kind(text) == 'needs_review'
 
 
-@pytest.mark.parametrize('text,expected', [('PROVED', 'proved'), (' disproved\n', 'disproved'),
-                                         ('NEEDS_REVIEW', 'needs_review')])
-def test_classifier_exact_tokens(text, expected):
-    from lea.agent import _parse_result_kind
-    assert _parse_result_kind(text) == expected
 
 
 def test_real_agent_shell_edit_cannot_certify_bad_source():

@@ -460,7 +460,7 @@ test("known tag states stay stable across refreshes, expiry and read errors, the
 });
 
 for(const [status,label,resultKind] of [['unformalized','unformalized'],['formalized','formalized'],
-  ['formalized','defined','defined'],['failed','failed'],['paused','paused'],['needs_review','Needs review'],['sorry_stub','sorry stub']]){
+  ['formalized','defined','defined'],['failed','failed'],['paused','paused'],['sorry_stub','sorry stub']]){
   test(`known ${label} tags retain presentation when an older SQL response has no display history`,async()=>{
     let stale=false;
     const h=createContentHarness({}, {}, {fetchOverride:async url=>url.endsWith('/statuses')
@@ -4004,237 +4004,32 @@ test("Lean pane edit 'Save' posts the edited content and renders the cascade imp
   assert.match(harness.bodyText(), /corollary_a: broken by this edit\./);
 });
 
-function reviewResponse(body, status = 200) {
-  return { ok: status < 400, status, async json() { return body; } };
-}
-
-function reviewFixture(outcomes = ['proved', 'disproved']) {
-  return { ok: true, review: { eligible: true, revision_token: 'revision-1', allowed_outcomes: outcomes,
-    reason: 'Lean check passed.', candidate_declaration: 'claim' },
-    source_snapshot: { statement: 'Full current LaTeX.', proof: 'Associated author proof.', context: 'Source context.' },
-    artifacts: [{ path: 'Claim.lean', content: 'theorem claim : True := by trivial\n' + '-- full content\n'.repeat(400) }] };
-}
-
-function reviewButton(h, text) {
-  const button = h.document.body.querySelectorAll('button').find(button => button.textContent === text);
-  assert.ok(button, `Expected ${text}`);
-  return button;
-}
-
-function createReviewHarness(status, patch = {}, options = {}) {
-  const kind = patch.targetKind === 'definition' ? 'definition' : 'theorem';
-  const h = createContentHarness(status, patch, {
-    manifest: { ok: true, rootFile: 'main.tex', diagnostics: [], items: [{ id: 'review-item', label: 'demo_theorem',
-      kind, status: 'needs-review', review: status.review, formalizable: true,
-      leanKind: kind === 'definition' ? 'def' : 'theorem', naturalLanguageLatex: 'A theorem.', sourceFile: 'main.tex' }] },
-    ...options
-  });
-  const load = h.loadVisibleTheorems.bind(h);
-  h.loadVisibleTheorems = input => load({ activeTex: `\\begin{${kind}}\n% lea: ${kind === 'definition' ? 'define' : 'formalize'} label=demo_theorem\nA theorem.\n\\end{${kind}}`, ...input });
-  return h;
-}
-
-test('review approval loads full evidence, requires a theorem outcome, and never formalizes', async () => {
-  const status = { status: 'needs_review', review: { eligible: true }, leaSessionId: 'session-1' };
-  const fixture = reviewFixture();
-  const h = createReviewHarness(status, {}, { fetchOverride(url, options) {
-    if (url.endsWith('/review/context')) return reviewResponse(fixture);
-    if (url.endsWith('/review/decision')) {
-      const request = JSON.parse(options.body).decision;
-      assert.equal(request.outcome, 'disproved');
-      assert.equal(request.revision_token, 'revision-1');
-      Object.assign(status, { status: 'disproved', review: { approval: { id: 'approval-1', outcome: 'disproved', created_at: '2026-01-01' } } });
-      return reviewResponse({ formalization: { validity_status: 'disproved' } });
-    }
-  } });
-  await h.loadVisibleTheorems();
-  h.openTargetPopover();
-  assert.equal(h.hasViewInLeaUiButton(), true);
-  assert.equal(h.hasButtonText('Re-formalize'), true);
-  reviewButton(h, 'Review result').click();
-  await flushPromises();
-  const dialog = h.document.querySelector('.ol-lean-review-panel');
-  assert.equal(dialog.attributes.role, 'region');
-  assert.equal(dialog.attributes['aria-modal'], undefined);
-  assert.ok(h.document.querySelector('.ol-lean-project-pane').contains(dialog));
-  assert.ok(dialog.textContent.includes(fixture.artifacts[0].content));
-  assert.equal(reviewButton(h, 'Choose an outcome').disabled, true);
-  const radios = dialog.querySelectorAll('input');
-  assert.equal(radios.length, 2);
-  assert.ok(radios.every(radio => !radio.checked));
-  radios.find(radio => radio.value === 'disproved').dispatchEvent({ type: 'change' });
-  reviewButton(h, 'Approve counterexample').click();
-  await flushPromises();
-  assert.equal(h.document.querySelector('.ol-lean-review-panel'), null);
-  h.openTargetPopover();
-  assert.equal(h.hasButtonText('Withdraw approval'), true);
-  assert.match(h.bodyText(), /Approved by user/);
-  assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/formalize')));
-  assert.equal(h.storageSetCalls.length, 0, 'approval does not set personal audit notes');
-  reviewButton(h, 'Withdraw approval').click();
-  await flushPromises();
-  const decisions = h.fetchCalls.filter(call => call.url.endsWith('/review/decision'));
-  const contextCall = h.fetchCalls.find(call => call.url.endsWith('/review/context'));
-  assert.equal(JSON.parse(contextCall.options.body).target.source_context_ref, 'published-source');
-  assert.equal(JSON.parse(decisions[0].options.body).target.source_context_ref, 'published-source');
-  assert.ok(h.fetchCalls.filter(call => call.url.endsWith('/source-context/publish')).length >= 2,
-    'opening review and submitting approval each capture a current editor publication');
-  assert.equal(JSON.parse(decisions[1].options.body).decision.action, 'withdraw');
-});
-
-test('definition approval has a fixed outcome and cancel or Escape restores trigger focus', async () => {
-  for (const escape of [false, true]) {
-    const h = createReviewHarness({ status: 'needs_review', review: { eligible: true } }, { targetKind: 'definition' }, {
-      fetchOverride(url) { if (url.endsWith('/review/context')) return reviewResponse(reviewFixture(['defined'])); }
-    });
-    await h.loadVisibleTheorems();
-    h.openTargetPopover();
-    const trigger = reviewButton(h, 'Review result');
-    trigger.click();
-    await flushPromises();
-    const dialog = h.document.querySelector('.ol-lean-review-panel');
-    assert.equal(dialog.querySelectorAll('input').length, 0);
-    assert.equal(reviewButton(h, 'Approve definition').disabled, false);
-    if (escape) dialog.dispatchEvent({ type: 'cancel' });
-    else reviewButton(h, 'Back to details').click();
-    assert.equal(h.document.querySelector('.ol-lean-review-panel'), null);
-    assert.ok(h.document.querySelector('.ol-lean-project-pane'));
-    assert.ok(!h.fetchCalls.some(call => /\/(formalize|review\/decision)$/.test(call.url)));
-  }
-});
-
-test('approval offline retry retains outcome and stale revision reload requires fresh selection', async () => {
-  let submissions = 0;
-  let loads = 0;
-  const h = createReviewHarness({ status: 'needs_review', review: { eligible: true } }, {}, {
-    fetchOverride(url) {
-      if (url.endsWith('/review/context')) {
-        const fixture = reviewFixture();
-        fixture.review.revision_token = `revision-${++loads}`;
-        return reviewResponse(fixture);
-      }
-      if (url.endsWith('/review/decision')) {
-        return reviewResponse({ ok: false, message: ++submissions === 1 ? 'Offline. Retry.' : 'Inputs changed.' }, submissions === 1 ? 503 : 409);
-      }
-    }
-  });
-  await h.loadVisibleTheorems();
-  h.openTargetPopover();
-  reviewButton(h, 'Review result').click();
-  await flushPromises();
-  h.document.querySelector('.ol-lean-review-panel').querySelectorAll('input')[0].dispatchEvent({ type: 'change' });
-  reviewButton(h, 'Approve proof').click();
-  await flushPromises();
-  assert.match(h.bodyText(), /Offline/);
-  assert.equal(reviewButton(h, 'Approve proof').disabled, false);
-  reviewButton(h, 'Approve proof').click();
-  await flushPromises();
-  assert.equal(loads, 2);
-  assert.equal(reviewButton(h, 'Choose an outcome').disabled, true);
-  const calls = h.fetchCalls.filter(call => call.url.endsWith('/review/decision'));
-  assert.equal(JSON.parse(calls[0].options.body).decision.idempotency_key, JSON.parse(calls[1].options.body).decision.idempotency_key);
-  assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/formalize')));
-});
-
-test('pane approval opens inline review and Escape leaves the pane open', async () => {
-  const h = createReviewHarness({ status: 'needs_review', review: { eligible: true } }, {}, {
-    locationPath: '/project/unknown',
-    manifest: { ok: true, rootFile: 'main.tex', diagnostics: [], items: [{ id: 'review-item', label: 'demo_theorem',
-      kind: 'theorem', status: 'needs-review', review: { eligible: true }, formalizable: true,
-      leanKind: 'theorem', naturalLanguageLatex: 'A theorem.', sourceFile: 'main.tex' }] },
-    fetchOverride(url) { if (url.endsWith('/review/context')) return reviewResponse(reviewFixture()); }
-  });
-  await h.loadVisibleTheorems();
-  h.clickPaneTrigger();
-  await flushPromises();
-  h.clickPaneTreeRowText('main.tex');
-  const trigger = reviewButton(h, 'Review result');
-  assert.ok(trigger);
-  assert.equal(h.hasButtonText('Re-formalize'), true);
-  trigger.click();
-  await flushPromises();
-  const dialog = h.document.querySelector('.ol-lean-review-panel');
-  assert.ok(dialog);
-  h.clickButtonLabel('Refresh Lean pane');
-  await flushPromises();
-  assert.equal(h.document.querySelector('.ol-lean-review-panel'), dialog, 'refresh preserves the open review and its evidence');
-  dialog.dispatchEvent({ type: 'keydown', key: 'Escape' });
-  assert.equal(h.document.querySelector('.ol-lean-review-panel'), null);
-  assert.ok(h.document.querySelector('.ol-lean-project-pane'));
-  assert.ok(h.document.querySelector('.ol-lean-project-pane'));
-  assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/formalize')));
-});
-
-test('review loading failure exposes reload and update-required errors without retrying formalization', async () => {
-  const h = createReviewHarness({ status: 'needs_review', review: { eligible: true } }, {}, {
-    fetchOverride(url) { if (url.endsWith('/review/context')) return reviewResponse({}, 404); }
-  });
-  await h.loadVisibleTheorems();
-  h.openTargetPopover();
-  reviewButton(h, 'Review result').click();
-  await flushPromises();
-  assert.match(h.bodyText(), /updated Lea companion and adapter/);
-  assert.equal(reviewButton(h, 'Refresh source and retry').hidden, false);
-  assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/formalize')));
-});
-
-test('blocked review explains approval availability in the tag and pane after status refresh', async () => {
-  const status = { status: 'needs_review', review: { eligible: false, reason: 'NEEDS_REVIEW' } };
-  const reason = 'The current Lean artifact has not passed its check.';
-  const h = createReviewHarness(status, {}, {
-    fetchOverride(url) {
-      if (url.endsWith('/review/context')) return reviewResponse({ ...reviewFixture(), review: {
-        eligible: false, reason, revision_token: null, allowed_outcomes: []
-      } });
-    }
-  });
-  await h.loadVisibleTheorems();
-  h.openTargetPopover();
-  assert.match(h.bodyText(), /see what is blocking approval/);
-  status.review.reason = reason;
-  await h.loadVisibleTheorems();
-  assert.match(h.document.querySelector('.ol-lean-popover-status').textContent, /has not passed its check/);
-  assert.doesNotMatch(h.document.querySelector('.ol-lean-popover-status').textContent, /Lean check passed/);
-  reviewButton(h, 'Review result').click();
-  await flushPromises();
-  const panel = h.document.querySelector('.ol-lean-review-panel');
-  assert.match(panel.textContent, /has not passed its check/);
-  assert.equal(panel.querySelector('fieldset').hidden, true);
-  assert.equal(reviewButton(h, 'Approval unavailable').disabled, true);
-  assert.equal(reviewButton(h, 'Refresh source and retry').hidden, false);
-  assert.ok(!h.fetchCalls.some(call => /\/(formalize|review\/decision)$/.test(call.url)));
-});
-
-test('pane withdrawal and retained-draft review use the stable source identity', async () => {
-  const h = createReviewHarness({ status: 'defined' }, { targetKind: 'definition' }, {
+test('historical review metadata exposes Lea Status without approval controls', async () => {
+  const h = createContentHarness({ status: 'needs_review', review: { eligible: true }, leaSessionId: 'session-1' }, {}, {
     manifest: { ok: true, rootFile: 'main.tex', diagnostics: [], items: [{
-      id: 'review-item', label: 'demo_theorem', kind: 'definition', status: 'defined', formalizable: true,
-      leanKind: 'def', leanDeclarationName: 'Ua', naturalLanguageLatex: 'A theorem.', sourceFile: 'main.tex',
-      review: { approval: { id: 'approved-1' } }, reformalization: { has_drafts: true, state: 'review' }
-    }] },
-    fetchOverride(url) {
-      if (url.endsWith('/review/context')) return reviewResponse(reviewFixture(['defined']));
-      if (url.endsWith('/review/decision')) return reviewResponse({ ok: true });
-    }
+      id: 'legacy-review', label: 'demo_theorem', kind: 'theorem', status: 'needs-review',
+      review: { eligible: true, approval: { id: 'legacy' } },
+      reformalization: { has_drafts: true, state: 'review' }, formalizable: true,
+      naturalLanguageLatex: 'A theorem.', sourceFile: 'main.tex', leanKind: 'theorem',
+      leanCheck: { status: 'checked' },
+      leaStatus: { confidence: 'high', assessment: { confidence: 'high', scope: 'statement_and_proof', summary: 'The source omits a boundary case.' } }
+    }] }
   });
   await h.loadVisibleTheorems();
+  h.openTargetPopover();
+  assert.equal(h.hasButtonText('Review result'), false);
   h.clickPaneTrigger();
   await flushPromises();
   h.clickPaneTreeRowText('main.tex');
   h.clickFirstPaneItem();
-  h.clickButtonLabel('More actions');
-  reviewButton(h, 'Withdraw approval').click();
-  await flushPromises();
-  const withdrawal = h.fetchCalls.find(call => call.url.endsWith('/review/decision'));
-  assert.equal(JSON.parse(withdrawal.options.body).target.targetLabel, 'demo_theorem');
-  assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/source-context/publish')));
-  h.clickButtonLabel('More actions');
-  reviewButton(h, 'Review draft').click();
-  await flushPromises();
-  assert.ok(h.document.querySelector('.ol-lean-review-panel'));
-  const context = h.fetchCalls.find(call => call.url.endsWith('/review/context'));
-  assert.equal(JSON.parse(context.options.body).target.targetLabel, 'demo_theorem');
-  assert.equal(JSON.parse(context.options.body).target.sourceBundle.targetKey, 'demo_theorem');
+  assert.match(h.paneText(), /The source omits a boundary case/);
+  assert.match(h.paneText(), /Lean Check/);
+  assert.match(h.paneText(), /Lea Status/);
+  assert.doesNotMatch(h.paneText(), /Needs review|Approved by user|awaits approval/);
+  for (const text of ['Review result', 'Review draft', 'Withdraw approval', 'Approve proof']) {
+    assert.equal(h.hasButtonText(text), false);
+  }
+  assert.ok(!h.fetchCalls.some(call => /\/review\/(context|decision)$/.test(call.url)));
 });
 
 test("Lea tag setup remains available when an empty inventory cannot reach the companion", async () => {
@@ -4522,20 +4317,15 @@ test("Formalize all waits for the complete inventory and includes all ten target
   assert.ok(submitted.items.every(item => item.source_context_ref));
 });
 
-test("a collapsed review card exposes the uncertified outcome beside a passing check and high confidence", async () => {
+test("a collapsed card shows the independent Lean check and Lea Status", async () => {
   const h = await batchAdmissionHarness({ manifest: { ok: true, diagnostics: [], items: [{
-    ...queuePaneItem('review_target'), status: 'needs-review',
-    leanCheck: { status: 'checked' }, review: { eligible: true, reason: 'The selected declaration does not match.' },
+    ...queuePaneItem('target'), status: 'valid', leanCheck: { status: 'checked' },
     leaStatus: { confidence: 'high', assessment: { confidence: 'high', scope: 'statement_and_proof' } }
   }] } });
   h.clickPaneTreeRowText('main.tex');
-  assert.match(h.paneText(), /Needs review · Result not certified/);
   assert.match(h.paneText(), /Lean Check:\s*checked/);
   assert.match(h.paneText(), /High confidence/);
-  const warning = h.document.body.querySelector('.ol-lean-project-check-chip-needs-review');
-  assert.equal(warning.title, 'The selected declaration does not match.');
-  assert.ok(!h.document.body.querySelector('.ol-lean-project-item-header').attributes['aria-expanded']
-    || h.document.body.querySelector('.ol-lean-project-item-header').attributes['aria-expanded'] === 'false');
+  assert.doesNotMatch(h.paneText(), /Needs review|Review result|awaits approval/);
 });
 
 test('a project batch counts reused proofs separately and keeps them out of needs attention', async () => {

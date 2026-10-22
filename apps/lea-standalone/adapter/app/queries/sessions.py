@@ -122,13 +122,13 @@ def _list_sessions(
                      order by cs.id desc limit 1),
                     (select rcs.focus_formalization_id from runs rcs
                      where rcs.session_id = s.id
-                       and rcs.result_kind in ('proved', 'defined', 'needs_review')
+                       and rcs.result_kind in ('proved', 'defined', 'needs_review', 'incomplete')
                      order by rcs.created_at desc, rcs.id desc limit 1)
                 ) as latest_code_formalization_id,
                 case when (
                     select rcs.result_kind from runs rcs
                     where rcs.session_id = s.id
-                      and rcs.result_kind in ('proved', 'defined', 'needs_review')
+                      and rcs.result_kind in ('proved', 'defined', 'needs_review', 'incomplete')
                       and (
                         (select cs.formalization_id from timeline cs
                          where cs.session_id = s.id and cs.kind = 'code'
@@ -250,7 +250,7 @@ def _list_sessions(
                 f"select * from formalizations where id in ({marks})", target_ids
             ).fetchall()]
         target_verdicts = {item['id']: item['validity_status'] for item in formalization_service.decorate(raw)
-                           if item['validity_status'] in {'needs_review', 'disproved'} or item.get('review', {}).get('reason')}
+                           if item['validity_status'] in {'unchecked', 'disproved'}}
         for session, fid in zip(sessions, status_targets):
             if fid in target_verdicts:
                 session["status"] = target_verdicts[fid]
@@ -372,7 +372,7 @@ def session_detail(session_id: str) -> dict | None:
         with connect() as conn:
             run_row = conn.execute(
                 """select result_kind, focus_formalization_id from runs where session_id = ?
-                   and result_kind in ('proved', 'defined', 'needs_review')
+                   and result_kind in ('proved', 'defined', 'needs_review', 'incomplete')
                    and (? is null or focus_formalization_id = ?)
                    order by created_at desc, id desc limit 1""",
                 (session_id, real_steps[-1].get("formalization_id"),
@@ -396,7 +396,7 @@ def session_detail(session_id: str) -> dict | None:
     if latest_formalization_id:
         from . import proofs as formalization_service
         target = formalization_service.get(latest_formalization_id)
-        if target and (target['validity_status'] in {'needs_review', 'disproved'} or target.get('review', {}).get('reason')):
+        if target and target['validity_status'] in {'unchecked', 'disproved'}:
             derived_status = target["validity_status"]
     return {
         **session,
@@ -586,7 +586,7 @@ def _derive_session_status(
     in-progress in the session list and stats the moment it starts."""
     if code_step_count:
         if latest_code_run_status == "needs_review":
-            return "needs_review"
+            return "unchecked"
         if latest_check_status == "ok":
             if latest_code_run_status == "disproved":
                 return "disproved"

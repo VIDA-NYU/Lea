@@ -118,29 +118,13 @@ def _capture(kind,identity,snapshot):
         with db.connect() as conn:
             source=conn.execute('select source_bundle_json from lea_status_run_contexts where run_id=?',(form['completion_run_id'],)).fetchone()
         if source:context['source_snapshot']=json.loads(source[0])
-    from . import reformalizations,reformalization_review
+    from . import reformalizations, reformalization_review
     attempt=reformalization_review.latest(identity)
     if attempt and attempt['state']!='settled':
         drafts=reformalizations.drafts(attempt['id'])
         if drafts:
-            # Display retained candidates without calling assess(): assess can
-            # compile and modify a stage. The decision handler revalidates effects.
-            token,bindings=reformalization_review.binding(attempt)
-            eligible=attempt['state']=='review'
-            if eligible:
-                try:reformalizations.fresh(attempt,snapshot=snapshot)
-                except (ValueError,OSError):eligible=False
-            from pathlib import Path
-            from lea.check_evidence import freshness
-            for draft in drafts:
-                execution=(draft.get('evidence') or {}).get('execution') or {}
-                eligible=eligible and freshness(execution,Path(attempt['manifest']['repo'])/draft['path'],snapshot=snapshot)[0]
-            selection=(attempt.get('result') or {}).get('selection') or {}
-            outcome='defined' if form.get('kind')=='definition' else 'disproved' if selection.get('kind')=='disproved' else 'proved'
-            context['review']={'eligible':bool(eligible and selection),'revision_token':token,'allowed_outcomes':[outcome],
-                'reason':'Confirm correspondence with the source.' if eligible else 'The draft needs reconciliation.',
-                'approval':None,'run_id':attempt['root_run_id'],'artifact_scope':'attempt','reformalization_id':attempt['id'],
-                'candidate_path':selection.get('path'),'candidate_declaration':selection.get('declaration'),'evidence':bindings}
+            context['review']={'eligible':False,'requested':False,'reason':'',
+                'allowed_outcomes':[],'approval':None}
             context['artifacts']=[{'path':d['path'],'blob_id':d['blob_id'],'artifact_scope':'attempt'} for d in drafts]
     return {'formalization':form,'artifact_snapshot':captured[0] if captured else None,'review_context':context,
             'target':_target(form,steps,snapshot)}

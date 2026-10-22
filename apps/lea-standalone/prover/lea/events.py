@@ -249,8 +249,10 @@ class Finished:
     `result_kind` is set for completed proof artifacts:
       'proved'       — the user's stated claim was verified
       'disproved'    — the user's stated claim was shown false
-      'needs_review' — Lean checked an artifact, but its relation to the request
-                       is ambiguous and should not be displayed as proof success
+      'defined'      — the selected definition passed its check
+      'incomplete'   — the checked inputs changed before completion
+
+    Correspondence findings are carried by Lea Status and its description.
     """
     reason: str
     text: str

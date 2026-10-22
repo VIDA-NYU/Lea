@@ -1,7 +1,7 @@
 """Public SQL/admission contract. Private operations are in app.routes.formalizations."""
 from __future__ import annotations
 from ..api_contracts import sql_query
-from .. import workspace_commands
+from .. import workspace_commands, formalization_reviews
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -32,14 +32,12 @@ class ReviewDecision(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
 
 @router.get('/api/formalizations/{formalization_id}/review')
-@sql_query('review')
 def review_context(formalization_id: str, source_context_ref: str | None=None) -> dict:
-    raise RuntimeError('A SQL query cannot execute')
+    formalization_reviews.retired()
 
 @router.post('/api/formalizations/{formalization_id}/review-decisions', status_code=202)
-@workspace_commands.intake('formalization.review')
 def review_decision(formalization_id: str, request: ReviewDecision) -> dict:
-    raise RuntimeError('An intake contract cannot execute')
+    formalization_reviews.retired()
 
 @router.get('/api/projects/{project_id}/formalizations')
 @sql_query('project_forms')

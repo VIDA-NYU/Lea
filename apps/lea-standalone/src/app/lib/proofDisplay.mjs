@@ -44,25 +44,10 @@ export function latestCodeStep(steps = []) {
  */
 export function deriveRunCompletionStatus(runStatus, steps = [], resultKind = null) {
   if (runStatus === 'disproved') return runStatus;
-  if (runStatus === 'needs_review' || resultKind === 'needs_review') return 'needs_review';
+  if (runStatus === 'needs_review' || resultKind === 'needs_review') return 'answered';
   if (runStatus !== 'proved' && runStatus !== 'success') return runStatus || 'pending';
   const latest = latestCodeStep(steps);
   const proofStatus = deriveCodeStepProofStatus(latest);
   if (proofStatus === 'defined' || ((resultKind === 'defined' || latest?.artifact_kind === 'definition') && proofStatus === 'proved')) return 'defined';
   return proofStatus === 'proved' || proofStatus === 'stubbed' ? proofStatus : 'answered';
-}
-
-export function deriveRunReviewNotice(runId, formalization) {
-  const review = formalization?.review;
-  if (!review || review.run_id !== runId) {
-    return 'This run requested review. See the current formalization for its review status.';
-  }
-  if (review.approval) {
-    return `This run requested review. Approved by user as ${review.approval.outcome} on ${new Date(review.approval.created_at).toLocaleString()}.`;
-  }
-  if (review.eligible === true && review.revision_token && review.allowed_outcomes?.length) {
-    return 'Review requested — inspect the current artifact before approving its relationship to the original request.';
-  }
-  const reason = review.reason || formalization.validity_reason || 'Current review eligibility is unavailable.';
-  return `This run needs attention. Approval is unavailable. ${reason}`;
 }

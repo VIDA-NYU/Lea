@@ -30,7 +30,6 @@ def test_checked_sorry_finishes_only_in_explicit_stub_mode(tmp_path, monkeypatch
         return CheckText("warning: declaration uses 'sorry'", execution, path.read_text(), str(path))
     monkeypatch.setattr(agent, '_provider_stream', provider)
     monkeypatch.setattr(agent._tools, 'lean_check', check)
-    monkeypatch.setattr(agent, '_classify_final_result', lambda **_: pytest.fail('A stub is never a proved result'))
     config = LeaConfig(model='test', max_turns=3, mcp_servers={}, stub_generation=stub,
         prompt_variant='overleaf_stub' if stub else 'default')
     events = list(agent.run_events(config, [{'role':'user','content':'Create a checked sorry stub and stop.'}], working_dir=tmp_path))

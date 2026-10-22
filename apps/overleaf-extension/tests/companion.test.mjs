@@ -1186,33 +1186,20 @@ test("a failed background report state write is observed without an unhandled re
   assert.match(errors.mock.calls[0].arguments[0], /report bookkeeping failed/);
 });
 
-test('review transport forwards the current editor publication without admitting a prover run or rewriting jobs', async () => {
+test('retired review endpoints reject decisions without contacting the adapter or changing jobs', async () => {
   const calls = [];
-  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
-    calls.push({ url: String(url), options });
-    if (String(url).includes('/review?')) return jsonResponse(200, { review: { eligible: true } });
-    if (String(url).endsWith('/review-decisions')) return jsonResponse(200, { formalization: { validity_status: 'proved' } });
-    throw new Error(`Unexpected request: ${url}`);
-  } });
-  state.jobs.review = { jobId: 'review', jobKey: 'project-1:theorem:claim', targetLabel: 'claim', targetKind: 'theorem',
-    formalizationId: 'formalization-1', leaSessionId: 'session-1', status: 'needs_review', finishedAt: '2026-01-01' };
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (...args) => { calls.push(args); } });
   const before = structuredClone(state.jobs);
-  const target = { overleafProjectId: 'project-1', targetKind: 'theorem', targetLabel: 'claim', source_context_ref: 'fresh-source' };
-  assert.equal((await handleReview({ target }, state)).body.review.eligible, true);
-  const approval = { action: 'approve', outcome: 'proved', revision_token: 'revision', idempotency_key: 'one' };
-  assert.equal((await handleReview({ target, decision: approval }, state, { decision: true })).body.formalization.validity_status, 'proved');
-  const forwarded = JSON.parse(calls.find(call => call.url.endsWith('/review-decisions')).options.body);
-  assert.deepEqual(forwarded, { ...approval, source_context_ref: 'fresh-source' });
-  const beforeWithdrawal = calls.length;
-  await handleReview({ target, decision: { action: 'withdraw', approval_id: 'one', idempotency_key: 'withdraw' } }, state, { decision: true });
-  assert.equal(calls.length, beforeWithdrawal + 1, 'withdrawal does not prepare source or create a run');
+  for (const decision of [false, true]) {
+    const result = await handleReview({}, state, { decision });
+    assert.equal(result.statusCode, 410);
+    assert.equal(result.body.error, 'formalization_review_retired');
+  }
   assert.deepEqual(state.jobs, before);
-  assert.equal((await handleReview({ target: { ...target, source_context_ref: null } }, state)).statusCode, 409);
-  state.jobs.review.settling = true;
-  assert.equal((await handleReview({ target }, state)).statusCode, 409);
+  assert.deepEqual(calls, []);
 });
 
-test('adapter user approval supersedes cached review while batch history remains unchanged', async () => {
+test('current run evidence supersedes a cached review without exposing approval', async () => {
   const name = 'approved_claim';
   const approval = { id: 'user-approval', outcome: 'proved', created_at: '2026-01-02' };
   const entry = ledgerEntry(name, { review: { approval }, certification: { source: 'user_review', outcome: 'proved' } });
@@ -1223,14 +1210,14 @@ test('adapter user approval supersedes cached review while batch history remains
     `\\begin{theorem}\n% lea: formalize label=${name}\nTrue.\n\\end{theorem}` }] };
   const result = await handleLeanPaneManifest(payload, state);
   assert.equal(result.body.items[0].status, 'valid');
-  assert.equal(result.body.items[0].review.approval.id, approval.id);
+  assert.equal(result.body.items[0].review.approval, null);
   assert.equal(state.jobs.review.status, 'needs_review');
   Object.assign(entry, { validity_status: 'needs_review', review: { eligible: true, approval: null }, certification: null });
-  assert.equal((await handleLeanPaneManifest(payload, state)).body.items[0].status, 'needs-review');
+  assert.equal((await handleLeanPaneManifest(payload, state)).body.items[0].status, 'unknown');
 });
 
-test("lean pane manifest surfaces needs_review as a visible review state", async () => {
-  // A partial run with no artifact-index row remains visible as Needs review.
+test("lean pane manifest does not reopen a historical review", async () => {
+  // A partial historical run never opens an approval flow.
   const leaRepo = await makeLeaRepo();
   const state = await makeState({ leaRepoPath: leaRepo });
   state.jobs.needsReview = {
@@ -1263,11 +1250,11 @@ test("lean pane manifest surfaces needs_review as a visible review state", async
   }, state);
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.items[0].status, "needs-review");
+  assert.ok(!["needs-review", "valid"].includes(res.body.items[0].status));
 });
 
 for (const check of ["ok", "error", "unchecked"]) {
-  test(`blocked review stays visible in badges and pane with an independent ${check} file check`, async () => {
+  test(`retired review metadata cannot override an independent ${check} file check`, async () => {
     const name = "review_target";
     const reason = "The checked artifact does not declare the requested review_target.";
     const entry = ledgerEntry(name, { validity_status: "unchecked", validity_reason: reason,
@@ -1277,16 +1264,16 @@ for (const check of ["ok", "error", "unchecked"]) {
         revision_token: null, approval: null, reason } });
     const { state } = await makeLedgerState({ [name]: entry });
     const badge = await ledgerStatusFor(state, name);
-    assert.equal(badge.status, "needs_review");
-    assert.equal(badge.resultKind, "needs_review");
+    assert.equal(badge.status, check === "error" ? "failed" : "unavailable");
+    assert.notEqual(badge.resultKind, "needs_review");
     assert.equal(badge.review.eligible, false);
-    assert.equal(badge.message, reason);
+    assert.equal(badge.message, check === "error" ? "type mismatch" : reason);
     const response = await handleLeanPaneManifest({ overleafProjectId: "project-1", files: [
       { path: "main.tex", content: `\\begin{theorem}\n% lea: formalize label=${name}\nTrue.\n\\end{theorem}` }
     ] }, state);
     const item = response.body.items[0];
-    assert.equal(item.status, "needs-review");
-    assert.equal(item.message, reason);
+    assert.equal(item.status, check === "error" ? "invalid" : "unknown");
+    assert.equal(item.message, check === "error" ? "type mismatch" : reason);
     assert.equal(item.review.eligible, false);
     assert.equal(item.leanCheck.status, check === "ok" ? "checked" : check === "error" ? "error" : "unconfirmed");
   });
@@ -1378,7 +1365,7 @@ test("lean pane manifest: a newer unconfirmed re-run beats an older formalized j
   }, state);
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.items[0].status, "needs-review");
+  assert.ok(!["needs-review", "valid"].includes(res.body.items[0].status));
 });
 
 test("lean pane manifest: a newer formalized re-run beats an older needs_review job", async () => {
@@ -4626,16 +4613,16 @@ test("formalize all cannot bypass the shared-file guard", async () => {
   assert.ok(!calls.some((call) => String(call.url).endsWith("/api/runs")));
 });
 
-test('formalize all leaves a review-ready target awaiting approval without a new run', async () => {
+test('formalize all can retry a historical review without waiting for approval', async () => {
   const calls = [];
   const { state } = await makeLedgerState({ awaiting: ledgerEntry('awaiting', { validity_status: 'needs_review', review: { eligible: true } }) }, {
     fetchImpl: makeAdapterApiFetch(calls, { targetStatus: { awaiting: ledgerEntry('awaiting', { validity_status: 'needs_review' }) } })
   });
   const result = await handleFormalize({ overleafProjectId: 'project-1', targetKind: 'theorem', targetLabel: 'awaiting', targetText: 'True.' }, state, { batch: true });
   assert.equal(result.statusCode, 200);
-  assert.equal(result.body.status, 'awaiting_approval');
-  assert.ok(!calls.some(call => String(call.url).endsWith('/api/runs')));
-  assert.deepEqual(state.jobs, {});
+  assert.equal(result.body.status, 'in_progress');
+  await waitFor(() => state.jobs[result.body.jobId]?.status !== 'in_progress');
+  assert.ok(calls.some(call => String(call.url).endsWith('/api/runs')));
 });
 
 test("formalize all refuses to complete a stub stored beside another proof", async () => {
@@ -6057,7 +6044,7 @@ test("formalize all overrides opt-in pauses, skips dependents, and continues ind
   assert.match(runs[0].body.message, /preferred Lean declaration name is base/);
 });
 
-test("formalize all keeps review terminal and skips only dependent targets", async () => {
+test("formalize all treats an old review outcome as incomplete and continues independent targets", async () => {
   const leaRepo = await makeLeaRepo();
   const state = await makeState({
     leaRepoPath: leaRepo,
@@ -6075,9 +6062,9 @@ test("formalize all keeps review terminal and skips only dependent targets", asy
   const batch = state.repairBatches[result.body.batchId];
   await waitFor(() => batch.done);
   assert.deepEqual(Object.fromEntries(batch.items.map((entry) => [entry.targetLabel, entry.state])), {
-    review_base: "needs_review", review_dependent: "skipped", independent: "needs_review"
+    review_base: "incomplete", review_dependent: "skipped", independent: "incomplete"
   });
-  assert.equal(batch.items[1].reason, "depends_on_review:review_base");
+  assert.equal(batch.items[1].reason, "depends_on_incomplete:review_base");
 });
 
 test("formalize all settles resumable pauses as incomplete and continues independent work", async () => {
@@ -6610,9 +6597,9 @@ test("resolveProofOutcome does not certify a bare successful stream outcome", as
     exit: { ok: true, resultKind: "proved" }
   });
 
-  assert.equal(outcome.jobStatus, "needs_review");
-  assert.equal(outcome.finalStatus, "needs_review");
-  assert.equal(outcome.effectiveStatus.status, "needs_review");
+  assert.equal(outcome.jobStatus, "failed");
+  assert.notEqual(outcome.finalStatus, "needs_review");
+  assert.notEqual(outcome.effectiveStatus.status, "needs_review");
   assert.equal(outcome.error, null);
   assert.equal(outcome.leanCheck, null);
 });
@@ -6682,7 +6669,7 @@ test("resolveProofOutcome marks a failed run as failed and surfaces the run erro
   assert.equal(outcome.error, "Lea run ended with status: failed");
 });
 
-test("resolveProofOutcome preserves needs_review even when the local file compiles", async () => {
+test("resolveProofOutcome treats an old review as incomplete even when the local file compiles", async () => {
   // A passing local compile remains a separate fact from the target verdict.
   const job = { targetKind: "theorem", targetLabel: "t5", leaWorkspacePath: "/tmp/x" };
   const leanCheck = { ok: true, exitCode: 0, stdout: "", stderr: "", message: "" };
@@ -6693,10 +6680,10 @@ test("resolveProofOutcome preserves needs_review even when the local file compil
     exit: { ok: false, doneStatus: "needs_review", resultKind: "needs_review", resultDetail: "NEEDS_REVIEW" }
   });
 
-  assert.equal(outcome.jobStatus, "needs_review");
-  assert.equal(outcome.finalStatus, "needs_review");
-  assert.equal(outcome.effectiveStatus.status, "needs_review");
-  assert.equal(outcome.resultKind, "needs_review");
+  assert.equal(outcome.jobStatus, "failed");
+  assert.notEqual(outcome.finalStatus, "needs_review");
+  assert.notEqual(outcome.effectiveStatus.status, "needs_review");
+  assert.equal(outcome.resultKind, "incomplete");
   assert.equal(outcome.error, null);
   // reuses the attached check -- it must not pay for a second compile
   assert.equal(outcome.leanCheck, leanCheck);
@@ -6714,10 +6701,10 @@ test("resolveProofOutcome fails unconfirmed needs_review when the fresh compile 
     exit: { ok: false, doneStatus: "needs_review", resultKind: "needs_review", resultDetail: "NEEDS_REVIEW" }
   });
 
-  assert.equal(outcome.jobStatus, "needs_review");
-  assert.equal(outcome.finalStatus, "needs_review");
-  assert.equal(outcome.effectiveStatus.status, "needs_review");
-  assert.equal(outcome.resultKind, "needs_review");
+  assert.equal(outcome.jobStatus, "failed");
+  assert.notEqual(outcome.finalStatus, "needs_review");
+  assert.notEqual(outcome.effectiveStatus.status, "needs_review");
+  assert.equal(outcome.resultKind, "incomplete");
   // the failing check is kept as the diagnostic explaining WHY
   assert.equal(outcome.leanCheck, failingCheck);
 });
@@ -6735,10 +6722,10 @@ test("resolveProofOutcome fails unconfirmed needs_review when no compile evidenc
     exit: { ok: false, doneStatus: "needs_review", resultKind: "needs_review", resultDetail: "NEEDS_REVIEW" }
   });
 
-  assert.equal(outcome.jobStatus, "needs_review");
-  assert.equal(outcome.finalStatus, "needs_review");
-  assert.equal(outcome.effectiveStatus.status, "needs_review");
-  assert.equal(outcome.resultKind, "needs_review");
+  assert.equal(outcome.jobStatus, "failed");
+  assert.notEqual(outcome.finalStatus, "needs_review");
+  assert.notEqual(outcome.effectiveStatus.status, "needs_review");
+  assert.equal(outcome.resultKind, "incomplete");
   assert.equal(outcome.leanCheck, null);
 });
 
@@ -6881,7 +6868,7 @@ test("recoverFormalizedStatusFromTargetPath returns null when the run has no ses
   assert.equal(recovered, null);
 });
 
-test("resolveProofOutcome keeps needs_review when no local file is found", async () => {
+test("resolveProofOutcome keeps an unconfirmed historical result incomplete without an artifact", async () => {
   // The review verdict survives even without a local file link.
   const job = { targetKind: "theorem", targetLabel: "t6", leaWorkspacePath: "/tmp/x" };
   const outcome = await resolveProofOutcome({
@@ -6890,10 +6877,10 @@ test("resolveProofOutcome keeps needs_review when no local file is found", async
     exit: { ok: false, doneStatus: "needs_review", resultKind: "needs_review", error: "Lea run ended with status: needs_review" }
   });
 
-  assert.equal(outcome.jobStatus, "needs_review");
-  assert.equal(outcome.finalStatus, "needs_review");
-  assert.equal(outcome.resultKind, "needs_review");
-  assert.equal(outcome.effectiveStatus.status, "needs_review");
+  assert.equal(outcome.jobStatus, "failed");
+  assert.notEqual(outcome.finalStatus, "needs_review");
+  assert.equal(outcome.resultKind, "incomplete");
+  assert.notEqual(outcome.effectiveStatus.status, "needs_review");
   assert.equal(outcome.error, null);
 });
 

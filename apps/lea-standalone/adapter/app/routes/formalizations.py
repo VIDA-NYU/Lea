@@ -60,7 +60,6 @@ class ReviewDecision(BaseModel):
 
 
 @router.get('/api/formalizations/{formalization_id}/review')
-@database_query('review')
 @project_coordination.guarded(_scope_project, metadata=True)
 def review_context(formalization_id: str, source_context_ref: str | None = None) -> dict:
     return formalization_reviews.context(formalization_id, source_context_ref)

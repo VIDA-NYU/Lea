@@ -250,7 +250,7 @@ def run(context, op):
                     if child:
                         store.set_run_transcript(child['run_id'], ev.transcript)
                         store.add_message(child['session']['id'], 'assistant', ev.summary, run_id=child['run_id'])
-                        store.update_run(child['run_id'], 'needs_review', result_kind='needs_review', final_text=ev.summary, usage_status='final')
+                        store.update_run(child['run_id'], 'answered', result_kind='incomplete', final_text=ev.summary, usage_status='final')
                         bridge._child_session_to_result.pop(child['session']['id'], None)
                         bridge.emit(events, 'subagent_finished', {'child_id': child['session']['id'], 'run_id': child['run_id'],
                             'result_id': ev.result_id, 'check_status': ev.check_status, 'artifact_scope': 'attempt', 'summary': ev.summary})
@@ -281,7 +281,7 @@ def run(context, op):
                 elif isinstance(ev, Finished):
                     _capture(op, rid, repo)
                     store.set_run_transcript(rid, ev.transcript.get('messages', []))
-                    kind = ev.result_kind or 'needs_review'
+                    kind = ev.result_kind or 'incomplete'
                     detail = ev.result_detail or ev.text
                     if ev.reason == 'completed' and not should_stop():
                         chosen = ev.selected_result or {}
@@ -291,24 +291,16 @@ def run(context, op):
                         with execution.scope(None):
                             assessment = assess(op['id'], selection)
                         selection = assessment['selection']
-                        if kind in {'proved', 'defined', 'disproved'}:
-                            if kind != selection['kind']:
-                                kind = 'needs_review'
-                                detail = 'The selected declaration and reported outcome require correspondence review.'
-                        if kind in {'proved', 'defined', 'disproved'}:
-                            if should_stop():raise ValueError('Solver was cancelled before publication; the draft is retained')
-                            with execution.scope(None):
-                                receipt = apply(op['id'], selection, kind, assessment=assessment, helper=dependency,command_token=context.command_token)
-                            status = kind
-                            detail = kind.upper()
-                            bridge.emit(events, 'reformalization_applied', receipt)
-                        else:
-                            status = kind = 'needs_review'
-                            for rel in assessment['checks']:
-                                if rel == selection['path'] or rel in assessment['changes']:
-                                    operations.save_draft(op['id'], rid, rel, assessment['after'][rel], assessment['checks'][rel])
-                            operations.update(op['id'], 'review', result={'outcome': kind, 'detail': detail,
-                                'selection': selection, 'drafts': [{'path': d['path'], 'blob_id': d['blob_id']} for d in operations.drafts(op['id'])]})
+                        # assess() verifies the selected declaration and publication
+                        # checks. Lea Status describes correspondence with the source;
+                        # there is no separate classifier or human approval gate.
+                        kind = selection['kind']
+                        if should_stop():raise ValueError('Solver was cancelled before publication; the draft is retained')
+                        with execution.scope(None):
+                            receipt = apply(op['id'], selection, kind, assessment=assessment, helper=dependency,command_token=context.command_token)
+                        status = kind
+                        detail = None
+                        bridge.emit(events, 'reformalization_applied', receipt)
                     else:
                         status, kind, reason, recoverable = 'cancelled', 'interrupted', ev.reason, True
                         if ev.reason=='completed':reason='interrupted'

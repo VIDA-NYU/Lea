@@ -47,8 +47,7 @@ class ProjectLibraryTests(unittest.TestCase):
             with patch.object(agent, "stream", side_effect=stream), \
                     patch.object(agent, "load_system_prompt", return_value="Test"), \
                     patch.dict(registry.REGISTRY, {"lean_check": replace(registry.REGISTRY["lean_check"],
-                        handler=checked)}), \
-                    patch.object(agent, "_classify_final_result", return_value=("defined", None, Usage(), 0.0)):
+                        handler=checked)}):
                 gen = agent.run_events(cfg, [{"role": "user", "content": "Define descent_energy"}],
                     working_dir=directory)
                 answer = None
@@ -68,7 +67,7 @@ class ProjectLibraryTests(unittest.TestCase):
             self.assertEqual(cfg.project_context.get("reserved_paths", []), [])
         finished = next(e for e in events if isinstance(e, Finished))
         self.assertEqual(finished.reason, "completed")
-        self.assertEqual(finished.result_kind, "defined")
+        self.assertEqual(finished.result_kind, "proved")  # host identifies the definition artifact
         self.assertTrue(any("current formalization target" in e.content for e in events if isinstance(e, ToolResulted)))
 
     def test_deferred_request_is_journaled_before_clean_checkpoint(self):

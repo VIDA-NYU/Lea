@@ -116,8 +116,6 @@ import {
   setProjectRemoteBySlug,
   fetchCurrentLeaStatus,
   prepareOverleafSource,
-  fetchFormalizationReview,
-  submitFormalizationReview,
   fetchLeaStatusHistory,
   createFormalizeBatchReport,
   listFormalizeBatchReports,
@@ -746,9 +744,6 @@ async function handleFormalizeUnlocked(payload, state, { batch = false, dependen
     return errorResponse(409, "shared_artifact", "Update the Lea adapter to re-formalize this shared file automatically while preserving its other declarations.");
   }
   if (batch) {
-    if (Object.values(ledger || {}).some(entry => entry?.validity_status === 'needs_review')) {
-      return { statusCode: 200, body: { status: 'awaiting_approval' } };
-    }
     // The pane's status snapshot can be stale by the time this item reaches the
     // front of a long batch. Never turn a completed proof into a destructive
     // retry simply because the browser queued it earlier. A partial file can
@@ -2195,36 +2190,9 @@ async function persistChatSessions(state) {
   publishEvent(state, "chat-updated", {});
 }
 
-export async function handleReview(payload, state, { decision = false } = {}) {
-  const validation = normalizeChatTarget(payload?.target, state);
-  if (!validation.ok) return errorResponse(400, validation.error, validation.message);
-  const target = validation.target;
-  const resolved = resolveChatSession({ state, target });
-  let formalizationId = resolved.formalizationId;
-  const latest = findLatestFinishedJob(state.jobs || {}, target.targetKey);
-  if (resolved.activeJob || latest?.settling) return errorResponse(409, 'review_busy', 'Wait for the current target operation to finish before approving.');
-  if (!formalizationId) {
-    const identity = await resolveRunProjectIdentity({ state, overleafProjectId: target.overleafProjectId });
-    const leaTarget = buildLeaTarget({ leaRepoPath: state.settings.leaRepoPath, ...target,
-      projectName: identity.projectName, projectNamespace: identity.namespace });
-    const ledger = await fetchTargetStatusFromAdapter({ state, target: leaTarget, declarations: [target.targetLabel] });
-    formalizationId = Object.values(ledger || {}).find(entry => entry?.formalization_id)?.formalization_id;
-  }
-  if (!formalizationId) return errorResponse(404, 'review_target_missing', 'The recorded formalization could not be found. Refresh status.');
-  const api = { fetchImpl: state.fetchImpl || fetch, baseUrl: chatBaseUrls(state).baseUrl,
-    apiKey: state.env?.LEA_API_KEY, formalizationId };
-  let sourceContextRef = target.source_context_ref;
-  if (!decision || payload.decision?.action === 'approve') {
-    if (!sourceContextRef) return errorResponse(409, 'review_source_required',
-      'Refresh the source from the Overleaf tab before reviewing this result.');
-  }
-  const result = decision
-    ? await submitFormalizationReview({ ...api, decision: { ...payload.decision, source_context_ref: sourceContextRef } })
-    : await fetchFormalizationReview({ ...api, sourceContextRef });
-  if (!result.ok) return errorResponse(result.status || 503, 'review_unavailable', result.status === 404
-    ? 'Result approval requires the updated Lea adapter. Update and restart it, then retry.' : result.error);
-  if (decision) publishEvent(state, 'jobs-changed', { overleafProjectId: target.overleafProjectId });
-  return { statusCode: 200, body: { ok: true, ...result.body } };
+export async function handleReview() {
+  return errorResponse(410, "formalization_review_retired",
+    "Lea Status and its description replace result review. No approval is required.");
 }
 
 export async function handleChatSession(payload, state) {
@@ -3950,8 +3918,8 @@ export function classifyFormalizeJob(job) {
   if (status === "paused" && job?.recoverable === true) return {
     ok: false, state: "incomplete", reason: job.stopReason || "paused", detail, recoverable: true
   };
-  return { ok: false, state: status === "needs_review" ? "needs_review" : "failed",
-    reason: job?.stopReason || detail || (status === "needs_review" ? "target_needs_review" : "formalize_failed"),
+  return { ok: false, state: status === "needs_review" || job?.resultKind === "incomplete" ? "incomplete" : "failed",
+    reason: job?.stopReason || detail || "formalize_failed",
     detail, recoverable: job?.recoverable === true };
 }
 
@@ -3996,9 +3964,6 @@ async function runFormalizeBatchItem(state, entry, batch) {
   if (result?.statusCode === 402 || body.error === "max_spend_reached") return { paused: true };
   if (result?.statusCode === 200 && body.status === "existing_proof") {
     return { ok: true, state: "skipped", reason: "existing_proof" };
-  }
-  if (result?.statusCode === 200 && body.status === 'awaiting_approval') {
-    return { ok: false, state: 'needs_review', reason: 'awaiting_approval' };
   }
   if (result?.statusCode !== 200 || !body.jobId) {
     return { ok: false, reason: body.error || body.message || "formalize_start_failed", jobId: body.jobId || null };
@@ -6980,15 +6945,12 @@ export async function resolveProofOutcome({ job, localStatus, exit }) {
     };
   }
 
-  if (resultKind === "needs_review") {
+  if (["needs_review", "incomplete"].includes(resultKind)) {
     return {
-      jobStatus: "needs_review",
-      finalStatus: "needs_review",
-      effectiveStatus: { ...local, status: "needs_review" },
-      resultKind: "needs_review",
-      resultDetail: exit.resultDetail || "The requested declaration was not certified.",
-      leanCheck: local.leanCheck || null,
-      error: null
+      jobStatus: "failed", finalStatus: local.status === "formalized" ? "unavailable" : local.status,
+      effectiveStatus: { ...local, status: local.status === "formalized" ? "unavailable" : local.status },
+      resultKind: "incomplete", resultDetail: exit.resultDetail || "The requested declaration was not certified.",
+      leanCheck: local.leanCheck || null, error: null
     };
   }
 
@@ -7009,11 +6971,11 @@ export async function resolveProofOutcome({ job, localStatus, exit }) {
 
   if (exit.ok && (exit.targetVerified !== true || !["proved", "defined"].includes(resultKind))) {
     return {
-      jobStatus: "needs_review",
-      finalStatus: "needs_review",
-      effectiveStatus: { ...local, status: "needs_review" },
+      jobStatus: "failed",
+      finalStatus: "unavailable",
+      effectiveStatus: { ...local, status: "unavailable" },
       leanCheck: local.leanCheck || null,
-      resultKind: "needs_review",
+      resultKind: "incomplete",
       resultDetail: "The adapter did not certify the requested target on this run's current checked artifact.",
       error: null
     };
@@ -7169,7 +7131,7 @@ export async function applyProofOutcomeToJob({ state, job, target, exit, resolve
     } else if (!evidence || !["proved", "defined"].includes(evidence.validity_status)
       || evidence.check_current !== true || evidence.declaration_present !== true
       || evidence.completion_run_id !== job.apiRunId) {
-      exit = { ...exit, ok: false, resultKind: "needs_review",
+      exit = { ...exit, ok: false, resultKind: "incomplete",
         resultDetail: evidence?.validity_reason || "The adapter could not confirm the requested target on the current checked artifact." };
     } else {
       exit = { ...exit, targetVerified: true };
@@ -7192,14 +7154,14 @@ export async function applyProofOutcomeToJob({ state, job, target, exit, resolve
   delete job.waitingForObservation;
   delete job.pendingProofOutcome;
 
-  // Partial files remain accessible even when the run needs review.
+  // Partial files remain accessible when the run is incomplete.
   const exitResultKind = String(exit.resultKind || exit.doneStatus || "").toLowerCase();
   // The adapter's structured index (4.1/4.2) is the ONLY identification
   // source; the registry-markdown diff fallback and its ambiguity path were
   // deleted after the bake period (4.3). No row / no index → the session
   // recovery below, exactly as before.
   let artifact = null;
-  if (exit.ok || exitResultKind === "needs_review") {
+  if (exit.ok || ["needs_review", "incomplete"].includes(exitResultKind)) {
     artifact = await identifyArtifactFromAdapter({ state, job, target });
   }
 
@@ -7212,7 +7174,7 @@ export async function applyProofOutcomeToJob({ state, job, target, exit, resolve
     // view complete when the agent didn't self-register an entry. Only fill
     // a MISSING entry; an existing one may carry the agent's richer prose
     // and must not be clobbered.
-    if (exit.ok && exitResultKind !== "needs_review") {
+    if (exit.ok && !["needs_review", "incomplete"].includes(exitResultKind)) {
       registryEntry = {
         projectMarkdownPath: target.projectMarkdownPath,
         projectId: target.projectSlug,
@@ -8378,7 +8340,7 @@ function buildJobResponse({ state = {}, job, status, target }) {
       : null) || (job.settling ? pausedMessage : null) || job.error || job.resultDetail || pausedMessage || (status === "disproved"
       ? "Lea found a verified counterexample or disproof. The original theorem was not proven."
       : status === "needs_review"
-        ? "Lea produced a checked, sorry-free proof but flagged its own result for human review."
+        ? "Lea did not certify the requested target. See Lea Status for its assessment."
         : ""),
     resultKind: job.resultKind || (status === "disproved" ? "disproved" : status === "needs_review" ? "needs_review" : status === "formalized" ? (target.targetKind === "definition" ? "defined" : "proved") : null),
     resultDetail: job.resultDetail || null,
@@ -9072,7 +9034,7 @@ function mapLeanPaneStatus(statusInfo, item) {
   if (status === "sorry_stub" || effective === "sorry_stub") return "stub-generated";
   if (status === "formalized") return item?.leanKind === "def" ? "defined" : "valid";
   if (status === "disproved") return "disproved";
-  if (status === "needs_review") return "needs-review";
+  if (status === "needs_review") return "unknown";
   if (status === "stale") return "stale";
   if (status === "failed") return "invalid";
   if (status === "in_progress") return "in-progress";
@@ -9331,9 +9293,6 @@ async function getTheoremStatus({
   const evidence = (linkedJob?.formalizationId
     ? Object.values(ledger || {}).find((entry) => entry?.formalization_id === linkedJob.formalizationId)
     : null) || candidates.map((name) => ledger?.[name]).find((entry) => entry?.formalization_id || entry?.last_batch_outcome) || null;
-  const needsReview = evidence?.validity_status === "needs_review"
-    || (evidence?.review?.requested === true && !evidence.review.approval
-      && !["proved", "defined", "disproved", "stale"].includes(evidence.validity_status));
   if (evidence?.project_namespace) target.projectNamespace = evidence.project_namespace;
   if(evidence?.formalization_id && evidence.projection && evidence.projection.state!=='observed') {
     return withLeaSession({status:evidence.stale?'stale':'unknown',effectiveStatus:evidence.stale?'stale':'unknown',
@@ -9349,15 +9308,15 @@ async function getTheoremStatus({
         artifactRecorded: true,
         artifactExists: Boolean(evidence.exists),
         artifactContent: typeof evidence.content === "string" ? evidence.content : undefined,
-        review: evidence.review,
+        review: { eligible: false, requested: false, reason: "", allowed_outcomes: [], approval: null },
         reformalization: evidence.reformalization,
         certification: evidence.certification,
-        leanCheck: { status: evidence.check_current === true ? evidence.check_status : "unchecked",
+        leanCheck: { status: evidence.exists && evidence.check_current === true ? evidence.check_status : "unchecked",
           message: evidence.check_detail || null }
       }
     : {};
   const newestFinishedJob = findLatestFinishedJob(jobs, target.jobKey);
-  const unresolvedReviewJob = evidence && !needsReview ? null : findLatestJob(jobs, target.jobKey, "needs_review");
+  const unresolvedReviewJob = evidence ? null : findLatestJob(jobs, target.jobKey, "needs_review");
   // A later successful target run can supersede a paused job. A manual check
   // alone cannot do so, even when it happened after the pause.
   const checkedAfterPause = newestFinishedJob?.status === "paused"
@@ -9367,7 +9326,7 @@ async function getTheoremStatus({
     && Boolean(evidence.completion_run_id)
     && evidence.completion_run_id !== newestFinishedJob.apiRunId;
   if (newestFinishedJob?.status === "paused" && !checkedAfterPause
-      && !needsReview && !unresolvedReviewJob) {
+      && !unresolvedReviewJob) {
     const paused = buildJobResponse({ state, job: newestFinishedJob, status: "paused", target });
     if (evidence?.exists) {
       const entry = {
@@ -9398,13 +9357,6 @@ async function getTheoremStatus({
   // dependent genuinely rebuilds.
   const editBroken = linkedJob?.lastEditCheckStatus === "error";
 
-  if (needsReview && !evidence.exists) {
-    return withLeaSession({ status: "needs_review", targetKind, targetLabel: target.targetLabel,
-      targetKey: target.jobKey, formalizationId: evidence.formalization_id || null,
-      resultKind: "needs_review", message: evidence.validity_reason,
-      leanCheckPassed: evidence.check_current === true && evidence.check_status === "ok", ...artifactEvidence });
-  }
-
   if (evidence && evidence.exists) {
     const entry = {
       name: evidence.declaration_name,
@@ -9415,11 +9367,6 @@ async function getTheoremStatus({
     };
     const base = ledgerStatusBase({ leaRepoPath, target, entry });
     const leanStatement = extractLeanStatement(evidence.content || "", entry.name);
-    if (needsReview) {
-      return withLeaSession({ status: "needs_review", ...base, ...artifactEvidence,
-        resultKind: "needs_review", message: evidence.validity_reason,
-        leanCheckPassed: evidence.check_current === true && evidence.check_status === "ok", leanStatement });
-    }
     if (evidence.check_status === "error" || editBroken) {
       // The newest real verdict is a compile error (manual edit or cascade
       // re-check). Checked ahead of has_sorry: a stub broken by an upstream
@@ -9440,7 +9387,7 @@ async function getTheoremStatus({
         message: evidence.check_detail || "This item no longer compiles."
       };
     }
-    if (evidence.validity_status === "disproved" && (evidence.completion_run_id || evidence.certification?.source === 'user_review') && evidence.check_current === true) {
+    if (evidence.validity_status === "disproved" && (evidence.completion_run_id) && evidence.check_current === true) {
       return withLeaSession({ status: "disproved", ...base, ...artifactEvidence,
         resultKind: "disproved", leanCheckPassed: true, leanStatement,
         message: "Checked counterexample—original claim disproved." });
@@ -9449,7 +9396,7 @@ async function getTheoremStatus({
       return withLeaSession({ status: "sorry_stub", ...base, ...artifactEvidence, leanStatement });
     }
     if (!(["proved", "defined"].includes(evidence.validity_status)
-      && Boolean(evidence.completion_run_id || evidence.certification?.source === 'user_review')
+      && Boolean(evidence.completion_run_id)
       && evidence.check_current === true && evidence.declaration_present === true)) {
       return withLeaSession({ status: evidence.validity_status === "stale" ? "stale" : "unavailable",
         ...base, ...artifactEvidence, message: evidence.validity_reason || "Target completion could not be confirmed.",
@@ -9480,7 +9427,7 @@ async function getTheoremStatus({
   const terminalCandidates = [
     { job: unresolvedReviewJob ? null : findLatestJob(jobs, target.jobKey, "formalized"), status: "unavailable" },
     { job: unresolvedReviewJob ? null : findLatestJob(jobs, target.jobKey, "repaired"), status: "unavailable" },
-    { job: evidence && evidence.validity_status !== 'needs_review' ? null : findLatestJob(jobs, target.jobKey, "needs_review"), status: "needs_review" },
+    { job: unresolvedReviewJob, status: "unavailable" },
     { job: findLatestJob(jobs, target.jobKey, "disproved"), status: "unavailable" },
     { job: findLatestJob(jobs, target.jobKey, "sorry_stub"), status: "sorry_stub" },
     { job: unresolvedReviewJob ? null : findLatestJob(jobs, target.jobKey, "paused"), status: "paused" },
