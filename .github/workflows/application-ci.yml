@@ -43,6 +43,10 @@ jobs:
           npm run site:build
           npm audit --omit=dev --audit-level=low
           bash tests/integration/container_supervision.sh
+      - name: Browser regressions
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:browser
       - name: Adapter and standalone prover tests
         run: |
           mkdir -p validation
@@ -50,10 +54,6 @@ jobs:
           .venv/bin/python -m pytest -W error::pytest.PytestUnhandledThreadExceptionWarning
           cd ../../..
           apps/lea-standalone/adapter/.venv/bin/python scripts/test-prover.py --suite unit --output-dir validation/prover-unit
-      - name: Browser regressions
-        run: |
-          npx playwright install --with-deps chromium
-          npm run test:browser
       - uses: actions/upload-artifact@v4
         if: always()
         with:

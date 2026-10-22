@@ -42,19 +42,10 @@ async function open(page, saving = false) {
     await route.fulfill({ json: result });
   });
   await page.route('**/src/main.tsx', route => route.fulfill({ contentType: 'application/javascript', body: '' }));
-  await page.addInitScript(({saving}) => { window.addEventListener('DOMContentLoaded', async () => {
-    const React = await import('/node_modules/.vite/deps/react.js');
-    const dom = await import('/node_modules/.vite/deps/react-dom_client.js');
-    const { createRoot } = dom.default || dom;
-    const { LiveEditor } = await import('/src/app/components/LiveEditor.tsx');
-    const { writeSessionFile } = await import('/src/app/lib/api.ts');
-    document.body.innerHTML = '<main id="editor-fixture" style="height:800px;display:flex"></main>';
-    window.editorRoot = createRoot(document.querySelector('main'));
-    window.renderEditor = (sessionId = 'session') => window.editorRoot.render((React.default || React).createElement(LiveEditor, { sessionId, path: 'Main.lean', captureSelection: () => () => true,
-      ...(saving ? {onSave:(content,path,base,draftId)=>writeSessionFile(base.session_id,path,content,undefined,base.formalization_id,base.formalization_revision,base.file_revision,draftId),
-        onCheck:async()=>{throw new Error('Check service unavailable');}} : {}) }));
-    window.renderEditor();
-  }); }, {saving});
+  await page.addInitScript(({saving, fixtureUrl}) => { window.addEventListener('DOMContentLoaded', async () => {
+    const { mountEditorFixture } = await import(fixtureUrl);
+    mountEditorFixture(saving);
+  }); }, {saving, fixtureUrl: `/@fs${root}/tests/browser/fixtures/editor.tsx`});
   await page.goto(origin);
   await expect(page.locator('.monaco-editor')).toBeVisible({ timeout: 45000 });
   return state;
@@ -84,7 +75,8 @@ test('superseded and unavailable results never replace the active draft or navig
   const state = await open(page);
   const input = page.locator('.monaco-editor textarea'); await input.focus();
   state.pending = true; await page.keyboard.press('ControlOrMeta+End'); await page.keyboard.type('-- first');
-  await expect.poll(() => state.requests.length).toBeGreaterThan(2);
+  await expect.poll(() => state.requests.some(request =>
+    state.buffers.get(request.buffer_id)?.content.includes('-- first'))).toBe(true);
   await page.keyboard.type(' newest');
   state.resultState = 'environment_changed'; state.pending = false;
   await expect(page.locator('.live-editor-bar')).toContainText('environment changed', { timeout: 15000 });
@@ -99,7 +91,7 @@ test('superseded and unavailable results never replace the active draft or navig
 test('Monaco hover and completion providers consume typed results', async ({ page }) => {
   const state = await open(page);
   await page.evaluate(async () => {
-    const monaco = await import('/node_modules/.vite/deps/monaco-editor.js');
+    const monaco = window.fixtureMonaco;
     const editor = monaco.editor.getEditors()[0];
     editor.setPosition({ lineNumber: 1, column: 12 }); editor.focus();
     await editor.getAction('editor.action.showHover').run();
@@ -107,7 +99,7 @@ test('Monaco hover and completion providers consume typed results', async ({ pag
   await expect(page.locator('.monaco-hover')).toContainText('Hover from SQL', { timeout: 10000 });
   await page.keyboard.press('Escape');
   await page.evaluate(async () => {
-    const monaco = await import('/node_modules/.vite/deps/monaco-editor.js');
+    const monaco = window.fixtureMonaco;
     const editor = monaco.editor.getEditors()[0];
     editor.setPosition({ lineNumber: 2, column: 3 });
     await editor.getAction('editor.action.triggerSuggest').run();
