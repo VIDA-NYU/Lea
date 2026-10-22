@@ -341,7 +341,12 @@ test("companion end-to-end: /formalize drives a run to formalized with a session
   assert.equal(replay.status,200,JSON.stringify(replay.body));assert.equal(replay.body.jobId,jobId);
   assert.equal(Object.values(await readCompanionJobs()).filter(job=>job.jobKey==='itest-doc:theorem:int_e2e_true').length,1);
 
-  assert.match(job.logTail,/Formalize the Overleaf theorem/);
+  // The bounded log tail may omit the beginning of a long source-context prompt.
+  // Verify the full task through the persisted session the extension opens.
+  const taskMessage = detail.body.messages.find(message => message.role === "user");
+  assert.ok(taskMessage, "the session retains the submitted formalization task");
+  assert.match(taskMessage.content, /Formalize the Overleaf theorem labeled int_e2e_true\./);
+  assert.match(taskMessage.content, /Reconcile relevant later definitions and uses/);
 });
 
 test("companion push channel: /events streams jobs-changed during a formalize (PLAN 3.1)", async () => {
