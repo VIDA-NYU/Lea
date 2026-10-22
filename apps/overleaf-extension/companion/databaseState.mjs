@@ -161,6 +161,13 @@ export function openWorkerDatabase({filename,owner,epoch,baseUrl,leaRoot,fetchIm
       if(batch.migrationBlocked)throw new Error('Review this imported batch before continuing.');
       return runAccepted(batch.acceptedCommandId,fn,{batchId:batch.batchId});
     },
+    canResumeBatch(batch) {
+      fence();
+      const identity=typeof batch.acceptedCommandId==='string' && batch.acceptedCommandId;
+      const row=identity?db.prepare('select kind,state,worker_epoch,lease_until from commands where id=?').get(identity):null;
+      return Boolean(row?.kind==='companion.dispatch' && (row.state==='succeeded'
+        || (row.state==='claimed' && row.worker_epoch===epoch && Date.parse(row.lease_until)>Date.now())));
+    },
     currentBatch(){return context.getStore()?.batchId;},
     resumeBatch(batch) {
       const updates=[];

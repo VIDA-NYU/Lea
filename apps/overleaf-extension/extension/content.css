@@ -3907,6 +3907,8 @@ body.ol-lean-settings-resizing {
 .bp-node-g { cursor: pointer; }
 .bp-node { stroke-width: 1.5; transition: filter .1s ease; }
 .bp-node-g:hover .bp-node { filter: brightness(0.97); }
+.bp-node-g:focus-visible { outline: none; }
+.bp-node-g:focus-visible .bp-node { stroke: var(--ol-focus-ring); stroke-width: 3; }
 .bp-node.is-selected { stroke-width: 3; }
 .bp-node.bp-planned { fill: var(--ol-panel-2); stroke: var(--ol-line); }
 .bp-node.bp-stated  { fill: #eaf0f7; stroke: #9fb6d4; }

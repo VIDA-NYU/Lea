@@ -340,7 +340,10 @@ import { installLeaTagsEditorBridge } from "./leaTagsEditorBridge.mjs";
 
   function treeItemClickTarget(item) {
     if (typeof item?.querySelector !== "function") return item;
-    return item.querySelector(".entity-name") || item.querySelector(".entity") || item;
+    // Current Overleaf folders expand on their actual button. Clicking the
+    // surrounding name wrapper only selects the folder and never mounts files.
+    return item.querySelector(".file-tree-entity-button")
+      || item.querySelector(".entity-name") || item.querySelector(".entity") || item;
   }
 
   function isDocumentTreeItem(item) {

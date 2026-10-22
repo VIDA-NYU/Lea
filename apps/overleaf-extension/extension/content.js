@@ -112,6 +112,8 @@
     renameRetryTimer = null;
     clearTimeout(leanPanePollTimer);
     leanPanePollTimer = null;
+    clearTimeout(leanPaneBlueprintTimer);
+    leanPaneBlueprintTimer = null;
     clearLeanPaneRefreshFailure();
     if (hadProject) {
       clearTimeout(leanPaneRepairBatchTimer);
@@ -378,6 +380,9 @@
   let leanPaneBlueprintGraph = null; // last fetched { nodes, edges, exists }
   let leanPaneBlueprintSelectedKey = null;
   let leanPaneBlueprintGenerateBtn = null; // the "Generate…" button, for the in-flight disable
+  let leanPaneBlueprintTimer = null;
+  let leanPaneBlueprintFailures = 0;
+  let leanPaneBlueprintGeneration = null;
   // Consecutive transient poll failures (AUDIT M2): a thrown fetch used to stop
   // polling entirely, freezing the panel on "Lea is working…". We now retry
   // with backoff up to this cap before giving up and surfacing the error.
@@ -900,6 +905,8 @@
     leanPaneRefreshTimer = null;
     clearTimeout(leanPanePollTimer);
     leanPanePollTimer = null;
+    clearTimeout(leanPaneBlueprintTimer);
+    leanPaneBlueprintTimer = null;
     displayRequests.manifest = (displayRequests.manifest || 0) + 1;
     clearLeanPaneRefreshFailure();
     clearTimeout(leanPaneStartupWatchdogTimer);
@@ -2080,6 +2087,8 @@
   async function setLeanPaneMainView(view) {
     if (view === leanPaneMainView || !leanPane) return;
     leanPaneMainView = view;
+    clearTimeout(leanPaneBlueprintTimer);
+    leanPaneBlueprintTimer = null;
     updateLeanPaneViewTabs();
     renderLeanPaneRefreshWarning();
     if (view === "blueprint") {
@@ -2100,9 +2109,24 @@
 
   // Fetch the project's blueprint graph from the companion and render it (or the
   // appropriate empty/error state). Guards against a view switch mid-fetch.
+  function scheduleBlueprintRefresh(delay = 2000) {
+    clearTimeout(leanPaneBlueprintTimer);
+    leanPaneBlueprintTimer = null;
+    if (!leanPane || document.hidden || leanPaneMainView !== "blueprint") return;
+    const projectId = extractOverleafProjectId();
+    leanPaneBlueprintTimer = setTimeout(() => {
+      leanPaneBlueprintTimer = null;
+      if (projectId !== extractOverleafProjectId() || document.hidden || leanPaneMainView !== "blueprint") return;
+      renderLeanPaneBlueprint({ background: true }).catch(renderLeanPaneError);
+    }, delay);
+  }
+
   async function renderLeanPaneBlueprint({ background = false } = {}) {
     if (!leanPane || !leanPaneBody || !leanPaneStatus) return;
     if (leanPaneMainView !== "blueprint") return;
+    if (leanPaneBlueprintGeneration?.projectId === extractOverleafProjectId()) return;
+    clearTimeout(leanPaneBlueprintTimer);
+    leanPaneBlueprintTimer = null;
     const request = displayRequest("blueprint");
     await ensureBlueprintPaneView();
     if (!background && !leanPaneBlueprintGraph) {
@@ -2136,14 +2160,32 @@
       if (!currentDisplayRequest(request)) return false;
       if (error?.code === "project_renaming") { markProjectRenaming(); return false; }
       if (leanPaneMainView !== "blueprint" || !leanPaneBody) return;
-      leanPaneStatus.textContent = "Blueprint unavailable.";
-      leanPaneBody.replaceChildren(buildBlueprintToolbar(), buildBlueprintMessage(errorText(error), "error"));
+      leanPaneBlueprintFailures += 1;
+      if (leanPaneBlueprintGraph) renderBlueprintBody(leanPaneBlueprintGraph);
+      else leanPaneBody.replaceChildren(buildBlueprintToolbar(), buildBlueprintMessage(errorText(error), "error"));
+      leanPaneStatus.textContent = "Waiting for the current blueprint · retrying.";
+      scheduleBlueprintRefresh(Math.min(10000, 1000 * 2 ** Math.min(leanPaneBlueprintFailures, 3)));
       return;
     }
 
     if (leanPaneMainView !== "blueprint" || !acceptDisplayResponse(request, payload.namespaceRevision)) return false;
+    // Generation returns a newer worker snapshot before its SQL view refreshes.
+    // Do not replace that result with an older observation during catch-up.
+    if (leanPaneBlueprintGraph?.generatedAt && payload.projection
+        && Date.parse(payload.projection.observed_at) < leanPaneBlueprintGraph.generatedAt) {
+      payload = { ...leanPaneBlueprintGraph, projection: { ...payload.projection, state: "inputs_changed" },
+        warnings: payload.warnings || [] };
+    }
+    payload = { ...payload, generationWarnings: leanPaneBlueprintGraph?.generationWarnings || [] };
     leanPaneBlueprintGraph = payload;
+    leanPaneBlueprintFailures = 0;
     renderBlueprintBody(payload);
+    const stale = payload.projection && payload.projection.state !== "observed";
+    if (stale) scheduleBlueprintRefresh();
+    else if (payload.projection?.expires_at) {
+      const expiresAt = Date.parse(payload.projection.expires_at);
+      scheduleBlueprintRefresh(Number.isFinite(expiresAt) ? Math.max(2000, expiresAt - Date.now() - 5000) : 5000);
+    }
     return true;
   }
 
@@ -2156,6 +2198,18 @@
     const edges = Array.isArray(payload?.edges) ? payload.edges : [];
     const prevScrollTop = leanPaneBody.scrollTop;
     leanPaneBody.replaceChildren(buildBlueprintToolbar());
+    const warnings = [...new Map([
+      ...(Array.isArray(payload?.warnings) ? payload.warnings : []),
+      ...(Array.isArray(payload?.generationWarnings) ? payload.generationWarnings : [])
+    ].map(warning => [JSON.stringify(warning), warning])).values()];
+    const degraded = warnings.some(warning => warning && typeof warning === "object");
+    if (degraded && leanPaneBlueprintGenerateBtn) leanPaneBlueprintGenerateBtn.disabled = true;
+    for (const warning of warnings) {
+      const message = typeof warning === "string" ? warning : warning?.message;
+      if (message) leanPaneBody.appendChild(buildBlueprintMessage(message, "warning"));
+    }
+    const stale = payload?.projection && payload.projection.state !== "observed";
+    if (stale) leanPaneBody.appendChild(buildBlueprintMessage("Showing the last observed blueprint. Waiting for the current graph…", "pending"));
 
     if (payload && payload.exists === false) {
       leanPaneStatus.textContent = "No Lea project yet.";
@@ -2168,7 +2222,9 @@
       return;
     }
     if (nodes.length === 0) {
-      leanPaneStatus.textContent = "Blueprint is empty.";
+      leanPaneStatus.textContent = degraded ? "Blueprint could not be read completely."
+        : stale ? "Waiting for the current blueprint…" : "Blueprint is empty.";
+      if (degraded || stale) return;
       leanPaneBody.appendChild(
         buildBlueprintMessage(
           "No blueprint nodes yet. Click “Generate from formalized theorems” above to build a starter graph from what you've formalized — or add nodes in the Lea UI.",
@@ -2178,7 +2234,8 @@
       return;
     }
 
-    leanPaneStatus.textContent = `${nodes.length} blueprint node${nodes.length === 1 ? "" : "s"}.`;
+    leanPaneStatus.textContent = stale ? "Waiting for the current blueprint…"
+      : `${nodes.length} blueprint node${nodes.length === 1 ? "" : "s"}.`;
     const element = leanPaneBlueprintView.renderBlueprintView(
       { nodes, edges },
       {
@@ -2226,6 +2283,22 @@
 
   // POST the generate request, then render the returned graph and report what changed.
   async function generateBlueprint() {
+    if (leanPaneBlueprintGeneration?.projectId === extractOverleafProjectId()) return;
+    const generation = { projectId: extractOverleafProjectId() };
+    leanPaneBlueprintGeneration = generation;
+    clearTimeout(leanPaneBlueprintTimer);
+    leanPaneBlueprintTimer = null;
+    try {
+      await generateBlueprintNow();
+    } finally {
+      if (leanPaneBlueprintGeneration === generation) {
+        leanPaneBlueprintGeneration = null;
+        scheduleBlueprintRefresh();
+      }
+    }
+  }
+
+  async function generateBlueprintNow() {
     if (!leanPane || !leanPaneBody || !leanPaneStatus || leanPaneMainView !== "blueprint") return;
     const request = displayRequest("blueprint");
     if (leanPaneBlueprintGenerateBtn) {
@@ -2262,12 +2335,15 @@
     }
 
     if (leanPaneMainView !== "blueprint" || !acceptDisplayResponse(request, payload.namespaceRevision)) return;
+    payload = { ...payload, generatedAt: Date.now(), generationWarnings: payload.warnings || [] };
     leanPaneBlueprintGraph = payload;
     leanPaneBlueprintSelectedKey = null;
     renderBlueprintBody(payload); // rebuilds the toolbar (button re-enabled) + graph
 
     // Overlay a result message over the node count renderBlueprintBody just set.
-    if (payload.exists === false) {
+    if (Array.isArray(payload.warnings) && payload.warnings.length) {
+      leanPaneStatus.textContent = "Blueprint generation needs attention. See the diagnostics below.";
+    } else if (payload.exists === false) {
       leanPaneStatus.textContent = "No Lea project for this document yet.";
     } else if (payload.added > 0) {
       leanPaneStatus.textContent = `Added ${payload.added} node${payload.added === 1 ? "" : "s"} from formalized theorems.`;
@@ -2467,6 +2543,8 @@
     clearTimeout(leanPanePollTimer);
     clearTimeout(leanPaneChatPollTimer);
     clearTimeout(leanPaneRepairBatchTimer);
+    clearTimeout(leanPaneBlueprintTimer);
+    leanPaneBlueprintTimer = null;
     if (!document.hidden) {
       scheduleStatusRefresh();
       if (leanPaneMainView === "blueprint" && leanPane) renderLeanPaneBlueprint({ background: true }).catch(() => {});

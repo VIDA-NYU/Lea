@@ -22,9 +22,12 @@ def main() -> None:
               "must NOT use the umbrella `import Mathlib`" in prompt)
         check(f"{variant}: maps source paths to imports",
               "`Mathlib/Foo/Bar.lean` corresponds to" in prompt)
-        check(f"{variant}: requires suggest_imports", "call `suggest_imports`" in prompt)
+        check(f"{variant}: import advice is optional and bounded",
+              "`suggest_imports` is optional advice" in prompt
+              and "call `suggest_imports` at most once" in prompt
+              and "If it is skipped or times out, keep the existing imports and finish" in prompt)
         check(f"{variant}: requires a clean re-check",
-              "replace its import" in prompt and "run `lean_check` again" in prompt)
+              "After changing any imports, run `lean_check` on the final file again" in prompt)
     default = load_system_prompt("default")
     check("old broad-import instruction removed",
           "Start files with `import Mathlib` when needed." not in default)

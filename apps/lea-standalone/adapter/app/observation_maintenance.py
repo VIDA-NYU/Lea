@@ -6,6 +6,7 @@ from . import db, observation
 _stop = Event()
 _worker = None
 _target_worker = None
+_runtime_worker = None
 
 
 def sweep():
@@ -16,7 +17,7 @@ def sweep():
     with db.connect() as conn:
         scopes=[r[0] for r in conn.execute("select 'p:'||id from projects where not exists(select 1 from core_projection_enrollment e where e.scope='p:'||projects.id) union all select 's:'||id from sessions where project_id is null and not exists(select 1 from core_projection_enrollment e where e.scope='s:'||sessions.id) limit 10")]
     for scope in scopes:core_observer.enroll(scope)
-    result['peripheral']=peripheral_views.maintain()
+    result['peripheral']=peripheral_views.maintain(exclude={'lean_check_runtime'})
     from . import source_publications,companion_service
     result['source_retention']=source_publications.retain()
     result['companion_retention']=companion_service.retain()
@@ -40,10 +41,23 @@ def sweep():
 
 
 def start():
-    global _worker, _target_worker
+    global _worker, _target_worker, _runtime_worker
     if _worker and _worker.is_alive():
         return
     _stop.clear()
+    def observe_runtime():
+        from . import peripheral_views
+        while not _stop.is_set():
+            try:
+                # Runtime observations have a short independent queue. Broad
+                # filesystem/backfill/compiler observations cannot delay their
+                # publication until the UI mistakes a busy worker for downtime.
+                peripheral_views.maintain(kinds={'lean_check_runtime'})
+            except Exception:
+                logging.getLogger(__name__).exception('Runtime observation failed')
+            _stop.wait(1)
+    _runtime_worker = Thread(target=observe_runtime, name='lea-runtime-observation', daemon=True)
+    _runtime_worker.start()
     def observe_targets():
         from . import target_observations
         while not _stop.is_set():
@@ -75,11 +89,11 @@ def start():
 
 
 def close():
-    global _worker, _target_worker
+    global _worker, _target_worker, _runtime_worker
     _stop.set()
-    for worker in (_worker, _target_worker):
+    for worker in (_worker, _target_worker, _runtime_worker):
         if worker:
             worker.join(timeout=10)
         if worker and worker.is_alive():
             raise RuntimeError('Observation maintenance did not stop')
-    _worker = _target_worker = None
+    _worker = _target_worker = _runtime_worker = None

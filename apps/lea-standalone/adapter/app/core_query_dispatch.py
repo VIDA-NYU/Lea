@@ -2,7 +2,7 @@
 from functools import wraps
 import inspect
 from fastapi import HTTPException
-from . import db,observation
+from . import db,observation,formalization_reviews
 from .queries import core,sessions,proofs,status,alignment
 
 
@@ -69,7 +69,7 @@ def _query(kind,a):
     if kind=='current':
         value=proofs.current_snapshot(fid,conversation_session_id=sid)
     elif kind=='formalization': value=proofs.get(fid)
-    elif kind=='review': value=proofs.review_context(fid,a.get('source_context_ref'))
+    elif kind=='review': formalization_reviews.retired()
     elif kind in {'project_forms','session_forms','slug_forms'}:
         if kind=='slug_forms': pid=project(a['slug'])['id']
         items=proofs.for_session(sid) if kind=='session_forms' else proofs.for_project(pid)

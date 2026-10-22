@@ -23,6 +23,23 @@ progress panel, `repair-batch-updated` event, and `/lean-pane/repair/all/continu
 resume endpoint — distinguished by a new `operation` field
 (`repair | stub | formalize`).
 
+Stub generation uses the explicit `overleaf_stub` run purpose and its own
+statement-only prompt and completion policy. The agent stops after a fresh Lean
+check while retaining `sorry`; the adapter validates the named theorem's own
+placeholder body and records an `answered` run, never a proved result. Definitions,
+unrelated placeholders, stale checks, and ambiguous target declarations are rejected.
+The companion waits for the current check observation after the run finishes;
+publication lag keeps the job in progress rather than failing a compiled stub.
+This wait is durable across worker restart and can be stopped with the batch.
+Single-item and batch jobs persist the checked stub and a registry publication
+retry before saving the derived project registry. A registry outage does not
+change the stub outcome; publication resumes after worker restart without
+rerunning the model. Batch items retain their job identity before run admission,
+so Stop also interrupts a run whose start response arrives after cancellation.
+Formalize all skips current certified proofs even when their derived artifact
+index has not caught up. Retry publication resolves staging and canonical path
+aliases before comparing imported source inputs, including newly required helpers.
+
 ## Why reuse the repair batch
 
 A naive client-side loop firing N `/formalize` calls at once would bypass the
@@ -113,6 +130,23 @@ not undo finished work.
 
 ## Tests
 
+- `apps/lea-standalone/adapter/tests/test_stub_workflow.py` — immutable source
+  admission, the real agent/tool/bridge completion path, named declaration and
+  statement checks, single/batch SQL jobs, and registry publication after a new
+  process and worker epoch. Only model and compiler responses are scripted.
+- `apps/lea-standalone/prover/tests/agent/test_stub_workflow.py` — a fresh checked
+  placeholder finishes in stub mode while ordinary proof completion still rejects
+  `sorry`.
+- `tests/stubWorkflow.test.mjs` — stub-to-formalization reuse, declaration/body
+  validation, stale checks, sequential mixed outcomes, cancellation during both
+  admission and execution, delayed check observations and their restart recovery,
+  and persisted publication retries.
+- `apps/lea-standalone/adapter/tests/test_reformalization_cache.py` — bounded
+  cancellation polling during dependency scans, compiler-input invalidation,
+  and real Lean cache reuse.
+- `apps/lea-standalone/adapter/tests/test_reformalization_operations.py` — real
+  Lean publication through aliased data paths, importing consumers, and new
+  required helper modules while preserving unrelated declarations.
 - `tests/leanPaneBatch.test.mjs` — request-validation guards (empty/missing
   items, missing project id, malformed label, definition rejected from stub),
   `orderTargetsByUses` dependency ordering, and cancel behavior (unknown batch
@@ -123,3 +157,14 @@ not undo finished work.
 - The shared batch loop (snapshot, pause, continue) is covered by
   `tests/leanPaneRepair.test.mjs`; the per-item run pipeline by
   `tests/companion.test.mjs`.
+
+## Live validation (2026-10-19)
+
+The production SQL/API/companion workflow was exercised in an isolated project
+with the configured `gpt-5.6-sol` model and Lean `v4.29.0`. Stub all generated and
+checked three theorem stubs: natural-number addition by zero, a dependent theorem
+applying that result twice, and a rational square identity. Per-item Formalize
+followed by Formalize all completed the proofs, skipped the already certified
+target, and produced a ready batch report. The three generated statements were
+unchanged, all final target checks were current, and compiler trust evidence
+contained no `sorryAx`. A combined Lake build succeeded.

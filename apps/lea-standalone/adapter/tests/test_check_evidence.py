@@ -226,32 +226,40 @@ def test_unicode_imports_are_traversed(workspace):
     assert freshness(checked.execution, target) == (False, 'dependency_changed')
 
 
-def test_changes_during_classification_prevent_terminal_success(workspace, monkeypatch):
+def test_changes_after_final_check_prevent_terminal_success(workspace, monkeypatch):
     from lea import agent
     from lea.config import LeaConfig
     from lea.events import Finished
     from lea.providers import TextDelta, ToolCall, Done, Usage
     proof = workspace / 'proofs/Fixture/Target.lean'
     turns = 0
+    changed = False
+    original_verified = agent.ProofVerificationState.latest_proof_verified
+    def change_after_check(state):
+        nonlocal changed
+        verified = original_verified(state)
+        if verified and not changed:
+            proof.write_text('theorem target : False := by trivial\n')
+            changed = True
+        return verified
     def stream(model, system, messages, schemas, model_kwargs=None, streaming=True):
         nonlocal turns
-        if 'classify the mathematical outcome' in system:
-            proof.write_text('theorem target : False := by trivial\n')
-            yield TextDelta('PROVED')
+        turns += 1
+        if turns == 1:
+            yield ToolCall('write_file', {'path': str(proof), 'content': 'theorem target : True := by trivial\n'})
+            yield ToolCall('lean_check', {'path': str(proof)})
         else:
-            turns += 1
-            if turns == 1:
-                yield ToolCall('write_file', {'path': str(proof), 'content': 'theorem target : True := by trivial\n'})
-                yield ToolCall('lean_check', {'path': str(proof)})
-            else:
-                yield TextDelta('The proof is complete.')
+            yield TextDelta('The proof is complete.')
         yield Done(Usage(), 0)
     monkeypatch.setattr(agent, 'stream', stream)
+    monkeypatch.setattr(agent.ProofVerificationState, 'latest_proof_verified', change_after_check)
     events = list(agent.run_events(LeaConfig(model='test', max_turns=3,
         tools=['write_file', 'lean_check']), [{'role': 'user', 'content': 'Prove target.'}],
         working_dir=str(proof.parent)))
     final = next(event for event in reversed(events) if isinstance(event, Finished))
-    assert final.result_kind == 'needs_review'
+    assert changed
+    assert final.reason == 'assistant'
+    assert final.result_kind == 'incomplete'
     assert 'changed' in final.result_detail
 
 

@@ -293,9 +293,11 @@ def get_blueprint_by_slug(slug: str) -> dict:
     raise RuntimeError('A SQL view cannot execute')
 
 @router.get('/api/projects/by-slug/{slug}/graph')
-@peripheral_views.view('get_graph_by_slug')
 def get_graph_by_slug(slug: str) -> dict:
-    raise RuntimeError('A SQL view cannot execute')
+    # Resolve absence from SQL before asking for a worker observation. A missing
+    # project never acquires a projection, so retrying a 503 cannot fix it.
+    _require_project_by_slug(slug)
+    return peripheral_views.get('get_graph_by_slug', {'slug': slug})
 
 @router.post('/api/projects/by-slug/{slug}/blueprint/generate', status_code=202)
 @workspace_commands.intake('project.generate_blueprint_slug')

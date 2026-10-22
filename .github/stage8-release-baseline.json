@@ -1,6 +1,7 @@
 {
   "version": 1,
   "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b",
+  "repository": "https://github.com/darturi/UnifiedLeaEcosystem.git",
   "ref": "refs/tags/codex/stage8-strict-baseline-20261017",
   "schema": "0048_process_boundary",
   "boundary_version": 1,

@@ -8,7 +8,7 @@ const extension = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 
 // Run the shipped content script/styles and lazy browser modules. Only the
 // Overleaf host and SQL transport are fixtures; no worker/provider is started.
-async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, completionPhase = null, batchProgress = null, identityTransportBase = null, badgePhase = null, reviewPhase = null } = {}) {
+async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, completionPhase = null, batchProgress = null, identityTransportBase = null, badgePhase = null, reviewPhase = null, blueprint = null } = {}) {
   await page.route('https://lea-fixture.test/**', async route => {
     const url = new URL(route.request().url());
     if (url.pathname === '/sql-identity' && identityTransportBase) {
@@ -23,8 +23,8 @@ async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, 
     await route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Batch Notes - Overleaf</title><main style="padding:24px;font:16px system-ui">Overleaf fixture</main>' });
   });
   await page.goto('https://lea-fixture.test/project/project-1');
-  await page.evaluate(({ targetCount, leaseMs, runtimePhase, completionPhase, batchProgress, identityTransportBase, badgePhase, reviewPhase }) => {
-    window.fixture = { offline: false, runtimePhase, completionPhase, batchProgress, badgePhase, reviewPhase, reviewVersion: 1, decisions: [], batchAccepted: false,
+  await page.evaluate(({ targetCount, leaseMs, runtimePhase, completionPhase, batchProgress, identityTransportBase, badgePhase, reviewPhase, blueprint }) => {
+    window.fixture = { offline: false, runtimePhase, completionPhase, batchProgress, badgePhase, reviewPhase, blueprint, reviewVersion: 1, decisions: [], batchAccepted: false,
       calls: [], owner: leaseMs ? 'previous-tab' : null, generation: leaseMs ? 1 : 0,
       leaseUntil: Date.now() + leaseMs, sequence: 0, publications: [],
       targets: Array.from({ length: targetCount }, (_, i) => ({ targetKind: reviewPhase ? 'definition' : 'theorem',
@@ -49,6 +49,7 @@ async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, 
       if (pathname.startsWith('/lean-pane/review/')) return json({ message: 'Result review is retired.' }, 410);
       if (pathname === '/settings') return window.fixture.offline ? json({ message: 'API starting' }, 503)
         : json({ leaTexMirrorEnabled: false });
+      if (pathname === '/project/graph' && f.blueprint) return json(f.blueprint);
       if (pathname === '/source-context/publisher') {
         const live = f.leaseUntil > Date.now();
         if (f.owner && !(f.owner === input.client_id && live) && (live || input.expected_generation !== f.generation)) {
@@ -74,6 +75,7 @@ async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, 
         sourceFile: 'main.tex', sourceStartLine: 1, sourceEndLine: 4, naturalLanguageLatex: target.targetText,
         leanKind: f.reviewPhase ? 'def' : 'theorem', leanDeclarationName: f.reviewPhase ? 'Ua' : target.targetLabel, formalizable: true,
         ...(f.reviewPhase ? { status: f.reviewPhase === 'approved' ? 'defined' : 'needs-review',
+          leanArtifactContent: 'def Ua : Nat := 0',
           leanCheck: { status: 'checked' }, review: { eligible: false, requested: false },
           leaStatus: { confidence: 'medium', attention: 'warning', assessment: { confidence: 'medium', scope: 'statement_and_proof', summary: 'The definition checks; the source omits a boundary case.' } } } : {}),
         ...(f.completionPhase ? { inProgress: false, status: f.completionPhase === 'pending' ? 'synchronizing' : 'valid',
@@ -142,7 +144,7 @@ async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, 
       }
       return json({ ok: true, reports: [], jobs: [], updates: [] });
     };
-  }, { targetCount, leaseMs, runtimePhase, completionPhase, batchProgress, identityTransportBase, badgePhase, reviewPhase });
+  }, { targetCount, leaseMs, runtimePhase, completionPhase, batchProgress, identityTransportBase, badgePhase, reviewPhase, blueprint });
   for (const file of ['lea-theme.css', 'content.css']) await page.addStyleTag({ content: await fs.readFile(path.join(extension, file), 'utf8') });
   await page.addScriptTag({ content: await fs.readFile(path.join(extension, 'content.js'), 'utf8') });
   await page.evaluate(() => window.postMessage({ type: 'OL_LEAN_TARGETS_VISIBLE', activePath: 'main.tex',
@@ -170,6 +172,42 @@ for (const width of [1280, 760]) test(`Lea Status describes a checked definition
   await expect.poll(() => pane.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath('lea-status-without-review.png') });
   expect(await page.evaluate(() => fixture.calls.filter(c => /review\/(context|decision)|^\/formalize(?:\/all)?$|^\/api\/runs$/.test(c.pathname)))).toHaveLength(0);
+});
+
+for (const width of [1280, 760]) test(`Blueprint refresh and keyboard selection at ${width}px`, async ({page}, info) => {
+  await page.setViewportSize({width, height:900});
+  const node={key:'demo_double_add',kind:'theorem',lean:'Lea.Demo.demo_double_add',uses:[],
+    status:'proved',verified:false,statement:'(m n : Nat) : D (m + n) = D m + D n'};
+  await setup(page,{blueprint:{nodes:[node],edges:[],projection:{state:'inputs_changed'}}});
+  await page.getByRole('button',{name:/Lean project pane/}).click();
+  if(width===760)await page.getByRole('separator',{name:'Resize Lean pane'}).press('Home');
+  await page.getByRole('tab',{name:'Blueprint',exact:true}).click();
+  const pane=page.locator('.ol-lean-project-pane');
+  await expect(pane).toContainText('Waiting for the current graph');
+  const graphNode=pane.getByRole('button',{name:/^demo_double_add, theorem/});
+  await graphNode.press('Enter');
+  await expect(graphNode).toHaveAttribute('aria-pressed','true');
+  await expect(pane.getByRole('region',{name:'Selected blueprint node'})).toContainText('(m n : Nat)');
+  await page.evaluate(()=>{fixture.blueprint={...fixture.blueprint,projection:{state:'observed'}};});
+  await expect(pane).not.toContainText('Waiting for the current graph');
+  await expect(graphNode).toHaveAttribute('aria-pressed','true');
+  await graphNode.press('Space');
+  await expect(graphNode).toHaveAttribute('aria-pressed','false');
+  await graphNode.press('Enter');
+  await expect.poll(()=>pane.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
+  await page.screenshot({path:info.outputPath('blueprint-ready-keyboard.png')});
+});
+
+test('the intentionally disabled Chat and Edit controls remain disabled', async ({page}) => {
+  await setup(page,{reviewPhase:'approved'});
+  await page.getByRole('button',{name:/Lean project pane/}).click();
+  await page.locator('.ol-lean-project-tree-row').filter({hasText:'main.tex'}).click();
+  await page.locator('.ol-lean-project-item-header').click();
+  const pane=page.locator('.ol-lean-project-pane');
+  await expect(pane.getByRole('button',{name:'Chat',exact:true})).toBeDisabled();
+  await pane.getByRole('button',{name:'More actions',exact:true}).click();
+  await expect(pane.getByRole('menuitem',{name:'Edit',exact:true})).toBeDisabled();
+  expect(await page.evaluate(()=>fixture.calls.filter(call=>/chat\/send|\/edit\/save|\/review\//.test(call.pathname)))).toHaveLength(0);
 });
 
 test('a saved review result has no approval action or new review request', async ({ page }) => {

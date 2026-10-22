@@ -308,8 +308,23 @@ async function persistRepairBatches(state) {
 
 export async function reconcileRecoveredBatches(state) {
   for (const batch of Object.values(state.repairBatches || {})) {
-    if(batch.migrationBlocked)continue;
-    if (!batch) continue;
+    if (!batch || batch.migrationBlocked) continue;
+    const needsCommand = !batch.done || (batch.operation === 'formalize' && !batch.reportId);
+    if (databaseState && needsCommand && !databaseState.canResumeBatch(batch)) {
+      // This also repairs completed batches imported before this check existed.
+      // Retain their history, but never retry business work without its command.
+      const detail = 'The original batch command is missing or no longer valid. Review this retained batch before continuing.';
+      batch.migrationBlocked = true;
+      batch.pausedOn = { reason: 'migration_review', detail };
+      if (batch.done && batch.operation === 'formalize') {
+        batch.reportState = 'save_failed';
+        batch.reportError = detail;
+        delete batch.reportRetry;
+      }
+      await persistRepairBatches(state);
+      publishEvent(state, 'repair-batch-updated', { overleafProjectId: batch.overleafProjectId, batchId: batch.batchId });
+      continue;
+    }
     if (batch.done) {
       if(batch.operation==='formalize'&&!batch.reportId&&batch.reportState==='save_failed'
         &&(batch.reportRecoveryCheckedAt||0)+30000<=Date.now()) {
@@ -1566,7 +1581,9 @@ export async function handleProjectGraph(payload, state) {
       exists: true,
       ...((result.body?.namespace_revision || result.body?.graph?.namespace_revision) ? { namespaceRevision: result.body.namespace_revision || result.body.graph.namespace_revision } : {}),
       nodes: Array.isArray(result.body?.nodes) ? result.body.nodes : [],
-      edges: Array.isArray(result.body?.edges) ? result.body.edges : []
+      edges: Array.isArray(result.body?.edges) ? result.body.edges : [],
+      warnings: Array.isArray(result.body?.warnings) ? result.body.warnings : [],
+      ...(result.body?.projection ? { projection: result.body.projection } : {})
     }
   };
 }
@@ -1594,7 +1611,8 @@ export async function handleProjectBlueprintGenerate(payload, state) {
       ...((result.body?.namespace_revision || result.body?.graph?.namespace_revision) ? { namespaceRevision: result.body.namespace_revision || result.body.graph.namespace_revision } : {}),
       added: Number(result.body?.added || 0),
       skipped: Number(result.body?.skipped || 0),
-      warnings: Array.isArray(result.body?.warnings) ? result.body.warnings : [],
+      warnings: [...(Array.isArray(result.body?.warnings) ? result.body.warnings : []),
+        ...(Array.isArray(graph.warnings) ? graph.warnings : [])],
       nodes: Array.isArray(graph.nodes) ? graph.nodes : [],
       edges: Array.isArray(graph.edges) ? graph.edges : [],
     },
@@ -8154,7 +8172,8 @@ async function markJobMaxSpend({ state, job, mode, interrupt = true }) {
   job.finalStatus = "max_spend";
   job.stopReason = "global_spend_cap";
   job.recoverable = true;
-  job.error = MAX_SPEND_MESSAGE;
+  job.resultDetail ||= MAX_SPEND_MESSAGE;
+  delete job.error;
   job.exitCode = 1;
   job.finishedAt = new Date().toISOString();
   await appendLog(job.logPath, `\n[backend] ${MAX_SPEND_MESSAGE}\n`);
@@ -9398,6 +9417,21 @@ async function getTheoremStatus({
     if (!(["proved", "defined"].includes(evidence.validity_status)
       && Boolean(evidence.completion_run_id)
       && evidence.check_current === true && evidence.declaration_present === true)) {
+      // A current rejected run is a failed attempt, even if its file compiles.
+      // Only the adapter's latest batch outcome can tie that overlay to this
+      // target revision; an old failed job must not override stale history.
+      if (evidence.validity_status !== "stale" && newestFinishedJob?.status === "failed"
+          && newestFinishedJob.apiRunId
+          && evidence.last_batch_outcome?.runId === newestFinishedJob.apiRunId
+          && ["failed", "incomplete"].includes(evidence.last_batch_outcome.state)) {
+        return withLeaSession({
+          ...buildFailedTheoremStatus({ failedJob: newestFinishedJob, target,
+            equivalentStatus: { status: "unformalized" } }),
+          ...base, ...artifactEvidence, leanStatement,
+          message: evidence.last_batch_outcome.detail || evidence.validity_reason
+            || "The requested declaration was not certified."
+        });
+      }
       return withLeaSession({ status: evidence.validity_status === "stale" ? "stale" : "unavailable",
         ...base, ...artifactEvidence, message: evidence.validity_reason || "Target completion could not be confirmed.",
         leanCheckPassed: evidence.check_current === true, leanStatement });

@@ -271,9 +271,9 @@ def test_namespace_rename_preserves_certification_and_original_history(tmp_path,
 @pytest.mark.parametrize("scenario, expected", [
     ("check-error", "failing"),
     ("unchecked", "unchecked"),
-    ("disk-edit", "needs_review"),
-    ("recorded-edit", "needs_review"),
-    ("review-result", "needs_review"),
+    ("disk-edit", "unchecked"),
+    ("recorded-edit", "unchecked"),
+    ("review-result", "unchecked"),
     ("no-completion", "unchecked"),
 ])
 def test_namespace_rename_cannot_create_certification(tmp_path, monkeypatch, scenario, expected):
@@ -415,7 +415,7 @@ def test_graph_route_derives_node_status(tmp_path, monkeypatch):
     (repo / "helper.lean").write_text("import Mathlib\nnamespace Lea.Analysis\nlemma helper : True := trivial\nend Lea.Analysis\n")
     projects_route.put_blueprint.worker(pid, DocUpdate(content="## helper\n- kind: lemma\n- lean: `Lea.Analysis.helper`\n\nA helper.\n"))
     sess = store.create_session("w", project_id=pid)["id"]
-    store.add_code_step(sess, None, "helper.lean", content="proof-a", check_status="ok")
+    store.add_code_step(sess, None, "helper.lean", content=(repo / 'helper.lean').read_text(), check_status="ok")
 
     result = projects_route.get_graph.worker(pid)
     node = result["nodes"][0]
@@ -829,7 +829,17 @@ def _record_artifact(project_id, session_id, name, kind, path):
     )
 
 
+def _mock_blueprint_references(monkeypatch):
+    # Route unit tests script only compiler resolution; the compiler regression
+    # in test_blueprint_readiness exercises the real namespace and binder rules.
+    from app import blueprint_seed
+    monkeypatch.setattr(blueprint_seed, '_compiler_references',
+        lambda project, repo, relative, *, required: {name: (['Lea.Analysis.base']
+            if name == 'Lea.Analysis.uses_base' else []) for name in required})
+
+
 def test_generate_blueprint_synthesizes_nodes_edges_and_is_idempotent(tmp_path, monkeypatch):
+    _mock_blueprint_references(monkeypatch)
     """Populate the blueprint from formalized artifacts: one node per recorded decl,
     kind from the Lean keyword, `uses` edges from decl references — additive + idempotent."""
     proofs = _setup(tmp_path, monkeypatch)
@@ -864,6 +874,7 @@ def test_generate_blueprint_synthesizes_nodes_edges_and_is_idempotent(tmp_path, 
 
 
 def test_generate_blueprint_backfills_pre_index_artifacts(tmp_path, monkeypatch):
+    _mock_blueprint_references(monkeypatch)
     """A project whose proofs predate the artifacts index (registry markdown only, no
     artifact rows) must still generate nodes — the route backfills before reading."""
     proofs = _setup(tmp_path, monkeypatch)
@@ -890,6 +901,7 @@ def test_generate_blueprint_backfills_pre_index_artifacts(tmp_path, monkeypatch)
 
 
 def test_generate_blueprint_edge_derivation_ignores_comments_and_ambiguous_shorts(tmp_path, monkeypatch):
+    _mock_blueprint_references(monkeypatch)
     """Edges come from real references only: a name mentioned in a comment yields no
     edge, and a short name shared by two decls is too ambiguous to edge (skipped)."""
     proofs = _setup(tmp_path, monkeypatch)
@@ -926,6 +938,7 @@ def test_generate_blueprint_edge_derivation_ignores_comments_and_ambiguous_short
 
 
 def test_generate_blueprint_preserves_multiline_signature(tmp_path, monkeypatch):
+    _mock_blueprint_references(monkeypatch)
     """A signature that spans multiple source lines keeps its line breaks in the node
     statement (so the pane can render it like the Lean pane), not collapsed to one line."""
     proofs = _setup(tmp_path, monkeypatch)
@@ -948,6 +961,7 @@ def test_generate_blueprint_preserves_multiline_signature(tmp_path, monkeypatch)
 
 
 def test_generate_blueprint_closes_dangling_fence_before_appending(tmp_path, monkeypatch):
+    _mock_blueprint_references(monkeypatch)
     """An unclosed ``` fence in blueprint.md must not swallow the appended nodes — the
     node stays a real section, so a second run is still idempotent."""
     proofs = _setup(tmp_path, monkeypatch)
@@ -971,6 +985,7 @@ def test_generate_blueprint_closes_dangling_fence_before_appending(tmp_path, mon
 
 
 def test_generate_blueprint_by_slug_and_404(tmp_path, monkeypatch):
+    _mock_blueprint_references(monkeypatch)
     proofs = _setup(tmp_path, monkeypatch)
     project = projects_route.create_project.worker(ProjectCreate(title="Doc One"))
     slug = project["slug"]

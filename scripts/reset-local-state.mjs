@@ -24,11 +24,11 @@ const proofsDir = path.join(workspaceDir, "proofs");
 const overleafContextDir = path.join(workspaceDir, "context", "overleaf");
 
 // Overleaf companion local state.
-const companionDir = path.join(MONOREPO_ROOT, "apps", "overleaf-extension", ".overleaf-lean-stub");
-const companionJobsDir = path.join(companionDir, "jobs");
-const companionBackupsDir = path.join(companionDir, "backups");
-const companionJobsIndex = path.join(companionDir, "jobs.json");
-const companionCache = path.join(companionDir, "cache.json");
+const companionDirs = new Set([
+  path.join(MONOREPO_ROOT, "apps", "overleaf-extension", ".overleaf-lean-stub"),
+]);
+const companionImportDir = process.env.LEA_COMPANION_IMPORT_DIR || rootEnv.LEA_COMPANION_IMPORT_DIR;
+if (companionImportDir) companionDirs.add(resolveMonorepoPath(companionImportDir));
 
 // Lea UI / adapter local state. The standalone adapter keeps its SQLite DB
 // (sessions, runs, code steps) under apps/lea-standalone/data; LEA_DB_PATH /
@@ -112,19 +112,29 @@ removeEntries("Lea proof entries", collectEntries(proofsDir));
 removeDir("Lea Overleaf LaTeX context", overleafContextDir);
 
 // Overleaf companion artifacts.
-removeDir("companion job logs", companionJobsDir);
-removeDir("companion backups", companionBackupsDir);
-writeJsonFile("companion job index", companionJobsIndex, {});
-writeJsonFile("companion cache", companionCache, {});
+// The worker imports these legacy ledgers into a new database on startup. Clear
+// every runtime ledger together so a fresh database cannot resurrect old work.
+// Connection/provider settings stay in settings.json and the root .env.
+for (const companionDir of companionDirs) {
+  removeDir("companion job logs", path.join(companionDir, "jobs"));
+  removeDir("companion backups", path.join(companionDir, "backups"));
+  writeJsonFile("companion job index", path.join(companionDir, "jobs.json"), {});
+  writeJsonFile("companion batch index", path.join(companionDir, "jobs.json.batches.json"), {});
+  writeJsonFile("companion chat associations", path.join(companionDir, "chatSessions.json"), {});
+  writeJsonFile("companion generated targets", path.join(companionDir, "generated-targets.json"), { version: 1, projects: {} });
+  writeJsonFile("companion cache", path.join(companionDir, "cache.json"), {});
+  removeDir("companion migration checkpoint", path.join(companionDir, ".lea-db-migration.json"));
+}
 
 // Lea UI artifacts.
 removeEntries("Lea UI SQLite databases", sqliteFiles);
 removeDir("GitHub import staging", githubImportsDir);
+removeDir("companion migration snapshots", path.join(uiDataDir, "legacy-companion"));
 
 if (!dryRun) {
   mkdirSync(projectsDir, { recursive: true });
   mkdirSync(proofsDir, { recursive: true });
-  mkdirSync(companionJobsDir, { recursive: true });
+  for (const companionDir of companionDirs) mkdirSync(path.join(companionDir, "jobs"), { recursive: true });
   mkdirSync(uiDataDir, { recursive: true });
 }
 

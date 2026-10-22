@@ -104,8 +104,8 @@ def test_adapter_stub_admission_and_real_agent_completion(workflow,code,accepted
     assert runs.create_run(request)['run_id']==admitted['run_id']
     result=x['execute'](admitted['run_id'])
     assert result['purpose']=='overleaf_stub'
-    assert result['status']==('answered' if accepted else 'needs_review'),result['result_detail']
-    assert result['result_kind']==(None if accepted else 'needs_review')
+    assert result['status']=='answered',result['result_detail']
+    assert result['result_kind']==(None if accepted else 'incomplete')
     assert x['state']['calls']['a']==2
     steps=store.current_code_steps_for_formalization(form['id'])
     assert steps and steps[0]['check_status']=='ok' and steps[0]['check_current']
@@ -139,7 +139,8 @@ def test_structured_stub_preserves_the_confirmed_statement(workflow, changed):
         autonomous=True, project_slug='doc', focus_formalization_id=form['id'],
         source_context_ref=payload['source_context_ref']))
     result = x['execute'](admitted['run_id'])
-    assert result['status'] == ('needs_review' if changed else 'answered'), result['result_detail']
+    assert result['status'] == 'answered', result['result_detail']
+    assert result['result_kind'] == ('incomplete' if changed else None)
     if changed:
         assert 'differs' in result['result_detail']
 

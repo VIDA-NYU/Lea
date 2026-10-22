@@ -102,12 +102,6 @@ def current_snapshot(formalization_id,*,conversation_session_id=None):
 
 
 @core.read_query
-def review_context(fid,source_context_ref=None):
-    from ..formalization_reviews import retired
-    retired()
-
-
-@core.read_query
 def search(q,limit=30):
     q=(q or '').strip()
     if not q:return []

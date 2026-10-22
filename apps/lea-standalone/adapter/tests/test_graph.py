@@ -54,11 +54,11 @@ def test_status_derivation_covers_all_kinds(tmp_path, monkeypatch):
 
     # helper: checked ok, no sorry → proved.
     sess = store.create_session("work", project_id=pid)["id"]
-    store.add_code_step(sess, None, "helper.lean", content="proof-a", check_status="ok")
+    store.add_code_step(sess, None, "helper.lean", content=(projects.project_repo_dir(project, proofs) / "helper.lean").read_text(), check_status="ok")
     # main: latest check errored → failed (even though the body is trivial).
-    store.add_code_step(sess, None, "main.lean", content="proof-b", check_status="error")
+    store.add_code_step(sess, None, "main.lean", content=(projects.project_repo_dir(project, proofs) / "main.lean").read_text(), check_status="error")
     # sketch: has a `sorry` in its decl span → stated (regardless of any verdict).
-    store.add_code_step(sess, None, "sketch.lean", content="proof-c", check_status="ok")
+    store.add_code_step(sess, None, "sketch.lean", content=(projects.project_repo_dir(project, proofs) / "sketch.lean").read_text(), check_status="ok")
 
     nodes = _nodes_by_key(graph.build_graph(project, proofs))
     assert nodes["helper"]["status"] == "proved"
@@ -88,8 +88,8 @@ def test_session_attribution_newest_first(tmp_path, monkeypatch):
     older = store.create_session("first pass", project_id=pid)["id"]
     newer = store.create_session("second pass", project_id=pid)["id"]
     # Two sessions both touch helper.lean; the newer insert is the latest verdict.
-    store.add_code_step(older, None, "helper.lean", content="proof-a", check_status="error")
-    store.add_code_step(newer, None, "helper.lean", content="proof-d", check_status="ok")
+    store.add_code_step(older, None, "helper.lean", content=(projects.project_repo_dir(project, proofs) / "helper.lean").read_text(), check_status="error")
+    store.add_code_step(newer, None, "helper.lean", content=(projects.project_repo_dir(project, proofs) / "helper.lean").read_text(), check_status="ok")
 
     nodes = _nodes_by_key(graph.build_graph(project, proofs))
     helper = nodes["helper"]
@@ -114,7 +114,7 @@ def test_verified_true_when_safeverify_ok(tmp_path, monkeypatch):
     project, proofs = _setup_demo(tmp_path, monkeypatch)
     pid = project["id"]
     sess = store.create_session("work", project_id=pid)["id"]
-    store.add_code_step(sess, None, "helper.lean", content="proof-a", check_status="ok")
+    store.add_code_step(sess, None, "helper.lean", content=(projects.project_repo_dir(project, proofs) / "helper.lean").read_text(), check_status="ok")
     _verify_ok(sess, pid)
 
     nodes = _nodes_by_key(graph.build_graph(project, proofs))
@@ -132,7 +132,7 @@ def test_verified_false_when_only_lean_checked(tmp_path, monkeypatch):
     pid = project["id"]
     sess = store.create_session("work", project_id=pid)["id"]
     # Lean check passes, but SafeVerify was never run → proved but audit pending.
-    store.add_code_step(sess, None, "helper.lean", content="proof-a", check_status="ok")
+    store.add_code_step(sess, None, "helper.lean", content=(projects.project_repo_dir(project, proofs) / "helper.lean").read_text(), check_status="ok")
 
     nodes = _nodes_by_key(graph.build_graph(project, proofs))
     assert nodes["helper"]["status"] == "proved"
@@ -143,7 +143,7 @@ def test_verified_false_when_newer_run_supersedes_verdict(tmp_path, monkeypatch)
     project, proofs = _setup_demo(tmp_path, monkeypatch)
     pid = project["id"]
     sess = store.create_session("work", project_id=pid)["id"]
-    store.add_code_step(sess, None, "helper.lean", content="proof-a", check_status="ok")
+    store.add_code_step(sess, None, "helper.lean", content=(projects.project_repo_dir(project, proofs) / "helper.lean").read_text(), check_status="ok")
     _verify_ok(sess, pid)
     # A fresh run (e.g. the agent ran again) becomes the latest and carries no verdict,
     # so the audit no longer applies — verified reverts to False until re-verified.
@@ -162,9 +162,9 @@ def test_verified_follows_latest_touching_session(tmp_path, monkeypatch):
     # The older session audited the file; a newer session then re-touched it (still a
     # clean check) but never ran SafeVerify. The verdict belongs to the older state,
     # so the node — now owned by the newer session — is not audited.
-    store.add_code_step(older, None, "helper.lean", content="proof-a", check_status="ok")
+    store.add_code_step(older, None, "helper.lean", content=(projects.project_repo_dir(project, proofs) / "helper.lean").read_text(), check_status="ok")
     _verify_ok(older, pid)
-    store.add_code_step(newer, None, "helper.lean", content="proof-d", check_status="ok")
+    store.add_code_step(newer, None, "helper.lean", content=(projects.project_repo_dir(project, proofs) / "helper.lean").read_text(), check_status="ok")
 
     nodes = _nodes_by_key(graph.build_graph(project, proofs))
     assert nodes["helper"]["status"] == "proved"
@@ -177,6 +177,51 @@ def test_edges_preserved_from_blueprint(tmp_path, monkeypatch):
     result = graph.build_graph(project, proofs)
     assert {"from": "main", "to": "helper"} in result["edges"]
     assert {"from": "todo", "to": "helper"} in result["edges"]
+
+
+def test_audit_is_bound_to_the_exact_file_revision(tmp_path, monkeypatch):
+    project, proofs = _setup_demo(tmp_path, monkeypatch)
+    repo = projects.project_repo_dir(project, proofs)
+    sid = store.create_session('two files', project_id=project['id'])['id']
+    for name in ('helper.lean', 'main.lean'):
+        store.add_code_step(sid, None, name, content=(repo / name).read_text(), check_status='ok')
+    _verify_ok(sid, project['id'])  # Only the latest file, main.lean, was audited.
+    nodes = _nodes_by_key(graph.build_graph(project, proofs))
+    assert nodes['helper']['status'] == 'proved'
+    assert nodes['helper']['verified'] is False
+    assert nodes['main']['verified'] is True
+    (repo / 'main.lean').write_text((repo / 'main.lean').read_text() + '\n-- changed\n')
+    nodes = _nodes_by_key(graph.build_graph(project, proofs))
+    assert nodes['main']['status'] != 'proved'
+    assert nodes['main']['verified'] is False
+
+
+def test_qualified_names_never_fall_back_and_short_names_must_be_unique(tmp_path, monkeypatch):
+    project, proofs = _setup_demo(tmp_path, monkeypatch)
+    repo = projects.project_repo_dir(project, proofs)
+    sid = store.create_session('qualified', project_id=project['id'])['id']
+    store.add_code_step(sid, None, 'helper.lean', content=(repo / 'helper.lean').read_text(), check_status='ok')
+    (repo / '.lea/blueprint.md').write_text(
+        '## missing\n- kind: lemma\n- lean: Missing.Namespace.helper\n\n'
+        '## legacy\n- kind: lemma\n- lean: helper\n')
+    nodes = _nodes_by_key(graph.build_graph(project, proofs))
+    assert nodes['missing']['status'] == 'planned'
+    assert nodes['missing']['file'] is None
+    assert nodes['legacy']['status'] == 'proved'
+    assert nodes['legacy']['resolved_lean'] == 'Lea.Demo.helper'
+    (repo / 'Other.lean').write_text('namespace Other\nlemma helper : True := trivial\nend Other\n')
+    nodes = _nodes_by_key(graph.build_graph(project, proofs))
+    assert nodes['legacy']['status'] == 'planned'
+    (repo / 'Duplicate.lean').write_text((repo / 'helper.lean').read_text())
+    names, _ = graph._scan_lean_decls(repo)
+    assert graph._resolve_file('Lea.Demo.helper', names) is None
+
+
+def test_recorded_check_for_different_bytes_cannot_certify_a_graph_node(tmp_path, monkeypatch):
+    project, proofs = _setup_demo(tmp_path, monkeypatch)
+    sid = store.create_session('different bytes', project_id=project['id'])['id']
+    store.add_code_step(sid, None, 'helper.lean', content='theorem unrelated : True := trivial', check_status='ok')
+    assert _nodes_by_key(graph.build_graph(project, proofs))['helper']['status'] == 'stated'
 
 
 # This module mocks compiler behavior; bind those mock verdicts to their inputs.

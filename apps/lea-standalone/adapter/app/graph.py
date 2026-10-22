@@ -47,7 +47,7 @@ def _short(name: str) -> str:
 
 def _scan_lean_decls(
     repo: Path, unreadable: list[tuple[str, str]] | None = None
-) -> tuple[dict[str, str], dict[str, str]]:
+) -> tuple[dict[str, str | None], dict[str, str]]:
     """Walk a project repo's ``.lean`` files and return ``(fqn_to_file, file_to_text)``.
 
     ``fqn_to_file`` maps each declaration's fully-qualified name (namespace stack +
@@ -57,7 +57,7 @@ def _scan_lean_decls(
     ``unreadable`` (F1) collects ``(relpath, reason)`` for files that could not be
     read, so the caller can report a partial scan rather than presenting it as a
     complete one."""
-    fqn_to_file: dict[str, str] = {}
+    fqn_to_file: dict[str, str | None] = {}
     file_to_text: dict[str, str] = {}
     unreadable = unreadable if unreadable is not None else []
     if not repo.is_dir():
@@ -67,7 +67,7 @@ def _scan_lean_decls(
             continue
         try:
             text = path.read_text()
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             # F1: a file we can't read contributes no declarations, so every node it
             # declares resolves to "no file" and renders as *planned* — the graph
             # reports unwritten work that is actually written. Recorded so the
@@ -77,20 +77,26 @@ def _scan_lean_decls(
         rel = path.relative_to(repo).as_posix()
         file_to_text[rel] = text
         for declaration in scan_lean_declarations(text):
-            fqn_to_file.setdefault(declaration.full_name, rel)
+            if declaration.full_name in fqn_to_file and fqn_to_file[declaration.full_name] != rel:
+                fqn_to_file[declaration.full_name] = None
+            else:
+                fqn_to_file[declaration.full_name] = rel
     return fqn_to_file, file_to_text
 
 
-def _resolve_file(lean: str, fqn_to_file: dict[str, str]) -> str | None:
-    """Find the file declaring a node's ``lean:`` decl: exact FQN match first, then a
-    forgiving short-name match (tolerates namespace drift between blueprint and code)."""
+def _resolve_name(lean: str, fqn_to_file: dict[str, str | None]) -> str | None:
+    """Qualified names are identities; legacy short names must be unambiguous."""
     if lean in fqn_to_file:
-        return fqn_to_file[lean]
-    target = _short(lean)
-    for fqn, file in fqn_to_file.items():
-        if _short(fqn) == target:
-            return file
-    return None
+        return lean if fqn_to_file[lean] is not None else None
+    if "." in lean:
+        return None
+    matches = [fqn for fqn in fqn_to_file if _short(fqn) == lean]
+    return matches[0] if len(matches) == 1 and fqn_to_file[matches[0]] is not None else None
+
+
+def _resolve_file(lean: str, fqn_to_file: dict[str, str | None]) -> str | None:
+    resolved = _resolve_name(lean, fqn_to_file)
+    return fqn_to_file.get(resolved) if resolved else None
 
 
 def _decl_has_sorry(text: str, lean: str) -> bool:
@@ -125,7 +131,7 @@ def build_graph(project: dict, proofs_root: Path) -> dict:
     except FileNotFoundError:
         # No blueprint yet is the normal state of a new project, not a failure.
         text = ""
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         # F1: a blueprint that EXISTS but can't be read produced an empty graph
         # indistinguishable from "this project has no blueprint" — so a permissions
         # or encoding problem read as "you haven't written one yet."
@@ -147,25 +153,24 @@ def build_graph(project: dict, proofs_root: Path) -> dict:
             source="graph", context={"path": rel, "project_id": project["id"]},
         ))
     titles = {s["id"]: s.get("title") or "session" for s in store.list_project_sessions(project["id"])}
-    # Sessions whose latest run holds a passing SafeVerify verdict (D28): a node is
-    # audited iff the session that owns its file's latest code_step is in this set.
-    verified_sessions = store.safe_verify_ok_sessions(project["id"])
-
     enriched: list[dict] = []
     base: dict[str, str] = {}
     for node in parsed["nodes"]:
         lean = node["lean"]
-        file = _resolve_file(lean, fqn_to_file) if lean else None
-        # Only the verdict and the session attribution are read below, so skip the
-        # blob join (P3): hydrating every revision of every file to look at
-        # `check_status` was the graph's whole cost.
+        resolved = _resolve_name(lean, fqn_to_file) if lean else None
+        file = fqn_to_file.get(resolved) if resolved else None
+        # Bind the displayed source to the recorded checked bytes as well as
+        # the compiler environment; file names and session ownership are insufficient.
         steps = (
-            store.code_steps_for_project_path(project["id"], file, include_content=False)
+            store.code_steps_for_project_path(project["id"], file)
             if file else []
         )
         latest = steps[0] if steps else None
-        has_sorry = _decl_has_sorry(file_to_text.get(file, ""), lean) if file else False
-        status = _base_status(lean, file, latest, has_sorry)
+        content = file_to_text.get(file, "")
+        has_sorry = _decl_has_sorry(content, resolved) if file else False
+        # A current check of different recorded bytes cannot certify this file.
+        matching_check = latest if latest and latest.get("code") == content else None
+        status = _base_status(resolved, file, matching_check, has_sorry)
         base[node["key"]] = status
 
         sessions: list[dict] = []
@@ -179,11 +184,12 @@ def build_graph(project: dict, proofs_root: Path) -> dict:
         last_modified_by = sessions[0]["session_id"] if sessions else None
         # Audit-grade only: a Lean-check pass (`proved`) that SafeVerify also cleared
         # for the session holding the current file state. Never True for stated/ready/etc.
-        verified = status == "proved" and last_modified_by in verified_sessions
+        verified = status == "proved" and store.safe_verify_current_step(project["id"], latest)
 
         enriched.append({
             **node,
             "file": file,
+            "resolved_lean": resolved,
             "status": status,
             "verified": verified,
             "sessions": sessions,

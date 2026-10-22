@@ -668,5 +668,5 @@
     "adapter GET /api/editor/requests/{command_id}": "editor_query",
     "adapter DELETE /api/editor/clients/current": "editor_buffer"
   },
-  "companion_dispatch_sha256": "74ae548f54420378bd430e023504ed964d29c3100f37c0202d07886ddf9ff749"
+  "companion_dispatch_sha256": "6540c59068f5e3771ab6df8c63d408b9554c6f0f49a9a36679e9fd91c3ba351c"
 }

@@ -42,11 +42,8 @@ jobs:
           df -h /
       - name: Prepare immutable strict baseline source
         run: |
-          baseline=$(python3 -c 'import json;print(json.load(open(".github/stage8-release-baseline.json"))["source"])')
-          git cat-file -e "$baseline^{commit}"
-          mkdir -p "$RUNNER_TEMP/stage8-baseline" validation
-          git archive "$baseline" | tar -x -C "$RUNNER_TEMP/stage8-baseline"
-          echo "BASELINE_SOURCE=$baseline" >> "$GITHUB_ENV"
+          python3 scripts/prepare-release-baseline.py --destination "$RUNNER_TEMP/stage8-baseline"
+          mkdir -p validation
       - name: Publication provenance guard regressions
         run: python3 -m unittest discover -s tests/local_preparation -p test_release_bundle.py -v
       - name: Build all baseline production roles

@@ -51,6 +51,7 @@ def test_review_decisions_are_retired_without_changing_evidence(target, action):
 
 def test_review_context_and_public_routes_are_retired(target):
     from app.api_routes import formalizations as public
+    from app import core_query_dispatch
     _, form, _ = target
     for read in [formalization_reviews.context, public.review_context]:
         with pytest.raises(HTTPException) as error:
@@ -58,6 +59,9 @@ def test_review_context_and_public_routes_are_retired(target):
         assert error.value.status_code == 410
     with pytest.raises(HTTPException) as error:
         public.review_decision(form['id'], public.ReviewDecision(action='approve', idempotency_key='old-client'))
+    assert error.value.status_code == 410
+    with pytest.raises(HTTPException) as error:
+        core_query_dispatch._query('review', {'formalization_id': form['id']})
     assert error.value.status_code == 410
 
 

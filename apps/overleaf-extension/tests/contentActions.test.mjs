@@ -3213,7 +3213,7 @@ test("Formalize all renders an accessible, collapsible queue with active turn pr
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickButtonText("Formalize all (8)");
-  await flushPromises();
+  await waitForHarness(() => harness.batchQueue(), "accepted batch queue");
 
   let queue = harness.batchQueue();
   assert.ok(queue, "expected a batch queue card");
@@ -3288,6 +3288,106 @@ test('continuous database notifications cannot starve Blueprint refresh',async()
     await h.advanceTime(500);
   }
   assert.ok(h.fetchCalls.filter(call=>call.url.includes('/project/graph')).length>initial);
+});
+
+test('Blueprint retries stale observations and retains its graph across a temporary outage', async () => {
+  let phase = 'stale';
+  const {h} = await deliveryPane({fetchOverride(url) {
+    if (!url.includes('/project/graph')) return;
+    if (phase === 'offline') return admissionResponse({message:'Worker unavailable'}, 503);
+    return admissionResponse({nodes:[{key:phase === 'ready' ? 'CURRENT' : 'PREVIOUS',
+      kind:'lemma',lean:null,uses:[],status:'planned',verified:false}],edges:[],
+      projection:{state:phase === 'ready' ? 'observed' : 'inputs_changed'}});
+  }});
+  const previousDocument = globalThis.document;
+  globalThis.document = h.document;
+  try {
+    h.clickButtonText('Blueprint'); await flushPromises();
+    assert.match(h.paneText(), /PREVIOUS/);
+    assert.match(h.paneText(), /Waiting for the current/);
+    phase = 'offline'; await h.runTimersAt(2000); await flushPromises();
+    assert.match(h.paneText(), /PREVIOUS/);
+    assert.match(h.bodyText(), /retrying/);
+    phase = 'ready'; await h.runTimersAt(2000); await flushPromises();
+    assert.match(h.paneText(), /CURRENT/);
+    assert.doesNotMatch(h.paneText(), /PREVIOUS|Waiting for the current/);
+    h.clickButtonText('Items');
+    const reads = h.fetchCalls.filter(call => call.url.includes('/project/graph')).length;
+    await h.advanceTime(10000);
+    assert.equal(h.fetchCalls.filter(call => call.url.includes('/project/graph')).length, reads);
+  } finally { globalThis.document = previousDocument; }
+});
+
+test('Blueprint read warnings remain visible instead of an empty graph or generation action', async () => {
+  const {h} = await deliveryPane({fetchOverride(url) {
+    if (url.includes('/project/graph')) return admissionResponse({nodes:[],edges:[],
+      warnings:[{code:'asset.read_failed',message:'The project blueprint could not be read.'}]});
+  }});
+  h.clickButtonText('Blueprint'); await flushPromises();
+  assert.match(h.paneText(), /could not be read/);
+  assert.doesNotMatch(h.paneText(), /No blueprint nodes yet/);
+  assert.equal(h.document.body.querySelectorAll('button').find(b => b.textContent === 'Generate from formalized theorems').disabled, true);
+});
+
+test('Blueprint generation survives refresh notifications and retains its diagnostics on later reads', async () => {
+  let release, generated = false, current = false;
+  const graph = () => ({ nodes:[{key:generated ? 'GENERATED' : 'PREVIOUS', kind:'lemma',
+    lean:null,uses:[],status:'planned',verified:false}], edges:[],
+    projection:{state:generated ? 'observed' : 'inputs_changed'} });
+  const {h,events} = await deliveryPane({fetchOverride(url) {
+    if (url.endsWith('/project/blueprint/generate')) return new Promise(resolve => {
+      release = () => { generated = true; resolve(admissionResponse({ ...graph(), added:1,
+        warnings:['One recorded declaration needs attention.'] })); };
+    });
+    if (url.includes('/project/graph')) return admissionResponse(current ? graph() : {
+      ...graph(), nodes:[{key:'PREVIOUS',kind:'lemma',lean:null,uses:[],status:'planned',verified:false}],
+      projection:{state:'inputs_changed',observed_at:'2000-01-01T00:00:00Z'} });
+  }});
+  const previousDocument = globalThis.document;
+  globalThis.document = h.document;
+  try {
+    h.clickButtonText('Blueprint'); await flushPromises();
+    h.clickButtonText('Generate from formalized theorems'); await flushPromises();
+    assert.equal(typeof release, 'function');
+    const reads = () => h.fetchCalls.filter(call => call.url.includes('/project/graph')).length;
+    const before = reads();
+    events.emit('jobs-changed',{overleafProjectId:'project-1'});
+    await h.runTimersAt(1500); await h.runTimersAt(2000); await flushPromises();
+    assert.equal(reads(), before);
+    release(); await flushPromises();
+    assert.match(h.paneText(), /GENERATED/);
+    assert.match(h.paneText(), /One recorded declaration needs attention/);
+    await h.runTimersAt(2000); await flushPromises();
+    assert.ok(reads() > before);
+    assert.match(h.paneText(), /GENERATED/);
+    assert.doesNotMatch(h.paneText(), /PREVIOUS/);
+    assert.match(h.paneText(), /One recorded declaration needs attention/);
+    current = true;
+    await h.runTimersAt(2000); await flushPromises();
+    assert.doesNotMatch(h.paneText(), /Waiting for the current/);
+  } finally { globalThis.document = previousDocument; }
+});
+
+test('Blueprint nodes support keyboard selection with named controls and pressed state', async () => {
+  const {h} = await deliveryPane({fetchOverride(url) {
+    if (url.includes('/project/graph')) return admissionResponse({nodes:[{
+      key:'keyboard_node',kind:'lemma',lean:null,uses:[],status:'planned',verified:false,
+      statement:'A keyboard accessible statement.'}],edges:[]});
+  }});
+  const previousDocument = globalThis.document;
+  globalThis.document = h.document;
+  try {
+    h.clickButtonText('Blueprint'); await flushPromises();
+    const node = h.document.body.querySelectorAll('g').find(node => node.getAttribute('role') === 'button');
+    assert.equal(node.getAttribute('role'), 'button');
+    assert.equal(node.getAttribute('tabindex'), '0');
+    assert.match(node.getAttribute('aria-label'), /keyboard_node/);
+    node.dispatchEvent({type:'keydown',key:'Enter'});
+    assert.equal(node.getAttribute('aria-pressed'), 'true');
+    assert.match(h.paneText(), /A keyboard accessible statement/);
+    node.dispatchEvent({type:'keydown',key:' '});
+    assert.equal(node.getAttribute('aria-pressed'), 'false');
+  } finally { globalThis.document = previousDocument; }
 });
 
 test('project navigation replaces its scoped stream and ignores late notifications',async()=>{
@@ -4477,7 +4577,7 @@ test("Formalize all waits for the complete inventory and includes all ten target
     }
   } });
   h.document.body.querySelector('.ol-lean-formalize-all-button').click();
-  await flushPromises();
+  await waitForHarness(() => h.fetchCalls.some(call => call.url.endsWith('/formalize/all')), "complete project batch admission");
   const call = h.fetchCalls.find(call => call.url.endsWith('/formalize/all'));
   assert.ok(call);
   const submitted = JSON.parse(call.options.body);
@@ -5521,6 +5621,15 @@ async function flushPromises() {
   for (let i = 0; i < 12; i += 1) {
     await Promise.resolve();
   }
+}
+
+async function waitForHarness(predicate, description) {
+  const deadline = Date.now() + 2000;
+  do {
+    await flushPromises();
+    if (predicate()) return;
+  } while (Date.now() < deadline);
+  assert.fail(`Timed out waiting for ${description}`);
 }
 
 class FakeDocument {

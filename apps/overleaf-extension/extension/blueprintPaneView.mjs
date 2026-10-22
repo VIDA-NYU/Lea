@@ -52,7 +52,7 @@ function buildSvg(graph, layout, selectedKey, onNodeClick, shapeByKey) {
   const svg = svgEl("svg", {
     width: layout.width,
     height: layout.height,
-    role: "img",
+    role: "group",
     "aria-label": "Blueprint dependency graph",
   });
 
@@ -95,8 +95,15 @@ function buildSvg(graph, layout, selectedKey, onNodeClick, shapeByKey) {
     const isDef = n.kind === "definition";
     const cls = `bp-node ${statusClass(n)}${selectedKey === key ? " is-selected" : ""}`;
 
-    const g = svgEl("g", { class: "bp-node-g", transform: `translate(${placed.x},${placed.y})` });
+    const g = svgEl("g", { class: "bp-node-g", transform: `translate(${placed.x},${placed.y})`,
+      role: "button", tabindex: 0, "aria-pressed": selectedKey === key ? "true" : "false",
+      "aria-label": `${n.key}, ${n.kind || "node"}, ${statusLabel(n)}` });
     g.addEventListener("click", () => onNodeClick(key));
+    g.addEventListener("keydown", event => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      onNodeClick(key);
+    });
 
     const shape = isDef
       ? svgEl("rect", { class: cls, width: NODE_W, height: NODE_H, rx: 7 })
@@ -241,20 +248,25 @@ export function renderBlueprintView(graph, { selectedKey = null, onSelectNode = 
   const side = el("div", "bp-graph-side");
   side.appendChild(buildLegend());
   const detailHost = el("div", "bp-detail-host");
+  detailHost.setAttribute("role", "region");
+  detailHost.setAttribute("aria-label", "Selected blueprint node");
+  detailHost.setAttribute("aria-live", "polite");
   side.appendChild(detailHost);
   root.appendChild(side);
 
   function renderDetail() {
     const node = selected ? nodeByKey.get(selected) : null;
     detailHost.replaceChildren(
-      node ? buildDetail(node) : el("div", "bp-detail-empty", "Click a node to see its statement and status."),
+      node ? buildDetail(node) : el("div", "bp-detail-empty", "Select a node to see its statement and status."),
     );
   }
 
   function onNodeClick(key) {
     const next = selected === key ? null : key;
     shapeByKey.get(selected)?.classList.remove("is-selected");
+    shapeByKey.get(selected)?.parentNode?.setAttribute("aria-pressed", "false");
     shapeByKey.get(next)?.classList.add("is-selected");
+    shapeByKey.get(next)?.parentNode?.setAttribute("aria-pressed", "true");
     selected = next;
     renderDetail();
     onSelectNode(selected);

@@ -116,7 +116,14 @@ export async function createServer({env=process.env,fetchImpl=fetch}={}) {
               namespace:null,namespaceEditable:true,hasRecordedProofs:false}});
           }
         }
-        const paths={'/project/graph':'/graph','/share/github':'/share','/project/github-import/status':'/github-imports/'+encodeURIComponent(url.searchParams.get('importId')||''),'/formalize/all/reports':'/formalize-batch-reports'};
+        if(pathname==='/project/graph') {
+          try { return send(response,200,{ok:true,exists:true,...await api('/api/projects/by-slug/'+encodeURIComponent(project)+'/graph')}); }
+          catch(error) {
+            if(error.status!==404)throw error;
+            return send(response,200,{ok:true,exists:false,nodes:[],edges:[]});
+          }
+        }
+        const paths={'/share/github':'/share','/project/github-import/status':'/github-imports/'+encodeURIComponent(url.searchParams.get('importId')||''),'/formalize/all/reports':'/formalize-batch-reports'};
         if(paths[pathname])return send(response,200,await api('/api/projects/by-slug/'+encodeURIComponent(project)+paths[pathname]));
         if(pathname.startsWith('/formalize/all/reports/'))return send(response,200,await api('/api/projects/by-slug/'+encodeURIComponent(project)+'/formalize-batch-reports/'+encodeURIComponent(decodeURIComponent(pathname.slice(23)))));
         if(pathname==='/project-export'){const upstream=await fetchImpl(base+'/api/projects/by-slug/'+encodeURIComponent(project)+'/export');response.writeHead(upstream.status,Object.fromEntries([...upstream.headers].filter(([k])=>['content-type','content-disposition'].includes(k))));for await(const bytes of upstream.body)response.write(bytes);response.end();return;}

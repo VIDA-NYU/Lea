@@ -126,7 +126,7 @@ def test_published_lean_block_gets_named_compiler_evidence_and_durable_verdict(t
         from lea import tools, result_selection
         from lea.check_runtime import CheckText
         from lea.runctx import run_context
-        assert config.selected_result == {'declaration': 'result', 'kind': kind}
+        assert config.selected_result == {'declaration': 'result', 'kind': 'defined' if kind == 'definition' else 'proved'}
         code = f'namespace Lea.Published\n{statement}\nend Lea.Published\n'
         if variant == 'changed_statement':
             code = code.replace(': n + 0 = n', ': n = n')
@@ -158,14 +158,15 @@ def test_published_lean_block_gets_named_compiler_evidence_and_durable_verdict(t
     assert token
     bridge.run_lea(bridge.RunnerContext(session_id=session['id'], run_id=run['id'], task='Formalize result',
         config=cfg, events=Queue(), autonomous=True, purpose='overleaf_solver', command_token=token))
-    assert inspected == [('result', kind)], store.get_run(run['id'])['result_detail']
+    assert inspected == [('result', 'defined' if kind == 'definition' else 'proved')], store.get_run(run['id'])['result_detail']
     accepted = variant in {'exact', 'definition'}
     outcome = store.get_run(run['id'])
-    assert outcome['result_kind'] == (('defined' if kind == 'definition' else 'proved') if accepted else 'needs_review'), outcome['result_detail']
+    assert outcome['result_kind'] == (('defined' if kind == 'definition' else 'proved') if accepted else 'incomplete'), outcome['result_detail']
     assert target_observations.capture(form['id'])['state'] == 'observed'
     projected = proofs.get(form['id'])
-    assert projected['validity_status'] == ('failing' if variant == 'unsupported_axiom' else outcome['result_kind'])
-    assert projected['check_current'] is (variant != 'unsupported_axiom')
+    assert projected['validity_status'] == (outcome['result_kind'] if accepted else 'unchecked')
+    # File checking and acceptance of the selected theorem are independent.
+    assert projected['check_current'] is True
     assert bool(projected['certification']) is accepted
     with db.connect() as conn:
         evidence = json.loads(conn.execute('select evidence_json from proof_check_evidence order by created_at desc limit 1').fetchone()[0])
@@ -225,8 +226,8 @@ def assert_job_report_and_ui_delivery(root, monkeypatch, project, form, run, ses
       state.jobs.completion=job;
       try{await db.runAccepted(x.parent,async()=>{await worker.applyProofOutcomeToJob({state,job,target:{targetKind:'theorem',targetLabel:'result',
         overleafProjectId:'doc',projectSlug:'doc',projectNamespace:'Lea.Published'},
-        exit:{ok:x.accepted,resultKind:x.accepted?'proved':'needs_review',resultDetail:'Named compiler evidence is missing.'}});
-        assert.equal(job.status,x.accepted?'formalized':'needs_review');
+        exit:{ok:x.accepted,resultKind:x.accepted?'proved':'incomplete',resultDetail:'Named compiler evidence is missing.'}});
+        assert.equal(job.status,x.accepted?'formalized':'failed');
         const batch={batchId:'formalize-batch-completion',operation:'formalize',overleafProjectId:'doc',
           acceptedCommandId:x.parent,createdAt:job.startedAt,done:false,running:false,usesByLabel:new Map(),items:[{targetKind:'theorem',targetLabel:'result',state:'running',runJobId:job.jobId}]};
         state.repairBatches={batch};await worker.reconcileRecoveredBatches(state);await batch.reportSubmission;
@@ -248,13 +249,16 @@ def assert_job_report_and_ui_delivery(root, monkeypatch, project, form, run, ses
         # These are the SQL API projections consumed by standalone's project and
         # session UIs; the extension above consumed the same target observation.
         standalone = client.get(f"/api/projects/{project['id']}/formalizations").json()
-        assert standalone['formalizations'][0]['validity_status'] == ('proved' if accepted else 'needs_review')
+        assert standalone['formalizations'][0]['validity_status'] == ('proved' if accepted else 'unchecked')
         with db.connect() as conn:
             job = json.loads(conn.execute("select payload from companion_jobs where id='completion'").fetchone()[0])
             facts = json.loads(conn.execute("select facts_json from formalize_batch_reports where batch_id='formalize-batch-completion'").fetchone()[0])
-        assert job['status'] == facts['items'][0]['state'] == ('formalized' if accepted else 'needs_review')
+        assert job['status'] == ('formalized' if accepted else 'failed')
+        assert facts['items'][0]['state'] == ('formalized' if accepted else 'incomplete')
         assert facts['counts']['verified'] == int(accepted)
-        assert facts['counts']['needsReview'] == int(not accepted)
+        assert facts['counts']['needsReview'] == 0
+        assert facts['counts']['failed'] == 0
+        assert facts['counts']['incomplete'] == int(not accepted)
     finally:
         server.shutdown()
         thread.join(timeout=5)

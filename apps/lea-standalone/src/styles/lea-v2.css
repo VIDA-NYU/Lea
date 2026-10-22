@@ -304,6 +304,11 @@
 .composer .send:disabled { opacity: .45; cursor: not-allowed; }
 .composer .send.stop { background: var(--red); }
 .thread-empty { max-width: 720px; margin: 0 auto; padding: 64px 24px; text-align: center; color: var(--muted); }
+.session-restore { padding: 64px 0; text-align: center; color: var(--ink); }
+.session-restore-spinner { display: block; margin: 0 auto 14px; color: var(--muted); animation: reconnect-spin 1s linear infinite; }
+.session-restore strong { font-weight: 600; }
+.session-restore p { margin: 8px 0 0; color: var(--ink-2); }
+@media (prefers-reduced-motion: reduce) { .session-restore-spinner { animation: none; } }
 
 /* "Lea is thinking…" indicator (M18) */
 .thinking { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin-bottom: 14px; }
@@ -313,6 +318,8 @@
 .thinking .dots i:nth-child(3) { animation-delay: .4s; }
 @keyframes lea-blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
 .err-banner { max-width: 720px; margin: 0 auto 14px; border: 1px solid var(--red-soft); background: var(--red-soft); color: var(--red); border-radius: 10px; padding: 10px 14px; font-size: 13px; }
+.restore-retry { display: block; margin-top: 10px; min-height: 36px; padding: 6px 12px; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.restore-retry:hover { background: var(--red-soft); }
 /* v2.3 item 14: transient SSE-reattach backoff notice (a dropped stream or a 409
    the browser can only surface as onerror), distinct from the red error banner. */
 .reconnect-chip { max-width: 720px; margin: 0 auto 14px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--amber-soft); background: var(--amber-soft); color: var(--amber); border-radius: 10px; padding: 8px 13px; font-size: 12.5px; }

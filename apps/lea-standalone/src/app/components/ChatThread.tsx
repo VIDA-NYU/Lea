@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, PanelLeftOpen } from 'lucide-react';
+import { Download, LoaderCircle, PanelLeftOpen } from 'lucide-react';
 import { sessionExportUrl, downloadWorkspaceExport, interruptSubagent } from '../lib/api';
 import type {
   ApprovalDecision,
@@ -79,6 +79,8 @@ export function ChatThread({
   onSubmit,
   onSubmitGeneral,
   submissionBusy = false,
+  restoringSession = false,
+  onRetryRestore,
   sourceConnection,
   onInterrupt,
   onResumeRun,
@@ -100,6 +102,8 @@ export function ChatThread({
   onSubmit: () => void;
   onSubmitGeneral?: () => void;
   submissionBusy?: boolean;
+  restoringSession?: boolean;
+  onRetryRestore?: () => void;
   sourceConnection?: { targetId: string; label: string; state: 'preparing' | 'connected' | 'error' } | null;
   onInterrupt: () => void;
   onResumeRun?: (runId: string, action?: 'resume' | 'continue') => Promise<void> | void;
@@ -611,9 +615,16 @@ export function ChatThread({
         )}
       </div>
 
-      <div className="thread" ref={scrollRef} onScroll={onScroll}>
+      <div className="thread" ref={scrollRef} onScroll={onScroll} aria-busy={restoringSession}>
         <div className="thread-inner">
-          {items.length === 0 && !error && (
+          {restoringSession && !error && (
+            <div className="session-restore" role="status">
+              <LoaderCircle size={20} className="session-restore-spinner" aria-hidden="true" />
+              <strong>Restoring session…</strong>
+              <p>Loading your conversation and proof context.</p>
+            </div>
+          )}
+          {items.length === 0 && !error && !restoringSession && (
             <div className="thread-empty">
               Enter a theorem or natural-language proof task to start Lea.
             </div>
@@ -714,7 +725,10 @@ export function ChatThread({
           {/* The banner survives, narrowed (v2.4) to client-side action failures —
               a fetch that didn't land, a button that failed. Everything the run
               reports is a Diagnostic with a place to live. */}
-          {error && <div className="err-banner">{error}</div>}
+          {error && <div className="err-banner" role="alert">
+            {error}
+            {onRetryRestore && <button className="restore-retry" onClick={onRetryRestore}>Retry loading</button>}
+          </div>}
         </div>
       </div>
 

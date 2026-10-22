@@ -106,6 +106,7 @@ export default function App() {
   const [draft, setDraft] = useState('');
   const [submissionBusy, setSubmissionBusy] = useState(false);
   const [restoringContext,setRestoringContext]=useState(true);
+  const [restorationFailed, setRestorationFailed] = useState(false);
   const restorationStarted=useRef(false);
   const [sourceConnection, setSourceConnection] = useState<{ targetId: string; label: string; state: 'preparing' | 'connected' | 'error' } | null>(null);
   const submitting = useRef(false);
@@ -170,7 +171,7 @@ export default function App() {
     () => sessions.find((s) => s.id === selectedSessionId),
     [sessions, selectedSessionId],
   );
-  const title = selectedSession?.title || 'New theorem session';
+  const title = selectedSession?.title || (restoringContext ? 'Restoring session…' : restorationFailed ? 'Session unavailable' : 'New theorem session');
 
   const sortedCode = useMemo(() => sortCodeSteps(codeSteps), [codeSteps]);
   const pendingApproval = approvals.find((a) => !a.decision && a.actionable !== false);
@@ -214,7 +215,10 @@ export default function App() {
     };
     if(restorationStarted.current)return;
     restorationStarted.current=true;
-    restore().catch((err) => setError(`Could not restore LeaChat: ${err instanceof Error ? err.message : String(err)} Reload this page to retry.`))
+    restore().catch((err) => {
+      setRestorationFailed(true);
+      setError(`Could not restore LeaChat: ${err instanceof Error ? err.message : String(err)} Retry loading to open this session.`);
+    })
       .finally(()=>setRestoringContext(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -227,11 +231,17 @@ export default function App() {
     onChanged: () => {
       bumpFormalizationRefresh();
       const selected=useSessions.getState().selectedSessionId;
-      if(selected && !useProofSession.getState().isRunning)void reconcile(selected).catch(()=>{});
+      if (selected && !useProofSession.getState().isRunning) {
+        const owned = captureSelection(false);
+        void reconcile(selected).catch((err) => {
+          if (owned()) setError(`Could not refresh LeaChat: ${err instanceof Error ? err.message : String(err)} Reload this page to retry.`);
+        });
+      }
     },
   }), []);
 
   const loadSession = async (sessionId: string) => {
+    setRestorationFailed(false);
     const detail = await loadOwnedSession(sessionId);
     if (detail) window.localStorage.setItem(SELECTED_SESSION_KEY, detail.id);
     return detail;
@@ -428,6 +438,7 @@ export default function App() {
   }, []);
 
   const resetForNewSession = () => {
+    setRestorationFailed(false);
     closeStream();
     setSelectedSessionId(undefined);
     // One call, not a hand-maintained list of setters. The list version silently
@@ -830,7 +841,9 @@ export default function App() {
             onDraftChange={setDraft}
             onSubmit={() => handleSubmit()}
             onSubmitGeneral={() => handleSubmit(true)}
-            submissionBusy={submissionBusy || restoringContext}
+            submissionBusy={submissionBusy || restoringContext || restorationFailed}
+            restoringSession={restoringContext}
+            onRetryRestore={restorationFailed ? () => window.location.reload() : undefined}
             sourceConnection={sourceConnection}
             onInterrupt={handleInterrupt}
             onResumeRun={async (runId, action = 'resume') => {

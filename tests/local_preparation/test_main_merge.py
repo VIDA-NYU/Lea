@@ -122,6 +122,29 @@ class MainIntegrationTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
         self.assertFalse((self.root / '.git/MERGE_HEAD').exists())
 
+    def test_preview_keeps_edits_to_tracked_ignored_files_and_excludes_private_files(self):
+        tracked = self.root / 'generated/status.json'
+        tracked.parent.mkdir()
+        tracked.write_text('committed status\n')
+        self.commit('track generated status')
+        with (self.root / '.gitignore').open('a') as file:
+            file.write('generated/\n')
+        self.commit('ignore future generated files')
+        tracked.write_text('updated tracked status\n')
+        private = tracked.with_name('private.json')
+        private.write_text('private data stays out of the preview\n')
+        before = self.snapshot()
+        result = self.approved()
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(tracked.read_text(), 'updated tracked status\n')
+        # Preview objects are disposable, so compare against a normal index
+        # snapshot in the fixture without retaining any of those objects.
+        self.git('add', '--update')
+        expected = self.git('write-tree')
+        self.git('reset', '-q')
+        self.assertEqual(result['source_tree'], expected)
+        self.assertNotIn('generated/private.json', self.git('ls-files').splitlines())
+
     def test_explicit_apply_stages_exact_tree_modes_links_deletions_and_history(self):
         approved = self.approved()
         result = prepare_integration(self.repository, self.manifest, approved, apply=True)

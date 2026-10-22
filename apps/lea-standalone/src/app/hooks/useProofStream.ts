@@ -71,6 +71,7 @@ export function useProofStream() {
   const applyingDetail = useRef(false);
   const pendingRequests = useRef(new Set<AbortController>());
   const detailRequestVersion = useRef(0);
+  const navigationRequest = useRef<{ sessionId: string; promise: Promise<SessionDetail | null> } | null>(null);
 
   // Ownership survives renders, but expires on every navigation (including A→B→A).
   const captureSelection = (includeScope = true) => {
@@ -134,6 +135,7 @@ export function useProofStream() {
   const closeStream = (invalidateSelection = true) => {
     streamGeneration.current += 1;
     if (invalidateSelection) {
+      navigationRequest.current = null;
       detailRequestVersion.current += 1;
       selectionGeneration.current += 1;
       for (const controller of pendingRequests.current) controller.abort();
@@ -317,8 +319,10 @@ export function useProofStream() {
     useSessions.getState().setSelectedSessionId(sessionId);
     useProofSession.getState().resetSessionScoped();
     const owned = captureSelection(false);
+    const request = { sessionId, promise: fetchDetail(sessionId) };
+    navigationRequest.current = request;
     try {
-      const detail = await fetchDetail(sessionId);
+      const detail = await request.promise;
       if (!detail || !owned()) return null;
       applyDetail(detail);
       for (const queued of detail.queued_reformalizations || []) {
@@ -330,12 +334,22 @@ export function useProofStream() {
     } catch (error) {
       if (!owned()) return null;
       throw error;
+    } finally {
+      if (navigationRequest.current === request) navigationRequest.current = null;
     }
   };
 
   const reconcile = async (sessionId: string) => {
     if (useSessions.getState().selectedSessionId !== sessionId) return;
     const owned = captureStream();
+    // Navigation owns the first snapshot. An invalidation must not supersede
+    // it and leave the freshly cleared conversation without its history.
+    const navigation = navigationRequest.current;
+    if (navigation?.sessionId === sessionId) {
+      try { if (!await navigation.promise) return; }
+      catch { return; } // The navigation caller owns reporting its load failure.
+      if (!owned()) return;
+    }
     let detail: SessionDetail | null;
     try { detail = await fetchDetail(sessionId); }
     catch (error) { if (!owned()) return; throw error; }

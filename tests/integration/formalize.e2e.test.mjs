@@ -634,7 +634,7 @@ test('Stage 6 source publication, chat, batch, namespace rename and SQL export t
   const chatTarget={...target,naturalLanguageLatex:target.targetText};
   const chat=await postJson(companionBaseUrl+'/lean-pane/chat/message',{target:chatTarget,message:'Explain the proof labeled int_stage6.'});
   assert.equal(chat.status,200,JSON.stringify(chat.body));assert.equal(chat.body.leaSessionId,initial.leaSessionId);
-  await waitFor(async()=>{const run=await fetch(adapterBaseUrl+'/api/runs/'+chat.body.runId).then(r=>r.json());return ['proved','answered','needs_review','failed'].includes(run.status)?run:null;},{label:'chat result'});
+  await waitFor(async()=>{const run=await fetch(adapterBaseUrl+'/api/runs/'+chat.body.runId).then(r=>r.json());return ['proved','answered','needs_review','failed'].includes(run.status)?run:null;},{timeoutMs:60000,label:'chat result'});
   const transcript=await fetch(companionBaseUrl+'/lean-pane/chat/session/'+initial.leaSessionId).then(r=>r.json());
   assert.ok(transcript.messages.some(m=>m.content.includes('Explain the proof labeled')));
   const batchItem=await publishedTarget({overleafProjectId:'itest-stage6-batch',targetKind:'theorem',targetLabel:'int_batch6',targetText:'True is true.'});

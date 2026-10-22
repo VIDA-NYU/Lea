@@ -11,9 +11,13 @@ The runtime contract is [STAGE8-process-boundary.md](STAGE8-process-boundary.md)
 The baseline is source `6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b`, retained by
 [`codex/stage8-strict-baseline-20261017`](https://github.com/darturi/UnifiedLeaEcosystem/tree/codex/stage8-strict-baseline-20261017).
 The successor is source `c8dc8f62efa1ddc6ca5e333e29317ef30ea433af` on the
-qualification branch `codex/stage8-release-gates`. The tested application and
-release tooling match this checkout; subsequent changes only record documentation
-and evidence. No registry image was published and no deployed stack was changed.
+qualification branch `codex/stage8-release-gates`. These results certify that
+immutable baseline/successor pair. Later application changes require a new
+qualification run. No registry image was published and no deployed stack was changed.
+
+The baseline manifest records its original source repository. Release CI fetches
+the retained tag from that repository when the baseline is absent from the target
+repository, verifies its pinned commit SHA, and archives that exact source.
 
 | Native runner | Production baseline and successor | Packaged-code regressions | Same-data binary rollback |
 | --- | --- | --- | --- |

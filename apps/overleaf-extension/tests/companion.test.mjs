@@ -7341,7 +7341,7 @@ test("project graph passes the by-slug nodes/edges through and treats 404 as an 
 
   const res = await handleProjectGraph({ overleafProjectId: "Doc 1" }, state);
   assert.equal(res.statusCode, 200);
-  assert.deepEqual(res.body, { ok: true, exists: true, nodes: graph.nodes, edges: graph.edges });
+  assert.deepEqual(res.body, { ok: true, exists: true, nodes: graph.nodes, edges: graph.edges, warnings: [] });
   assert.ok(calls.some((c) => c.url.includes(`/api/projects/by-slug/${slugProjectId("Doc 1")}/graph`)));
 
   // 404 (never-formalized document) → a calm empty graph, so the pane shows its empty state.
@@ -7372,8 +7372,9 @@ test("blueprint generate returns the added count + fresh graph, treating 404 as 
   const leaRepo = await makeLeaRepo();
   const calls = [];
   const adapterBody = {
-    added: 2, skipped: 1, warnings: [],
-    graph: { nodes: [{ key: "a", kind: "lemma", status: "proved", uses: [] }], edges: [] },
+    added: 2, skipped: 1, warnings: ['A generation warning.'],
+    graph: { nodes: [{ key: "a", kind: "lemma", status: "proved", uses: [] }], edges: [],
+      warnings: [{message:'A graph read warning.'}] },
   };
   const state = await makeState({
     leaRepoPath: leaRepo,
@@ -7385,6 +7386,7 @@ test("blueprint generate returns the added count + fresh graph, treating 404 as 
   assert.equal(res.body.added, 2);
   assert.equal(res.body.skipped, 1);
   assert.deepEqual(res.body.nodes, adapterBody.graph.nodes);
+  assert.deepEqual(res.body.warnings, [...adapterBody.warnings, ...adapterBody.graph.warnings]);
   assert.ok(calls.some((c) => c.method === "POST" && c.url.includes(`/api/projects/by-slug/${slugProjectId("Doc 1")}/blueprint/generate`)));
 
   // 404 → benign "no project yet", nothing generated.
@@ -8117,6 +8119,27 @@ test("ledger engine: a sorry in the recorded file reads sorry_stub", async () =>
   });
   const info = await ledgerStatusFor(state, "ledger_sorry");
   assert.equal(info.status, "sorry_stub");
+});
+
+test("ledger engine: a rejected current batch shows its failure without certifying the checked file", async () => {
+  const name = "rejected_result";
+  const evidence = ledgerEntry(name, { validity_status: "unchecked", completion_run_id: null,
+    last_batch_outcome: { runId: "rejected-run", state: "failed", detail: "Named compiler evidence is missing." } });
+  const { state, leaRepo } = await makeLedgerState({ [name]: evidence });
+  state.jobs.failed = { jobId: "failed", jobKey: `project-1:theorem:${name}`, status: "failed",
+    apiRunId: "rejected-run", targetKind: "theorem", targetLabel: name, declarationName: name,
+    overleafProjectId: "project-1", projectSlug: "project-1", leaRepoPath: leaRepo,
+    startedAt: "2026-01-02T00:00:00.000Z", finishedAt: "2026-01-02T00:01:00.000Z" };
+  const failed = await ledgerStatusFor(state, name);
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.effectiveStatus, "unformalized");
+  assert.equal(failed.leanCheck.status, "ok");
+  assert.equal(failed.message, "Named compiler evidence is missing.");
+  evidence.last_batch_outcome.runId = "different-run";
+  assert.equal((await ledgerStatusFor(state, name)).status, "unavailable");
+  evidence.last_batch_outcome.runId = "rejected-run";
+  evidence.validity_status = "stale";
+  assert.equal((await ledgerStatusFor(state, name)).status, "stale");
 });
 
 test("ledger engine: an error check verdict on the recorded file reads broken", async () => {

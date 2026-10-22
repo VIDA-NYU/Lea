@@ -2932,6 +2932,25 @@ def code_steps_for_project_path(
     return projected if include_content else [{**step, 'code': ''} for step in projected]
 
 
+def safe_verify_current_step(project_id: str, step: dict | None) -> bool:
+    """An audit applies only to this exact file revision in its owning project."""
+    if not step or not step.get('check_current'):
+        return False
+    with connect() as conn:
+        event = conn.execute('''select v.* from verification_events v
+            join sessions s on s.id=v.session_id
+            join runs r on r.id=(select id from runs where session_id=s.id
+                order by created_at desc,id desc limit 1)
+            where s.project_id=? and v.session_id=? and v.path=?
+                and r.safe_verify_status='ok'
+            order by v.created_at desc,v.id desc limit 1''',
+            (project_id, step['session_id'], step['path'])).fetchone()
+    if not event or event['status'] != 'ok' or str(event['code_step_id']) != str(step['id']):
+        return False
+    from .proof_evidence import verification_current
+    return verification_current(dict(event), step)
+
+
 def safe_verify_ok_sessions(project_id: str) -> set[str]:
     """Project session ids whose *latest* run holds a passing SafeVerify verdict.
 

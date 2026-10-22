@@ -142,7 +142,7 @@ def capture(kind,args):
     encoded=dump(value)
     if len(encoded.encode())>MAX_RESULT:raise ValueError('Worker view exceeds its 64 MiB bound')
     now=datetime.now(timezone.utc)
-    with db.write() as conn:
+    with db.write(timeout_seconds=1 if kind == 'lean_check_runtime' else None) as conn:
         from .workspace_commands import authorize
         authorize(conn)
         conn.execute('''insert into peripheral_views values(?,?,?,?,?,?,?,?,?,?,?) on conflict(key) do update set
@@ -154,17 +154,22 @@ def capture(kind,args):
     return value
 
 
-def maintain(limit=3):
+def maintain(limit=3, *, kinds=None, exclude=()):
     """Bounded autonomous refresh; requests never enqueue view maintenance."""
     with db.connect() as conn:
         projects=[dict(r) for r in conn.execute("select p.id,p.slug from projects p left join peripheral_views v on v.project_id=p.id group by p.id order by coalesce(max(v.observed_at),'') asc,p.id limit 100")]
-        sessions=[r[0] for r in conn.execute("select s.id from sessions s left join peripheral_views v on v.session_id=s.id group by s.id order by coalesce(max(v.observed_at),'') asc,s.id limit 100")]
+        sessions=[r[0] for r in conn.execute("""select s.id from sessions s
+            left join peripheral_views v on v.session_id=s.id and v.kind='lean_check_runtime'
+            group by s.id order by exists(select 1 from runs r where r.session_id=s.id
+                and r.status in ('pending','running')) desc,
+                coalesce(min(v.observed_at),'') asc,s.id limit 100""")]
         attachments=[dict(r) for r in conn.execute('select id,project_id from project_files where kind!=? order by created_at desc limit 100',('overleaf',))]
-    with db.write() as conn:
-        conn.execute('delete from download_artifacts where id in (select id from download_artifacts where expires_at<? limit 20)',(db.utc_now(),))
+    if kinds is None:
+        with db.write() as conn:
+            conn.execute('delete from download_artifacts where id in (select id from download_artifacts where expires_at<? limit 20)',(db.utc_now(),))
     candidates=[]
     for kind,(_,signature,automatic,_) in list(_queries.items()):
-        if not automatic:continue
+        if not automatic or kind in exclude or kinds is not None and kind not in kinds:continue
         required={n for n,p in signature.parameters.items() if p.default is inspect.Parameter.empty}
         if not required:variants=[{}]
         elif required=={'project_id'}:variants=[{'project_id':p['id']} for p in projects]
@@ -180,7 +185,10 @@ def maintain(limit=3):
             priority=3 if kind in {'health','readiness'} else 2 if not required else 1
             if age>=interval:candidates.append((priority,age,kind,args))
     completed=0
-    for _,_,kind,args in sorted(candidates,key=lambda i:(i[0],i[1]),reverse=True)[:limit]:
+    # Keep health responsive, then age all other views together. Giving every
+    # global catalog priority over project views can indefinitely starve a graph
+    # when catalog capture takes longer than its refresh interval.
+    for _,_,kind,args in sorted(candidates,key=lambda i:(i[0] == 3,i[1]),reverse=True)[:limit]:
         try:capture(kind,args)
         except (HTTPException,ValueError,OSError):pass
         completed+=1

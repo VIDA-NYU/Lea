@@ -7,6 +7,24 @@ import {createServer} from '../companion/server.mjs';
 import {createSourcePublisher} from '../extension/sourcePublisher.mjs';
 import {commandFetch,observeCommand} from '../extension/commandClient.mjs';
 
+test('graph transport distinguishes an absent project from pending or degraded observations', async () => {
+  const health={capabilities:{database_boundary:{version:1,ui_access:'database',command_direction:'ui_to_worker',
+    processes:'separate',queries:1,changes:1,commands:1,source_publications:1,editor:1}}};
+  for (const [status,payload] of [[404,{detail:'Project not found'}],
+    [503,{detail:{error:'projection_unavailable',message:'Waiting for first observation'}}],
+    [200,{nodes:[],edges:[],warnings:[{message:'Read failure'}],projection:{state:'inputs_changed'}}]]) {
+    const server=await createServer({fetchImpl:async url=>Response.json(url.endsWith('/api/health')?health:payload,
+      {status:url.endsWith('/api/health')?200:status})});
+    const response={setHeader(){},writeHead(code){this.code=code;},end(body){this.body=JSON.parse(body);}};
+    await server.listeners('request')[0]({method:'GET',url:'/project/graph?overleafProjectId=document',
+      headers:{host:'127.0.0.1'}},response);
+    assert.equal(response.code,status===404?200:status);
+    if(status===404)assert.equal(response.body.exists,false);
+    if(status===503)assert.equal(response.body.detail.error,'projection_unavailable');
+    if(status===200){assert.deepEqual(response.body.warnings,payload.warnings);assert.equal(response.body.projection.state,'inputs_changed');}
+  }
+});
+
 test('transport runs without a workspace or writable job ledger and preserves command identity',async()=>{
   const root=await mkdtemp(path.join(os.tmpdir(),'lea-transport-'));
   const calls=[];let lost=true;

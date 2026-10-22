@@ -4,6 +4,8 @@ import { build } from 'esbuild';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { deriveCodeStepProofStatus } from './lib/proofDisplay.mjs';
+import { observeSessionList } from './lib/sessionObserver.mjs';
+import { restoreInitialSession } from './sessionDeepLink.mjs';
 const require = createRequire(import.meta.url);
 const bundle = build({
   entryPoints: [new URL('./hooks/useProofStream.ts', import.meta.url).pathname],
@@ -251,6 +253,114 @@ test('save and verify ownership expires on navigation or formalization change',a
 import { readFile } from 'node:fs/promises';
 import { transform } from 'esbuild';
 const appSource=await readFile(new URL('./App.tsx',import.meta.url),'utf8');
+const observerEffect = await transform(appSource.slice(
+  appSource.indexOf('  useEffect(() => observeSessionList('),
+  appSource.indexOf('  const loadSession = async'),
+), { loader: 'tsx', format: 'cjs' });
+function appSessionObserver(x) {
+  const sources = [];
+  let stop;
+  const context = {
+    Error,
+    useEffect: (effect) => { stop = effect(); },
+    observeSessionList: options => observeSessionList({ ...options,
+      createSource: () => {
+        const source = { listeners: {}, addEventListener(name, listener) { this.listeners[name] = listener; }, close() {} };
+        sources.push(source);
+        return source;
+      },
+    }),
+    refreshSessions: async () => [],
+    useSessions: { getState: () => x.sessions },
+    useProofSession: { getState: () => x.proxy },
+    bumpFormalizationRefresh: x.proxy.bumpFormalizationRefresh,
+    reconcile: x.hook.reconcile,
+    captureSelection: x.hook.captureSelection,
+    setError: x.proxy.setError,
+  };
+  vm.runInNewContext(observerEffect.code, context);
+  return { sources, stop: () => stop() };
+}
+
+test('startup invalidation waits for navigation; a failed refresh preserves history and shows an error', async () => {
+  const x = await setup(), observer = appSessionObserver(x);
+  await flush();
+  let consumed = false;
+  const restore = restoreInitialSession({
+    search: '?session=A&formalization=focus', sessions: [],
+    loadFormalization: async () => ({ id: 'focus' }),
+    loadSession: x.hook.loadSession,
+    selectFormalization: x.proxy.setFormalizationScope,
+    onRestored: () => { consumed = true; },
+  });
+  await flush();
+  observer.sources[0].listeners.sessions_changed();
+  await flush();
+  assert.equal(x.requests.length, 1, 'a background refresh cannot replace the navigation request');
+  x.requests[0].resolve(detail('A'));
+  await restore;
+  assert.equal(consumed, true);
+  assert.equal(x.state.messages[0].content, 'A');
+  assert.equal(x.state.formalizationScope, 'focus');
+  assert.equal(x.requests.length, 2, 'changes received during loading are refreshed after hydration');
+  x.requests[1].reject(new Error('Temporary refresh failure'));
+  await flush();
+  assert.match(x.state.error, /Could not refresh LeaChat: Temporary refresh failure/);
+  assert.equal(x.state.messages[0].content, 'A');
+  observer.stop(); x.cleanup();
+});
+
+test('startup load failure propagates to restoration even when a refresh is waiting', async () => {
+  const x = await setup(), observer = appSessionObserver(x);
+  await flush();
+  let consumed = false;
+  const restore = restoreInitialSession({ search: '?session=A', sessions: [],
+    loadSession: x.hook.loadSession, onRestored: () => { consumed = true; } });
+  const failure = assert.rejects(restore, /Session unavailable/);
+  observer.sources[0].listeners.sessions_changed();
+  await flush();
+  assert.equal(x.requests.length, 1);
+  x.requests[0].reject(new Error('Session unavailable'));
+  await failure; await flush();
+  assert.equal(consumed, false, 'the requested URL remains available for retry');
+  assert.equal(x.requests.length, 1, 'a background refresh does not hide or retry the failed navigation');
+  observer.stop(); x.cleanup();
+});
+
+test('changes received during navigation are applied afterward without changing the restored target', async () => {
+  const x = await setup();
+  const load = x.hook.loadSession('A'), refresh = x.hook.reconcile('A');
+  assert.equal(x.requests.length, 1);
+  x.requests[0].resolve(detail('A'));
+  await load;
+  x.proxy.setFormalizationScope('chosen-target');
+  x.requests[1].resolve({ ...detail('A'), messages: [{ id: 'new-message', content: 'Updated history' }] });
+  await refresh;
+  assert.equal(x.state.messages[0].content, 'Updated history');
+  assert.equal(x.state.formalizationScope, 'chosen-target');
+  x.cleanup();
+});
+
+test('a refresh waiting for navigation cannot fetch or report errors after a session switch', async () => {
+  const x = await setup(), observer = appSessionObserver(x);
+  await flush();
+  const first = x.hook.loadSession('A');
+  observer.sources[0].listeners.sessions_changed(); await flush();
+  const second = x.hook.loadSession('B');
+  x.requests[0].resolve(detail('A')); await first; await flush();
+  assert.equal(x.requests.length, 2);
+  x.requests[1].resolve(detail('B')); await second;
+  assert.equal(x.state.messages[0].content, 'B');
+  assert.equal(x.state.error, undefined);
+  observer.sources[0].listeners.sessions_changed(); await flush();
+  const third = x.hook.loadSession('C');
+  x.requests[2].reject(new Error('Old refresh failed'));
+  x.requests[3].resolve(detail('C')); await third; await flush();
+  assert.equal(x.state.messages[0].content, 'C');
+  assert.equal(x.state.error, undefined);
+  observer.stop(); x.cleanup();
+});
+
 const handlers=await transform(appSource.slice(appSource.indexOf('  const handleSaveAndCheck = async'),appSource.indexOf('  // F9:',appSource.indexOf('  const handleSaveAndCheck = async')))
   +'\nmodule.exports={handleSaveAndCheck,handleCheckPublished,handleVerify};',{loader:'tsx',format:'cjs'});
 function appCallbacks(x, overrides={}) {
