@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b",
-  "repository": "https://github.com/darturi/UnifiedLeaEcosystem.git",
-  "ref": "refs/tags/codex/stage8-strict-baseline-20261017",
-  "schema": "0048_process_boundary",
+  "source": "3ee22220d926ac0604b4dc227579fd4b47a87251",
+  "repository": "https://github.com/VIDA-NYU/Lea.git",
+  "ref": "refs/tags/codex/stage8-schema51-baseline-20261022",
+  "schema": "0051_idle_observation_renewal",
   "boundary_version": 1,
-  "description": "First strict baseline; must pass production qualification before it is eligible as a rollback target."
+  "description": "Retained schema-0051 source before the merge-readiness fixes; must pass production qualification before it is eligible as a rollback target."
 }

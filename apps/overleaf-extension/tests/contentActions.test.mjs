@@ -3908,7 +3908,7 @@ test("Formalize all limits cost-cap failures to five statements until expanded",
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickButtonText("Formalize all (9)");
-  await flushPromises();
+  await waitForHarness(() => harness.batchQueue(), "completed cost-cap batch queue");
 
   let queue = harness.batchQueue();
   assert.equal(queue.attentionItemCount, 5);
@@ -4507,7 +4507,8 @@ test("concurrent batch targets share one publisher identity and ordered publicat
   h.clickPaneTrigger();
   await flushPromises();
   h.clickButtonText('Formalize all (9)');
-  await flushPromises();
+  await waitForHarness(() => h.fetchCalls.some(call => call.url.endsWith('/formalize/all')),
+    "batch admission after all source publications");
   assert.equal(new Set(clients).size, 1, "one page must not compete with itself for the document lease");
   assert.equal(conflicts, 0);
   assert.equal(publications.length, 9);

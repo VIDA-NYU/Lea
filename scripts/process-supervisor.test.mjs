@@ -20,7 +20,7 @@ const cooperative = `
   setInterval(() => {}, 1000);
 `;
 
-async function fixture(t, code, graceMs = 5000, { viaNpm = false, handleExits = false } = {}) {
+async function fixture(t, code, graceMs = 5000, { viaNpm = false, handleExits = false, slowInspection = false } = {}) {
   let output = "";
   const script = `
     import { createProcessSupervisor } from ${JSON.stringify(supervisorUrl)};
@@ -40,9 +40,16 @@ async function fixture(t, code, graceMs = 5000, { viaNpm = false, handleExits = 
     command = process.platform === "win32" ? "npm.cmd" : "npm";
     args = ["run", "dev", "--silent"];
   }
+  let inspectionPath;
+  if (slowInspection) {
+    inspectionPath = await mkdtemp(path.join(os.tmpdir(), "lea-shutdown-inspection-"));
+    await writeFile(path.join(inspectionPath, "ps"), '#!/bin/sh\nsleep 0.2\nexec /bin/ps "$@"\n', { mode: 0o755 });
+    t.after(() => rm(inspectionPath, { recursive: true, force: true }));
+  }
   const child = spawn(command, args, {
     cwd, detached: true,
-    env: { ...process.env, npm_lifecycle_event: "" },
+    env: { ...process.env, npm_lifecycle_event: "",
+      PATH: inspectionPath ? inspectionPath + path.delimiter + process.env.PATH : process.env.PATH },
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout.on("data", chunk => { output += chunk; });
@@ -142,13 +149,37 @@ test("terminal Ctrl+C through npm remains graceful, then the next press forces e
   const pid = Number(run.output.match(/READY (\d+)/)[1]);
   process.kill(-run.child.pid, "SIGINT");
   await run.waitFor(/TERM /);
-  await delay(20);
+  // npm versions may forward a copy or rely on process-group delivery alone.
+  // Exercise the next physical press after the bounded copy window in both cases.
+  await delay(150);
   assert.doesNotMatch(run.output, /Forcing shutdown/);
   const started = Date.now();
   process.kill(-run.child.pid, "SIGINT");
   await run.exited;
   assert.match(run.output, /Forcing shutdown/);
   assert.ok(Date.now() - started < 1500, run.output);
+  await assertGone(pid);
+});
+
+test("npm signal copies remain one press after slow process inspection", { timeout: 6000 }, async t => {
+  const run = await fixture(t, `
+    process.env.npm_lifecycle_event = "dev";
+    const peer = supervisor.spawn("adapter", process.execPath, ["-e", ${JSON.stringify(stubborn)}], { stdio: ["ignore", "pipe", "inherit"] });
+    peer.stdout.on("data", chunk => {
+      process.stdout.write(chunk);
+      if (String(chunk).includes("READY")) {
+        process.emit("SIGINT");
+        process.emit("SIGINT");
+        console.log("COPIES_DELIVERED");
+      }
+    });
+  `, 5000, { slowInspection: true });
+  await run.waitFor(/COPIES_DELIVERED/);
+  const pid = Number(run.output.match(/READY (\d+)/)[1]);
+  assert.doesNotMatch(run.output, /Forcing shutdown/);
+  run.child.kill("SIGINT");
+  const [code] = await run.exited;
+  assert.equal(code, 130, run.output);
   await assertGone(pid);
 });
 

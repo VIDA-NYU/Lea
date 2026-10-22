@@ -180,9 +180,8 @@ def qualify(bundle):
                 for name in ('data','config','proofs','projects','overleaf'):(stack.home/name).mkdir()
             stack.seed(revision);stack.start()
             first=request(stack.base,'/api/health')
-            if first.get('release'):
-                assert first['release']['source']==bundle['source']
-                assert first['capabilities']['release']['source']==bundle['source']
+            assert first['release']['source']==bundle['source']
+            assert first['capabilities']['release']['source']==bundle['source']
             assert first['capabilities']['database_boundary']['processes']=='separate'
             assert first['capabilities']['editor']['direct_lsp'] is False
             assert not first['capabilities']['execution']['available'],'Linux execution support must be explicitly qualified before enabling it'
@@ -243,7 +242,8 @@ def rehearse(baseline,candidate):
     with fixture(baseline) as stack:
         stack.seed('0031_usage_details');stack.start();initial=stack.private('snapshot',running=True)
         stack.drain();stack.stop();stack.bundle=candidate;stack.start()
-        health=request(stack.base,'/api/health');assert health.get('release',{}).get('version')==1,'Candidate build identity is missing'
+        health=request(stack.base,'/api/health')
+        assert health.get('release',{}).get('source')==candidate['source'],'Candidate build identity is incorrect'
         key=stack.private('producer',running=True)['credential'];headers={'Authorization':'Bearer '+key}
         body={'kind':'synthetic.echo','version':1,'idempotency_key':'candidate-receipt','payload':{'text':'retained after rollback'}}
         accepted=request(stack.base,'/api/commands',body,headers)
@@ -255,7 +255,7 @@ def rehearse(baseline,candidate):
         stack.drain();stack.stop()
         crash=stack.private('crash-publication');before=stack.private('snapshot');preserve(initial,before)
         stack.bundle=baseline;stack.start()
-        assert 'release' not in request(stack.base,'/api/health'),'Older strict API binary was not restored'
+        assert request(stack.base,'/api/health').get('release',{}).get('source')==baseline['source'],'Baseline strict API binary was not restored'
         after=stack.private('verify-recovery',running=True);preserve(before,after)
         assert after['effects'][crash['effect_id']]=='published'
         assert request(stack.base,'/api/commands/'+uncertain['id'],headers=headers)['state']=='suspended'

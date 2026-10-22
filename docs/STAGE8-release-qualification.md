@@ -19,6 +19,13 @@ The baseline manifest records its original source repository. Release CI fetches
 the retained tag from that repository when the baseline is absent from the target
 repository, verifies its pinned commit SHA, and archives that exact source.
 
+For schema `0051_idle_observation_renewal`, the current manifest instead retains
+source `3ee22220d926ac0604b4dc227579fd4b47a87251` as
+`codex/stage8-schema51-baseline-20261022` in `VIDA-NYU/Lea`. This source predates
+the merge-readiness fixes and supports the candidate's schema. Both bundles must
+pass fresh native qualification before rollback to this baseline is permitted.
+Rollback verifies the baseline's exact packaged source identity on the same data.
+
 | Native runner | Production baseline and successor | Packaged-code regressions | Same-data binary rollback |
 | --- | --- | --- | --- |
 | Ubuntu 24.04 AMD64 | Passed, all three roles | 52 passed, 1 skipped | Passed |

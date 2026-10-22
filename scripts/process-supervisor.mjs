@@ -149,9 +149,11 @@ export function createProcessSupervisor({ graceMs = 5000, prefix = "[dev]", onUn
       return;
     }
     awaitingNpmCopy = Boolean(process.env.npm_lifecycle_event);
-    lastInterrupt = now;
     if (stopping) force(130);
     else stop();
+    // stop() synchronously inspects descendants before returning. A forwarded
+    // copy can wait behind that work; measure its window after initialization.
+    lastInterrupt = performance.now();
   });
   process.on("SIGTERM", () => stopping ? force(143) : stop());
 
