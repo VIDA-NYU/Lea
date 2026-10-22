@@ -169,14 +169,16 @@ def test_inventory_assessments_retry_when_inputs_change_during_the_response(fres
         return {"version": reads[-1]}
 
     def legacy(*args, **kwargs):
-        path.write_text("new") if path.read_text() == "old" else None
+        # Some filesystems timestamp rapid rewrites at the same clock tick.
+        # A different size guarantees this injected mutation changes identity.
+        path.write_text("new content") if path.read_text() == "old" else None
         return {"lea_check": {"status": "N/A"}}
 
     monkeypatch.setattr(lea_status, "current", status)
     monkeypatch.setattr(alignment_checks, "current", legacy)
     request = AssessmentComparisons(comparisons=[dict(formalization_id=form, source_bundle=bundle())])
-    assert compare_assessments.worker(request)["assessments"][form]["lea_status"]["version"] == "new"
-    assert reads == ["old", "new"]
+    assert compare_assessments.worker(request)["assessments"][form]["lea_status"]["version"] == "new content"
+    assert reads == ["old", "new content"]
 
 
 def rehash_source(value):
