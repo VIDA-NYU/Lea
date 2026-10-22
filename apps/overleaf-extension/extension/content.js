@@ -9069,7 +9069,7 @@
       : !usage || usage.accountingUnavailable
       ? "Usage unavailable"
       : usage?.incompleteUsageRuns
-      ? cost > 0 ? `${formatCost(cost)} recorded so far` : "Awaiting usage"
+      ? cost > 0 ? formatCost(cost) : "Awaiting usage"
       : usage?.unconfirmedUsageRuns
         ? cost > 0 ? formatCost(cost) : "Usage unavailable"
         : formatCost(cost);
