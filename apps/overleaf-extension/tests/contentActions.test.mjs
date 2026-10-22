@@ -459,6 +459,118 @@ test("known tag states stay stable across refreshes, expiry and read errors, the
   assert.equal(h.fetchCalls.some(call=>/\/formalize(?:\/all)?$|\/interrupt$|\/restart$/.test(call.url)),false);
 });
 
+for (const awayView of ["empty", "other tags"]) {
+  test(`scrolling away to ${awayView} and back preserves known tags through an older viewport response`, async () => {
+    let delayStatus = false, releaseStatus;
+    const requestedLabels = [];
+    const h = createContentHarness({}, {}, {
+      storage: { leaTexMirrorEnabled: false },
+      fetchOverride: async (url, options) => {
+        if (!url.endsWith("/statuses")) return;
+        const { targets } = JSON.parse(options.body);
+        requestedLabels.push(targets.map(target => target.targetLabel));
+        const response = { ok: true, status: 200, async json() { return {
+          statuses: Object.fromEntries(targets.map(target => [`${target.targetKind}:${target.targetLabel}`, {
+            status: "formalized", resultKind: target.targetKind === "definition" ? "defined" : "proved",
+            projection: { state: "observed" }
+          }])), projectActivity: { activeJobs: 0, activeBatches: 0 }
+        }; } };
+        if (delayStatus) return new Promise(resolve => { releaseStatus = () => resolve(response); });
+        return response;
+      }
+    });
+    const definition = { ...h.target, targetKind: "definition", targetLabel: "OtherDefinition", coords: { left: 12, top: 50 } };
+    const knownTargets = [h.target, definition];
+    const awayTargets = awayView === "empty" ? [] : [{ ...h.target, targetLabel: "elsewhere" }];
+    const activeTex = "\\begin{theorem}\n% lea: formalize label=demo_theorem\nA theorem.\n\\end{theorem}";
+    const publish = targets => h.window.postMessage({
+      type: "OL_LEAN_TARGETS_VISIBLE", activePath: "main.tex", activeTex, targets, diagnostics: []
+    }, "*");
+    const badges = () => h.document.body.querySelectorAll(".ol-lean-status").map(badge => badge.textContent);
+    const assertKnown = () => assert.deepEqual(badges(), ["formalized", "defined"]);
+
+    await h.loadVisibleTheorems({ activeTex, targets: knownTargets });
+    assertKnown();
+    // A completed refresh for another viewport must not evict these two tags.
+    publish(awayTargets);
+    await h.runTimersAt(250);
+    delayStatus = true;
+    publish(awayTargets);
+    await h.runTimersAt(250);
+    assert.equal(typeof releaseStatus, "function");
+    publish(knownTargets);
+    assertKnown(); // Before any new request: no "awaiting status" flash.
+    await h.runTimersAt(250); // Coalesce the new viewport while the old read waits.
+    releaseStatus();
+    await flushPromises();
+    assertKnown(); // The old response omits these tags: no "unavailable" flash.
+    delayStatus = false;
+    await h.runTimersAt(250);
+    assertKnown();
+    assert.deepEqual(requestedLabels, [
+      ["demo_theorem", "OtherDefinition"], awayTargets.map(target => target.targetLabel),
+      awayTargets.map(target => target.targetLabel), ["demo_theorem", "OtherDefinition"]
+    ]);
+    assert.equal(h.fetchCalls.some(call => /\/formalize(?:\/all)?$|\/interrupt$|\/restart$|\/cancel$/.test(call.url)), false);
+  });
+}
+
+for (const failed of [false, true]) {
+  test(`a previous viewport's delayed ${failed ? "error" : "status"} is ignored even after scrolling back before the debounce`, async () => {
+    let delayStatus = false, releaseStatus, currentStatus = "formalized";
+    const h = createContentHarness({}, {}, {
+      storage: { leaTexMirrorEnabled: false },
+      fetchOverride: async url => {
+        if (!url.endsWith("/statuses")) return;
+        const response = (status, ok = true) => ({ ok, status: ok ? 200 : 503, async json() { return ok
+          ? { statuses: { "theorem:demo_theorem": { status, projection: { state: "observed" } } } }
+          : { message: "Previous viewport read failed" }; } });
+        if (delayStatus) return new Promise(resolve => {
+          releaseStatus = () => resolve(response("unformalized", !failed));
+        });
+        return response(currentStatus);
+      }
+    });
+    await h.loadStatusForVisibleTheorem();
+    delayStatus = true;
+    await h.runTimersAt(30000);
+    assert.equal(typeof releaseStatus, "function");
+    const activeTex = "\\begin{theorem}\n% lea: formalize label=demo_theorem\nA theorem.\n\\end{theorem}";
+    for (const targets of [[], [h.target]]) h.window.postMessage({
+      type: "OL_LEAN_TARGETS_VISIBLE", activePath: "main.tex", activeTex, targets, diagnostics: []
+    }, "*");
+    releaseStatus(); // Arrive before the new viewport's 250 ms debounce fires.
+    await flushPromises();
+    assert.equal(h.hasButtonText("formalized"), true);
+    assert.doesNotMatch(h.document.body.querySelector(".ol-lean-status").title, /Previous viewport|refresh delayed/);
+    delayStatus = false;
+    currentStatus = "paused";
+    await h.runTimersAt(250);
+    assert.equal(h.hasButtonText("paused"), true, "a current response must still update a cached status");
+  });
+}
+
+test("coordinate-only viewport updates do not discard a current status response", async () => {
+  let delayStatus = false, releaseStatus;
+  const h = createContentHarness({ status: "formalized" }, {}, {
+    storage: { leaTexMirrorEnabled: false },
+    fetchOverride: async url => {
+      if (delayStatus && url.endsWith("/statuses")) return new Promise(resolve => {
+        releaseStatus = () => resolve({ ok: true, async json() { return {
+          statuses: { "theorem:demo_theorem": { status: "paused" } }
+        }; } });
+      });
+    }
+  });
+  await h.loadStatusForVisibleTheorem();
+  delayStatus = true;
+  await h.runTimersAt(30000);
+  await h.loadVisibleTheorems({ targets: [{ ...h.target, coords: { left: 12, top: 80 } }] });
+  releaseStatus();
+  await flushPromises();
+  assert.equal(h.hasButtonText("paused"), true);
+});
+
 for(const [status,label,resultKind] of [['unformalized','unformalized'],['formalized','formalized'],
   ['formalized','defined','defined'],['failed','failed'],['paused','paused'],['sorry_stub','sorry stub']]){
   test(`known ${label} tags retain presentation when an older SQL response has no display history`,async()=>{

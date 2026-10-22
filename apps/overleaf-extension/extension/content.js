@@ -486,6 +486,8 @@
       const nextProjectId = extractOverleafProjectId();
       selectDisplayProject(nextProjectId);
       const activeTexChanged = nextActiveTex !== latestActiveTex || nextProjectId !== latestActiveTexProjectId;
+      const activePathChanged = normalizeDocPath(event.data.activePath ?? latestActiveTexPath) !== normalizeDocPath(latestActiveTexPath);
+      const previousTargetKeys = JSON.stringify(latestTargets.map(targetKey).sort());
       latestTargets = event.data.targets || [];
       latestDiagnostics = event.data.diagnostics || [];
       latestActiveTex = nextActiveTex;
@@ -501,6 +503,11 @@
             target.targetUses = resolved.targetUses;
           }
         }
+      }
+      if (activeTexChanged || activePathChanged || previousTargetKeys !== JSON.stringify(latestTargets.map(targetKey).sort())) {
+        // Invalidate immediately, before the refresh debounce. A response for
+        // an earlier viewport must stay obsolete even if we scroll back to it.
+        displayRequests.statuses = (displayRequests.statuses || 0) + 1;
       }
       renderStatusBadges();
       if (activeTexChanged) {
@@ -7765,10 +7772,12 @@
 
   async function refreshStatusesSnapshot(request) {
     await resolveVisibleTargets();
+    if (!currentDisplayRequest(request)) return false;
+    const requestedTargets = [...latestTargets];
 
     const settings = await getSettings();
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
-    const targets = await Promise.all(latestTargets.map(async (target) => {
+    const targets = await Promise.all(requestedTargets.map(async (target) => {
       // A status read needs the live source identity, not publication authority.
       // Another tab may own the publisher while this tab reads saved SQL facts.
       const sourceContext = await buildFormalizationSourceContext(target, { verifyMirror: false, publish: false });
@@ -7781,14 +7790,15 @@
         sourceIdentityHash: sourceContext.sourceBundle?.sourceIdentityHash || ""
       };
     }));
+    if (!currentDisplayRequest(request)) return false;
     const payload = await queuedCompanionQuery(baseUrl, "/statuses", {
-        overleafProjectId: extractOverleafProjectId(),
+        overleafProjectId: request.projectId,
         targets
     });
     if (!currentDisplayRequest(request)) return false;
     if (!acceptDisplayResponse(request, payload.namespaceRevision)) return false;
-    const statuses = withFallbackStatuses(payload.statuses || {});
-    await reconcileHumanApprovals(latestTargets.map((target) => ({
+    const statuses = withFallbackStatuses(payload.statuses || {}, requestedTargets);
+    await reconcileHumanApprovals(requestedTargets.map((target) => ({
       target,
       statusInfo: statuses[targetKey(target)]
     })));
@@ -7800,10 +7810,11 @@
       const target = latestTargets.find((item) => targetKey(item) === activePopover.dataset.targetKey);
       if (target) updatePopoverStatus(activePopover, target);
     }
-    const awaitingStatuses = Object.values(latestStatuses).some(status => status.projection && status.projection.state !== "observed");
+    // Offscreen cache entries do not determine the cadence of the current read.
+    const awaitingStatuses = Object.values(statuses).some(status => status.projection && status.projection.state !== "observed");
     if (awaitingStatuses) {
       scheduleStatusRefresh(STATUS_REFRESH_IN_PROGRESS_MS);
-    } else if (latestProjectActivity?.activeJobs > 0 || latestProjectActivity?.activeBatches > 0 || Object.values(latestStatuses).some((status) => (
+    } else if (latestProjectActivity?.activeJobs > 0 || latestProjectActivity?.activeBatches > 0 || Object.values(statuses).some((status) => (
       status.status === "in_progress" && !status.githubImportPending
     ))) {
       scheduleStatusRefresh(pushConnected ? STATUS_REFRESH_RECONCILE_MS : STATUS_REFRESH_IN_PROGRESS_MS);
@@ -8227,7 +8238,9 @@
   }
 
   function postStatuses(statuses) {
-    const next={};
+    // A viewport response is partial: keep the other project tags cached so
+    // scrolling them back into view can render their last known status.
+    const next={...latestBaseStatuses};
     for(const [key,info] of Object.entries(statuses || {})) {
       const previous=latestBaseStatuses[key];
       let known=previous && getDisplayStatus(previous);
@@ -8244,9 +8257,9 @@
     renderStatusBadges();
   }
 
-  function withFallbackStatuses(statuses) {
+  function withFallbackStatuses(statuses, requestedTargets) {
     const completeStatuses = { ...statuses };
-    for (const target of latestTargets) {
+    for (const target of requestedTargets) {
       const key = targetKey(target);
       if (!completeStatuses[key]) {
         completeStatuses[key] = {
