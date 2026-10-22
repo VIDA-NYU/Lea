@@ -1,5 +1,6 @@
 """Metadata reads must not pay for certification; status reads must stay strict."""
 import json
+import os
 from collections import Counter
 
 import pytest
@@ -282,7 +283,13 @@ def test_continuous_changes_fail_closed_and_reset_context(tmp_path, metadata_onl
     @read_projection
     def project():
         check_evidence.freshness(decode_evidence(raw), target, snapshot=current_snapshot())
-        target.write_text(target.read_text() + ('' if metadata_only else '\n'))
+        if metadata_only:
+            # Identical-byte writes can share timestamps on coarse clocks.
+            # Explicitly change metadata so both attempts observe a mutation.
+            stat = target.stat()
+            os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        else:
+            target.write_text(target.read_text() + '\n')
         return {'check_current': True}
     with pytest.raises(HTTPException) as exc:
         project()
