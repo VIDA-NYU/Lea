@@ -249,6 +249,32 @@ def test_restart_marks_unfinished_summary_retryable(tmp_path, monkeypatch):
     assert reports.get("project-one", "formalize-batch-1")["state"] == "narrative_unavailable"
 
 
+def test_batch_narrative_receives_partial_scope_and_document_context(tmp_path, monkeypatch):
+    seed(tmp_path, monkeypatch)
+    assessment = dict(confidence="medium", scope="partial_artifact", summary="The RHS was encoded.",
+        correspondence=dict(scope_summary="Only the complex right-hand sum.",
+            omitted_source_parts=["The coefficient identity."], context_status="incomplete",
+            context_summary="The applicability of the later domain convention is unresolved.", context_evidence=[]))
+    with db.write() as conn:
+        conn.execute("update lea_status_updates set assessment_json=? where id='u-one'", (json.dumps(assessment),))
+    reports.create("project-one", payload())
+    monkeypatch.setattr(reports, "load_config", lambda: SimpleNamespace(model="test-model"))
+
+    def completion(model, system, messages, *args, **kwargs):
+        item = next(item for item in json.loads(messages[0]["content"])["items"] if item["label"] == "target")
+        assert item["assessment_scope"] == "partial_artifact"
+        assert item["correspondence"]["scope_summary"] == "Only the complex right-hand sum."
+        assert item["correspondence"]["omitted_source_parts"] == ["The coefficient identity."]
+        assert item["correspondence"]["context_status"] == "incomplete"
+        assert "do not describe a partial encoding as the complete source result" in system
+        yield TextDelta("The partial encoding omits the coefficient identity.")
+        yield Done(Usage(1, 1), 0)
+
+    monkeypatch.setattr(reports, "stream", completion)
+    reports.generate("formalize-batch-1")
+    assert reports.get("project-one", "formalize-batch-1")["state"] == "ready"
+
+
 def test_project_report_routes_persist_and_read_after_generation(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from app.main import app

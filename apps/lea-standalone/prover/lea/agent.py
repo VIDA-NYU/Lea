@@ -1361,7 +1361,9 @@ def _run_events_inner(
                                                  "turn": turn, "call_index": idx,
                                                  "input": tc["args"]})
                     try:
-                        payload = validate_payload(tc["args"])
+                        # The host checks durable invocation identity before enforcing
+                        # the new final contract, so an accepted pre-upgrade call can replay.
+                        payload = validate_payload(tc["args"], allow_legacy_final=True)
                         ack = yield LeaStatusUpdateRequested(payload, f"{turn}:{idx}:{tc.get('id') or ''}")
                         if not isinstance(ack, LeaStatusUpdateAck):
                             raise ValueError("Reporting host did not acknowledge publication")

@@ -3264,6 +3264,9 @@ test("formalize maps an Overleaf label to the Lean artifact Lea records", async 
     assert.match(calls[0].body.task, /chapters\/parity notes\.tex, lines 4-4/);
     assert.match(calls[0].body.task, /\.lea\/files\/overleaf\/chapters\/parity-notes\.tex/);
     assert.match(calls[0].body.task, /read all mirrored LaTeX source files before planning/i);
+    assert.match(calls[0].body.task, /Reconcile relevant later definitions and uses/);
+    assert.match(calls[0].body.task, /correspondence\.context_evidence/);
+    assert.match(calls[0].body.task, /context_status=incomplete/);
     assert.match(calls[0].body.task, /Nearby prose defines the parity notation/);
     assert.match(calls[0].body.task, /no sorry\/admit in theorem even_square_of_even/);
     const job = state.jobs[result.body.jobId];

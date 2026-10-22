@@ -78,6 +78,10 @@ def test_overleaf_disproof_crosses_agent_compiler_and_database(tmp_path, monkeyp
         purpose='overleaf_solver', focus_formalization_id=target['id'],
         source_bundle=source, source_context_ref=reference)
     calls = []
+    correspondence = dict(scope_summary='The universal natural-number claim is disproved by n = 1.',
+        omitted_source_parts=[], context_status='reconciled',
+        context_summary='The source quantifies over every natural number, which includes one; no additional assumptions are needed.',
+        context_evidence=[dict(side='latex', path='main.tex', excerpt=statement)])
 
     def provider(model, system, messages, tools, *args, **kwargs):
         assert 'select_result' in {tool['name'] for tool in tools}
@@ -86,7 +90,8 @@ def test_overleaf_disproof_crosses_agent_compiler_and_database(tmp_path, monkeyp
         calls.append(messages)
         if len(calls) == 1:
             yield ToolCall('update_lea_status', dict(kind='initial', confidence='high', scope='source_only',
-                summary='The claim is false at n = 1.', confidence_reason='One is not zero.'))
+                summary='The claim is false at n = 1.', confidence_reason='One is not zero.',
+                correspondence=correspondence))
             yield ToolCall('write_file', dict(path='Counterexample.lean', content=(
                 'namespace Lea.Disproof\n'
                 'private theorem supportingFact : True := by trivial\n'
@@ -100,6 +105,7 @@ def test_overleaf_disproof_crosses_agent_compiler_and_database(tmp_path, monkeyp
             yield ToolCall('update_lea_status', dict(kind='final', confidence='high', scope='statement_and_proof',
                 summary='The original universal claim has a checked disproof.',
                 confidence_reason='Lean verified the negation using n = 1.',
+                correspondence=correspondence,
                 matches=[], caveats=[], limitations=[], remaining_obligations=[],
                 recommended_next_action=dict(kind='inspect_result', detail='Inspect the checked disproof.')))
         else:

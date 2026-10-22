@@ -17,7 +17,7 @@ test('confidence, source attention, compiler verdict and freshness are independe
 });
 
 test('confidence includes assessment scope without changing compiler status', () => {
-  for (const [scope, label] of [['source_only', 'Source assessment'], ['partial_artifact', 'Partial artifact'], ['statement_and_proof', 'Statement and proof']]) {
+  for (const [scope, label] of [['source_only', 'Source assessment'], ['statement_only', 'Statement only'], ['definition', 'Definition'], ['partial_artifact', 'Partial artifact'], ['statement_and_proof', 'Statement and proof']]) {
     const status = { assessment: { confidence: 'high', scope }, freshness: 'current', leanCheck: 'unformalized' };
     assert.equal(leaStatusLabel(status), `High confidence · ${label}`);
     assert.equal(normalizeLeaStatus(status).leanCheck, 'unformalized');

@@ -38,6 +38,13 @@ def finding(**changes):
         correction="Prove the boundary case explicitly.") | changes
 
 
+def correspondence(**changes):
+    return dict(scope_summary="The displayed defining sum.", omitted_source_parts=[],
+        context_status="reconciled", context_summary="The later domain convention applies to the target.",
+        context_evidence=[dict(side="latex", path="main.tex", start_line=12,
+                              excerpt="q = exp(2*pi*i*tau), tau in the upper half-plane")]) | changes
+
+
 def test_tool_contract_reserves_blocking_for_semantic_changes():
     description = TOOL_SCHEMA["description"]
     assert "missing source proof" in description
@@ -102,6 +109,64 @@ def test_source_only_publication_is_durable_and_idempotent(fresh):
     assert lea_status_store.context(run)["source_bundle"]["proof"] == "By triviality."
     db.init_db()
     assert lea_status_store.get(first["id"]) == first
+
+
+def test_semantic_confidence_rejection_is_atomic_and_does_not_change_run_outcome(fresh):
+    run, form, session = ids(fresh)
+    store.link_formalization_file(form, "Target.lean", "primary")
+    store.add_code_step(session, run, "Target.lean", content="def target : Nat := 0", formalization_id=form)
+    initial, _ = lea_status.publish(run, "initial", payload(scope="partial_artifact",
+        correspondence=correspondence(), finding_updates=[finding(
+            category="formalization_choice", semantic_impact="unresolved", lean_resolution="applied")]))
+    before = store.get_run(run)["status"]
+    with pytest.raises(ValueError, match="unresolved semantic ambiguity"):
+        lea_status.publish(run, "overconfident", payload(confidence="high", scope="partial_artifact"))
+    assert lea_status_store.latest(run)["id"] == initial["id"]
+    assert len(lea_status.history(form)["updates"]) == 1
+    assert store.get_run(run)["status"] == before
+    # The compiler outcome and ordinary source warnings do not manufacture a review state.
+    assert lea_status.current(form)["attention"] == "source_issue"
+
+
+def test_definition_publication_checks_scope_against_bound_source(fresh):
+    source = bundle("")
+    source["targetKind"] = "definition"
+    source["statement"] = "The defining sum."
+    source["bundleHash"] = source_hash(source)
+    source["sourceIdentityHash"] = source_hash(source, identity=True)
+    # The fresh fixture isolates storage; this run has its own definition binding.
+    data = store.create_run_bundle(message="Define target", session_id=None, project_id=None,
+        session_origin="overleaf", session_origin_url=None, model="test", provider=None,
+        max_turns=3, autonomous=True, purpose="overleaf_solver", source_bundle=source,
+        new_formalization=dict(origin="overleaf", origin_key="doc:definition:target",
+                               kind="definition", display_title="target", declaration_name="target"))
+    run, form, session = ids(data)
+    store.link_formalization_file(form, "Target.lean", "primary")
+    store.add_code_step(session, run, "Target.lean", content="def target : Nat := 0", formalization_id=form)
+    with pytest.raises(ValueError, match="do not claim a theorem proof"):
+        lea_status.publish(run, "overbroad", payload(scope="statement_and_proof", correspondence=correspondence()))
+    assert lea_status_store.latest(run) is None
+    accepted, _ = lea_status.publish(run, "definition", payload(scope="definition", correspondence=correspondence()))
+    assert accepted["assessment"]["scope"] == "definition"
+
+
+def test_exact_legacy_status_replays_survive_the_stricter_final_contract(fresh):
+    run, form, _ = ids(fresh)
+    first, _ = lea_status.publish(run, "legacy", payload())
+    legacy = payload(kind="final", confidence="high", matches=[], caveats=[],
+                     remaining_obligations=[], limitations=[], recommended_next_action=dict(kind="inspect_result", detail="Inspect."))
+    # Simulate a durable update accepted by the old version, before correspondence was required.
+    with db.write() as conn:
+        conn.execute("update lea_status_updates set kind='final', payload_json=?, assessment_json=? where id=?",
+                     (json.dumps(legacy), json.dumps(legacy), first["id"]))
+    store.update_run(run, "proved", result_kind="proved")
+    replay, _ = lea_status.publish(run, "legacy", legacy)
+    assert replay["id"] == first["id"]
+    assert lea_status_store.append(run, "legacy", legacy, {}, "unused")["id"] == first["id"]
+    with pytest.raises(ValueError, match="different content"):
+        lea_status.publish(run, "legacy", {**legacy, "confidence": "medium"})
+    with pytest.raises(ValueError, match="Final update must refresh"):
+        lea_status.publish(run, "new-invocation", legacy)
 
 
 def test_inventory_assessments_share_one_fresh_response_snapshot(fresh, monkeypatch):

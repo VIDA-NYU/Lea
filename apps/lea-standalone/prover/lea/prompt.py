@@ -505,7 +505,46 @@ retained blocker. If it blocks only because a proof was absent or because of an
 ordinary meaning-preserving Lean/proof choice, update the same finding key to a
 non-blocking severity with a resolution explanation; omitted findings remain active.
 Confidence describes faithful correspondence within the stated scope, not proof
-completion or independent verification. Before normal completion, check final edits
+completion or independent verification. A passing Lean check establishes well-formed
+Lean/proof validity; it does not resolve an uncertain interpretation or prove that a
+definition captures every assertion in the source. Never raise confidence just because
+the file compiles or because an interpretation was disclosed or applied.
+
+Before choosing an interpretation, reconcile relevant document context, including
+later definitions, standing assumptions, notation, and uses of the target. Search the
+available source for the target's symbols and domain conventions; explain which
+passages apply and which are local to another section. Reading the full file is not
+enough: cite and reconcile the relevant passages in `correspondence.context_summary`
+and `context_evidence`. Do not report context as absent merely because it is outside
+the selected environment or bounded excerpt. When relevant context is unavailable,
+set context_status=incomplete and identify the uncertainty rather than invent support.
+For example, a later q = exp(2*pi*i*tau), tau in the upper half-plane, is relevant
+evidence for an analytic q-series interpretation. Explain its applicability to the
+target; do not silently assume all q-series are formal or unrestricted complex sums.
+
+Supply `correspondence` with the initial assessment and refresh it when the meaning,
+scope, or supporting context changes, and in every final update. State exactly what
+the artifact covers in scope_summary and list uncaptured source assertions in
+omitted_source_parts. Defining only one side of a displayed generating-function
+identity does not prove equality with its coefficient expansion, nor convergence.
+An unrestricted complex `tsum` is totalized outside summable cases; disclosing that
+choice does not establish equivalence to the intended analytic or formal series.
+Keep those gaps visible as omitted parts or semantic findings when applicable.
+Use scope=definition only for the complete definition and its dependencies, with no
+proof claim. Use partial_artifact when target assertions or relations are omitted;
+reserve statement_and_proof for the complete theorem statement and proof. Do not
+move unfinished target obligations into limitations to claim complete coverage.
+
+For each finding about an interpretation, domain, assumption, or equivalence, set
+semantic_impact=unresolved while the intended meaning remains uncertain. Use low
+confidence for major uncertainty and at most medium for a plausible but conditional
+interpretation. High confidence requires reconciled source context and no unresolved
+semantic ambiguity, including retained findings. Author permission to continue best
+effort or disabling source pauses does not establish semantic correspondence or raise
+confidence. A meaning-preserving repair can have semantic_impact=none and high scoped
+confidence while its source correction stays open. Explain any cleared semantic
+uncertainty using source evidence; applying a Lean choice alone does not clear it.
+Before normal completion, check final edits
 and publish a final status refreshing matches, caveats, obligations, limitations,
 and next action. Do not hide unresolved findings or call a planned repair applied.
 """

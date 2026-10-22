@@ -5049,7 +5049,7 @@
         }
         const incomplete = item.reportingIncomplete ? " · no final Lea Status assessment" : "";
         const confidence = item.leaStatus?.confidence
-          ? ` · Lea confidence: ${item.leaStatus.confidence} (self-reported)${item.leaStatus.scope ? ` · ${{ source_only: "Source assessment", partial_artifact: "Partial artifact", statement_and_proof: "Statement and proof" }[item.leaStatus.scope] || item.leaStatus.scope}` : ""}` : "";
+          ? ` · Lea confidence: ${item.leaStatus.confidence} (self-reported)${item.leaStatus.scope ? ` · ${{ source_only: "Source assessment", statement_only: "Statement only", definition: "Definition", partial_artifact: "Partial artifact", statement_and_proof: "Statement and proof" }[item.leaStatus.scope] || item.leaStatus.scope}` : ""}` : "";
         const detail = document.createElement("span");
         detail.textContent = ` (${item.targetKind || "item"}): ${item.state}${item.reason ? ` · ${item.reason === "dependency_wait" ? "waiting for a supporting result" : item.reason.replaceAll("_", " ")}` : ""}${confidence}${incomplete}`;
         row.appendChild(detail);

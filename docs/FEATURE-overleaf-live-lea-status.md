@@ -134,6 +134,30 @@ Run activity, confidence, attention, and freshness are separate properties. Paus
 
 For definitions or targets without an applicable proof, state the actual scope. A definition can be assessed for meaning and dependencies without inventing a proof-strategy judgment. A theorem with missing or ambiguously associated proof text must disclose that limitation; when its statement is precise, Lea may choose and clearly label a standard meaning-preserving proof strategy. That strategy must not be presented as author-supplied evidence.
 
+Every final update includes structured `correspondence`: a `scope_summary`,
+`omitted_source_parts`, `context_status` (`reconciled` or `incomplete`),
+`context_summary`, and `context_evidence`. The solver supplies it initially and
+refreshes it when source, scope, or interpretation changes. Reconciled context
+requires cited LaTeX evidence and an explanation of how relevant surrounding and
+later definitions, assumptions, and uses apply to this target. A missing convention
+in the selected environment is not evidence that it is absent from the document.
+
+Findings distinguish unresolved meaning through `semantic_impact=unresolved` from
+supported, meaning-preserving choices or repairs (`none`). High confidence requires
+reconciled context and no unresolved semantic findings, including retained findings.
+Applying a choice in Lean, disclosing it, allowing best-effort continuation, or
+disabling source pauses does not establish semantic correspondence. Clearing
+semantic uncertainty requires an explanation and refreshed context evidence.
+
+Complete definitions use `scope=definition`, without claiming a theorem proof.
+Omitted target assertions require `partial_artifact`; for example, encoding the
+right-hand infinite sum alone does not establish the displayed coefficient identity
+or convergence. These omissions appear in status details and batch-report evidence.
+High confidence can describe a supported partial encoding when its scope and omitted
+parts are explicit and its interpretation is no longer semantically uncertain.
+Previously accepted updates remain historical records; exact invocation replays are
+preserved across the stricter validation. New assessments must satisfy these rules.
+
 **5. Reporting tool**
 
 Add one tool, provisionally named `update_lea_status`, to supported Overleaf solver runs. One tool handles early assessment, ordinary progress, findings, confidence changes, and the final summary. It does not call a second model.

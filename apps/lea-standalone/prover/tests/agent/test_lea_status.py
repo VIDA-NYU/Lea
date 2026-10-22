@@ -74,6 +74,19 @@ class ReportingTests(unittest.TestCase):
         events = self.drive([ToolCall("update_lea_status", status(scope="source_only"))], lambda event: None)
         self.assertTrue(any("did not acknowledge" in e.content for e in events if isinstance(e, ToolResulted)))
 
+    def test_legacy_final_can_reach_the_host_for_durable_invocation_replay(self):
+        legacy = status(kind="final", scope="source_only", matches=[], caveats=[],
+                        remaining_obligations=[], limitations=[],
+                        recommended_next_action={"kind": "inspect_result", "detail": "Inspect."})
+        seen = []
+
+        def host(event):
+            seen.append(event.payload)
+            return LeaStatusUpdateAck(True, "previously-accepted", 1, event.payload)
+
+        self.drive([ToolCall("update_lea_status", legacy)], host)
+        self.assertEqual(seen, [legacy])
+
     def test_rejected_material_update_defers_the_preplanned_correction(self):
         events = self.drive([
             ToolCall("update_lea_status", status(scope="source_only", finding_updates=[{

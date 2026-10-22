@@ -122,6 +122,21 @@ export function renderLeaStatus(item, { document, loadHistory, pause }) {
 function renderAssessment(node, body, assessment) {
   if (!assessment) return;
   node("p", assessment.confidence_reason || "", body);
+  const correspondence = assessment.correspondence;
+  if (correspondence) {
+    node("strong", "Assessed scope", body);
+    node("p", correspondence.scope_summary, body);
+    if (correspondence.omitted_source_parts?.length) {
+      node("strong", "Source parts not formalized", body);
+      const list = node("ul", undefined, body);
+      for (const part of correspondence.omitted_source_parts) node("li", part, list);
+    }
+    node("strong", `Document context: ${friendly(correspondence.context_status)}`, body);
+    node("p", correspondence.context_summary, body);
+    for (const evidence of correspondence.context_evidence || []) {
+      node("blockquote", [evidence.path, evidence.start_line ? `line ${evidence.start_line}` : "", evidence.excerpt].filter(Boolean).join(" · "), body);
+    }
+  }
   if (assessment.current_work) node("p", `Current work: ${assessment.current_work}`, body);
   for (const finding of assessment.findings || []) {
     const section = node("section", undefined, body);
