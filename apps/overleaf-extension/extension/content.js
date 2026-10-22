@@ -5090,7 +5090,7 @@
             setBatchQueueNavigationStatus(identity, `Opened ${identity.targetLabel} in the Lean pane.`);
           } else {
             setBatchQueueNavigationStatus(identity, "Opening Lea session…");
-            await openLeaUiForPaneItem(item, { requireSession: true });
+            await openLeaUiForPaneItem(item);
             setBatchQueueNavigationStatus(identity, `Opened ${identity.targetLabel} in LeaChat.`);
           }
         } catch (error) {
@@ -5702,10 +5702,8 @@
         button.disabled = true;
         if (leanPaneStatus) leanPaneStatus.textContent = "Opening Lea session...";
         try {
-          const { sessionOpened } = await openLeaUiForPaneItem(item);
-          if (leanPaneStatus) {
-            leanPaneStatus.textContent = sessionOpened ? "Opened Lea session." : "Opened Lea UI.";
-          }
+          await openLeaUiForPaneItem(item);
+          if (leanPaneStatus) leanPaneStatus.textContent = "Opened Lea session.";
         } catch (error) {
           if (leanPaneStatus) leanPaneStatus.textContent = normalizeErrorMessage(error);
         } finally {
@@ -5844,17 +5842,14 @@
     return button;
   }
 
-  // Open this item's Lea session in the standalone UI, mirroring the popover's
-  // "View in Lea UI" action. The session is resolved through the companion's
-  // chat-session lookup (read-only: it never creates a session); when no
-  // session has been recorded yet, fall back to the Lea UI itself, matching
-  // the popover's base-link fallback.
-  async function openLeaUiForPaneItem(item, { requireSession = false } = {}) {
+  // Resolve an existing session without creating one. Missing associations and
+  // failed lookups must stay visible instead of navigating to an unrelated chat.
+  async function openLeaUiForPaneItem(item) {
     if (item.leaSessionUrl || item.leaSessionId) {
       const settings = await getSettings();
       const link = getLeaSessionLink({ ...item, leaUiBaseUrl: settings.leaUiBaseUrl });
       await openLeaSession(link);
-      return { sessionOpened: true };
+      return;
     }
     const baseUrl = await chatCompanionBaseUrl();
     const target = leanPaneView.paneItemToChatTarget(item, itemsProjectId(lastLeanPaneManifest?.items || []));
@@ -5864,18 +5859,14 @@
       body: JSON.stringify({ target })
     });
     const payload = await response.json().catch(() => ({}));
-    const sessionUrl = String(payload?.leaSessionUrl || "").trim();
-    if (sessionUrl) {
-      await openLeaSession({ url: sessionUrl, baseUrl: sessionUrl });
-      return { sessionOpened: true };
+    if (!response.ok || payload?.ok === false) {
+      throw companionRequestError(response, payload);
     }
-    if (requireSession) {
+    if (!payload?.leaSessionUrl && !payload?.leaSessionId) {
       throw new Error(payload?.message || "No LeaChat session is available yet.");
     }
     const settings = await getSettings();
-    const uiBaseUrl = String(settings.leaUiBaseUrl || DEFAULT_LEA_UI_BASE_URL).replace(/\/+$/, "");
-    await openLeaSession({ url: uiBaseUrl, baseUrl: uiBaseUrl });
-    return { sessionOpened: false };
+    await openLeaSession(getLeaSessionLink({ ...payload, leaUiBaseUrl: settings.leaUiBaseUrl }));
   }
 
   function isChatResponseActive(payload) {
@@ -6546,7 +6537,6 @@
     // unformalized/unknown theorems appear viewable.
     const showLeaUiButton = canViewInLeaUi(actionStatus);
     if (showLeaUiButton) {
-      const leaUiLink = leaSession || getLeaUiBaseLink(statusInfo);
       const sessionButton = document.createElement("button");
       sessionButton.type = "button";
       sessionButton.textContent = statusInfo?.recoveryState === "review"
@@ -6556,10 +6546,10 @@
       sessionButton.addEventListener("click", async (event) => {
         event.preventDefault();
         event.stopPropagation();
-        status.textContent = leaUiLink.sessionId ? "Opening Lea session..." : "Opening Lea UI...";
+        status.textContent = "Opening Lea session...";
         try {
-          await openLeaSession(leaUiLink);
-          status.textContent = leaUiLink.sessionId ? "Opened Lea session." : "Opened Lea UI.";
+          await openLeaSession(leaSession);
+          status.textContent = "Opened Lea session.";
         } catch (error) {
           status.textContent = error instanceof Error ? error.message : String(error);
         }
@@ -8538,11 +8528,6 @@
     };
   }
 
-  function getLeaUiBaseLink(statusInfo) {
-    const baseUrl = String(statusInfo?.leaUiBaseUrl || DEFAULT_LEA_UI_BASE_URL).replace(/\/+$/, "");
-    return { sessionId: "", baseUrl, url: baseUrl };
-  }
-
   function buildLeaSessionUrl(baseUrl, sessionId) {
     // A malformed stored leaUiBaseUrl (a user typo in options) must not throw
     // out of popover render (AUDIT L4) — fall back to the default origin.
@@ -8559,6 +8544,14 @@
   function openLeaSession(sessionLink) {
     if (!sessionLink?.url) {
       return Promise.reject(new Error("Lea session link is not available yet."));
+    }
+    try {
+      const url = new URL(sessionLink.url);
+      if (!url.searchParams.get("session")?.trim() && !url.searchParams.get("formalization")?.trim()) {
+        return Promise.reject(new Error("No LeaChat session is available in this link."));
+      }
+    } catch {
+      return Promise.reject(new Error("The LeaChat session link is invalid."));
     }
     return new Promise((resolve, reject) => {
       const fallback = () => {

@@ -2,8 +2,8 @@
 //
 // The Overleaf extension's "View in Lea UI" action opens the UI at
 // `<ui>/?session=<id>`. That deep-link takes precedence over the last-opened
-// session (persisted in localStorage). These helpers are pure so they can be
-// unit-tested without a DOM; App.tsx wires them to window.location/history.
+// session (persisted in localStorage). Navigation can be tested without a DOM;
+// App.tsx wires these helpers to window.location/history and the session stores.
 
 export function readDeepLinkSessionId(search) {
   const params = new URLSearchParams(search || '');
@@ -48,4 +48,30 @@ export function pickInitialSession({ search, savedId, sessions } = {}) {
   return exists
     ? { sessionId: trimmedSaved, source: 'saved' }
     : { sessionId: null, source: 'none' };
+}
+
+// Restore explicit navigation before consuming its URL. A rejected load leaves
+// the link available for retry; a null load means another selection took over.
+export async function restoreInitialSession({
+  search, savedId, sessions, loadSession, loadFormalization,
+  selectFormalization, openProject, onRestored,
+}) {
+  const initial = pickInitialSession({ search, savedId, sessions });
+  const formalizationId = readDeepLinkFormalizationId(search);
+  const formalization = formalizationId ? await loadFormalization(formalizationId) : null;
+  const sessionId = initial.source === 'deep-link'
+    ? initial.sessionId
+    : formalization ? formalization.sessions[0]?.id : initial.sessionId;
+
+  if (sessionId) {
+    if (!await loadSession(sessionId)) return;
+    if (formalization) selectFormalization(formalization.id);
+  } else if (formalization) {
+    if (!formalization.project_id) {
+      throw new Error('No LeaChat session is available for this formalization.');
+    }
+    if (!await openProject(formalization.project_id)) return;
+  }
+
+  if (initial.source === 'deep-link' || formalizationId) onRestored();
 }

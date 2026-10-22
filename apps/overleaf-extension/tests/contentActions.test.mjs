@@ -2147,6 +2147,61 @@ test("Lean pane opens a saved LeaChat session from the collapsed summary even wh
   assert.equal(detailActions?.querySelector(".ol-lean-open-chat") || null, null);
 });
 
+for (const [name, lookup, message] of [
+  ["missing session", { ok: true, status: 200, body: { ok: true, status: "no-session" } }, "No LeaChat session is available yet."],
+  ["HTTP failure", { ok: false, status: 503, body: { message: "Adapter unavailable", leaSessionUrl: "http://localhost:5173/?session=target" } }, "Adapter unavailable"],
+  ["failed lookup envelope", { ok: true, status: 200, body: { ok: false, message: "Session lookup failed", leaSessionUrl: "http://localhost:5173/?session=target" } }, "Session lookup failed"],
+  ["invalid JSON", { ok: true, status: 200, invalidJson: true }, "No LeaChat session is available yet."],
+  ["network failure", { networkError: true }, "Failed to fetch"],
+  ["link without a session", { ok: true, status: 200, body: { ok: true, leaSessionUrl: "http://localhost:5173" } }, "No LeaChat session is available in this link."],
+]) {
+  test(`Open in LeaChat reports a ${name} without opening a blank session`, async () => {
+    let failing = true;
+    const harness = createContentHarness({ status: "unformalized" }, {}, {
+      manifest: { ok: true, rootFile: "main.tex", diagnostics: [], items: [{
+        id: "theorem:Example", label: "Example", kind: "theorem", status: "stub-generated",
+        sourceFile: "main.tex", leanDeclarationName: "Example"
+      }] },
+      fetchOverride: async (url) => {
+        if (!url.endsWith("/lean-pane/chat/session")) return;
+        if (!failing) return { ok: true, json: async () => ({ ok: true, leaSessionId: "target" }) };
+        if (lookup.networkError) throw new TypeError("Failed to fetch");
+        return { ok: lookup.ok, status: lookup.status, json: async () => {
+          if (lookup.invalidJson) throw new SyntaxError("Invalid JSON");
+          return lookup.body;
+        } };
+      },
+    });
+    await harness.loadVisibleTheorems();
+    harness.clickPaneTrigger();
+    await flushPromises();
+    harness.clickPaneTreeRowText("main.tex");
+    harness.clickButtonText("Open in LeaChat");
+    await flushPromises();
+    assert.ok(harness.bodyText().includes(message), harness.bodyText());
+    assert.ok(!harness.runtimeMessages.some((entry) => entry.type === "OPEN_LEA_SESSION"));
+
+    // A failed open leaves the button usable and a recovered lookup opens the
+    // resolved conversation, even when only its ID is returned.
+    failing = false;
+    harness.clickButtonText("Open in LeaChat");
+    await flushPromises();
+    const opened = harness.runtimeMessages.filter((entry) => entry.type === "OPEN_LEA_SESSION");
+    assert.equal(opened.length, 1);
+    assert.equal(new URL(opened[0].url).searchParams.get("session"), "target");
+  });
+}
+
+test("View in Lea UI reports a missing saved session instead of opening the homepage", async () => {
+  const harness = createContentHarness({ status: "formalized" });
+  await harness.loadStatusForVisibleTheorem();
+  harness.openTargetPopover();
+  harness.clickButtonText("View in Lea UI");
+  await flushPromises();
+  assert.match(harness.bodyText(), /Lea session link is not available yet/);
+  assert.ok(!harness.runtimeMessages.some((entry) => entry.type === "OPEN_LEA_SESSION"));
+});
+
 test("Lean pane shows navigable uses and used-by relationships across project files", async () => {
   const harness = createContentHarness(
     { status: "unformalized" },

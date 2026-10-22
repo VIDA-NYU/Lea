@@ -21,8 +21,7 @@ import { createChatSubmission, createCheckpointSubmission } from './lib/overleaf
 import { parseSlashCommand } from './lib/slashCommands.js';
 import { runSlashCommand } from './lib/slashCommandRunner';
 import {
-  pickInitialSession,
-  readDeepLinkFormalizationId,
+  restoreInitialSession,
   stripNavigationParams,
 } from './sessionDeepLink.mjs';
 import { useProofSession } from './stores/proofSession';
@@ -187,53 +186,35 @@ export default function App() {
       useModel.getState().loadCatalog();
       // The Overleaf extension's "View in Lea UI" action opens <ui>/?session=<id>;
       // that deep-link takes precedence over the last-opened session.
-      const { sessionId: initialSessionId, source } = pickInitialSession({
+      await restoreInitialSession({
         search: window.location.search,
         savedId: window.localStorage.getItem(SELECTED_SESSION_KEY),
         sessions: loaded,
-      });
-      const deepLinkedFormalizationId = readDeepLinkFormalizationId(
-        window.location.search,
-      );
-      if (source === 'deep-link' || deepLinkedFormalizationId) {
-        // Strip the param so a later reload falls back to the saved-session restore.
-        const cleaned = stripNavigationParams(window.location.search);
-        window.history.replaceState(
-          {},
-          '',
-          `${window.location.pathname}${cleaned}${window.location.hash}`,
-        );
-      }
-      if (deepLinkedFormalizationId) {
-        const formalization = await getFormalization(deepLinkedFormalizationId);
-        const targetSessionId =
-          source === 'deep-link'
-            ? initialSessionId
-            : formalization.sessions[0]?.id;
-        if (targetSessionId && targetSessionId !== initialSessionId) {
-          await loadSession(targetSessionId);
-        }
-        if (targetSessionId) {
-          setFormalizationScope(formalization.id);
+        loadSession,
+        loadFormalization: getFormalization,
+        selectFormalization: (id: string) => {
+          setFormalizationScope(id);
           setCanvasCollapsed(false);
-        } else if (formalization.project_id) {
-          if (await openProject(formalization.project_id)) setView('project');
-        }
-      }
-      if (initialSessionId) {
-        try {
-          await loadSession(initialSessionId);
-        } catch (err) {
-          // A stale saved id is unexpected (it was just found in the list); a bad
-          // deep-link id is plausible — in that case leave the user on a fresh
-          // session rather than surfacing an error.
-          if (source !== 'deep-link') throw err;
-        }
-      }
+        },
+        openProject: async (id: string) => {
+          const project = await openProject(id);
+          if (project) setView('project');
+          return project;
+        },
+        onRestored: () => {
+          // Consume the link only after its session or project loaded successfully.
+          const cleaned = stripNavigationParams(window.location.search);
+          window.history.replaceState(
+            {},
+            '',
+            `${window.location.pathname}${cleaned}${window.location.hash}`,
+          );
+        },
+      });
     };
     if(restorationStarted.current)return;
     restorationStarted.current=true;
-    restore().catch((err) => setError(err instanceof Error ? err.message : String(err)))
+    restore().catch((err) => setError(`Could not restore LeaChat: ${err instanceof Error ? err.message : String(err)} Reload this page to retry.`))
       .finally(()=>setRestoringContext(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
