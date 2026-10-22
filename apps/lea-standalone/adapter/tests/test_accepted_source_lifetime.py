@@ -57,6 +57,31 @@ def renew(client='tab'):
     assert renewed['generation'] == 2
 
 
+def test_review_admission_uses_renewed_editor_source_and_withdrawal_needs_no_lease(accepted):
+    request = {'overleafProjectId': DOCUMENT, 'target': {'overleafProjectId': DOCUMENT,
+        'source_context_ref': accepted['source']['source_context_ref']},
+        'decision': {'action': 'approve', 'outcome': 'proved', 'revision_token': 'reviewed'}}
+    with db.write() as conn:
+        conn.execute("update source_publishers set lease_until='2000-01-01'")
+    with pytest.raises(HTTPException) as stale:
+        companion_service.admit('/lean-pane/review/decision', request, 'expired-review')
+    assert stale.value.status_code == 409
+    renew()
+    current = publish(generation=2)
+    request['target']['source_context_ref'] = current['source_context_ref']
+    admitted = companion_service.admit('/lean-pane/review/decision', request, 'fresh-review')['command']
+    with db.connect() as conn:
+        assert conn.execute('select publication_id from companion_source_bindings where command_id=?',
+                            (admitted['id'],)).fetchone()[0] == current['source_context_ref']
+    with db.write() as conn:
+        conn.execute("update source_publishers set lease_until='2000-01-01'")
+    withdrawal = companion_service.admit('/lean-pane/review/decision',
+        {'overleafProjectId': DOCUMENT, 'decision': {'action': 'withdraw', 'approval_id': 'approval'}},
+        'withdraw-without-source')['command']
+    with db.connect() as conn:
+        assert not conn.execute('select 1 from companion_source_bindings where command_id=?', (withdrawal['id'],)).fetchone()
+
+
 def api_result(accepted, *, context=None):
     marker = db.caller_parent_command.set(accepted['command']['id'])
     try:

@@ -102,14 +102,15 @@ def bind_server(server) -> None:
     _server = server
 
 
-def snapshot() -> dict:
-    from . import store
-    try:
-        queued = len(store.list_runs_by_status("pending"))
-    except sqlite3.OperationalError:
-        # Health probes used by in-process clients can run before lifespan
-        # startup. The real server acquires its lock and migrates first.
-        queued = 0
+def snapshot(*, include_queue=True) -> dict:
+    queued = 0
+    if include_queue:
+        from . import store
+        try:
+            queued = len(store.list_runs_by_status("pending"))
+        except sqlite3.OperationalError:
+            # In-process probes can run before lifespan startup.
+            queued = 0
     return {
         "runtime_id": IDENTITY,
         "ready": accepting_work(),
@@ -117,7 +118,7 @@ def snapshot() -> dict:
         "lifecycle_state": state(),
         "active_runs": runregistry.registry.active_count(),
         "active_operations": _active_operations,
-        "queued_runs": queued,
+        **({"queued_runs": queued} if include_queue else {}),
         "recovery_capability_version": RECOVERY_CAPABILITY_VERSION,
     }
 

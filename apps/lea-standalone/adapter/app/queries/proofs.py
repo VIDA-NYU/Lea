@@ -193,7 +193,9 @@ def target_status(project,declarations='',formalization_ids=''):
             'module_name':artifact.get('module_name') if artifact.get('path')==path else None,'kind':artifact.get('kind'),
             'check_status':step.get('check_status') if step else None,'check_detail':step.get('check_detail') if step else None,
             'check_author':step.get('author') if step else None,'check_created_at':step.get('created_at') if step else None,
-            'check_current':bool(form.get('check_current') and step and step.get('check_current')),
+            # File-check freshness and target certification are separate facts.
+            # A blocked review must not erase a current passing file check.
+            'check_current':bool(step and step.get('check_current')),
             'validity_status':form['validity_status'],'validity_reason':form['validity_reason'],
             'review':form['review'],'certification':form['certification'],'completion_run_id':form.get('completion_run_id'),
             'declaration_kind':observed.get('declaration_kind') or form.get('declaration_kind'),

@@ -28,6 +28,74 @@ def source(label, statement, kind='theorem', file='main.tex'):
 
 
 @pytest.mark.usefixtures('certified_unit_inputs')
+@pytest.mark.parametrize('inventory_first', [False, True])
+def test_generated_target_inventory_and_run_keep_one_lean_name(tmp_path, monkeypatch, inventory_first):
+    from app import github_import_service, run_commands
+    from app.github_project_import import TaggedTarget
+    from published_source_fixtures import publish_for
+
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path/'names.sqlite3')
+    db.init_db()
+    project = store.create_project('doc', namespace='Lea.Names')
+    label = 'lea_auto_def_Ua_12345678'
+    bundle = source(label, r'\mathcal{U}_a(q) is the generating series.', 'definition')
+    target = TaggedTarget(origin_key=f'doc:definition:{label}', label=label,
+        declaration_name='Ua', display_title=label, kind='definition', statement=bundle['statement'],
+        source_hash=bundle['sourceIdentityHash'])
+
+    def sync(descriptor):
+        result = github_import_service.sync_targets(project, [descriptor], tmp_path/'proofs')['targets'][0]
+        assert result['conflict'] is None
+        assert result['declaration_name'] == 'Ua'
+        return store.get_formalization(result['formalization_id'])
+
+    if inventory_first:
+        form = sync(target)
+    ref = publish_for(form['id'] if inventory_first else None, bundle, files={'main.tex': bundle['statement']})
+    admitted = store.create_run_bundle(message='Formalize Ua', session_id=None, project_id=project['id'],
+        session_origin='overleaf', session_origin_url=None, model='test', provider=None, max_turns=3,
+        autonomous=True, purpose='overleaf_solver', source_bundle=bundle, source_context_ref=ref,
+        new_formalization=dict(display_title=label, declaration_name='Ua', kind='definition',
+            origin='overleaf', origin_key=target.origin_key, source_hash=bundle['sourceIdentityHash']))
+    run, session = admitted['run'], admitted['session']
+    fid = run['focus_formalization_id']
+    # An inventory captured earlier can arrive after admission. It must not
+    # replace the established Lean name with the generated source identifier.
+    from dataclasses import replace
+    for descriptor in [target, replace(target, declaration_name=label)]:
+        refreshed = sync(descriptor)
+        assert refreshed['id'] == fid
+        assert refreshed['declaration_name'] == 'Ua'
+
+    cfg = LeaConfig(model='test', max_turns=3, lea_root=tmp_path/'prover')
+    (cfg.lea_root/'workspace').mkdir(parents=True)
+    monkeypatch.setattr('app.config.load_config', lambda: cfg)
+
+    def events(config, messages, *, working_dir, **kwargs):
+        path = Path(working_dir)/f'{label}.lean'
+        code = 'namespace Lea.Names\nprivate def helper : Nat := 0\ndef Ua : Nat := helper\nend Lea.Names\n'
+        path.write_text(code)
+        yield FileChanged(str(path), content=code)
+        yield CheckResult(str(path), 'ok', execution=mock_execution(path), content=code)
+        yield Finished('completed', 'Definition compiled.', 1, session['id'], 'test', Usage(), 0,
+            {'messages': messages}, result_kind='defined', candidate_path=str(path))
+
+    monkeypatch.setattr(bridge, 'run_events', events)
+    run_commands.ensure_run(run['id'])
+    epoch = commands.start_worker('names-worker')
+    token = commands.claim('names-worker', epoch, 'compute', kinds={'run.execute'})
+    bridge.run_lea(bridge.RunnerContext(session_id=session['id'], run_id=run['id'], task='Formalize Ua',
+        config=cfg, events=Queue(), autonomous=True, purpose='overleaf_solver', command_token=token))
+    outcome = store.get_run(run['id'])
+    assert outcome['result_kind'] == 'defined', outcome['result_detail']
+    assert target_observations.capture(fid)['state'] == 'observed'
+    assert proofs.get(fid)['validity_status'] == 'defined'
+    with db.connect() as conn:
+        assert conn.execute('select declaration_name from artifacts where formalization_id=?', (fid,)).fetchone()[0] == 'Ua'
+        assert conn.execute('select count(*) from formalizations where project_id=?', (project['id'],)).fetchone()[0] == 1
+
+
+@pytest.mark.usefixtures('certified_unit_inputs')
 @pytest.mark.parametrize('variant', ['exact', 'changed_statement', 'missing_selection', 'unsupported_axiom', 'definition'])
 def test_published_lean_block_gets_named_compiler_evidence_and_durable_verdict(tmp_path, monkeypatch, variant):
     monkeypatch.setattr(db, 'DB_PATH', tmp_path/'workflow.sqlite3')

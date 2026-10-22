@@ -16,6 +16,7 @@ from app import db, process_state, runtime, worker_diagnostics
 
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
+    monkeypatch.setenv('LEA_PROCESS_ROLE', 'test')
     monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'data/state.sqlite3')
     db.init_db()
     monkeypatch.setattr(worker_diagnostics.faulthandler, 'enable', lambda *a, **k:None)
@@ -30,6 +31,8 @@ def test_real_sqlite_contention_keeps_runtime_and_can_publish_after_release(isol
     monkeypatch.setattr(db, 'BUSY_TIMEOUT_MS', 30)
     monkeypatch.setattr(runtime, 'IDENTITY', 'same-lifetime')
     process_state.record_start(runtime.IDENTITY, os.getpid())
+    from app import store
+    monkeypatch.setattr(store, 'list_runs_by_status', lambda *_: pytest.fail('Heartbeat performed an unbounded queue read'))
     worker_diagnostics.setup(runtime.IDENTITY)
     with db.read_snapshot() as reader:
         reader.execute('select * from worker_process').fetchall()

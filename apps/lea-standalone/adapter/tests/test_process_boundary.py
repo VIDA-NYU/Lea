@@ -32,7 +32,7 @@ def wait(fn,timeout=25):
 
 
 def environment(tmp_path,monkeypatch):
-    data=tmp_path/'data';monkeypatch.setattr(db,'DB_PATH',data/'lea-interface.sqlite3');db.init_db()
+    data=tmp_path/'data';monkeypatch.setattr(db,'DB_PATH',data/'lea-interface.sqlite3');db.init_db();db.configure_concurrency()
     prover=tmp_path/'prover';(prover/'workspace').mkdir(parents=True)
     config=tmp_path/'config.toml';config.write_text(f'model="openai/gpt-test"\nlea_root={json.dumps(str(prover))}\n')
     return {**os.environ,'LEA_SHARED_DATA_DIR':str(data),'LEA_CONFIG_FILE':str(config),
@@ -53,9 +53,12 @@ def stop(child):
         except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)
 
 
-def test_inflight_solver_survives_sql_reader_longer_than_busy_timeout(tmp_path, monkeypatch):
+@pytest.mark.parametrize('journal', ['delete', 'wal'])
+def test_inflight_solver_survives_sql_reader_longer_than_busy_timeout(tmp_path, monkeypatch, journal):
     api_port = port(); base = f'http://127.0.0.1:{api_port}'
     env = environment(tmp_path, monkeypatch); env['LEA_API_BASE_URL'] = base
+    if journal == 'delete':
+        with sqlite3.connect(db.DB_PATH) as conn:conn.execute('pragma journal_mode=delete')
     children = []
     try:
         api = start(tmp_path, 'busy-api', [ADAPTER/'run_api.py', '--port', api_port, '--log-level', 'error'], env); children.append(api)
@@ -64,8 +67,8 @@ def test_inflight_solver_survives_sql_reader_longer_than_busy_timeout(tmp_path, 
         run = request(base, '/api/runs', {'message':'Hold through read contention.', 'idempotency_key':'contention'})
         rid = run['run_id']
         attempt = wait(lambda:request(base, '/api/runs/'+rid).get('attempt_id'))
-        # DELETE journaling is the production baseline: this long reader blocks
-        # publication COMMIT beyond the five-second SQLite busy timeout.
+        # Production WAL permits concurrent publication. Retain rollback mode
+        # as an adversarial case that blocks COMMIT beyond the busy timeout.
         with sqlite3.connect(db.DB_PATH, isolation_level=None) as reader:
             reader.execute('begin')
             reader.execute('select * from runs').fetchall()

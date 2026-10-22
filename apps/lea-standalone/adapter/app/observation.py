@@ -28,6 +28,11 @@ def _record_event(conn, run_id, attempt, event_id, event_type, payload):
         return
     key = ("latest" if event_type == "status" else
            str(payload.get("approval_id") or payload.get("id") or payload.get("child_id") or "latest"))
+    if event_type == "subagent_progress":
+        key = f"{payload.get('child_id')}:{payload.get('kind')}"
+    if event_type.startswith('subagent_') and not payload.get('created_at'):
+        event = conn.execute('select created_at from run_events where id=?', (event_id,)).fetchone()
+        payload = {**payload, 'created_at': event['created_at'] if event else None}
     conn.execute("""insert into run_observation_records values (?,?,?,?,?,?)
         on conflict(run_id,attempt_id,type,record_key) do update set
         event_id=excluded.event_id,payload=excluded.payload where excluded.event_id>event_id""",
@@ -114,6 +119,21 @@ def append_run_event(run_id: str, event_type: str, payload: dict) -> dict:
         if run is None:
             raise ValueError("Cannot publish an event for a missing run")
         attempt = run[0] or ""
+        if event_type.startswith('subagent_') and not (
+                event_type == 'subagent_progress' and payload.get('kind') == 'text'):
+            payload = {**payload, 'created_at': payload.get('created_at') or db.utc_now()}
+            if event_type == 'subagent_progress' and payload.get('kind') == 'turn':
+                frontier = conn.execute('select coalesce(max(id),0) from timeline where session_id=?',
+                                        (payload.get('child_id'),)).fetchone()[0]
+                payload = {**payload, 'message_frontier': frontier}
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        if event_type in {'approval_requested', 'approval_resolved'}:
+            payload = {**payload, 'created_at': payload.get('created_at') or db.utc_now()}
+            if event_type == 'approval_requested':
+                frontier = conn.execute('select coalesce(max(id),0) from timeline where session_id=?',
+                                        (run['session_id'],)).fetchone()[0]
+                payload = {**payload, 'seq': frontier + .5}
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         if event_type == 'status':
             payload = {**payload, 'id': payload.get('id') or str(uuid4()),
                        'session_id': run['session_id'], 'run_id': run_id,

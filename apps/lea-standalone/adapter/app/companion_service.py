@@ -63,7 +63,9 @@ def admit(path,payload,key,method='POST'):
                     elif isinstance(item,(dict,list)):collect(item)
             elif isinstance(value,list):
                 for item in value:collect(item)
-        if not previous and kind=='companion.dispatch' and path in SOURCE_PATHS:
+        needs_source = path in SOURCE_PATHS and not (
+            path == '/lean-pane/review/decision' and (payload.get('decision') or {}).get('action') == 'withdraw')
+        if not previous and kind=='companion.dispatch' and needs_source:
             collect(payload)
             if not references and document:
                 references={r[0] for r in conn.execute('select publication_id from source_heads where document_id=? limit 1001',(document,))}

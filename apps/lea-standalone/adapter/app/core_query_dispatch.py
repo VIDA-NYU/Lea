@@ -49,7 +49,7 @@ def _query(kind,a):
     if kind=='project':
         with db.connect() as conn:row=conn.execute('select * from projects where id=?',(pid,)).fetchone()
         if not row:raise LookupError('Project not found')
-        return {**dict(row),'sessions':sessions.list_project_sessions(pid)}
+        return {**dict(row),'sessions':sessions.list_project_sessions(pid),'cursor':observation.watermark(_connection())}
     if kind=='search':
         q=a.get('q','')
         session_hits=[{**r,'result_type':'session'} for r in sessions.search_sessions(q)]

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import type { SafeVerifyResult } from '../lib/api';
+import type { SafeVerifyResult, EditorDraftBase, FileWriteResult } from '../lib/api';
 import { LeanQuery } from '../lib/leanQuery';
 import { EditorClient } from '../lib/editorClient.mjs';
+import { EditorDraft } from '../lib/editorDraft.mjs';
 import { useProofSession } from '../stores/proofSession';
 
 type SaveResult = { status: string; detail?: string | null; current?: boolean; check_current?: boolean; check_stale_reason?: string | null };
@@ -15,16 +16,20 @@ const AUTOSAVE_MS = 1200;
 export function LiveEditor({
   sessionId,
   path,
+  formalizationId,
   locked,
   onSave,
+  onCheck,
   onVerify,
   captureSelection,
 }: {
   sessionId: string;
   path?: string;
+  formalizationId?: string;
   captureSelection: () => () => boolean;
   locked?: boolean;
-  onSave?: (content: string, path: string) => Promise<SaveResult>;
+  onSave?: (content: string, path: string, base: EditorDraftBase, draftId: string) => Promise<FileWriteResult>;
+  onCheck?: (path: string, base: EditorDraftBase) => Promise<SaveResult>;
   onVerify?: (path: string) => Promise<SaveResult>;
 }) {
   const editorRef = useRef<HTMLDivElement>(null);
@@ -45,12 +50,15 @@ export function LiveEditor({
   const leanQueryRef = useRef<LeanQuery | null>(null);
   const pathRef = useRef<string>('');
   const onSaveRef = useRef(onSave);
+  const onCheckRef = useRef(onCheck);
+  const draftRef = useRef<EditorDraft | null>(null);
   const lockedRef = useRef(locked);
   const saveTimerRef = useRef<number | null>(null);
   const savingRef = useRef(false);
   const pendingRef = useRef(false);
   const suppressChangeRef = useRef(false);
   onSaveRef.current = onSave;
+  onCheckRef.current = onCheck;
   lockedRef.current = locked;
 
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -75,6 +83,14 @@ export function LiveEditor({
     let analysisGeneration = 0;
     let environmentTimer: number;
     let refreshing = false;
+    const draft = new EditorDraft(sessionId, formalizationId);
+    draftRef.current = draft;
+    savingRef.current = false;
+    pendingRef.current = false;
+    setStatus('loading');
+    setError(null);
+    setSave({ state: 'clean', detail: '' });
+    setVerify({ state: 'idle' });
     /* eslint-enable @typescript-eslint/no-explicit-any */
 
     // Serialize saves: never let two writes overlap; if the buffer changed while a
@@ -92,8 +108,26 @@ export function LiveEditor({
       savingRef.current = true;
       setSave({ state: 'saving', detail: '' });
       try {
-        const result = await onSaveFn(value, pathRef.current);
+        const submitted = draft.prepare(value);
+        const receipt = await onSaveFn(value, submitted.base.path, submitted.base, submitted.draft_id);
         if (disposed) return;
+        if (!draft.acknowledge(submitted, receipt)) return;
+        const publishedBase = draft.base;
+        // Check is a separate queued operation. Publication remains saved even
+        // when checking fails or a newer draft is typed while checking.
+        if (onCheckRef.current) {
+          void onCheckRef.current(publishedBase.path, publishedBase).then(result => {
+            if (!disposed && draft.base === publishedBase && api.editor?.getValue?.() === value) {
+              setSave({ state: 'saved', detail: result.status === 'ok'
+                ? result.check_current === true ? 'lean_check: 0 errors' : 'recheck required'
+                : result.detail || `lean_check: ${result.status}` });
+            }
+          }).catch(err => {
+            if (!disposed && draft.base === publishedBase && api.editor?.getValue?.() === value) {
+              setSave({ state: 'saved', detail: err instanceof Error ? err.message : 'Check unavailable' });
+            }
+          });
+        }
         if (api.editor?.getValue?.() !== value) {
           pendingRef.current = true;
           setSave({ state: 'dirty', detail: '' });
@@ -102,15 +136,13 @@ export function LiveEditor({
         // The write always persists (a snapshot); the verdict just annotates it.
         setSave({
           state: 'saved',
-          detail: result.status === 'ok'
-            ? result.check_current === true ? 'lean_check: 0 errors' : 'recheck required'
-            : result.detail || `lean_check: ${result.status}`,
+          detail: onCheckRef.current ? 'checking published revision…' : 'published',
         });
       } catch (err) {
         if (disposed) return;
         setSave({ state: 'dirty', detail: err instanceof Error ? err.message : String(err) });
       } finally {
-        savingRef.current = false;
+        if (!disposed) savingRef.current = false;
         if (!disposed && pendingRef.current) {
           pendingRef.current = false;
           scheduleSave();
@@ -148,10 +180,11 @@ export function LiveEditor({
     };
     (async () => {
       try {
-        client = new EditorClient(sessionId, path, { onState: (state: string) => { if (!disposed) setAnalysis(state); } });
+        client = new EditorClient(sessionId, path, { formalizationId, onState: (state: string) => { if (!disposed) setAnalysis(state); } });
         clientRef.current = client;
         const info = await client.open();
         if (disposed) { client.dispose(); return; }
+        draft.load(info);
         pathRef.current = info.path;
         const { createQueuedEditor } = await import('../lib/queuedMonaco');
         if (disposed) return;
@@ -199,7 +232,7 @@ export function LiveEditor({
         /* ignore */
       }
     };
-  }, [sessionId, path]);
+  }, [sessionId, path, formalizationId]);
 
   // Reflect the modal lock onto the live editor when a run starts/stops.
   useEffect(() => {
@@ -301,9 +334,17 @@ export function LiveEditor({
   // Suppress the resulting change event so it isn't treated as a user edit.
   const handleReload = async () => {
     const owned = captureSelection();
+    const draft = draftRef.current;
+    const content = editorApiRef.current?.editor?.getValue();
     try {
       const info = await clientRef.current!.info();
-      if (!owned()) return;
+      if (!owned() || draft !== draftRef.current) return;
+      if (editorApiRef.current?.editor?.getValue() !== content) {
+        throw new Error('The draft changed during reload. Reload again to replace it.');
+      }
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+      pendingRef.current = false;
+      draft!.load(info);
       suppressChangeRef.current = true;
       const editor = editorApiRef.current?.editor;
       const model = editor?.getModel();
@@ -312,7 +353,7 @@ export function LiveEditor({
       setSave({ state: 'clean', detail: 'reloaded published file' });
     } catch (err) {
       if (!owned()) return;
-      setSave({ state: 'clean', detail: err instanceof Error ? err.message : String(err) });
+      setSave(s => ({ ...s, detail: err instanceof Error ? err.message : String(err) }));
     }
   };
 
@@ -321,7 +362,7 @@ export function LiveEditor({
     : save.state === 'saving'
     ? 'Saving…'
     : save.state === 'dirty'
-    ? 'Editing…'
+    ? save.detail ? `Unsaved · ${save.detail}` : 'Editing…'
     : save.state === 'saved'
     ? `Saved · ${save.detail}`
     : save.detail || 'All changes saved';

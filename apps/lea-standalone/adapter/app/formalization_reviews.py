@@ -54,6 +54,7 @@ def project(form, steps, primary, artifact, completion, active=None, *, requeste
         or (completion.get('result_kind') in {'proved', 'disproved'} and completion.get('result_detail')
             and completion['result_detail'].strip().upper() != completion['result_kind'].upper())))
     managed = review_run or bool(events)
+    result.update(requested=bool(review_run), run_id=(completion or {}).get('id'))
     if not managed:
         return result, bindings, candidate, technical
     active = active or project_coordination.review_busy(form.get('project_id'), (completion or {}).get('id'))

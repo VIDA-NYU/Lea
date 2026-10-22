@@ -389,6 +389,7 @@
   // leanPaneExpandedItemIds tracks expansion -- module state survives the
   // pane's full replaceChildren re-render.
   let leanPaneEditingItemId = "";
+  let activeResultReview = null;
   let leanPaneEditDraft = "";
   let leanPaneEditPreSaveDependents = [];
   let leanPaneEditError = "";
@@ -882,6 +883,7 @@
   }
 
   function closeLeanPane() {
+    activeResultReview?.close(false);
     deferredLeanPaneManifest = null;
     leaTagsSetupControls?.dispose();
     leaTagsSetupControls = null;
@@ -3631,13 +3633,13 @@
 
     const summaryActions = document.createElement("div");
     summaryActions.className = "ol-lean-project-summary-actions";
-    const reviewing = item.status === 'needs-review' && item.review?.eligible;
-    const formalizeAction = reviewing ? { id: 'approve-result', label: 'Approve result' } : leanPaneView.paneItemFormalizeAction(item);
+    const reviewing = item.status === 'needs-review';
+    const formalizeAction = reviewing ? { id: 'approve-result', label: 'Review result' } : leanPaneView.paneItemFormalizeAction(item);
     const formalizeButton = renderPaneItemPrimaryAction(item, formalizeAction);
     formalizeButton.className += " ol-lean-project-summary-formalize";
     const editing = leanPaneEditingItemId === item.id;
     const waiting = leanPaneView.dependencyWait(item);
-    formalizeButton.disabled = editing || (!waiting && !leanPaneView.canFormalizePaneItem(item));
+    formalizeButton.disabled = editing || (!reviewing && !waiting && !leanPaneView.canFormalizePaneItem(item));
     if (!waiting && (item.inProgress || item.status === "in-progress")) {
       formalizeButton.textContent = "Formalizing…";
       formalizeButton.title = "Formalization is already running";
@@ -3853,6 +3855,10 @@
   function renderLeanPaneItemDetail(item, useRelationships) {
     const detail = document.createElement("div");
     detail.className = "ol-lean-project-detail";
+    if (activeResultReview?.itemId === item.id) {
+      detail.appendChild(activeResultReview.panel);
+      return detail;
+    }
 
     const source = renderLeanPaneDetailSection("Source statement");
     const natural = document.createElement("p");
@@ -5650,10 +5656,15 @@
       button.type = 'button';
       button.className = 'ol-lean-primary-button ol-lean-item-primary-action';
       button.textContent = action.label;
-      button.addEventListener('click', event => {
+      button.addEventListener('click', async event => {
         event.preventDefault();
         event.stopPropagation();
-        showResultReview(leanPaneView.paneItemToChatTarget(item, extractOverleafProjectId()), button);
+        try {
+          await showResultReview(paneItemReviewTarget(item), button);
+        } catch (error) {
+          rememberLeanPaneActionError(item, error, action.id);
+          revealLeanPaneItem(item);
+        }
       });
       return button;
     }
@@ -5714,6 +5725,7 @@
     button.title = action.label;
     button.setAttribute("aria-label", action.label);
     button.innerHTML = PANE_ICON_SVG[action.id] || "";
+    button.disabled = action.id === "chat";
     if (action.id === "view-in-lea") {
       const label = document.createElement("span");
       label.textContent = action.label;
@@ -5769,6 +5781,7 @@
       entry.className = "ol-lean-overflow-item";
       entry.setAttribute("role", "menuitem");
       entry.textContent = action.label;
+      entry.disabled = action.id === "edit";
       if (action.label === "Re-formalize") {
         entry.title = REFORMALIZE_HELP_TEXT;
         entry.setAttribute("aria-description", REFORMALIZE_HELP_TEXT);
@@ -5809,8 +5822,12 @@
   // Formalize/stub reuse the same companion paths as the primary button and
   // the in-document popover.
   async function runPaneOverflowAction(item, action) {
+    if (action.id === 'approve-result') {
+      await showResultReview(paneItemReviewTarget(item));
+      return;
+    }
     if (action.id === 'withdraw-approval') {
-      await withdrawResultApproval(leanPaneView.paneItemToChatTarget(item, extractOverleafProjectId()), item.review.approval);
+      await withdrawResultApproval(paneItemReviewTarget(item), item.review.approval);
       return;
     }
     if (action.id.startsWith("dependency-")) return runDependencyAction(item, action);
@@ -6486,7 +6503,7 @@
     if (currentStatus === "in_progress") {
       status.textContent = inProgressMessage(latestStatuses[key], target);
     } else if (currentStatus === 'needs_review') {
-      status.textContent = statusInfo.review?.reason || 'Lean check passed. Your approval is needed to confirm this result against the LaTeX.';
+      status.textContent = resultReviewNotice(statusInfo);
     } else if (statusInfo.review?.approval) {
       status.textContent = reviewApprovalText(statusInfo.review.approval);
     } else if (isExtensionContextInvalidated()) {
@@ -6559,7 +6576,9 @@
       if (spec.disabled) button.disabled = true;
       button.addEventListener("click", async () => {
         if (spec.review) {
-          showResultReview(target, button);
+          renderPopoverActionStatus(status, 'Opening result review…');
+          try { await showResultReview(target, button); }
+          catch (error) { renderPopoverActionError(status, error); }
           return;
         }
         for (const actionButton of actions.querySelectorAll("button")) {
@@ -6640,12 +6659,30 @@
     return `Approved by user · ${outcome} · ${new Date(approval.created_at).toLocaleString()}`;
   }
 
+  function paneItemReviewTarget(item) {
+    return { ...leanPaneView.paneItemToChatTarget(item, extractOverleafProjectId()),
+      targetLabel: item.label || item.leanDeclarationName, labelSource: item.labelSource };
+  }
+
+  function resultReviewNotice(statusInfo) {
+    const reason = String(statusInfo.review?.reason || '').trim();
+    if (reason && reason.toUpperCase() !== 'NEEDS_REVIEW') return reason;
+    return statusInfo.review?.eligible
+      ? 'Open Review result in the Lean pane to compare the checked Lean code with the current LaTeX.'
+      : 'Review requested. Open Review result in the Lean pane to see what is blocking approval.';
+  }
+
   async function resultReviewRequest(route, target, decision) {
     const baseUrl = await chatCompanionBaseUrl();
+    let current = target;
+    if (!decision || decision.action === 'approve') {
+      current = await currentResumeTarget(target);
+      current = { ...current, ...await buildFormalizationSourceContext(current, { verifyMirror: false, forcePublish: true }) };
+    }
     const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/lean-pane/review/${route}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target: { ...target, overleafProjectId: target.overleafProjectId || extractOverleafProjectId(),
-        naturalLanguageLatex: target.naturalLanguageLatex || target.targetText || '' }, ...(decision ? { decision } : {}) })
+      body: JSON.stringify({ target: { ...current, overleafProjectId: current.overleafProjectId || extractOverleafProjectId(),
+        naturalLanguageLatex: current.naturalLanguageLatex || current.targetText || '' }, ...(decision ? { decision } : {}) })
     }, { timeoutMs: 65000, timeoutMessage: 'Result approval timed out. Retry without starting another formalization.' });
     if (!response.ok || payload.ok === false) {
       if (response.status === 404) {
@@ -6672,26 +6709,29 @@
     return { ...result, status: 'needs_review' };
   }
 
-  function showResultReview(target, trigger) {
-    const existing = document.querySelector('.ol-lean-review-dialog');
-    if (existing) return;
+  async function showResultReview(target, trigger) {
+    if (activeResultReview) activeResultReview.close(false);
+    const item = await showTargetInLeanPane(target);
+    target = { ...target, targetLabel: item.label || target.targetLabel, labelSource: item.labelSource || target.labelSource,
+      sourceFile: item.sourceFile || target.sourceFile };
     const triggerItemId = trigger?.closest('.ol-lean-project-item')?.dataset.itemId;
-    const dialog = document.createElement('dialog');
-    dialog.className = 'ol-lean-review-dialog';
-    dialog.setAttribute('role', 'dialog');
-    dialog.setAttribute('aria-modal', 'true');
-    dialog.setAttribute('aria-labelledby', 'ol-lean-review-title');
+    const panel = document.createElement('section');
+    panel.className = 'ol-lean-review-panel';
+    panel.setAttribute('role', 'region');
+    panel.setAttribute('aria-labelledby', 'ol-lean-review-title');
     const title = document.createElement('h2');
     title.id = 'ol-lean-review-title';
-    title.textContent = 'Approve result';
+    title.textContent = 'Review result';
+    title.tabIndex = -1;
     const explanation = document.createElement('p');
-    explanation.textContent = 'Confirm how this checked result relates to the current LaTeX. Approval records your judgment without modifying or rerunning the proof.';
+    explanation.textContent = 'Compare the current LaTeX with the checked Lean code. Approval records your judgment without rerunning Lea.';
     const evidence = document.createElement('div');
     evidence.className = 'ol-lean-review-evidence';
     const choices = document.createElement('fieldset');
     const legend = document.createElement('legend');
     legend.textContent = 'What does the checked artifact establish?';
     choices.appendChild(legend);
+    choices.hidden = true;
     const status = document.createElement('p');
     status.className = 'ol-lean-review-status';
     status.setAttribute('role', 'status');
@@ -6701,49 +6741,53 @@
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.className = 'ol-lean-secondary-button';
-    cancel.textContent = 'Cancel';
+    cancel.textContent = 'Back to details';
     const retry = document.createElement('button');
     retry.type = 'button';
     retry.className = 'ol-lean-secondary-button';
-    retry.textContent = 'Reload result';
+    retry.textContent = 'Refresh source and retry';
     retry.hidden = true;
     const submit = document.createElement('button');
     submit.type = 'button';
     submit.className = 'ol-lean-primary-button';
-    submit.textContent = 'Choose an outcome';
+    submit.textContent = 'Loading review…';
     submit.disabled = true;
     actions.append(cancel, retry, submit);
-    dialog.append(title, explanation, evidence, choices, status, actions);
+    panel.append(title, explanation, status, evidence, choices, actions);
     let context = null;
     let selected = '';
     let busy = false;
     let closed = false;
     let submission = null;
-    const close = () => {
+    let loadGeneration = 0;
+    const close = (restoreFocus = true) => {
       closed = true;
-      dialog.close?.();
-      dialog.remove();
+      if (activeResultReview?.panel === panel) activeResultReview = null;
+      document.body.classList.remove('ol-lean-review-open');
+      panel.remove();
+      if (lastLeanPaneManifest) renderLeanPaneManifest(lastLeanPaneManifest);
+      if (!restoreFocus) return;
       if (trigger?.isConnected !== false) trigger?.focus?.();
       else {
-        const item = triggerItemId && [...document.querySelectorAll('.ol-lean-project-item')].find(item => item.dataset.itemId === triggerItemId);
-        const replacement = item?.querySelector('.ol-lean-project-summary-formalize')
+        const card = [...document.querySelectorAll('.ol-lean-project-item')].find(card => card.dataset.itemId === (triggerItemId || item.id));
+        const replacement = card?.querySelector('.ol-lean-project-summary-formalize')
           || activePopover?.querySelector('[data-primary="true"]')
           || [...document.querySelectorAll('.ol-lean-status')].find(badge => badge.dataset.targetKey === targetKey(target))
           || document.querySelector('.ol-lean-pane-trigger');
         replacement?.focus?.();
       }
     };
-    cancel.addEventListener('click', close);
-    dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
-    dialog.addEventListener('keydown', event => {
+    cancel.addEventListener('click', () => close());
+    panel.addEventListener('cancel', event => { event.preventDefault(); close(); });
+    panel.addEventListener('keydown', event => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
       event.stopPropagation();
       close();
     });
-    dialog.addEventListener('click', event => event.stopPropagation());
+    panel.addEventListener('click', event => event.stopPropagation());
     const update = () => {
-      submit.textContent = busy ? 'Saving approval…' : { proved: 'Approve as formalized', defined: 'Approve as defined', disproved: 'Approve as counterexample' }[selected] || 'Choose an outcome';
+      submit.textContent = busy ? 'Saving approval…' : { proved: 'Approve proof', defined: 'Approve definition', disproved: 'Approve counterexample' }[selected] || (context?.review?.eligible ? 'Choose an outcome' : 'Approval unavailable');
       submit.disabled = busy || !context?.review?.eligible || !selected;
       for (const input of choices.querySelectorAll('input')) input.disabled = busy;
     };
@@ -6756,14 +6800,19 @@
       evidence.append(heading, pre);
     };
     const load = async (changed = false) => {
+      const generation = ++loadGeneration;
       context = null;
       submit.disabled = true;
       retry.hidden = true;
+      retry.disabled = true;
+      choices.hidden = true;
+      evidence.replaceChildren();
+      selected = '';
       status.setAttribute('role', 'status');
-      status.textContent = changed ? 'The reviewed inputs changed. Loading the current result; review it again before approving.' : 'Loading current LaTeX and checked artifact…';
+      status.textContent = changed ? 'The source or result changed. Loading the current evidence for another review.' : 'Refreshing source and loading the checked result…';
       try {
         const loaded = await resultReviewRequest('context', target);
-        if (closed) return;
+        if (closed || generation !== loadGeneration) return;
         context = loaded;
         evidence.replaceChildren();
         const source = context.source_snapshot || {};
@@ -6774,8 +6823,10 @@
         for (const artifact of context.artifacts || []) block(
           artifact.artifact_scope === 'attempt' ? `Draft: ${artifact.path}` : artifact.path, artifact.content);
         choices.replaceChildren(legend);
+        choices.hidden = !context.review.eligible || context.review.allowed_outcomes.length <= 1;
         selected = '';
         submission = null;
+        if (context.review.allowed_outcomes.length === 1) selected = context.review.allowed_outcomes[0];
         for (const [outcome, label] of [['proved', 'Proof of the stated claim'], ['disproved', 'Counterexample to the stated claim'], ['defined', 'Definition']]) {
           if (!context.review.allowed_outcomes.includes(outcome)) continue;
           if (outcome === 'defined') {
@@ -6795,15 +6846,17 @@
           }
         }
         const reason = context.review.reason && context.review.reason.trim().toUpperCase() !== 'NEEDS_REVIEW'
-          ? context.review.reason : 'Lean check passed. Your approval is needed to confirm this result against the LaTeX.';
+          ? context.review.reason : context.review.eligible ? 'Ready for your review.' : 'Approval is unavailable for the current result.';
         status.textContent = (changed ? 'The reviewed inputs changed. Review the current evidence and choose again. ' : '') + reason;
+        if (!context.review.eligible) retry.hidden = false;
         update();
       } catch (error) {
-        if (closed) return;
+        if (closed || generation !== loadGeneration) return;
         status.setAttribute('role', 'alert');
-        status.textContent = normalizeErrorMessage(error);
+        status.textContent = `Could not load the review. ${normalizeErrorMessage(error).replace(/^HTTP \d+:\s*/, '')}`;
+        submit.textContent = 'Approval unavailable';
         retry.hidden = false;
-      }
+      } finally { if (!closed && generation === loadGeneration) retry.disabled = false; }
     };
     retry.addEventListener('click', () => load());
     submit.addEventListener('click', async () => {
@@ -6825,9 +6878,12 @@
         }
       } finally { busy = false; if (!closed) update(); }
     });
-    document.body.appendChild(dialog);
-    dialog.showModal?.();
-    cancel.focus?.();
+    activeResultReview = { itemId: item.id, panel: panel, close };
+    document.body.classList.add('ol-lean-review-open');
+    closePopover();
+    renderLeanPaneManifest(lastLeanPaneManifest);
+    title.focus?.();
+    panel.scrollIntoView?.({ block: 'start' });
     load();
   }
 
@@ -6943,8 +6999,7 @@
   function actionSpecsForStatus(status, target, statusInfo = {}) {
     const definition = isDefinitionTarget(target);
     if (status === 'needs_review') {
-      return [{ role: 'approve-result', label: 'Approve result', primary: true, review: true,
-        disabled: statusInfo.review?.eligible === false },
+      return [{ role: 'approve-result', label: 'Review result', primary: true, review: true },
       { role: 'theorem-reformalize-action', label: definition ? 'Regenerate definition' : 'Re-formalize',
         pendingText: 'Starting Lea...', run: formalize }];
     }
@@ -7482,7 +7537,7 @@
       } else if (statusInfo.review?.approval) {
         detail.textContent = reviewApprovalText(statusInfo.review.approval);
       } else if (currentStatus === 'needs_review') {
-        detail.textContent = 'Lean check passed. Your approval is needed to confirm this result against the LaTeX.';
+        detail.textContent = resultReviewNotice(statusInfo);
       } else if (statusInfo.message) {
         detail.textContent = statusInfo.message;
       } else if (statusInfo.relativePath) {
@@ -7497,7 +7552,7 @@
     renderTargetWarning(stubbedWarning, target, statusInfo);
   }
 
-  async function buildFormalizationSourceContext(target, { verifyMirror = true, mirrorSnapshot = null, publish = true } = {}) {
+  async function buildFormalizationSourceContext(target, { verifyMirror = true, mirrorSnapshot = null, publish = true, forcePublish = false } = {}) {
     const capturedDocument=extractOverleafProjectId();
     const capturedBuffer=latestActiveTex;
     const capturedActivePath=latestActiveTexPath;
@@ -7582,7 +7637,7 @@
       }
       const publishSource = await sourcePublisher;
       if(capturedDocument!==extractOverleafProjectId() || capturedBuffer!==latestActiveTex || capturedActivePath!==latestActiveTexPath)throw new Error('The editor changed during source capture. Publish its current revision again.');
-      publication=await publishSource({document_id:capturedDocument,source_bundle:sourceBundle,files:immutableFiles,coverage:complete?"complete":"partial"});
+      publication=await publishSource({document_id:capturedDocument,source_bundle:sourceBundle,files:immutableFiles,coverage:complete?"complete":"partial"}, { force: forcePublish });
     }
     return {
       ...publication,
@@ -7619,15 +7674,16 @@
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw companionRequestError(response, payload);
-      parsed = payload.targets || [];
+      parsed = parsed.map(candidate => ({ ...candidate,
+        ...(payload.targets || []).find(resolved => resolved.from === candidate.from && resolved.to === candidate.to) }));
     }
     const matches = parsed.filter((candidate) =>
       candidate.targetKind === target.targetKind && (candidate.targetLabel === target.targetLabel
         || (target.labelSource === "generated" && candidate.labelSource === "generated"
           && target.latexLabel && candidate.latexLabel === target.latexLabel)));
-    if (matches.length !== 1) throw new Error("The paused target cannot be identified in the current source. Refresh the pane before resuming.");
+    if (matches.length !== 1) throw new Error("This target cannot be identified in the current source. Refresh the Lean pane and try again.");
     const current = matches[0];
-    return { ...target, ...current, targetLabel: target.targetLabel, sourceFile: path,
+    return { ...target, ...current, targetLabel: target.targetLabel, naturalLanguageLatex: current.targetText, sourceFile: path,
       sourceStartLine: String(content).slice(0, current.from).split("\n").length,
       sourceEndLine: String(content).slice(0, current.to).split("\n").length };
   }

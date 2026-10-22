@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import test from "node:test";
 import vm from "node:vm";
 import { buildLeanPaneManifest } from "../shared/leanPaneManifest.mjs";
+import { handleGetStatuses, handleLeanPaneManifest } from "../companion/workerService.mjs";
 
 // A successful project download is a real (empty main.tex) ZIP; the harness
 // overlays its live buffer just as the browser does. Tests for unavailable or
@@ -3250,6 +3252,98 @@ test('active batch and file inventory advance together every five seconds with a
   assert.ok(!h.fetchCalls.some(c => /cancel|restart|interrupt/.test(c.url)));
 });
 
+test('idle after Formalize All retains completed results through failed background status lookups', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lea-idle-refresh-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'workspace'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'pyproject.toml'), '[project]\nname="idle-refresh"\n');
+  fs.writeFileSync(path.join(dir, 'workspace/lakefile.lean'), 'import Lake\n');
+  fs.copyFileSync(path.join(repoRoot, 'apps/lea-standalone/prover/workspace/lean-toolchain'), path.join(dir, 'workspace/lean-toolchain'));
+  const labels = ['idle_one', 'idle_two'];
+  const source = labels.map(label => `\\begin{theorem}\n% lea: formalize label=${label}\nA theorem.\n\\end{theorem}`).join('\n');
+  const phase = { accepted: false, done: false, failure: null, lookups: 0 };
+  const worker = { settings: { leaRepoPath: dir, leaApiBaseUrl: 'http://127.0.0.1:8001', leaTexMirrorEnabled: false },
+    jobsPath: path.join(dir, 'jobs.json'), settingsPath: path.join(dir, 'settings.json'), jobs: {}, env: {},
+    fetchImpl: async url => {
+      if (String(url).endsWith('/identity')) return Response.json({ projectId: 'p1', slug: 'project-1',
+        projectName: 'Idle', namespace: 'Lea.Project1', namespaceRevision: 1 });
+      if (String(url).includes('/target-status')) {
+        phase.lookups++;
+        if (phase.failure === 'network') throw new TypeError('Connection unavailable');
+        if (phase.failure) return Response.json({ detail: { error: 'database_busy', message: 'Database busy' } }, { status: 503 });
+        return Response.json({ targets: new URL(url).searchParams.get('declarations').split(',').map(name => ({
+          declaration_name: name, recorded: phase.done, exists: phase.done, declaration_present: phase.done,
+          formalization_id: `form-${name}`, session_id: `session-${name}`, completion_run_id: `run-${name}`,
+          path: `${name}.lean`, has_sorry: false, check_current: phase.done, check_status: 'ok',
+          validity_status: phase.done ? 'proved' : 'planned', content: `theorem ${name} : True := by trivial\n`
+        })) });
+      }
+      return Response.json({});
+    } };
+  const batch = () => ({ ok: true, batchId: 'idle-batch', operation: 'formalize', running: !phase.done, done: phase.done,
+    items: labels.map(targetLabel => ({ targetKind: 'theorem', targetLabel, state: phase.done ? 'formalized' : 'pending' })) });
+  const response = result => ({ ok: result.statusCode < 400, status: result.statusCode, json: async () => result.body });
+  class EventSource extends DeliveryEventSource { static instances = []; constructor(url) { super(url); EventSource.instances.push(this); } }
+  const h = createContentHarness({}, {}, { EventSource, locationPath: '/project/project-1',
+    targetBatch: batch(), repairStatus: () => batch(),
+    fetchOverride: async (url, options) => {
+      if (url.endsWith('/formalize/all')) {
+        phase.accepted = true;
+        for (const label of labels) worker.jobs[label] = { jobId: label, jobKey: `project-1:theorem:${label}`,
+          status: 'in_progress', targetKind: 'theorem', targetLabel: label, declarationName: label,
+          formalizationId: `form-${label}`, leaSessionId: `session-${label}`, overleafProjectId: 'project-1',
+          projectSlug: 'project-1', startedAt: '2026-01-01T00:00:00Z' };
+        return response({ statusCode: 200, body: batch() });
+      }
+      if (url.endsWith('/lean-pane/repair/status')) return response({ statusCode: 200, body: batch() });
+      // Exercise the real worker snapshot builders; only the SQL API replies
+      // are scripted. A failed nested read must survive the outer envelope.
+      if (url.endsWith('/statuses')) return response(await handleGetStatuses(JSON.parse(options.body), worker));
+      if (url.endsWith('/lean-pane/manifest')) return response(await handleLeanPaneManifest(JSON.parse(options.body), worker));
+    } });
+  await h.loadVisibleTheorems({ activeTex: source, targets: labels.map((targetLabel, index) => ({
+    targetKind: 'theorem', targetLabel, targetText: 'A theorem.', coords: { left: 12, top: 18 + 30 * index }
+  })) });
+  h.clickPaneTrigger(); await flushPromises();
+  h.clickButtonText('Formalize all (2)'); await flushPromises();
+  assert.equal(phase.accepted, true);
+  for (let turn = 0; turn < 100 && !h.batchQueue()?.progress; turn++) await flushPromises();
+  assert.ok(h.batchQueue()?.progress, 'Formalize All has settled its admission');
+  for (const eventSource of EventSource.instances) eventSource.onopen?.();
+  await h.runTimersAt(0);
+  phase.done = true;
+  for (const job of Object.values(worker.jobs)) { job.status = 'formalized'; job.finishedAt = '2026-01-01T00:01:00Z'; }
+  await h.advanceTime(5000);
+  assert.match(h.paneProgresses()[0].label, /2 verified/);
+  assert.equal(h.countSelector('.ol-lean-status-formalized'), 2);
+  const completedJobs = JSON.stringify(worker.jobs);
+  const events = EventSource.instances[0];
+  const inputRequests = () => h.fetchCalls.filter(c => /source-context\/publish|mirror-tex|formalize\/all/.test(c.url));
+  const submissions = inputRequests().length;
+
+  // From here the user never clicks, edits, reloads or switches visibility.
+  // Time and maintenance notifications alone drive several idle refreshes.
+  for (const failure of ['database-busy', 'network']) {
+    phase.failure = failure;
+    const reads = phase.lookups;
+    await h.advanceTime(30000);
+    events.emit('jobs-changed'); await h.advanceTime(1500);
+    assert.ok(phase.lookups > reads, 'Settled proofs still reconcile while idle');
+    assert.match(h.paneProgresses()[0].label, /2 verified/);
+    assert.equal(h.countSelector('.ol-lean-status-formalized'), 2);
+    assert.match(h.bodyText(), /last loaded inventory.*out of date/i);
+    assert.equal(h.countSelector('.ol-lean-project-pane-refresh-warning'), 1);
+    assert.equal(h.countSelector('.ol-lean-project-check-chip-unformalized'), 0);
+    phase.failure = null;
+    await h.advanceTime(30000);
+    assert.equal(h.countSelector('.ol-lean-project-pane-refresh-warning'), 0);
+    assert.match(h.paneProgresses()[0].label, /2 verified/);
+  }
+  assert.equal(JSON.stringify(worker.jobs), completedJobs);
+  assert.equal(inputRequests().length, submissions, 'Idle reconciliation cannot republish source or admit another batch');
+  assert.ok(!h.fetchCalls.some(c => /cancel|restart|interrupt/.test(c.url)));
+});
+
 test('push bursts coalesce the shared batch and inventory read while SQL is slow', async () => {
   const { h, state, events } = await progressRefreshHarness();
   const reads = state.reads;
@@ -3927,10 +4021,23 @@ function reviewButton(h, text) {
   return button;
 }
 
+function createReviewHarness(status, patch = {}, options = {}) {
+  const kind = patch.targetKind === 'definition' ? 'definition' : 'theorem';
+  const h = createContentHarness(status, patch, {
+    manifest: { ok: true, rootFile: 'main.tex', diagnostics: [], items: [{ id: 'review-item', label: 'demo_theorem',
+      kind, status: 'needs-review', review: status.review, formalizable: true,
+      leanKind: kind === 'definition' ? 'def' : 'theorem', naturalLanguageLatex: 'A theorem.', sourceFile: 'main.tex' }] },
+    ...options
+  });
+  const load = h.loadVisibleTheorems.bind(h);
+  h.loadVisibleTheorems = input => load({ activeTex: `\\begin{${kind}}\n% lea: ${kind === 'definition' ? 'define' : 'formalize'} label=demo_theorem\nA theorem.\n\\end{${kind}}`, ...input });
+  return h;
+}
+
 test('review approval loads full evidence, requires a theorem outcome, and never formalizes', async () => {
   const status = { status: 'needs_review', review: { eligible: true }, leaSessionId: 'session-1' };
   const fixture = reviewFixture();
-  const h = createContentHarness(status, {}, { fetchOverride(url, options) {
+  const h = createReviewHarness(status, {}, { fetchOverride(url, options) {
     if (url.endsWith('/review/context')) return reviewResponse(fixture);
     if (url.endsWith('/review/decision')) {
       const request = JSON.parse(options.body).decision;
@@ -3944,20 +4051,22 @@ test('review approval loads full evidence, requires a theorem outcome, and never
   h.openTargetPopover();
   assert.equal(h.hasViewInLeaUiButton(), true);
   assert.equal(h.hasButtonText('Re-formalize'), true);
-  reviewButton(h, 'Approve result').click();
+  reviewButton(h, 'Review result').click();
   await flushPromises();
-  const dialog = h.document.querySelector('.ol-lean-review-dialog');
-  assert.equal(dialog.attributes.role, 'dialog');
-  assert.equal(dialog.attributes['aria-modal'], 'true');
+  const dialog = h.document.querySelector('.ol-lean-review-panel');
+  assert.equal(dialog.attributes.role, 'region');
+  assert.equal(dialog.attributes['aria-modal'], undefined);
+  assert.ok(h.document.querySelector('.ol-lean-project-pane').contains(dialog));
   assert.ok(dialog.textContent.includes(fixture.artifacts[0].content));
   assert.equal(reviewButton(h, 'Choose an outcome').disabled, true);
   const radios = dialog.querySelectorAll('input');
   assert.equal(radios.length, 2);
   assert.ok(radios.every(radio => !radio.checked));
   radios.find(radio => radio.value === 'disproved').dispatchEvent({ type: 'change' });
-  reviewButton(h, 'Approve as counterexample').click();
+  reviewButton(h, 'Approve counterexample').click();
   await flushPromises();
-  assert.equal(h.document.querySelector('.ol-lean-review-dialog'), null);
+  assert.equal(h.document.querySelector('.ol-lean-review-panel'), null);
+  h.openTargetPopover();
   assert.equal(h.hasButtonText('Withdraw approval'), true);
   assert.match(h.bodyText(), /Approved by user/);
   assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/formalize')));
@@ -3965,26 +4074,31 @@ test('review approval loads full evidence, requires a theorem outcome, and never
   reviewButton(h, 'Withdraw approval').click();
   await flushPromises();
   const decisions = h.fetchCalls.filter(call => call.url.endsWith('/review/decision'));
+  const contextCall = h.fetchCalls.find(call => call.url.endsWith('/review/context'));
+  assert.equal(JSON.parse(contextCall.options.body).target.source_context_ref, 'published-source');
+  assert.equal(JSON.parse(decisions[0].options.body).target.source_context_ref, 'published-source');
+  assert.ok(h.fetchCalls.filter(call => call.url.endsWith('/source-context/publish')).length >= 2,
+    'opening review and submitting approval each capture a current editor publication');
   assert.equal(JSON.parse(decisions[1].options.body).decision.action, 'withdraw');
 });
 
 test('definition approval has a fixed outcome and cancel or Escape restores trigger focus', async () => {
   for (const escape of [false, true]) {
-    const h = createContentHarness({ status: 'needs_review', review: { eligible: true } }, { targetKind: 'definition' }, {
+    const h = createReviewHarness({ status: 'needs_review', review: { eligible: true } }, { targetKind: 'definition' }, {
       fetchOverride(url) { if (url.endsWith('/review/context')) return reviewResponse(reviewFixture(['defined'])); }
     });
     await h.loadVisibleTheorems();
     h.openTargetPopover();
-    const trigger = reviewButton(h, 'Approve result');
+    const trigger = reviewButton(h, 'Review result');
     trigger.click();
     await flushPromises();
-    const dialog = h.document.querySelector('.ol-lean-review-dialog');
+    const dialog = h.document.querySelector('.ol-lean-review-panel');
     assert.equal(dialog.querySelectorAll('input').length, 0);
-    assert.equal(reviewButton(h, 'Approve as defined').disabled, false);
+    assert.equal(reviewButton(h, 'Approve definition').disabled, false);
     if (escape) dialog.dispatchEvent({ type: 'cancel' });
-    else reviewButton(h, 'Cancel').click();
-    assert.equal(h.document.querySelector('.ol-lean-review-dialog'), null);
-    assert.equal(trigger.focused, true);
+    else reviewButton(h, 'Back to details').click();
+    assert.equal(h.document.querySelector('.ol-lean-review-panel'), null);
+    assert.ok(h.document.querySelector('.ol-lean-project-pane'));
     assert.ok(!h.fetchCalls.some(call => /\/(formalize|review\/decision)$/.test(call.url)));
   }
 });
@@ -3992,7 +4106,7 @@ test('definition approval has a fixed outcome and cancel or Escape restores trig
 test('approval offline retry retains outcome and stale revision reload requires fresh selection', async () => {
   let submissions = 0;
   let loads = 0;
-  const h = createContentHarness({ status: 'needs_review', review: { eligible: true } }, {}, {
+  const h = createReviewHarness({ status: 'needs_review', review: { eligible: true } }, {}, {
     fetchOverride(url) {
       if (url.endsWith('/review/context')) {
         const fixture = reviewFixture();
@@ -4006,14 +4120,14 @@ test('approval offline retry retains outcome and stale revision reload requires 
   });
   await h.loadVisibleTheorems();
   h.openTargetPopover();
-  reviewButton(h, 'Approve result').click();
+  reviewButton(h, 'Review result').click();
   await flushPromises();
-  h.document.querySelector('.ol-lean-review-dialog').querySelectorAll('input')[0].dispatchEvent({ type: 'change' });
-  reviewButton(h, 'Approve as formalized').click();
+  h.document.querySelector('.ol-lean-review-panel').querySelectorAll('input')[0].dispatchEvent({ type: 'change' });
+  reviewButton(h, 'Approve proof').click();
   await flushPromises();
   assert.match(h.bodyText(), /Offline/);
-  assert.equal(reviewButton(h, 'Approve as formalized').disabled, false);
-  reviewButton(h, 'Approve as formalized').click();
+  assert.equal(reviewButton(h, 'Approve proof').disabled, false);
+  reviewButton(h, 'Approve proof').click();
   await flushPromises();
   assert.equal(loads, 2);
   assert.equal(reviewButton(h, 'Choose an outcome').disabled, true);
@@ -4022,8 +4136,8 @@ test('approval offline retry retains outcome and stale revision reload requires 
   assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/formalize')));
 });
 
-test('pane approval opens the shared dialog and Escape leaves the pane open', async () => {
-  const h = createContentHarness({ status: 'needs_review', review: { eligible: true } }, {}, {
+test('pane approval opens inline review and Escape leaves the pane open', async () => {
+  const h = createReviewHarness({ status: 'needs_review', review: { eligible: true } }, {}, {
     locationPath: '/project/unknown',
     manifest: { ok: true, rootFile: 'main.tex', diagnostics: [], items: [{ id: 'review-item', label: 'demo_theorem',
       kind: 'theorem', status: 'needs-review', review: { eligible: true }, formalizable: true,
@@ -4034,32 +4148,93 @@ test('pane approval opens the shared dialog and Escape leaves the pane open', as
   h.clickPaneTrigger();
   await flushPromises();
   h.clickPaneTreeRowText('main.tex');
-  const trigger = reviewButton(h, 'Approve result');
+  const trigger = reviewButton(h, 'Review result');
   assert.ok(trigger);
   assert.equal(h.hasButtonText('Re-formalize'), true);
   trigger.click();
   await flushPromises();
-  const dialog = h.document.querySelector('.ol-lean-review-dialog');
+  const dialog = h.document.querySelector('.ol-lean-review-panel');
   assert.ok(dialog);
+  h.clickButtonLabel('Refresh Lean pane');
+  await flushPromises();
+  assert.equal(h.document.querySelector('.ol-lean-review-panel'), dialog, 'refresh preserves the open review and its evidence');
   dialog.dispatchEvent({ type: 'keydown', key: 'Escape' });
-  assert.equal(h.document.querySelector('.ol-lean-review-dialog'), null);
+  assert.equal(h.document.querySelector('.ol-lean-review-panel'), null);
   assert.ok(h.document.querySelector('.ol-lean-project-pane'));
-  assert.equal(trigger.focused, true);
+  assert.ok(h.document.querySelector('.ol-lean-project-pane'));
   assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/formalize')));
 });
 
 test('review loading failure exposes reload and update-required errors without retrying formalization', async () => {
-  const h = createContentHarness({ status: 'needs_review', review: { eligible: true } }, {}, {
+  const h = createReviewHarness({ status: 'needs_review', review: { eligible: true } }, {}, {
     fetchOverride(url) { if (url.endsWith('/review/context')) return reviewResponse({}, 404); }
   });
   await h.loadVisibleTheorems();
   h.openTargetPopover();
-  reviewButton(h, 'Approve result').click();
-  assert.equal(reviewButton(h, 'Choose an outcome').disabled, true);
+  reviewButton(h, 'Review result').click();
   await flushPromises();
   assert.match(h.bodyText(), /updated Lea companion and adapter/);
-  assert.equal(reviewButton(h, 'Reload result').hidden, false);
+  assert.equal(reviewButton(h, 'Refresh source and retry').hidden, false);
   assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/formalize')));
+});
+
+test('blocked review explains approval availability in the tag and pane after status refresh', async () => {
+  const status = { status: 'needs_review', review: { eligible: false, reason: 'NEEDS_REVIEW' } };
+  const reason = 'The current Lean artifact has not passed its check.';
+  const h = createReviewHarness(status, {}, {
+    fetchOverride(url) {
+      if (url.endsWith('/review/context')) return reviewResponse({ ...reviewFixture(), review: {
+        eligible: false, reason, revision_token: null, allowed_outcomes: []
+      } });
+    }
+  });
+  await h.loadVisibleTheorems();
+  h.openTargetPopover();
+  assert.match(h.bodyText(), /see what is blocking approval/);
+  status.review.reason = reason;
+  await h.loadVisibleTheorems();
+  assert.match(h.document.querySelector('.ol-lean-popover-status').textContent, /has not passed its check/);
+  assert.doesNotMatch(h.document.querySelector('.ol-lean-popover-status').textContent, /Lean check passed/);
+  reviewButton(h, 'Review result').click();
+  await flushPromises();
+  const panel = h.document.querySelector('.ol-lean-review-panel');
+  assert.match(panel.textContent, /has not passed its check/);
+  assert.equal(panel.querySelector('fieldset').hidden, true);
+  assert.equal(reviewButton(h, 'Approval unavailable').disabled, true);
+  assert.equal(reviewButton(h, 'Refresh source and retry').hidden, false);
+  assert.ok(!h.fetchCalls.some(call => /\/(formalize|review\/decision)$/.test(call.url)));
+});
+
+test('pane withdrawal and retained-draft review use the stable source identity', async () => {
+  const h = createReviewHarness({ status: 'defined' }, { targetKind: 'definition' }, {
+    manifest: { ok: true, rootFile: 'main.tex', diagnostics: [], items: [{
+      id: 'review-item', label: 'demo_theorem', kind: 'definition', status: 'defined', formalizable: true,
+      leanKind: 'def', leanDeclarationName: 'Ua', naturalLanguageLatex: 'A theorem.', sourceFile: 'main.tex',
+      review: { approval: { id: 'approved-1' } }, reformalization: { has_drafts: true, state: 'review' }
+    }] },
+    fetchOverride(url) {
+      if (url.endsWith('/review/context')) return reviewResponse(reviewFixture(['defined']));
+      if (url.endsWith('/review/decision')) return reviewResponse({ ok: true });
+    }
+  });
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  h.clickPaneTreeRowText('main.tex');
+  h.clickFirstPaneItem();
+  h.clickButtonLabel('More actions');
+  reviewButton(h, 'Withdraw approval').click();
+  await flushPromises();
+  const withdrawal = h.fetchCalls.find(call => call.url.endsWith('/review/decision'));
+  assert.equal(JSON.parse(withdrawal.options.body).target.targetLabel, 'demo_theorem');
+  assert.ok(!h.fetchCalls.some(call => call.url.endsWith('/source-context/publish')));
+  h.clickButtonLabel('More actions');
+  reviewButton(h, 'Review draft').click();
+  await flushPromises();
+  assert.ok(h.document.querySelector('.ol-lean-review-panel'));
+  const context = h.fetchCalls.find(call => call.url.endsWith('/review/context'));
+  assert.equal(JSON.parse(context.options.body).target.targetLabel, 'demo_theorem');
+  assert.equal(JSON.parse(context.options.body).target.sourceBundle.targetKey, 'demo_theorem');
 });
 
 test("Lea tag setup remains available when an empty inventory cannot reach the companion", async () => {

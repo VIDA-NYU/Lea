@@ -149,6 +149,7 @@ export interface Project {
 // GET /api/projects/{id}: the project meta plus its sessions (the project window).
 export interface ProjectDetail extends Project {
   sessions: SessionSummary[];
+  cursor?: number;
 }
 
 export type FormalizationValidity =
@@ -193,6 +194,7 @@ export interface Formalization {
   check_current?: boolean;
   reformalization?: { id: string; state: string; has_drafts: boolean; detail?: string; repair_needed?: string[] } | null;
   review?: {
+    requested?: boolean;
     eligible: boolean;
     reason: string;
     revision_token: string | null;
@@ -658,9 +660,11 @@ export interface PendingApproval {
 
 // An approval as kept in the thread history: gains a `decision` once resolved
 // (so denied/allowed cards stay visible) + a synthetic `seq` for interleaving.
-export type ApprovalRecord = PendingApproval & { decision?: string | null; seq?: number };
+export type ApprovalRecord = PendingApproval & { decision?: string | null; seq?: number; actionable?: boolean };
 
 export interface ApprovalEvent {
+  actionable?: boolean;
+  seq?: number;
   id: string;
   session_id?: string;
   run_id?: string;
@@ -780,6 +784,15 @@ export interface Diagnostic {
 }
 
 export interface SessionDetail extends SessionSummary {
+  subagent_observations?: Array<{
+    child_id: string;
+    queued?: boolean;
+    finished?: boolean;
+    error?: string | null;
+    stop_notice?: string | null;
+    progress: { text: string; turn?: number; tool?: string; check?: string;
+      message_id?: string; stream_sequence?: number };
+  }>;
   /** Per-attempt replay barriers captured with this SQL snapshot. */
   run_event_cursors?: Record<string, string>;
   // Includes source preparation and continuations awaiting execution capacity.

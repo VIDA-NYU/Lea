@@ -143,10 +143,9 @@ async def _subscribe_durable(run_id: str, cursor: int, attempt_id: str | None):
             yield sse('done', {'status': 'failed'})
             return
         if run.get('attempt_id') != attempt_id:
-            needs_reset = bool(attempt_id) or cursor > 0
             attempt_id, cursor = (run.get('attempt_id'), 0)
-            if needs_reset:
-                yield sse('resync', {'run_id': run_id, 'attempt_id': attempt_id, 'reason': 'execution_attempt_changed', 'reload': True})
+            yield sse('resync', {'run_id': run_id, 'attempt_id': attempt_id,
+                'reason': 'execution_attempt_changed', 'reload': True}, seq=0, attempt_id=attempt_id)
         try:
             page = await run_in_threadpool(observation.run_events, run_id, attempt_id, cursor)
         except observation.RunCursorReset as exc:

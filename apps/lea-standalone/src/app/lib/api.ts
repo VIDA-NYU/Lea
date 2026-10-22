@@ -40,6 +40,9 @@ import type {
 
 export * from './types';
 import { workspaceResult, submitWithRecovery } from '../../../../../packages/lea-workspace-client/index.mjs';
+import { createIntentRegistry } from './submissionIdentity.mjs';
+const runIntents = createIntentRegistry('runs');
+const projectIntents = createIntentRegistry('projects');
 
 // ────────────────────────────────────────────────────────────────────────────
 // HTTP
@@ -136,15 +139,19 @@ export async function createRun(
   focus_formalization_id?: string | null;
   formalization?: Formalization | null;
 }> {
+  const send = async (payload: Record<string, unknown>) => {
   const response = await fetch('/api/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, session_id: sessionId, model, ...scope }),
+    body: JSON.stringify(payload),
   });
   if (!response.ok) {
     throw Object.assign(new Error(await detailMessage(response, `Failed to start run: ${response.statusText}`)), { status: response.status });
   }
   return awaitReformalization(await response.json(), onQueued, stillSelected);
+  };
+  const payload = { message, session_id: sessionId, model, ...scope };
+  return scope?.idempotency_key ? send(payload) : runIntents.run(payload, send);
 }
 
 
@@ -324,20 +331,22 @@ export async function listProjects(): Promise<Project[]> {
 
 export async function getProject(projectId: string): Promise<ProjectDetail> {
   const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}`);
-  if (!response.ok) throw new Error(`Failed to load project: ${response.statusText}`);
+  if (!response.ok) throw Object.assign(new Error(`Failed to load project: ${response.statusText}`), {status: response.status});
   return readWorkspaceResponse(response);
 }
 
 export async function createProject(title: string, description?: string): Promise<Project> {
+  return projectIntents.run({ title, description }, async (payload: Record<string, unknown>) => {
   const response = await fetch('/api/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, description }),
+    body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    throw new Error(await detailMessage(response, `Failed to create project: ${response.statusText}`));
+    throw Object.assign(new Error(await detailMessage(response, `Failed to create project: ${response.statusText}`)), {status: response.status});
   }
   return readWorkspaceResponse(response);
+  });
 }
 
 export async function updateProject(
@@ -1011,9 +1020,20 @@ export interface FileWriteResult {
   code_step?: CodeStep | null;
   note?: ChatMessage | null;
   revision_token?: string | null;
+  draft_id: string;
+  file_revision: string;
+}
+
+export interface EditorDraftBase {
+  session_id: string;
+  path: string;
+  file_revision: string;
+  formalization_id?: string;
+  formalization_revision?: string;
 }
 
 export class RevisionConflictError extends Error {
+  status = 409;
   currentRevision?: string | null;
   lastUpdatedSession?: { id: string; title: string } | null;
 
@@ -1039,22 +1059,21 @@ export async function writeSessionFile(
   formalizationId?: string,
   baseRevision?: string,
   fileRevision?: string,
+  draftIdentity?: string,
 ): Promise<FileWriteResult> {
-  const idempotencyKey = globalThis.crypto?.randomUUID?.() || `save-${Date.now()}-${Math.random()}`;
+  if (!fileRevision) throw new Error('The loaded file revision is required before saving.');
+  const idempotencyKey = draftIdentity || globalThis.crypto?.randomUUID?.() || `save-${Date.now()}-${Math.random()}`;
   const draftId = idempotencyKey;
-  const metadata = await fetch(`/api/workspace/file?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(path)}`);
-  if (!metadata.ok) {
-    const body = await metadata.clone().json().catch(() => ({}));
-    if (body.detail?.code === 'revision_conflict') throw new RevisionConflictError(body.detail.message, body.detail);
-    throw new Error(await detailMessage(metadata, 'Unable to read the file revision.'));
-  }
-  const base = await metadata.json();
   const payload = {version: 1, action: 'session.save', idempotency_key: idempotencyKey, draft_id: draftId,
-    expected_revision: fileRevision || base.file_revision,
+    expected_revision: fileRevision,
     arguments: {session_id: sessionId, request: {path, content, note, formalization_id: formalizationId, base_revision: baseRevision}}};
   const send = async () => {
     const response = await fetch('/api/workspace/commands', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-    if (!response.ok) throw Object.assign(new Error(await detailMessage(response, 'Unable to save file.')), {status: response.status});
+    if (!response.ok) {
+      const body = await response.clone().json().catch(() => ({}));
+      if (body.detail?.code === 'revision_conflict') throw new RevisionConflictError(body.detail.message, body.detail);
+      throw Object.assign(new Error(await detailMessage(response, 'Unable to save file.')), {status: response.status});
+    }
     return response.json();
   };
   const lookup = async () => {
@@ -1083,11 +1102,12 @@ export async function leanCheckSession(
   sessionId: string,
   path?: string,
   formalizationId?: string,
+  fileRevision?: string,
 ): Promise<{ path: string; status: 'ok' | 'error'; check_current: boolean; check_stale_reason?: string | null; detail?: string | null; execution?: LeanCheckExecution; diagnostics?: Diagnostic[]; lean_check_runtime?: LeanCheckRuntime }> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/lean-check`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, formalization_id: formalizationId }),
+    body: JSON.stringify({ path, formalization_id: formalizationId, file_revision: fileRevision }),
   });
   if (!response.ok) {
     throw new Error(await detailMessage(response, `lean_check failed: ${response.statusText}`));

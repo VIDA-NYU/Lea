@@ -43,6 +43,10 @@ const bundle = build({
         ? `export const getSession=async()=>structuredClone(window.fixture.detail);
            export const getCurrentFormalization=async id=>structuredClone(window.fixture.snapshots[id]);
            export const listSessions=async()=>[];
+           export const listProjects=async()=>[];
+           export const getProject=async id=>({id,sessions:[]});
+           export const createProject=async()=>({id:'created'});
+           export const deleteProject=async()=>{};
            export const sessionListSnapshot=async()=>({sessions:[],cursor:0});
            export const awaitReformalization=async()=>({});`
         : name === 'editor'

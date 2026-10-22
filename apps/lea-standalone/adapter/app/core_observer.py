@@ -146,7 +146,7 @@ def _capture(kind,identity,snapshot):
             'target':_target(form,steps,snapshot)}
 
 
-def capture(scope,limit=20):
+def capture(scope,limit=20,*,renew=False):
     if not 1<=limit<=200: raise ValueError('Invalid capture batch size')
     with db.connect() as conn:
         active=conn.execute('''select o.* from core_observations o join core_projection_enrollment e
@@ -154,7 +154,20 @@ def capture(scope,limit=20):
     if active:
         prior=json.loads(active['inputs_json']);check=read_projections.ReadSnapshot()
         check.files=prior.get('files',{});check.topology=prior.get('topology',{});check.artifact_sets=prior.get('artifact_sets',{})
-        if not check.unchanged():
+        unchanged=check.unchanged()
+        if renew and active['state']=='observed' and unchanged:
+            with db.write() as conn:
+                current=conn.execute('''select e.observation_id,o.state from core_projection_enrollment e
+                    join core_observations o on o.id=e.observation_id where e.scope=? and e.enabled=1''',(scope,)).fetchone()
+                if (current and current['observation_id']==active['id'] and revision(conn,scope)==active['input_revision']
+                    and current['state']=='observed'
+                    and not conn.execute('select 1 from core_backfills where scope=?',(scope,)).fetchone()
+                    and check.unchanged()):
+                    now=datetime.now(timezone.utc)
+                    conn.execute('update core_observations set observed_at=?,expires_at=? where id=? and state=\'observed\'',
+                        (now.isoformat(),(now+timedelta(seconds=LIFETIME_SECONDS)).isoformat(),active['id']))
+                    return {'state':'observed','observation_id':active['id'],'processed':0}
+        if not unchanged:
             with db.write() as conn:
                 conn.execute("update core_observations set state='reconciling' where id=?",(active['id'],))
     with db.write() as conn:
@@ -248,4 +261,4 @@ def maintain():
         if not scope:
             return {'state':'waiting'} if conn.execute('select 1 from core_projection_enrollment where enabled=1 limit 1').fetchone() else {}
         conn.execute('update core_projection_enrollment set last_scan_at=? where scope=?',(db.utc_now(),scope[0]))
-    return capture(scope[0])
+    return capture(scope[0],renew=True)

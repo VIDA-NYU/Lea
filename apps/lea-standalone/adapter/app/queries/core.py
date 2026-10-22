@@ -155,6 +155,11 @@ def approval_events_for_session(session_id):
         events=conn.execute('''select r.id as run_id,e.type,e.payload from run_observation_records e
             join runs r on r.id=e.run_id where r.session_id=? and e.type in ('approval_requested','approval_resolved')
             order by e.event_id''',(session_id,)).fetchall()
+        gates=conn.execute('''select g.*,r.attempt_id as current_attempt,r.status,r.stop_requested_reason,
+            (select coalesce(max(t.id),0)+.5 from timeline t where t.session_id=r.session_id
+                and julianday(t.created_at)<=julianday(g.created_at)) as seq
+            from tool_approval_requests g join runs r on r.id=g.run_id
+            where r.session_id=? order by g.created_at,g.id''',(session_id,)).fetchall()
     approvals={a['id']:a for a in json.loads(legacy[0])} if legacy else {}
     for event in events:
         p=json.loads(event['payload']);key=event['run_id']+':'+str(p.get('approval_id',''))
@@ -162,4 +167,14 @@ def approval_events_for_session(session_id):
             approvals[key]={**p,'id':key,'session_id':session_id,'run_id':event['run_id'],'decision':None}
         elif key in approvals:
             approvals[key].update(decision=p.get('decision'),feedback=p.get('feedback'),resolved_at=p.get('created_at'))
+    for gate in gates:
+        key=gate['run_id']+':'+gate['id']
+        previous=approvals.get(key,{})
+        approvals[key]={**previous,'id':key,'approval_id':gate['id'],'session_id':session_id,
+            'run_id':gate['run_id'],'tool_name':gate['tool_name'],'args':json.loads(gate['args_json']),
+            'decision':gate['decision'] or previous.get('decision'),'state':gate['state'],
+            'resolved_at':gate['resolved_at'] or previous.get('resolved_at'),
+            'seq':previous.get('seq',gate['seq']),
+            'actionable':gate['state']=='pending' and gate['status']=='running'
+                and gate['attempt_id']==gate['current_attempt'] and not gate['stop_requested_reason']}
     return list(approvals.values())

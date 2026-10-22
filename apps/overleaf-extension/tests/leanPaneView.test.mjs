@@ -520,6 +520,7 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
     success: 3,
     disproved: 0,
     sorryStubbed: 0,
+    needsReview: 0,
     failed: 1,
     outOfDate: 0,
     unformalized: 4,
@@ -541,6 +542,7 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
     success: 5,
     disproved: 1,
     sorryStubbed: 1,
+    needsReview: 0,
     failed: 0,
     outOfDate: 0,
     unformalized: 1,
@@ -557,6 +559,7 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
     success: 0,
     disproved: 0,
     sorryStubbed: 2,
+    needsReview: 0,
     failed: 0,
     outOfDate: 0,
     unformalized: 0,
@@ -589,6 +592,7 @@ test("paneProgressSegments returns ordered nonzero segments with percentages", (
     total: 8,
     success: 6,
     sorryStubbed: 1,
+    needsReview: 0,
     failed: 0,
     unformalized: 1,
     inProgress: 0
@@ -602,6 +606,7 @@ test("paneProgressSegments returns ordered nonzero segments with percentages", (
     total: 3,
     success: 0,
     sorryStubbed: 2,
+    needsReview: 0,
     failed: 0,
     unformalized: 1,
     inProgress: 0
@@ -649,6 +654,7 @@ test("formatPaneProgressLabel omits zero-count buckets and includes running coun
     total: 8,
     success: 6,
     sorryStubbed: 0,
+    needsReview: 0,
     failed: 1,
     unformalized: 1,
     inProgress: 0
@@ -658,6 +664,7 @@ test("formatPaneProgressLabel omits zero-count buckets and includes running coun
     total: 6,
     success: 2,
     sorryStubbed: 4,
+    needsReview: 0,
     failed: 0,
     unformalized: 0,
     inProgress: 1
@@ -1123,4 +1130,13 @@ test("formatDependentOutcome corrects a stale busy line when the item is now bro
     formatDependentOutcome({ targetLabel: "b", status: "reverified", attributed: true, nowBroken: true }),
     "b: re-checked, still valid -- now broken."
   );
+});
+
+
+test("checked results awaiting review are counted separately from unformalized items", () => {
+  const summary = summarizePaneProgress([{ status: "needs-review" }, { status: "needs_review" }]);
+  assert.equal(summary.needsReview, 2);
+  assert.equal(summary.unformalized, 0);
+  assert.match(formatPaneProgressSummary(summary), /2 needs review/);
+  assert.deepEqual(paneProgressSegments(summary).map(s => [s.id, s.count]), [["needs-review", 2]]);
 });

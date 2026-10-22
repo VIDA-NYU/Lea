@@ -131,6 +131,25 @@ test('a browser mutation retries with the original idempotency key after respons
   assert.equal(result,'original receipt');assert.equal(keys.length,2);assert.equal(keys[0],keys[1]);
 });
 
+test('explicit review refresh renews the publisher even when identical source is cached', async () => {
+  const calls = [];
+  let sequence = 0;
+  const publish = createSourcePublisher({ documentId: () => 'document', clientId: 'tab', clock: () => 0,
+    request: async (route, value) => {
+      calls.push({ route, value });
+      if (route.endsWith('/publisher')) return { generation: 1, sequence };
+      sequence = value.sequence;
+      return { source_context_ref: 'review-source-' + sequence };
+    } });
+  const input = { source_bundle: { targetKind: 'definition', targetKey: 'stable-id' }, files: { 'main.tex': 'Current definition.' } };
+  const first = await publish(input);
+  assert.deepEqual(await publish(input), first);
+  const renewed = await publish(input, { force: true });
+  assert.notEqual(renewed.source_context_ref, first.source_context_ref);
+  assert.equal(calls.filter(call => call.route.endsWith('/publisher')).length, 2);
+  assert.equal(calls.at(-1).value.source_bundle.targetKey, 'stable-id');
+});
+
 test('an unacknowledged browser mutation does not claim durable acceptance',async()=>{
   await assert.rejects(commandFetch(async()=>{throw new TypeError('offline');},'http://localhost/formalize',{
     method:'POST',headers:{'Idempotency-Key':'retained-intent'},body:'same bytes'

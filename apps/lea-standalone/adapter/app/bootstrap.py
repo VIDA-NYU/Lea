@@ -4,7 +4,7 @@ import os
 import stat
 from pathlib import Path
 from . import db
-SCHEMA='0050_target_observations'
+SCHEMA='0051_idle_observation_renewal'
 MAX_INTAKE_ENTRIES=10000
 
 
@@ -63,6 +63,7 @@ def migrate():
         runtime.acquire_workspace_lock(root/'workspace')
         prepare_storage_access()
         db.init_db()
+        db.configure_concurrency()
         prepare_storage_access()
     finally:
         runtime.release_workspace_lock()

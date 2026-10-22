@@ -24,6 +24,7 @@ import { matchSlashCommands } from '../lib/slashCommands.js';
 import {
   deriveCodeStepProofStatus,
   deriveRunCompletionStatus,
+  deriveRunReviewNotice,
   hasSorryLikeCheckDetail,
   latestCodeStep,
 } from '../lib/proofDisplay.mjs';
@@ -336,7 +337,7 @@ export function ChatThread({
     for (const a of approvals) {
       nodes.push({
         kind: 'approval',
-        key: `a:${a.approval_id}`,
+        key: `a:${a.run_id}:${a.approval_id}`,
         runId: a.run_id ?? null,
         seqKey: typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER,
         approval: a,
@@ -452,7 +453,7 @@ export function ChatThread({
   // streaming text (the gap after submit + between turns while a tool runs) and
   // we're not paused on an approval. The live bubble (live:true) means text is
   // already flowing, so the indicator yields to it.
-  const hasPendingApproval = approvals.some((a) => !a.decision);
+  const hasPendingApproval = approvals.some((a) => !a.decision && a.actionable !== false);
   const thinking =
     isRunning &&
     !hasPendingApproval &&
@@ -687,7 +688,11 @@ export function ChatThread({
                 {finished && completion === 'defined' && <DefinedCard steps={steps} session={session} />}
                 {finished && completion === 'disproved' && <DisprovedCard steps={steps} session={session} />}
                 {finished && completion === 'stubbed' && <StubCard steps={steps} session={session} />}
-                {finished && resultKind === 'needs_review' && <ReviewNote approval={focused?.review?.run_id === group.runId ? focused?.review?.approval : undefined} />}
+                {finished && resultKind === 'needs_review' && (
+                  <div className="final review">
+                    <div className="fhead">{deriveRunReviewNotice(group.runId, focused)}</div>
+                  </div>
+                )}
               </Fragment>
             );
           })}
@@ -1478,16 +1483,6 @@ function DisprovedCard({ steps, session }: { steps: number; session?: SessionSum
   );
 }
 
-function ReviewNote({ approval }: { approval?: { outcome: string; created_at: string } | null }) {
-  return (
-    <div className="final review">
-      <div className="fhead">{approval
-        ? `This run requested review. Approved by user as ${approval.outcome} on ${new Date(approval.created_at).toLocaleString()}.`
-        : 'Review requested — inspect the current artifact and its verification status before approving its relationship to the original request.'}</div>
-    </div>
-  );
-}
-
 function StubCard({ steps, session }: { steps: number; session?: SessionSummary }) {
   return (
     <div className="final stub">
@@ -1510,19 +1505,19 @@ function ApprovalCard({
   busy,
   onDecide,
 }: {
-  approval: PendingApproval;
+  approval: ApprovalRecord;
   decision?: string | null;
   busy: boolean;
   onDecide: (decision: ApprovalDecision) => void;
 }) {
   const preview = approvalPreview(approval);
-  const resolved = !!decision;
+  const resolved = !!decision || approval.actionable === false;
   return (
     <div className={`approval ${resolved ? 'resolved' : ''}`}>
       <div className="ahead">
         🛡{' '}
         {resolved
-          ? decisionHeadline(decision as string, approval.tool_name)
+          ? decision ? decisionHeadline(decision, approval.tool_name) : `${approval.tool_name} — no longer pending`
           : `Approve ${approval.tool_name}?`}
       </div>
       {preview && <div className="acode">{preview}</div>}
@@ -1531,7 +1526,7 @@ function ApprovalCard({
           className="resolved-tag"
           style={decision === 'deny' ? { color: 'var(--red)' } : undefined}
         >
-          {decisionTag(decision as string)}
+          {decision ? decisionTag(decision) : 'no longer pending'}
         </span>
       ) : (
         <div className="actions">

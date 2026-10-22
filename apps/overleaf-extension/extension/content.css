@@ -1309,6 +1309,8 @@ body.ol-lean-pane-resizing {
   background: var(--ol-amber);
 }
 
+.ol-lean-project-progress-segment-needs-review { background: var(--ol-amber); }
+
 .ol-lean-project-progress-segment-failed {
   background: var(--ol-red);
 }
@@ -1368,6 +1370,14 @@ body.ol-lean-pane-resizing {
   align-items: end;
   gap: 8px 10px;
 }
+
+.ol-lean-project-item-needs-review .ol-lean-project-item-summary {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "identity" "checks" "actions";
+}
+.ol-lean-project-item:has(.ol-lean-review-panel) .ol-lean-project-summary-actions { display: none; }
+.ol-lean-review-open .ol-lean-pane-trigger,
+.ol-lean-review-open .ol-lean-settings-trigger { display: none; }
 
 @container (max-width: 380px) {
   .ol-lean-project-item-summary {
@@ -3115,25 +3125,18 @@ body.ol-lean-settings-resizing {
   margin-top: 10px;
 }
 
-.ol-lean-review-dialog {
-  box-sizing: border-box;
-  width: min(860px, calc(100vw - 32px));
-  max-height: calc(100dvh - 48px);
-  padding: 24px;
-  overflow: auto;
-  border: 1px solid var(--ol-line);
-  border-radius: var(--ol-radius);
-  background: var(--ol-panel);
+/* Review stays beside the source in the Lean pane. */
+.ol-lean-review-panel {
+  min-width: 0;
   color: var(--ol-ink);
   font: 14px/1.55 var(--ol-sans);
-  color-scheme: light;
 }
-.ol-lean-review-dialog::backdrop { background: rgba(24, 24, 27, .45); }
-.ol-lean-review-dialog h2 { margin: 0 0 12px; font: 600 22px/1.25 var(--ol-sans); }
-.ol-lean-review-dialog h3 { margin: 20px 0 8px; font: 600 14px/1.4 var(--ol-sans); }
-.ol-lean-review-dialog p { max-width: 70ch; color: var(--ol-ink-2); }
-.ol-lean-review-dialog pre {
-  max-height: 260px;
+.ol-lean-review-panel [hidden] { display: none !important; }
+.ol-lean-review-panel h2 { margin: 0 0 8px; font: 600 18px/1.3 var(--ol-sans); }
+.ol-lean-review-panel h3 { margin: 20px 0 8px; font: 600 13px/1.4 var(--ol-sans); }
+.ol-lean-review-panel p { max-width: 70ch; color: var(--ol-ink-2); overflow-wrap: anywhere; }
+.ol-lean-review-panel pre {
+  max-height: 320px;
   padding: 12px;
   overflow: auto;
   white-space: pre-wrap;
@@ -3143,13 +3146,13 @@ body.ol-lean-settings-resizing {
   font: 12px/1.6 var(--ol-mono);
   border-radius: var(--ol-radius-sm);
 }
-.ol-lean-review-dialog fieldset { margin: 24px 0 12px; padding: 12px; border: 1px solid var(--ol-line); }
-.ol-lean-review-dialog legend { font-weight: 600; }
-.ol-lean-review-dialog label { display: flex; gap: 10px; align-items: start; padding: 8px 0; cursor: pointer; }
-.ol-lean-review-dialog input { accent-color: var(--ol-accent); margin-top: 4px; }
-.ol-lean-review-dialog :focus-visible { outline: 2px solid var(--ol-ink); outline-offset: 3px; }
-.ol-lean-review-dialog ::selection { color: var(--ol-ink); background: var(--ol-accent-soft); }
-.ol-lean-review-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 10px; margin-top: 20px; }
+.ol-lean-review-panel fieldset { min-width: 0; margin: 24px 0 12px; padding: 12px; border: 1px solid var(--ol-line); }
+.ol-lean-review-panel legend { font: 600 14px/1.4 var(--ol-sans); }
+.ol-lean-review-panel label { display: flex; gap: 10px; align-items: start; padding: 8px 0; cursor: pointer; }
+.ol-lean-review-panel input { accent-color: var(--ol-accent); margin-top: 4px; }
+.ol-lean-review-panel :focus-visible { outline: 2px solid var(--ol-ink); outline-offset: 3px; }
+.ol-lean-review-panel ::selection { color: var(--ol-ink); background: var(--ol-accent-soft); }
+.ol-lean-review-actions { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; justify-content: end; gap: 10px; margin-top: 20px; padding: 12px 0; border-top: 1px solid var(--ol-line); background: var(--ol-panel); }
 .ol-lean-review-actions button { padding: 8px 14px; }
 .ol-lean-review-status[role="alert"] { color: var(--ol-red-ink); }
 .ol-lean-review-provenance { color: var(--ol-ink-2); font-size: 12px; }

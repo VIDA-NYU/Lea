@@ -29,7 +29,7 @@ async def body(request,model,cap):
 
 
 @router.get('/api/sessions/{session_id}/editor')
-def info(session_id:str,path:str|None=None):return invoke(service.file_info,session_id,path)
+def info(session_id:str,path:str|None=None,formalization_id:str|None=None):return invoke(service.file_info,session_id,path,formalization_id)
 
 
 @router.post('/api/sessions/{session_id}/editor/clients',status_code=201)

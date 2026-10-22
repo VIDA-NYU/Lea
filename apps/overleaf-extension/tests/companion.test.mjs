@@ -1186,11 +1186,10 @@ test("a failed background report state write is observed without an unhandled re
   assert.match(errors.mock.calls[0].arguments[0], /report bookkeeping failed/);
 });
 
-test('review transport refreshes source and never admits a prover run or rewrites jobs', async () => {
+test('review transport forwards the current editor publication without admitting a prover run or rewriting jobs', async () => {
   const calls = [];
   const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
     calls.push({ url: String(url), options });
-    if (String(url).endsWith('/published-source')) return jsonResponse(200, { source_context_ref: 'fresh-source' });
     if (String(url).includes('/review?')) return jsonResponse(200, { review: { eligible: true } });
     if (String(url).endsWith('/review-decisions')) return jsonResponse(200, { formalization: { validity_status: 'proved' } });
     throw new Error(`Unexpected request: ${url}`);
@@ -1198,7 +1197,7 @@ test('review transport refreshes source and never admits a prover run or rewrite
   state.jobs.review = { jobId: 'review', jobKey: 'project-1:theorem:claim', targetLabel: 'claim', targetKind: 'theorem',
     formalizationId: 'formalization-1', leaSessionId: 'session-1', status: 'needs_review', finishedAt: '2026-01-01' };
   const before = structuredClone(state.jobs);
-  const target = { overleafProjectId: 'project-1', targetKind: 'theorem', targetLabel: 'claim' };
+  const target = { overleafProjectId: 'project-1', targetKind: 'theorem', targetLabel: 'claim', source_context_ref: 'fresh-source' };
   assert.equal((await handleReview({ target }, state)).body.review.eligible, true);
   const approval = { action: 'approve', outcome: 'proved', revision_token: 'revision', idempotency_key: 'one' };
   assert.equal((await handleReview({ target, decision: approval }, state, { decision: true })).body.formalization.validity_status, 'proved');
@@ -1208,6 +1207,7 @@ test('review transport refreshes source and never admits a prover run or rewrite
   await handleReview({ target, decision: { action: 'withdraw', approval_id: 'one', idempotency_key: 'withdraw' } }, state, { decision: true });
   assert.equal(calls.length, beforeWithdrawal + 1, 'withdrawal does not prepare source or create a run');
   assert.deepEqual(state.jobs, before);
+  assert.equal((await handleReview({ target: { ...target, source_context_ref: null } }, state)).statusCode, 409);
   state.jobs.review.settling = true;
   assert.equal((await handleReview({ target }, state)).statusCode, 409);
 });
@@ -1264,6 +1264,68 @@ test("lean pane manifest surfaces needs_review as a visible review state", async
 
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.items[0].status, "needs-review");
+});
+
+for (const check of ["ok", "error", "unchecked"]) {
+  test(`blocked review stays visible in badges and pane with an independent ${check} file check`, async () => {
+    const name = "review_target";
+    const reason = "The checked artifact does not declare the requested review_target.";
+    const entry = ledgerEntry(name, { validity_status: "unchecked", validity_reason: reason,
+      declaration_present: false, check_status: check, check_current: check !== "unchecked",
+      check_detail: check === "error" ? "type mismatch" : null,
+      review: { requested: true, run_id: "review-run", eligible: false, allowed_outcomes: [],
+        revision_token: null, approval: null, reason } });
+    const { state } = await makeLedgerState({ [name]: entry });
+    const badge = await ledgerStatusFor(state, name);
+    assert.equal(badge.status, "needs_review");
+    assert.equal(badge.resultKind, "needs_review");
+    assert.equal(badge.review.eligible, false);
+    assert.equal(badge.message, reason);
+    const response = await handleLeanPaneManifest({ overleafProjectId: "project-1", files: [
+      { path: "main.tex", content: `\\begin{theorem}\n% lea: formalize label=${name}\nTrue.\n\\end{theorem}` }
+    ] }, state);
+    const item = response.body.items[0];
+    assert.equal(item.status, "needs-review");
+    assert.equal(item.message, reason);
+    assert.equal(item.review.eligible, false);
+    assert.equal(item.leanCheck.status, check === "ok" ? "checked" : check === "error" ? "error" : "unconfirmed");
+  });
+}
+
+test("generated target inventory and run admission use the same readable Lean name", async () => {
+  const calls = [], synced = [];
+  const fallback = makeAdapterApiFetch(calls, { doneStatus: "defined" });
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: async (url, options = {}) => {
+      if (String(url).endsWith("/identity")) return jsonResponse(200, {
+        project_id: "adapter-project-1", slug: "project-1", title: "Project1", namespace: "Lea.Project1"
+      });
+      if (String(url).endsWith("/formalizations/sync")) {
+        synced.push(...JSON.parse(options.body).targets);
+        return jsonResponse(200, { targets: [] });
+      }
+      return fallback(url, options);
+    } });
+  const files = [{ path: "main.tex", content: String.raw`\begin{definition}\label{def:Ua}
+% lea: define
+A generating series.
+\end{definition}` }];
+  const manifest = await handleLeanPaneManifest({ overleafProjectId: "project-1", files }, state);
+  const item = manifest.body.items[0];
+  assert.match(item.label, /^lea_auto_def_/);
+  assert.equal(synced[0].label, item.label);
+  assert.equal(synced[0].origin_key, `project-1:definition:${item.label}`);
+  assert.equal(synced[0].declaration_name, "Ua");
+  const response = await handleFormalize({ overleafProjectId: "project-1", targetKind: "definition",
+    targetLabel: item.label, labelSource: item.labelSource, latexLabel: item.latexLabel,
+    targetText: item.naturalLanguageLatex, sourceBundle: item.sourceBundle }, state);
+  assert.equal(response.statusCode, 200);
+  await waitFor(() => Boolean(state.jobs[response.body.jobId]?.finishedAt));
+  const admitted = calls.find(call => String(call.url).endsWith("/api/runs") && call.options.method === "POST");
+  assert.equal(admitted.body.new_formalization.declaration_name, "Ua");
+  assert.equal(admitted.body.new_formalization.origin_key, synced[0].origin_key);
+  assert.match(admitted.body.message, /preferred Lean declaration name is Ua/);
+  assert.equal(state.jobs[response.body.jobId].targetLabel, item.label);
 });
 
 // The terminal-outcome branches in getTheoremStatus used pairwise recency
@@ -8125,7 +8187,65 @@ test("ledger engine: an unconfirmed historical formalized job remains unavailabl
   const preIndex = await ledgerStatusFor(state, "ledger_preindex");
   assert.equal(preIndex.status, "unavailable",
     "a historical job cannot certify the current target without adapter evidence");
+  const pane = await handleLeanPaneManifest({ overleafProjectId: 'project-1', files: [{ path: 'main.tex',
+    content: '\\begin{theorem}\n% lea: formalize label=ledger_preindex\nA theorem.\n\\end{theorem}' }] }, state);
+  assert.equal(pane.body.items[0].status, 'unknown', 'Unconfirmed history does not mean the proof is missing');
+  assert.equal(pane.body.items[0].leanCheck.status, 'unconfirmed');
 });
+
+for (const failure of ['sqlite-busy', 'worker-unavailable', 'network', 'malformed']) {
+  test(`status lookup ${failure} rejects the snapshot without erasing completed jobs`, async (t) => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const { openWorkerDatabase } = await import('../companion/databaseState.mjs');
+    const leaRepo = await makeLeaRepo();
+    const filename = path.join(leaRepo, 'ownership.sqlite3');
+    const blocker = new DatabaseSync(filename);
+    blocker.exec("create table command_workers(id text,epoch text,lease_until text); insert into command_workers values('lea-command-host','probe',datetime('now','+1 hour'))");
+    const ownership = openWorkerDatabase({ filename, owner: 'lea-command-host', epoch: 'probe', leaRoot: leaRepo });
+    t.after(() => { ownership.close(); blocker.close(); });
+    let unavailable = false;
+    const state = await makeState({ leaRepoPath: leaRepo, fetchImpl: async (url) => {
+      if (String(url).endsWith('/identity')) return jsonResponse(200, {
+        projectId: 'p1', slug: 'project-1', projectName: 'Notes', namespace: 'Lea.Project1', namespaceRevision: 1
+      });
+      if (String(url).includes('/target-status')) {
+        if (unavailable) {
+          if (failure === 'sqlite-busy') {
+            blocker.exec('begin exclusive');
+            try { ownership.fence(); } finally { blocker.exec('rollback'); }
+          }
+          if (failure === 'network') throw new TypeError('Connection unavailable');
+          if (failure === 'malformed') return jsonResponse(200, { targets: null });
+          return jsonResponse(503, { detail: { error: 'worker_unavailable', message: 'Waiting for runtime observation' } });
+        }
+        return jsonResponse(200, { targets: [ledgerEntry('saved')] });
+      }
+      return jsonResponse(200, {});
+    } });
+    state.jobs.saved = { jobId: 'saved', jobKey: 'project-1:theorem:saved', status: 'formalized',
+      targetKind: 'theorem', targetLabel: 'saved', declarationName: 'saved', formalizationId: 'fixture-saved',
+      leaSessionId: 'saved-session', overleafProjectId: 'project-1', projectSlug: 'project-1',
+      startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T00:01:00Z' };
+    const badges = { overleafProjectId: 'project-1', targets: [{ targetKind: 'theorem', targetLabel: 'saved', targetText: 'A theorem.' }] };
+    const pane = { overleafProjectId: 'project-1', files: [{ path: 'main.tex',
+      content: '\\begin{theorem}\n% lea: formalize label=saved\nA theorem.\n\\end{theorem}' }] };
+    assert.equal((await handleGetStatuses(badges, state)).body.statuses['theorem:saved'].status, 'formalized');
+    assert.equal((await handleLeanPaneManifest(pane, state)).body.items[0].status, 'valid');
+    const jobs = JSON.stringify(state.jobs);
+    unavailable = true;
+    for (const response of [await handleGetStatuses(badges, state), await handleLeanPaneManifest(pane, state)]) {
+      assert.equal(response.statusCode, failure === 'malformed' ? 502 : 503);
+      assert.equal(response.body.error, 'target_status_unavailable');
+      assert.equal(response.body.statuses, undefined);
+      assert.equal(response.body.items, undefined);
+      assert.match(response.body.message, /saved formalizations.*retained/i);
+    }
+    assert.equal(JSON.stringify(state.jobs), jobs, 'A failed read cannot rewrite job history');
+    unavailable = false;
+    assert.equal((await handleGetStatuses(badges, state)).body.statuses['theorem:saved'].status, 'formalized');
+    assert.equal((await handleLeanPaneManifest(pane, state)).body.items[0].status, 'valid');
+  });
+}
 
 test("rename snapshot: a busy target defers the whole status response instead of fabricating unformalized", async () => {
   const leaRepo = await makeLeaRepo();
@@ -8267,4 +8387,22 @@ test("settings reject a Portkey key the gateway turns away", async () => {
   assert.equal(result.body.error, "invalid_portkey_key");
   assert.equal(calls[0].url, "https://api.portkey.ai/v1/models"); // no override → hosted default
   assert.equal(state.env.PORTKEY_API_KEY, undefined);
+});
+
+test('initial job logging retries only its SQL mutation before any solver is admitted',async(t)=>{
+  const calls=[];
+  const state=await makeState({leaRepoPath:await makeLeaRepo(),env:{OPENAI_API_KEY:'test-key'},
+    fetchImpl:makeAdapterApiFetch(calls)});
+  const paths=[];const stopped=new Error('Stop at intent publication');
+  setWorkerDatabase({
+    fence(){},validateSource(){return {ok:true};},
+    appendLog(logPath,text){paths.push(logPath);assert.equal(text,'');if(paths.length===1)throw Object.assign(new Error('database is locked'),{errcode:5,code:'ERR_SQLITE_ERROR'});},
+    async persist(name){if(name==='jobs.json')throw stopped;},
+  });
+  t.after(()=>setWorkerDatabase(null));
+  await assert.rejects(handleFormalize({overleafProjectId:'project-1',targetKind:'theorem',targetLabel:'log_retry',
+    targetText:'True is true.'},state),error=>error===stopped);
+  assert.equal(paths.length,2);
+  assert.equal(paths[0],paths[1],'The existing job identity survives contention');
+  assert.equal(calls.some(call=>String(call.url).endsWith('/api/runs')&&call.options.method==='POST'),false);
 });

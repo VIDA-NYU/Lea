@@ -3,6 +3,8 @@ import {
   getCurrentFormalization,
   type CodeStep,
   type SafeVerifyStatus,
+  type EditorDraftBase,
+  type FileWriteResult,
 } from '../lib/api';
 import { LiveEditor } from './LiveEditor';
 import { ReformalizationDraft } from './ReformalizationDraft';
@@ -33,6 +35,7 @@ export function Canvas({
   sessionId,
   onClose,
   onSaveAndCheck,
+  onCheck,
   onVerify,
   onOpenSession,
   captureSelection,
@@ -44,9 +47,11 @@ export function Canvas({
   onClose: () => void;
   onSaveAndCheck: (
     content: string,
-    path?: string,
-    baseRevision?: string,
-  ) => Promise<CheckOutcome>;
+    path: string,
+    base: EditorDraftBase,
+    draftId: string,
+  ) => Promise<FileWriteResult>;
+  onCheck?: (path: string, base: EditorDraftBase) => Promise<CheckOutcome>;
   onVerify: (path?: string) => Promise<CheckOutcome>;
   onOpenSession?: (sessionId: string) => void;
 }) {
@@ -364,15 +369,11 @@ export function Canvas({
         <LiveEditor
           sessionId={sessionId}
           path={shownPath}
+          formalizationId={scoped ? scope : undefined}
           captureSelection={captureSelection}
           locked={isRunning}
-          onSave={(content, path) => onSaveAndCheck(
-            content,
-            path,
-            scoped && showingCurrent
-              ? currentSnapshot?.revision_token || undefined
-              : undefined,
-          )}
+          onSave={onSaveAndCheck}
+          onCheck={onCheck}
           onVerify={onVerify}
         />
       ) : (

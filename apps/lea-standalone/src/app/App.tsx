@@ -40,6 +40,8 @@ import {
   type SessionDetail,
   type StatusEvent,
   type Formalization,
+  type EditorDraftBase,
+  type FileWriteResult,
   createRun,
   getFormalization,
   listProjectFormalizations,
@@ -65,6 +67,7 @@ export default function App() {
   const refreshSessions = useSessions((s) => s.refreshSessions);
   // F1: projects store — the list, the open project's detail, and open/close.
   const currentProject = useProjects((s) => s.currentProject);
+  const currentProjectDeleted = useProjects((s) => s.currentProjectDeleted);
   const refreshProjects = useProjects((s) => s.refreshProjects);
   const openProject = useProjects((s) => s.openProject);
   const closeProject = useProjects((s) => s.closeProject);
@@ -114,7 +117,7 @@ export default function App() {
   // the useLayout hook now (R5).
   const {
     view,
-    setView,
+    setView: setLayoutView,
     canvasCollapsed,
     setCanvasCollapsed,
     sidebarCollapsed,
@@ -124,6 +127,10 @@ export default function App() {
     setDragging,
     mainAreaRef,
   } = useLayout();
+  const setView = (next: Parameters<typeof setLayoutView>[0]) => {
+    useProjects.getState().invalidateNavigation();
+    setLayoutView(next);
+  };
   // editedPath (M20 canvas-edit nudge) now lives in the proofSession store
   // (v2.0.1 R1a): App sets it; ChatThread reads it straight from the store.
   const setEditedPath = useProofSession((s) => s.setEditedPath);
@@ -167,7 +174,7 @@ export default function App() {
   const title = selectedSession?.title || 'New theorem session';
 
   const sortedCode = useMemo(() => sortCodeSteps(codeSteps), [codeSteps]);
-  const pendingApproval = approvals.find((a) => !a.decision);
+  const pendingApproval = approvals.find((a) => !a.decision && a.actionable !== false);
 
   // The run EventSource lifecycle + session-detail hydration live in a hook now
   // (R2); it reads the proofSession + sessions stores directly.
@@ -210,8 +217,7 @@ export default function App() {
           setFormalizationScope(formalization.id);
           setCanvasCollapsed(false);
         } else if (formalization.project_id) {
-          await openProject(formalization.project_id);
-          setView('project');
+          if (await openProject(formalization.project_id)) setView('project');
         }
       }
       if (initialSessionId) {
@@ -254,14 +260,14 @@ export default function App() {
   // selected project (sidebar highlight); the view switch reveals the window.
   const openProjectWindow = (projectId: string) => {
     openProject(projectId)
-      .then(() => setView('project'))
+      .then((detail) => { if (detail) setView('project'); })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   };
 
   const handleCreateProject = async (title: string, description?: string) => {
-    await createAndOpenProject(title, description);
+    const project = await createAndOpenProject(title, description);
     setNewProjectOpen(false);
-    setView('project');
+    if (project) setView('project');
   };
 
   // Leaving a project window back to the loose-chat view.
@@ -403,18 +409,19 @@ export default function App() {
   };
 
   const handleOpenFormalization = async (formalizationId: string) => {
+    const owned = captureSelection();
     try {
       const formalization = await getFormalization(formalizationId);
+      if (!owned()) return;
       const recentSession = formalization.sessions[0];
       if (recentSession) {
         closeProject();
         setView('main');
-        await loadSession(recentSession.id);
+        if (!await loadSession(recentSession.id)) return;
         setFormalizationScope(formalization.id);
         setCanvasCollapsed(false);
       } else if (formalization.project_id) {
-        await openProject(formalization.project_id);
-        setView('project');
+        if (await openProject(formalization.project_id)) setView('project');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to open formalization.');
@@ -595,50 +602,43 @@ export default function App() {
     setCanvasCollapsed(false);
   };
 
-  // Canvas editing → write the file, then lean_check; reconcile to pick up the
-  // new user-authored code step. Returns the verdict for the canvas foot.
-  // The canvas passes the file it's showing (#10); fall back to the latest step's
-  // file for the single-file case. So Edit/lean_check and SafeVerify act on the
-  // *chosen* file, not always the newest (possibly scratch) one.
+  // Publication owns the loaded draft's scope and preconditions. Checking has
+  // its own receipt/lifecycle and cannot turn an acknowledged save into a failure.
   const handleSaveAndCheck = async (
     content: string,
-    path?: string,
-    baseRevision?: string,
-  ): Promise<CheckOutcome> => {
-    const target = path ?? sortedCode[sortedCode.length - 1]?.path;
-    if (!selectedSessionId || !target) return { status: 'error', detail: 'No file to edit.' };
-    const owned = captureSelection();
-    const focusId =
-      formalizationScope === 'project' || formalizationScope === 'new'
-        ? undefined : formalizationScope;
+    path: string,
+    base: EditorDraftBase,
+    draftId: string,
+  ): Promise<FileWriteResult> => {
+    const selectionOwned = captureSelection();
+    const owned = () => selectionOwned() && useSessions.getState().selectedSessionId === base.session_id;
     try {
-      await writeSessionFile(
-        selectedSessionId,
-        target,
-        content,
-        'Manual edit from the canvas.',
-        focusId,
-        baseRevision || currentFormalizationSnapshot?.revision_token || undefined,
-        (() => { const step = [...sortedCode].reverse().find(item => item.path === target);
-          return step?.blob_id ? `proof:${step.id}:${step.blob_id}` : undefined; })(),
-      );
+      const publication = await writeSessionFile(base.session_id, path, content, 'Manual edit from the canvas.',
+        base.formalization_id, base.formalization_revision, base.file_revision, draftId);
+      if (owned()) { setEditedPath(path); setSafeVerify(null); bumpFormalizationRefresh(); }
+      return publication;
     } catch (err) {
       if (owned() && err instanceof RevisionConflictError) {
         setError(err.message);
       }
       throw err;
     }
-    if (owned()) useProofSession.setState({ manualCheckSessionId: selectedSessionId });
+  };
+
+  const handleCheckPublished = async (target: string, base: EditorDraftBase): Promise<CheckOutcome> => {
+    const selectionOwned = captureSelection();
+    const owned = () => selectionOwned() && useSessions.getState().selectedSessionId === base.session_id;
+    if (owned()) useProofSession.setState({ manualCheckSessionId: base.session_id });
     let result;
     try {
-      result = await leanCheckSession(selectedSessionId, target, focusId);
+      result = await leanCheckSession(base.session_id, target, base.formalization_id, base.file_revision);
     } finally {
-      if (owned() && useProofSession.getState().manualCheckSessionId === selectedSessionId) {
+      if (owned() && useProofSession.getState().manualCheckSessionId === base.session_id) {
         useProofSession.setState({ manualCheckSessionId: undefined });
       }
     }
     if (!owned()) return result;
-    await reconcile(selectedSessionId);
+    await reconcile(base.session_id);
     await refreshSessions();
     if (!owned()) return result;
     setEditedPath(target); // after reconcile (which clears it) — surface the nudge
@@ -696,6 +696,9 @@ export default function App() {
     />
   );
 
+  if (view === 'project' && currentProjectDeleted)
+    return <main className="p-8"><button onClick={leaveProject}>Back to chats</button>
+      <h1>Project deleted</h1><p>This project is no longer available.</p></main>;
   if (view === 'project' && currentProject)
     return (
       <>
@@ -906,6 +909,7 @@ export default function App() {
             sessionId={selectedSessionId}
             onClose={() => setCanvasCollapsed(true)}
             onSaveAndCheck={handleSaveAndCheck}
+            onCheck={handleCheckPublished}
             onVerify={handleVerify}
             onOpenSession={(id) => {
               closeProject();

@@ -3,6 +3,7 @@ import {
   getSession,
   awaitReformalization,
   type ChatMessage,
+  type ApprovalRecord,
   type CodeStep,
   type Diagnostic,
   type PendingApproval,
@@ -10,7 +11,7 @@ import {
   type SessionDetail,
   type StatusEvent,
 } from '../lib/api';
-import { useProofSession } from '../stores/proofSession';
+import { useProofSession, type SubagentLive } from '../stores/proofSession';
 import { useSessions } from '../stores/sessions';
 import { sortCodeSteps } from '../lib/timeline.mjs';
 import { mainFileIndex } from '../lib/canvasFiles.mjs';
@@ -164,12 +165,13 @@ export function useProofStream() {
   const applyDetail = (detail: SessionDetail, { preservePresentation = false } = {}) => {
     const preserve = preservePresentation && useSessions.getState().selectedSessionId === detail.id;
     if (useSessions.getState().selectedSessionId !== detail.id) closeStream();
-    // Canonical code has a snapshot barrier. Other events still replay because
-    // they carry transient child/approval state absent from the timeline.
+    // A complete SQL snapshot and its event barrier replace all execution data.
     const snapshotRunId = detail.active_run?.id;
     const snapshotCursor = snapshotRunId && detail.run_event_cursors?.[snapshotRunId];
     if (snapshotRunId && snapshotCursor) {
       snapshotCursorsRef.current.set(snapshotRunId, snapshotCursor);
+      if (detail.subagent_observations) runCursorsRef.current.set(snapshotRunId, snapshotCursor);
+      else runCursorsRef.current.delete(snapshotRunId); // Older servers need a complete replay.
       if (snapshotCursorsRef.current.size > 128) snapshotCursorsRef.current.delete(snapshotCursorsRef.current.keys().next().value!);
     }
     const previousScope = useProofSession.getState().formalizationScope;
@@ -216,14 +218,22 @@ export function useProofStream() {
     }
     applyingDetail.current = false;
     if (preserve) {
-      // These are replayable execution data, unlike the author's view state.
       const state = useProofSession.getState();
-      state.setSubagentProgress({});
-      state.setSubagentErrors({});
-      state.setSubagentQueued({});
-      state.setSubagentStopNotices({});
       state.bumpFormalizationRefresh();
     }
+    const progress: Record<string, SubagentLive> = {}, errors: Record<string, string> = {};
+    const queued: Record<string, true> = {}, notices: Record<string, string> = {};
+    for (const child of detail.subagent_observations || []) {
+      if (!child.finished) progress[child.child_id] = child.progress;
+      if (child.queued && !child.finished) queued[child.child_id] = true;
+      if (child.error) errors[child.child_id] = child.error;
+      if (child.stop_notice) notices[child.child_id] = child.stop_notice;
+    }
+    const observationState = useProofSession.getState();
+    observationState.setSubagentProgress(progress);
+    observationState.setSubagentErrors(errors);
+    observationState.setSubagentQueued(queued);
+    observationState.setSubagentStopNotices(notices);
     useSessions.getState().setSelectedSessionId(detail.id);
     setMessages(detail.messages);
     replaceCodeSteps(detail.code_steps);
@@ -250,19 +260,22 @@ export function useProofStream() {
     setCurrentRunId(active?.id);
     setIsRunning(Boolean(active));
     setRunStatus((active?.status as RunStatus) || undefined);
-    setApprovals(
-      active?.pending_approval
-        ? [
-            {
-              ...active.pending_approval,
-              session_id: detail.id,
-              run_id: active.id,
-              decision: null,
-              seq: lastSeqRef.current + 0.5,
-            },
-          ]
-        : [],
-    );
+    const approvals: ApprovalRecord[] = (detail.approval_events || []).map(event => ({
+      ...event, session_id: detail.id, run_id: event.run_id || '',
+      tool_name: event.tool_name || '', args: event.args || {},
+      decision: event.decision || null, actionable: false, seq: event.seq ?? lastSeqRef.current + .5,
+    }));
+    if (active?.pending_approval) {
+      const gate = active.pending_approval;
+      const index = approvals.findIndex(a => a.run_id === active.id && a.approval_id === gate.approval_id);
+      if (index < 0 || (!approvals[index].decision && detail.approval_events[index].actionable !== false)) {
+        const record = { ...gate, session_id: detail.id, run_id: active.id, decision: null, actionable: true,
+          seq: index >= 0 ? approvals[index].seq : lastSeqRef.current + .5 };
+        if (index >= 0) approvals[index] = record;
+        else approvals.push(record);
+      }
+    }
+    setApprovals(approvals);
     setApprovalBusy(false);
     const statuses: Record<string, string> = {};
     const resultKinds: Record<string, string | null | undefined> = {};
@@ -408,7 +421,11 @@ export function useProofStream() {
             const previous = runCursorsRef.current.get(runId);
             const split = id.lastIndexOf(':');
             const sameAttempt = previous && previous.slice(0, previous.lastIndexOf(':')) === id.slice(0, split);
-            if (type !== 'resync' && previous && (!sameAttempt ||
+            // Older streams can enter their first attempt without a reset frame.
+            // A pending:0 snapshot has no events from an earlier attempt to fence.
+            const firstAttempt = previous === 'pending:0' && id.slice(0, split) !== 'pending';
+            if (firstAttempt) snapshotCursorsRef.current.delete(runId);
+            if (type !== 'resync' && previous && ((!sameAttempt && !firstAttempt) ||
                 Number(id.slice(split + 1)) <= Number(previous.slice(previous.lastIndexOf(':') + 1)))) return;
             if (!sameAttempt || Number(id.slice(split + 1)) > Number(previous!.slice(previous!.lastIndexOf(':') + 1))) {
               runCursorsRef.current.set(runId, id);
@@ -606,11 +623,12 @@ export function useProofStream() {
         ...state.messages.map((m) => (typeof m.seq === 'number' ? m.seq : 0)),
         ...state.codeSteps.map((c) => (typeof c.seq === 'number' ? c.seq : 0)),
       );
-      const seq = maxKnown + 0.5 + approvalCounterRef.current * 1e-4;
+      const seq = (payload as PendingApproval & { seq?: number }).seq
+        ?? maxKnown + 0.5 + approvalCounterRef.current * 1e-4;
       setApprovals((prev) =>
-        prev.some((a) => a.approval_id === payload.approval_id)
+        prev.some((a) => a.run_id === runId && a.approval_id === payload.approval_id)
           ? prev
-          : [...prev, { ...payload, session_id: sessionId, run_id: runId, decision: null, seq }],
+          : [...prev, { ...payload, session_id: sessionId, run_id: runId, decision: null, actionable: true, seq }],
       );
       setApprovalBusy(false);
     });
@@ -619,7 +637,8 @@ export function useProofStream() {
       const payload = JSON.parse((event as MessageEvent).data) as { approval_id?: string; decision?: string };
       setApprovals((prev) =>
         prev.map((a) =>
-          a.approval_id === payload.approval_id ? { ...a, decision: payload.decision || 'resolved' } : a,
+          a.run_id === runId && a.approval_id === payload.approval_id
+            ? { ...a, decision: payload.decision || 'resolved', actionable: false } : a,
         ),
       );
       setApprovalBusy(false);
@@ -655,7 +674,8 @@ export function useProofStream() {
       // durable transcript still lands on finish.
       const data = (event as MessageEvent).data;
       if (!data) return;
-      let p: { child_id?: string; kind?: string; text?: string; tool?: string; status?: string; turn?: number };
+      let p: { child_id?: string; kind?: string; text?: string; tool?: string; status?: string; turn?: number;
+        message?: ChatMessage };
       try {
         p = JSON.parse(data);
       } catch {
@@ -663,11 +683,26 @@ export function useProofStream() {
       }
       const childId = p.child_id;
       if (!childId) return;
+      if (p.kind === 'text' && p.message) {
+        const current = useProofSession.getState().subagentProgress[childId];
+        const previousSequence = current?.message_id === p.message.id ? current.stream_sequence ?? 0 : 0;
+        const sequence = p.message.stream_sequence ?? 0;
+        if (sequence <= previousSequence) return;
+        if (sequence !== previousSequence + 1) {
+          source.close(); eventSourceRef.current = null;
+          fetchDetail(sessionId).then(detail => { if (detail && owned()) applyDetail(detail, { preservePresentation: true }); })
+            .catch(() => { if (owned()) scheduleReconnect(runId, sessionId); });
+          return;
+        }
+      }
       useProofSession.getState().setSubagentProgress((prev) => {
         const cur = prev[childId] || { text: '' };
         let next = cur;
-        if (p.kind === 'text') next = { ...cur, text: cur.text + (p.text || '') };
-        else if (p.kind === 'turn') next = { ...cur, text: '', turn: p.turn, tool: undefined };
+        if (p.kind === 'text') next = { ...cur,
+          text: (p.message && cur.message_id !== p.message.id ? '' : cur.text) + (p.text || ''),
+          message_id: p.message?.id, stream_sequence: p.message?.stream_sequence };
+        else if (p.kind === 'turn') next = { ...cur, text: '', turn: p.turn, tool: undefined,
+          message_id: undefined, stream_sequence: undefined };
         else if (p.kind === 'tool') next = { ...cur, tool: p.tool };
         else if (p.kind === 'check') next = { ...cur, check: p.status, tool: undefined };
         else return prev;
@@ -791,7 +826,7 @@ export function useProofStream() {
         ...prev, [runId]: { state: recoveryState, reason: recoveryReason },
       }));
       setCurrentRunId(undefined);
-      setApprovals((prev) => prev.filter((a) => a.decision));
+      setApprovals((prev) => prev.map(a => ({ ...a, actionable: false })));
       setApprovalBusy(false);
       reconcile(sessionId)
         .then(() => useSessions.getState().refreshSessions())

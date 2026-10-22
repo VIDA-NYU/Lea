@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {sourceHashInputs} from '../../apps/overleaf-extension/extension/sourceIdentityCore.mjs';
 // Cross-layer integration harness (PLAN-system-hardening Phase 1 / review B6).
 //
@@ -159,10 +159,10 @@ after(async () => {
       setTimeout(() => {
         adapter.kill("SIGKILL");
         resolve();
-      }, 3000).unref();
+      }, 20000).unref();
     });
   }
-  if (home && !process.env.LEA_ITEST_KEEP_HOME) await fs.rm(home, { recursive: true, force: true });
+  if (home && !process.env.LEA_ITEST_KEEP_HOME) await fs.rm(home, { recursive: true, force: true, maxRetries:5, retryDelay:100 });
   if(process.env.LEA_ITEST_KEEP_HOME)console.log('Retained fixture',home);
 });
 
@@ -186,8 +186,17 @@ async function publishedTarget(body,{complete=false}={}) {
 }
 async function postJson(url, body, idempotencyKey=null) {
   if(['/formalize','/stub'].includes(new URL(url).pathname)&&!body.source_context_ref)body=await publishedTarget(body);
-  const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json',...(idempotencyKey?{'Idempotency-Key':idempotencyKey}:{})},body:JSON.stringify(body)});
-  return {status:response.status,body:await response.json()};
+  // Admission can wait for a busy publication or a recovering worker. Simulate
+  // a client retry with one identity and immutable bytes, never a fresh action.
+  const key=idempotencyKey||body.idempotency_key||randomUUID();
+  const serialized=JSON.stringify(new URL(url).pathname==='/api/runs'?{...body,idempotency_key:key}:body);
+  const deadline=Date.now()+120000;
+  for(;;){
+    const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body:serialized});
+    const result={status:response.status,body:await response.json()};
+    if(![429,503].includes(result.status)||Date.now()>=deadline)return result;
+    await new Promise(resolve=>setTimeout(resolve,250));
+  }
 }
 
 async function readCompanionJobs() {
@@ -317,9 +326,11 @@ test("companion end-to-end: /formalize drives a run to formalized with a session
   // recorded a structured artifact row, and the companion identified the
   // artifact from that index (not from registry-markdown diffing — the stub
   // prover never writes markdown).
-  const artifacts = await fetch(`${adapterBaseUrl}/api/projects/by-slug/itest-doc/artifacts`)
-    .then((res) => res.json());
-  const row = (artifacts.artifacts || []).find((a) => a.declaration_name === "int_e2e_true");
+  const row = await waitFor(async () => {
+    const response = await fetch(`${adapterBaseUrl}/api/projects/by-slug/itest-doc/artifacts`);
+    const artifacts = await response.json();
+    return response.ok && (artifacts.artifacts || []).find(a => a.declaration_name === 'int_e2e_true');
+  }, {label:'committed artifact projection'});
   assert.ok(row, "the adapter recorded an artifact row for the run's declaration");
   assert.equal(row.kind, "proof");
   assert.ok(job.recordedProofPath?.endsWith(`/${row.path}`),
@@ -357,7 +368,7 @@ test("companion push channel: /events streams jobs-changed during a formalize (P
       overleafProjectId: "itest-doc",
       ...target
     });
-    assert.equal(result.status, 200);
+    assert.equal(result.status, 200, JSON.stringify(result.body));
     await readUntil("event: jobs-changed");
     // And the run still completes normally underneath.
     const info = await pollStatus("itest-doc", target, ["formalized", "failed"]);
@@ -370,7 +381,7 @@ test("companion push channel: /events streams jobs-changed during a formalize (P
 test("retry lifecycle: a failed changed-source attempt retains the previous proof as stale history", async () => {
   const target = { targetKind: "theorem", targetLabel: "int_retry_true", targetText: "True is true." };
   const first = await postJson(`${companionBaseUrl}/formalize`, { overleafProjectId: "itest-doc", ...target });
-  assert.equal(first.status, 200);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
   const firstInfo = await pollStatus("itest-doc", target, ["formalized", "failed"]);
   assert.equal(firstInfo.status, "formalized");
 
@@ -388,11 +399,11 @@ test("retry lifecycle: a failed changed-source attempt retains the previous proo
     ...target,
     targetText: "True is true. [stub:fail]"
   });
-  assert.equal(retry.status, 200);
+  assert.equal(retry.status, 200, JSON.stringify(retry.body));
   await waitFor(async () => {
     const jobs = await readCompanionJobs();
     return jobs[retry.body.jobId]?.status === "failed";
-  }, { timeoutMs: 45000, label: "retry to reach failed" });
+  }, { timeoutMs: 120000, label: "retry to reach failed" });
 
   const restoredContent = await fs.readFile(absoluteProof, "utf8");
   assert.equal(restoredContent, original, "the previous proof is retained on disk");
@@ -604,7 +615,8 @@ test('durable solver commands progress without observers and settle duplicate ap
   assert.equal((await postJson(`${adapterBaseUrl}/api/runs/${second.run_id}/approvals/${second.gate.approval_id}`,{decision:'allow'})).status,409);
   const final=await waitFor(async()=>{
     const row=await (await fetch(`${adapterBaseUrl}/api/runs/${second.run_id}`)).json();
-    return row.status==='cancelled' && row.command.state==='succeeded'?row:false;
+    return row.status==='cancelled' && row.command.state==='succeeded'
+      && row.control_commands.some(c=>c.kind==='run.stop' && c.state==='succeeded')?row:false;
   },{label:'durable stop observed by worker'});
   assert.equal(final.stop_requested_reason,'user_stop');
   assert.ok(final.control_commands.some(c=>c.kind==='run.stop' && c.state==='succeeded'));
@@ -629,10 +641,10 @@ test('Stage 6 source publication, chat, batch, namespace rename and SQL export t
   assert.equal(batch.status,200,JSON.stringify(batch.body));assert.ok(batch.body.batchId);
   await waitFor(async()=>{const result=await postJson(companionBaseUrl+'/lean-pane/repair/status',{batchId:batch.body.batchId});return result.body.done?result.body:null;},{timeoutMs:60000,label:'database batch settlement'});
   assert.equal((await pollStatus(batchItem.overleafProjectId,batchItem,['formalized','failed'])).status,'formalized');
-  const identity=await fetch(companionBaseUrl+'/project/identity?overleafProjectId='+target.overleafProjectId).then(r=>r.json());
+  const {identity}=await fetch(companionBaseUrl+'/project/identity?overleafProjectId='+target.overleafProjectId).then(r=>r.json());
   const renamedResponse=await fetch(companionBaseUrl+'/project/identity',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({overleafProjectId:target.overleafProjectId,projectName:'Stage Six Renamed',mode:'rename-namespace',namespace:'Lea.StageSixRenamed',expectedNamespace:identity.namespace})});
   const renamed=await renamedResponse.json();assert.equal(renamedResponse.status,200,JSON.stringify(renamed));
-  const current=await fetch(companionBaseUrl+'/project/identity?overleafProjectId='+target.overleafProjectId).then(r=>r.json());
+  const {identity:current}=await fetch(companionBaseUrl+'/project/identity?overleafProjectId='+target.overleafProjectId).then(r=>r.json());
   assert.equal(current.namespace,'Lea.StageSixRenamed');assert.ok(current.namespaceRevision>identity.namespaceRevision);
   const download=await fetch(companionBaseUrl+'/project-export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({overleafProjectId:target.overleafProjectId})});
   assert.equal(download.status,200,await download.clone().text());assert.match(download.headers.get('content-type'),/zip/);

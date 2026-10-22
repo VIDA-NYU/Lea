@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 import pytest
 from fastapi import HTTPException
 
-from app import db, store, recovery, lea_status, lea_status_store, bridge, projects
+from app import db, store, recovery, lea_status, lea_status_store, bridge, projects, commands, run_commands
 from app.config import LeaConfig
 from app.routes import runs
 from app.source_context import source_hash
@@ -71,7 +71,19 @@ def paused(tmp_path, monkeypatch):
     store.update_run(old["id"], "max_turns", recoverable=True, stop_reason="turn_cap",
                      input_tokens=100, output_tokens=40, cost_usd=0.25, usage_status="final")
     recovery.finish_attempt(old["id"], attempt, "max_turns")
+    run_commands.recover_at_startup()  # Settle the manually prepared predecessor command.
     return old, cfg, tmp_path, saved
+
+
+def claim_execution(run_id):
+    """Use the same admission and ownership fence as the durable worker."""
+    from uuid import uuid4
+    receipt = run_commands.ensure_run(run_id)
+    owner = 'continuation-' + uuid4().hex
+    epoch = commands.start_worker(owner)
+    token = commands.claim(owner, epoch, 'compute', kinds={'run.execute'})
+    assert token and token['id'] == receipt['id']
+    return token
 
 
 def request(**changes):
@@ -419,7 +431,7 @@ def test_bridge_executes_successive_continuations_with_separate_usage(paused, mo
         row = store.get_run(result["run_id"])
         queue = Queue()
         task = store.get_run_submission(f"segment-{index}")["message"]["content"]
-        bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=row["id"],
+        bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=row["id"], command_token=claim_execution(row["id"]),
             task=task, config=replace(cfg, max_turns=row["max_turns"]),
             events=queue, autonomous=True, purpose="overleaf_solver"))
         finished = store.get_run(row["id"])
@@ -442,11 +454,15 @@ def test_automatic_recovery_uses_the_continuations_own_checkpoint(paused, monkey
     state, _ = recovery.prepare_continuation(row, cfg, repo, lea_status.seed(row["id"]), "Continue")
     state.update(turn=3, input_tokens=11, output_tokens=4, cost_usd=0.02)
     state["messages"].append({"role": "assistant", "content": "Own continuation checkpoint"})
+    crashed_token = claim_execution(row["id"])
     assert store.claim_pending_run(row["id"])
     attempt = recovery.start_attempt(row["id"])
     recovery.Recorder(row["id"], attempt, recovery.manifest(run=row, config=cfg, repo=repo))("checkpoint", state)
     store.checkpoint_run_usage(row["id"], 11, 4, 0.02, 1)
     assert recovery.recover_running()["resumed"] == 1
+    run_commands.recover_at_startup()
+    with db.connect() as conn:
+        assert not run_commands.owns(conn, row['id'], crashed_token)
     monkeypatch.setattr(projects, "repo_for_session", lambda *_: repo)
     seen = []
     def provider(*args, **kwargs):
@@ -454,7 +470,7 @@ def test_automatic_recovery_uses_the_continuations_own_checkpoint(paused, monkey
         yield ToolCall("read_file", {"path": "Target.lean"}, "after-crash")
         yield Done(Usage(11, 4), 0.02)
     monkeypatch.setattr(agent, "_provider_stream", provider)
-    bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=row["id"], task="Continue",
+    bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=row["id"], command_token=claim_execution(row["id"]), task="Continue",
         config=cfg, events=Queue(), autonomous=True, purpose="overleaf_solver"))
     finished = store.get_run(row["id"])
     assert finished["status"] == "max_turns", finished.get("result_detail")
@@ -485,10 +501,14 @@ def test_completion_reuses_only_current_saved_verification(paused, monkeypatch, 
     cfg = replace(cfg, max_turns=row["max_turns"])
     if revision == "restart":
         state, _ = recovery.prepare_continuation(row, cfg, repo, lea_status.seed(row["id"]), "Continue")
+        crashed_token = claim_execution(row["id"])
         assert store.claim_pending_run(row["id"])
         attempt = recovery.start_attempt(row["id"])
         recovery.Recorder(row["id"], attempt, recovery.manifest(run=row, config=cfg, repo=repo))("checkpoint", state)
         assert recovery.recover_running()["resumed"] == 1
+        run_commands.recover_at_startup()
+        with db.connect() as conn:
+            assert not run_commands.owns(conn, row['id'], crashed_token)
     calls = []
     checks = []
     def provider(*args, **kwargs):
@@ -500,7 +520,7 @@ def test_completion_reuses_only_current_saved_verification(paused, monkeypatch, 
     monkeypatch.setitem(registry.REGISTRY, "lean_check", replace(registry.REGISTRY["lean_check"],
         handler=lambda args: checks.append(args) or CheckText("Lean check passed.", mock_execution(args["path"]), Path(args["path"]).read_text())))
     queue = Queue()
-    bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=row["id"], task="Continue",
+    bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=row["id"], command_token=claim_execution(row["id"]), task="Continue",
         config=cfg, events=queue, autonomous=True, purpose="overleaf_solver"))
     finished = store.get_run(row["id"])
     assert finished["status"] == "proved", finished.get("result_detail")
@@ -577,7 +597,7 @@ def test_known_settled_predecessor_migrates_without_replay_or_recount(paused, re
     monkeypatch.setattr(agent, "_provider_stream", provider)
     monkeypatch.setitem(registry.REGISTRY, "lean_check", replace(registry.REGISTRY["lean_check"],
         handler=lambda args: checks.append(args) or "Error: proof contains sorry."))
-    bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=new["id"],
+    bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=new["id"], command_token=claim_execution(new["id"]),
         task="Continue", config=replace(cfg, max_turns=5), events=Queue(),
         autonomous=True, purpose="overleaf_solver"))
     finished = store.get_run(new["id"])

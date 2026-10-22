@@ -8,7 +8,7 @@ const extension = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 
 // Run the shipped content script/styles and lazy browser modules. Only the
 // Overleaf host and SQL transport are fixtures; no worker/provider is started.
-async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, completionPhase = null, batchProgress = null, identityTransportBase = null, badgePhase = null } = {}) {
+async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, completionPhase = null, batchProgress = null, identityTransportBase = null, badgePhase = null, reviewPhase = null } = {}) {
   await page.route('https://lea-fixture.test/**', async route => {
     const url = new URL(route.request().url());
     if (url.pathname === '/sql-identity' && identityTransportBase) {
@@ -23,11 +23,11 @@ async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, 
     await route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Batch Notes - Overleaf</title><main style="padding:24px;font:16px system-ui">Overleaf fixture</main>' });
   });
   await page.goto('https://lea-fixture.test/project/project-1');
-  await page.evaluate(({ targetCount, leaseMs, runtimePhase, completionPhase, batchProgress, identityTransportBase, badgePhase }) => {
-    window.fixture = { offline: false, runtimePhase, completionPhase, batchProgress, badgePhase, batchAccepted: false,
+  await page.evaluate(({ targetCount, leaseMs, runtimePhase, completionPhase, batchProgress, identityTransportBase, badgePhase, reviewPhase }) => {
+    window.fixture = { offline: false, runtimePhase, completionPhase, batchProgress, badgePhase, reviewPhase, reviewVersion: 1, decisions: [], batchAccepted: false,
       calls: [], owner: leaseMs ? 'previous-tab' : null, generation: leaseMs ? 1 : 0,
       leaseUntil: Date.now() + leaseMs, sequence: 0, publications: [],
-      targets: Array.from({ length: targetCount }, (_, i) => ({ targetKind: 'theorem',
+      targets: Array.from({ length: targetCount }, (_, i) => ({ targetKind: reviewPhase ? 'definition' : 'theorem',
         targetLabel: targetCount === 1 ? 'demo_theorem' : 'target_' + i, targetText: 'A theorem.', targetUses: [] })) };
     const area = { get: async defaults => ({ ...defaults }), set: async () => {}, remove: async () => {} };
     window.chrome = { runtime: { id: 'fixture', getURL: file => 'https://lea-fixture.test/extension/' + file,
@@ -46,6 +46,25 @@ async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, 
       const f = window.fixture;
       f.calls.push({ pathname, method: options.method || 'GET', input });
       const json = (value, status = 200) => Response.json(value, { status });
+      if (pathname.startsWith('/lean-pane/review/')) {
+        if (input.decision?.action !== 'withdraw' && !f.publications.some(p => p.ref === input.target?.source_context_ref)) {
+          return json({ message: 'Published source is stale. Publish it again from Overleaf before sending.' }, 409);
+        }
+        if (pathname.endsWith('/context')) {
+          if (f.reviewPhase === 'offline') { f.reviewPhase = 'ready'; return json({ message: 'Review service temporarily unavailable.' }, 503); }
+          return json({ ok: true, review: { eligible: true, revision_token: 'review-' + f.reviewVersion,
+            allowed_outcomes: ['defined'], candidate_declaration: 'Lea.BatchNotes.Ua', reason: 'Lean check passed. Confirm that this definition matches the source.' },
+            source_snapshot: { statement: input.target.sourceBundle.statement },
+            artifacts: [{ path: 'Ua.lean', content: 'namespace Lea.BatchNotes\n\n/-- A checked definition. -/\ndef Ua : Nat := 0\n\nend Lea.BatchNotes' }] });
+        }
+        f.decisions.push(input);
+        if (f.reviewPhase === 'changed') {
+          f.reviewPhase = 'ready'; f.reviewVersion++;
+          return json({ message: 'The reviewed inputs changed. Refresh and review the current result.' }, 409);
+        }
+        f.reviewPhase = 'approved';
+        return json({ ok: true, formalization: { validity_status: 'defined' } });
+      }
       if (pathname === '/settings') return window.fixture.offline ? json({ message: 'API starting' }, 503)
         : json({ leaTexMirrorEnabled: false });
       if (pathname === '/source-context/publisher') {
@@ -69,9 +88,11 @@ async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, 
         return json({ source_context_ref: ref });
       }
       const inventory = { ok: true, rootFile: 'main.tex', diagnostics: [], items: f.targets.map((target, i) => ({
-        id: 'theorem:' + target.targetLabel + ':0', kind: 'theorem', label: target.targetLabel, status: 'missing-stub',
+        id: 'theorem:' + target.targetLabel + ':0', kind: f.reviewPhase ? 'definition' : 'theorem', label: target.targetLabel, status: 'missing-stub',
         sourceFile: 'main.tex', sourceStartLine: 1, sourceEndLine: 4, naturalLanguageLatex: target.targetText,
-        leanKind: 'theorem', leanDeclarationName: target.targetLabel, formalizable: true,
+        leanKind: f.reviewPhase ? 'def' : 'theorem', leanDeclarationName: f.reviewPhase ? 'Ua' : target.targetLabel, formalizable: true,
+        ...(f.reviewPhase ? { status: f.reviewPhase === 'approved' ? 'defined' : 'needs-review',
+          leanCheck: { status: 'checked' }, review: { eligible: true, requested: true } } : {}),
         ...(f.completionPhase ? { inProgress: false, status: f.completionPhase === 'pending' ? 'synchronizing' : 'valid',
           projection: { state: f.completionPhase === 'pending' ? 'inputs_changed' : 'observed' },
           leanCheck: { status: f.completionPhase === 'pending' ? 'synchronizing' : 'checked' } } : {}),
@@ -115,6 +136,9 @@ async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, 
             lastObservedResult:{validity_status:p==='finished_expired'?'proved':'planned'}};
         return json({statuses:Object.fromEntries(f.targets.map(t=>[`${t.targetKind}:${t.targetLabel}`,status]))});
       }
+      if (pathname === '/statuses' && f.reviewPhase) return json({ statuses: Object.fromEntries(f.targets.map(t => [
+        `${t.targetKind}:${t.targetLabel}`, { status: f.reviewPhase === 'approved' ? 'formalized' : 'needs_review', review: { eligible: true }, leanCheckPassed: true }
+      ])) });
       if (pathname === '/statuses') return json({ statuses: f.badgePhase
         ? Object.fromEntries(f.targets.map((t,i)=>[`${t.targetKind}:${t.targetLabel}`, i===1
           ? {status:'in_progress',turnProgress:{current:3,max:100}}
@@ -126,16 +150,71 @@ async function setup(page, { targetCount = 1, leaseMs = 0, runtimePhase = null, 
       if (pathname === '/formalize/all' && f.batchProgress !== null) { f.batchAccepted = true; return json(batch()); }
       if (pathname === '/formalize/all' || pathname === '/commands/startup-click') return json({ workspace_command: true,
         command: { id: 'startup-click', state: 'queued' } }, pathname === '/formalize/all' ? 202 : 200);
-      if (pathname.endsWith('/download/zip')) return new Response('', { status: 503 });
+      if (pathname.endsWith('/download/zip')) {
+        if (f.offline) return new Response('', { status: 503 });
+        // A complete one-file archive; the content script overlays the live
+        // main.tex buffer. Batch admission requires complete source coverage.
+        const zip = Uint8Array.from(atob('UEsDBBQAAAAAAPW5TV0AAAAAAAAAAAAAAAAIAAAAbWFpbi50ZXhQSwECFAMUAAAAAAD1uU1dAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAgAEAAAAAbWFpbi50ZXhQSwUGAAAAAAEAAQA2AAAAJgAAAAAA'), c => c.charCodeAt(0));
+        return new Response(zip, { headers: { 'Content-Type': 'application/zip' } });
+      }
       return json({ ok: true, reports: [], jobs: [], updates: [] });
     };
-  }, { targetCount, leaseMs, runtimePhase, completionPhase, batchProgress, identityTransportBase, badgePhase });
+  }, { targetCount, leaseMs, runtimePhase, completionPhase, batchProgress, identityTransportBase, badgePhase, reviewPhase });
   for (const file of ['lea-theme.css', 'content.css']) await page.addStyleTag({ content: await fs.readFile(path.join(extension, file), 'utf8') });
   await page.addScriptTag({ content: await fs.readFile(path.join(extension, 'content.js'), 'utf8') });
   await page.evaluate(() => window.postMessage({ type: 'OL_LEAN_TARGETS_VISIBLE', activePath: 'main.tex',
-    activeTex: '\\begin{theorem}\n% lea: formalize label=demo_theorem\nA theorem.\n\\end{theorem}',
+    activeTex: fixture.reviewPhase ? '\\begin{definition}\n% lea: define label=demo_theorem\nA theorem.\n\\end{definition}'
+      : '\\begin{theorem}\n% lea: formalize label=demo_theorem\nA theorem.\n\\end{theorem}',
     targets: window.fixture.targets, diagnostics: [] }, '*'));
 }
+
+for (const width of [1280, 760]) test(`definition approval stays in the pane and republishes idle source at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 });
+  await setup(page, { reviewPhase: 'ready' });
+  await page.getByRole('button', { name: /Lean project pane/ }).click();
+  if (width === 760) await page.getByRole('separator', { name: 'Resize Lean pane' }).press('Home');
+  await page.locator('.ol-lean-project-tree-row').filter({ hasText: 'main.tex' }).click();
+  await page.getByRole('button', { name: 'Review result', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Review result' });
+  await expect(panel).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(panel.getByRole('button', { name: 'Approve definition', exact: true })).toBeEnabled();
+  await expect(panel.locator('fieldset')).toBeHidden();
+  await expect(panel).toContainText('Lea.BatchNotes.Ua');
+  await expect.poll(() => panel.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+  await page.screenshot({ path: `/tmp/lea-review-inline-${width}.png` });
+  await page.evaluate(() => { fixture.leaseUntil = 0; });
+  await panel.getByRole('button', { name: 'Approve definition', exact: true }).click();
+  await expect(panel).toHaveCount(0);
+  const result = await page.evaluate(() => ({ decisions: fixture.decisions, publications: fixture.publications,
+    runs: fixture.calls.filter(c => c.pathname === '/formalize' || c.pathname === '/api/runs') }));
+  expect(result.runs).toHaveLength(0);
+  expect(result.decisions).toHaveLength(1);
+  expect(result.publications.length).toBeGreaterThanOrEqual(2);
+  expect(result.decisions[0].target.targetLabel).toBe('demo_theorem');
+  expect(result.decisions[0].target.sourceBundle.targetKey).toBe('demo_theorem');
+  expect(result.decisions[0].decision.outcome).toBe('defined');
+});
+
+test('review retries refresh source and revision changes require another explicit approval', async ({ page }) => {
+  await setup(page, { reviewPhase: 'offline' });
+  await page.getByRole('button', { name: /Lean project pane/ }).click();
+  await page.locator('.ol-lean-project-tree-row').filter({ hasText: 'main.tex' }).click();
+  await page.getByRole('button', { name: 'Review result', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Review result' });
+  await expect(panel.getByRole('alert')).toContainText('Review service temporarily unavailable');
+  await expect(panel.locator('fieldset')).toBeHidden();
+  await panel.getByRole('button', { name: 'Refresh source and retry' }).click();
+  await expect(panel.getByRole('button', { name: 'Approve definition' })).toBeEnabled();
+  await page.evaluate(() => { fixture.reviewPhase = 'changed'; });
+  await panel.getByRole('button', { name: 'Approve definition' }).click();
+  await expect(panel).toContainText('reviewed inputs changed');
+  await expect(panel.getByRole('button', { name: 'Approve definition' })).toBeEnabled();
+  expect(await page.evaluate(() => fixture.decisions.length)).toBe(1);
+  await panel.getByRole('button', { name: 'Approve definition' }).click();
+  await expect(panel).toHaveCount(0);
+  expect(await page.evaluate(() => fixture.decisions.map(d => d.decision.revision_token))).toEqual(['review-1', 'review-2']);
+});
 
 test('known LaTeX tag states do not change when SQL snapshots refresh or expire',async({page},info)=>{
   await setup(page);

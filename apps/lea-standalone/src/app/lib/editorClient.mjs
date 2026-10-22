@@ -4,9 +4,9 @@ export class EditorStateError extends Error {
 }
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 export class EditorClient {
-  constructor(sessionId, path, { fetch: request = globalThis.fetch.bind(globalThis), onState = state => { void state; } } = {}) {
+  constructor(sessionId, path, { fetch: request = globalThis.fetch.bind(globalThis), onState = state => { void state; }, formalizationId = '' } = {}) {
     this.sessionId = sessionId;
-    Object.assign(this, { sessionId, path, fetch: request, onState, revision: 0, version: 0, sequence: 0, disposed: false, serial: Promise.resolve() });
+    Object.assign(this, { sessionId, path, formalizationId, fetch: request, onState, revision: 0, version: 0, sequence: 0, disposed: false, serial: Promise.resolve() });
   }
   async json(url, init = {}) {
     const response = await this.fetch(url, { ...init, signal: init.signal || AbortSignal.timeout(6000), headers: { 'Content-Type': 'application/json', ...(this.owner ? { Authorization: `Bearer ${this.owner.credential}` } : {}), ...init.headers } });
@@ -14,7 +14,12 @@ export class EditorClient {
     if (!response.ok) throw new EditorStateError(value.detail?.error || value.detail || `editor_http_${response.status}`);
     return value;
   }
-  async info() { return this.json(`/api/sessions/${encodeURIComponent(this.sessionId)}/editor${this.path ? `?path=${encodeURIComponent(this.path)}` : ''}`); }
+  async info() {
+    const params = new URLSearchParams();
+    if (this.path) params.set('path', this.path);
+    if (this.formalizationId) params.set('formalization_id', this.formalizationId);
+    return this.json(`/api/sessions/${encodeURIComponent(this.sessionId)}/editor${params.size ? `?${params}` : ''}`);
+  }
   async open() {
     const info = await this.info(); this.path = info.path;
     this.owner = await this.json(`/api/sessions/${encodeURIComponent(this.sessionId)}/editor/clients`, { method: 'POST' });

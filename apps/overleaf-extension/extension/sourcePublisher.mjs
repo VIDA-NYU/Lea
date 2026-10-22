@@ -17,7 +17,7 @@ export function createSourcePublisher({documentId,request,clientId=crypto.random
     blocked={until:clock()+delay,error:failure};
     return failure;
   }
-  async function publish(value) {
+  async function publish(value, { force = false } = {}) {
     const current=documentId();
     if(value.document_id && value.document_id!==current)throw new Error('The document changed during source capture. Publish its current revision again.');
     if(current!==document){document=current;generation=0;sequence=0;archive=null;blocked=null;recent.clear();}
@@ -25,7 +25,7 @@ export function createSourcePublisher({documentId,request,clientId=crypto.random
     blocked=null;
     const fingerprint=await hash(value);
     const previous=recent.get(value.source_bundle.targetKind+':'+value.source_bundle.targetKey);
-    if(previous?.fingerprint===fingerprint && clock()-previous.at<30000)return previous.receipt;
+    if(!force && previous?.fingerprint===fingerprint && clock()-previous.at<30000)return previous.receipt;
     const claim=()=>request('/source-context/publisher',{document_id:document,client_id:clientId,expected_generation:generation});
     let authority;
     for(let attempt=0;attempt<2;attempt++) {
@@ -59,5 +59,5 @@ export function createSourcePublisher({documentId,request,clientId=crypto.random
     recent.set(value.source_bundle.targetKind+':'+value.source_bundle.targetKey,{fingerprint,receipt,at:clock()});
     return receipt;
   }
-  return value=>{const work=tail.catch(()=>{}).then(()=>publish(value));tail=work;return work;};
+  return (value, options)=>{const work=tail.catch(()=>{}).then(()=>publish(value, options));tail=work;return work;};
 }

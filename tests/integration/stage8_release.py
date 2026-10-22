@@ -165,7 +165,7 @@ def fixture(bundle):
 
 
 def preserve(before,after):
-    assert after['schema']==before['schema']=='0050_target_observations'
+    assert after['schema']==before['schema']=='0051_idle_observation_renewal'
     assert all(after['blobs'].get(k)==v for k,v in before['blobs'].items()),'Retained blob history changed'
     assert all(row in after['timeline'] for row in before['timeline']),'Retained timeline changed'
 

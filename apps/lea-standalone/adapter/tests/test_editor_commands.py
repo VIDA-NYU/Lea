@@ -343,3 +343,24 @@ def test_closing_a_view_retires_its_producer_and_releases_active_capacity(env,mo
         assert row['state']=='suspended' and row['error']=='producer_revoked'
         assert conn.execute("select count from command_capacity where key='editor:global'").fetchone()[0]==0
     assert service.create_client(env['session']['id'])['owner_id']!=env['owner']['owner_id']
+
+
+def test_scoped_load_pins_file_bytes_and_formalization_revision_together(env):
+    from app.queries import proofs
+    sid=env['session']['id']
+    form=store.create_formalization(project_id=None,loose_session_id=sid,display_title='Main',declaration_name='main')
+    store.link_session_formalization(sid,form['id'])
+    store.link_formalization_file(form['id'],'Main.lean',role='primary')
+    first=service.file_info(sid,'Main.lean',form['id'])
+    assert first['formalization_revision']==proofs.current_snapshot(form['id'])['revision_token']
+    assert first['file_revision']==workspace_commands.revision_for(env['scope'],'Main.lean')
+    store.add_code_step(sid,None,'Main.lean',content='example : True := by decide\n',author='user',formalization_id=form['id'])
+    current=service.file_info(sid,'Main.lean',form['id'])
+    assert current['content'].endswith('decide\n')
+    assert current['file_revision']!=first['file_revision']
+    assert current['formalization_revision']!=first['formalization_revision']
+    other=store.create_session('Unrelated')
+    store.add_code_step(other['id'],None,'Main.lean',content='example : True := by trivial',author='user')
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException, match='not associated'):
+        service.file_info(other['id'],'Main.lean',form['id'])

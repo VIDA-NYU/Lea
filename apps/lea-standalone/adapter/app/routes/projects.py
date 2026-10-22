@@ -58,6 +58,7 @@ def _guard_project(*, by_slug=False, write=False, metadata=False, environment_wr
 
 
 class ProjectCreate(BaseModel):
+    idempotency_key: str | None = None
     title: str
     description: str | None = None
 
@@ -408,10 +409,15 @@ def read_project_file(project_id: str,path:str,observation_id:str|None=None) -> 
     from ..queries import files
     from .workspace import file as sql_file
     try:
-        if observation_id is not None:return {**files.content(project_id,path,observation_id),'file_revision':workspace_commands.revision_for('p:'+project_id,path)}
-        value=sql_file(path,project_id=project_id)
-        if value['content'] is not None:return {**value,'lean':path.endswith('.lean')}
-        return {**files.content(project_id,path),'file_revision':value['file_revision']}
+        from .. import db
+        with db.read_snapshot():
+            if observation_id is not None:
+                value=files.content(project_id,path,observation_id)
+                return {**value,'file_revision':'observed:'+value['blob_id'],'editable':False}
+            value=sql_file(path,project_id=project_id)
+            if value['content'] is not None:return {**value,'lean':path.endswith('.lean'),'editable':True}
+            observed=files.content(project_id,path)
+            return {**observed,'file_revision':'observed:'+observed['blob_id'],'editable':True}
     except files.ProjectionUnavailable as exc:raise HTTPException({'not_found':404,'bad_path':400,'binary':415,'file_too_large':413}.get(exc.reason,409),detail={'error':'projection_unavailable','reason':exc.reason}) from exc
     except HTTPException as exc:
         if exc.status_code==422:raise HTTPException(400,exc.detail) from exc

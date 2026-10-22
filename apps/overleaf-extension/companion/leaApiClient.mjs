@@ -21,9 +21,9 @@ function toNonNegativeNumber(value) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-function decodeChunk(chunk) {
+function decodeChunk(chunk, decoder) {
   if (typeof chunk === "string") return chunk;
-  if (chunk instanceof Uint8Array) return new TextDecoder().decode(chunk);
+  if (chunk instanceof Uint8Array) return decoder.decode(chunk, { stream: true });
   return String(chunk);
 }
 
@@ -736,6 +736,7 @@ export async function streamApiRun({
   let recoveryReason = null;
   let waitingDependencies = [];
   let buffer = "";
+  const decoder = new TextDecoder();
 
   const handleFrame = async (frame) => {
     const { type, data } = parseSseFrame(frame);
@@ -763,7 +764,7 @@ export async function streamApiRun({
 
   try {
     for await (const chunk of iterateResponseBody(response.body)) {
-      buffer += decodeChunk(chunk);
+      buffer += decodeChunk(chunk, decoder);
       const frames = buffer.split(/\r?\n\r?\n/);
       buffer = frames.pop() || "";
       for (const frame of frames) {
@@ -771,6 +772,7 @@ export async function streamApiRun({
       }
       if (doneStatus !== null) break;
     }
+    buffer += decoder.decode();
     if (doneStatus === null && buffer.trim()) await handleFrame(buffer);
   } catch (error) {
     if (error?.name === "AbortError") return { ok: false, aborted: true, error: runError || "Run stream aborted." };

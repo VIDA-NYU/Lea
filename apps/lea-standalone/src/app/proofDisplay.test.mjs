@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   deriveCodeStepProofStatus,
   deriveRunCompletionStatus,
+  deriveRunReviewNotice,
   hasSorryLikeCheckDetail,
   hasSorryLikeCode,
 } from './lib/proofDisplay.mjs';
@@ -90,6 +91,25 @@ test('reviewed definition artifacts retain the review verdict', () => {
 
 test('reviewed unknown artifacts retain the review verdict', () => {
   assert.equal(deriveRunCompletionStatus('needs_review', [step({ artifact_kind: 'unknown' })]), 'needs_review');
+});
+
+test('review notices request approval only with an actionable decision for that run', () => {
+  const form = { review: { run_id: 'run-1', eligible: true, revision_token: 'revision', allowed_outcomes: ['defined'] } };
+  assert.match(deriveRunReviewNotice('run-1', form), /^Review requested.*before approving/);
+  for (const change of [{ eligible: false }, { revision_token: null }, { allowed_outcomes: [] }]) {
+    const blocked = { review: { ...form.review, ...change, reason: 'The requested declaration is missing.' } };
+    assert.equal(deriveRunReviewNotice('run-1', blocked),
+      'This run needs attention. Approval is unavailable. The requested declaration is missing.');
+  }
+});
+
+test('review notices keep approvals and superseded reviews scoped to their own run', () => {
+  const form = { review: { run_id: 'run-2', eligible: false,
+    approval: { outcome: 'defined', created_at: '2026-10-21T15:00:00Z' } } };
+  assert.match(deriveRunReviewNotice('run-2', form), /Approved by user as defined/);
+  assert.equal(deriveRunReviewNotice('run-1', form),
+    'This run requested review. See the current formalization for its review status.');
+  assert.equal(deriveRunReviewNotice('run-1', null), deriveRunReviewNotice('run-1', form));
 });
 
 test('Lean comments mentioning sorry do not make the code a stub', () => {

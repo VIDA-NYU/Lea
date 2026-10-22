@@ -77,7 +77,7 @@ def environment(conn,session):
         'environment':value['environment_revision']}))
 
 
-def file_info(session_id,path=None):
+def file_info(session_id,path=None,formalization_id=None):
     with db.read_snapshot() as conn:
         session=_session(conn,session_id)
         if path is None:
@@ -98,6 +98,14 @@ def file_info(session_id,path=None):
         if not blob:_error('file_not_indexed',503)
         value=conn.execute('select content from artifact_blobs where id=?',(blob,)).fetchone()
         if not value:_error('file_not_indexed',503)
+        formalization_revision=None
+        if formalization_id:
+            workspace_commands._scope(conn, {'session_id':session_id,'formalization_id':formalization_id})
+            from .queries import proofs
+            snapshot=proofs.current_snapshot(formalization_id,conversation_session_id=session_id)
+            if not snapshot or not any(f['path']==path and f.get('blob_id')==blob for f in snapshot['files']):
+                _error('formalization_file_changed')
+            formalization_revision=snapshot['revision_token']
         try:env=environment(conn,session);state='observed'
         except commands.QueueError as exc:env=None;state=exc.code
         worker=conn.execute('select epoch,lease_until from command_workers where id=?',('lea-command-host',)).fetchone()
@@ -105,6 +113,7 @@ def file_info(session_id,path=None):
         return {'worker':{'state':'draining' if run_commands.drain_requested(conn) else 'available' if available else 'unavailable','epoch':worker['epoch'] if available else None},
             'version':1,'session_id':session_id,'project_id':session['project_id'],'path':path,
             'fileName':path,'content':value[0],'file_revision':revision,'environment_revision':env,
+            'formalization_id':formalization_id,'formalization_revision':formalization_revision,
             'analysis_state':state,'capabilities':capability(),'cursor':observation.watermark(conn)}
 
 

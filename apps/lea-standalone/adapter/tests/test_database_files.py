@@ -155,7 +155,7 @@ def test_symlinks_are_excluded_and_large_files_marked_unavailable(fixture,tmp_pa
 
 def test_query_package_has_no_execution_or_workspace_service_imports():
     folder=Path(files.__file__).parent
-    allowed_std={'__future__','datetime','contextlib','contextvars','functools','typing','collections','hashlib','json','re','base64'}
+    allowed_std={'__future__','datetime','contextlib','contextvars','functools','typing','collections','hashlib','json','re','base64','sqlite3'}
     pure={'db','observation','source_context','alignment_schemas'}
     for source in folder.glob('*.py'):
         tree=ast.parse(source.read_text())

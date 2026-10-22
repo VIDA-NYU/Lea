@@ -11,14 +11,21 @@ test.beforeAll(async () => {
   throw new Error('Editor Vite fixture unavailable');
 });
 test.afterAll(() => { vite?.kill('SIGTERM'); });
-async function open(page) {
-  const state = { environment: 'env', workerEpoch: 'epoch-1', base: 'base', publications: [], requests: [], resultState: 'available', pending: false, rejectRequests: null, buffers: new Map(), receipts: new Map() };
+async function open(page, saving = false) {
+  const state = { environment: 'env', workerEpoch: 'epoch-1', base: 'base', content: 'example : True := by\n  trivial\n', saves: [], publications: [], requests: [], resultState: 'available', pending: false, rejectRequests: null, buffers: new Map(), receipts: new Map(), holdPublication: null };
   await page.route('**/api/**', async route => {
     const req = route.request(), url = new URL(req.url());
     let result;
     if (url.pathname === '/api/editor/clients/current') result = { closed: true };
     else if (url.pathname.endsWith('/editor/clients')) result = { owner_id: 'owner', credential: 'token' };
-    else if (url.pathname.endsWith('/editor')) result = { path: 'Main.lean', content: 'example : True := by\n  trivial\n', environment_revision: state.environment, file_revision: state.base, worker: { state: 'available', epoch: state.workerEpoch } };
+    else if (url.pathname.endsWith('/editor')) result = { path: 'Main.lean', content: state.content, environment_revision: state.environment, file_revision: state.base, worker: { state: 'available', epoch: state.workerEpoch } };
+    else if (url.pathname === '/api/workspace/commands') {
+      const value = req.postDataJSON(); state.saves.push(value);
+      if (value.expected_revision !== state.base) return route.fulfill({status:409,json:{detail:{code:'revision_conflict',message:'Changed in another tab.',current_revision:state.base}}});
+      state.base = `published-${state.saves.length}`; state.content = value.arguments.request.content;
+      result = {draft_id:value.draft_id,file_revision:state.base};
+      if (state.holdPublication) await state.holdPublication;
+    }
     else if (url.pathname === '/api/editor/buffers') {
       const value = req.postDataJSON(); state.publications.push(value);
       result = { id: `buffer-${value.version}`, ...value, expires_at: new Date(Date.now() + 60000).toISOString() }; state.buffers.set(result.id, result);
@@ -35,16 +42,19 @@ async function open(page) {
     await route.fulfill({ json: result });
   });
   await page.route('**/src/main.tsx', route => route.fulfill({ contentType: 'application/javascript', body: '' }));
-  await page.addInitScript(() => { window.addEventListener('DOMContentLoaded', async () => {
+  await page.addInitScript(({saving}) => { window.addEventListener('DOMContentLoaded', async () => {
     const React = await import('/node_modules/.vite/deps/react.js');
     const dom = await import('/node_modules/.vite/deps/react-dom_client.js');
     const { createRoot } = dom.default || dom;
     const { LiveEditor } = await import('/src/app/components/LiveEditor.tsx');
+    const { writeSessionFile } = await import('/src/app/lib/api.ts');
     document.body.innerHTML = '<main id="editor-fixture" style="height:800px;display:flex"></main>';
     window.editorRoot = createRoot(document.querySelector('main'));
-    window.renderEditor = (sessionId = 'session') => window.editorRoot.render((React.default || React).createElement(LiveEditor, { sessionId, path: 'Main.lean', captureSelection: () => () => true }));
+    window.renderEditor = (sessionId = 'session') => window.editorRoot.render((React.default || React).createElement(LiveEditor, { sessionId, path: 'Main.lean', captureSelection: () => () => true,
+      ...(saving ? {onSave:(content,path,base,draftId)=>writeSessionFile(base.session_id,path,content,undefined,base.formalization_id,base.formalization_revision,base.file_revision,draftId),
+        onCheck:async()=>{throw new Error('Check service unavailable');}} : {}) }));
     window.renderEditor();
-  }); });
+  }); }, {saving});
   await page.goto(origin);
   await expect(page.locator('.monaco-editor')).toBeVisible({ timeout: 45000 });
   return state;
@@ -119,4 +129,31 @@ test('idle environment refresh and queue saturation preserve the local draft', a
   await expect(page.getByLabel('Goal analysis')).toContainText('⊢ True');
   await expect(input).toBeFocused();
   await expect(page.locator('.view-lines')).toContainText('-- keep this draft');
+});
+
+test('a dirty Monaco draft keeps its loaded base after another tab publishes',async({page})=>{
+  const state=await open(page,true);
+  state.base='another-tab';state.content='-- remote publication';
+  const input=page.locator('.monaco-editor textarea');await input.focus();
+  await page.keyboard.press('ControlOrMeta+End');await page.keyboard.type('-- my unsaved draft');
+  await expect(page.locator('.live-editor-bar')).toContainText('Changed in another tab.');
+  expect(state.saves[0].expected_revision).toBe('base');
+  expect(state.content).toBe('-- remote publication');
+  await expect(page.locator('.view-lines')).toContainText('-- my unsaved draft');
+  await expect(input).toBeFocused();
+});
+
+test('typing during publication survives its receipt and a later check failure',async({page})=>{
+  const state=await open(page,true);let release;
+  state.holdPublication=new Promise(resolve=>{release=resolve;});
+  const input=page.locator('.monaco-editor textarea');await input.focus();
+  await page.keyboard.press('ControlOrMeta+End');await page.keyboard.type('-- first');
+  await expect.poll(()=>state.saves.length).toBe(1);
+  await page.keyboard.type(' newest');state.holdPublication=null;release();
+  await expect.poll(()=>state.saves.length).toBe(2);
+  expect(state.saves[1].expected_revision).toBe('published-1');
+  expect(state.saves[1].arguments.request.content).toContain('-- first newest');
+  await expect(page.locator('.live-editor-bar')).toContainText('Check service unavailable');
+  await expect(page.locator('.view-lines')).toContainText('-- first newest');
+  await expect(input).toBeFocused();
 });

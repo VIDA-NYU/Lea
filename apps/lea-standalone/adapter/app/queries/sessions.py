@@ -11,6 +11,7 @@ from contextlib import nullcontext
 from typing import Any
 from ..db import connect, row_to_dict
 from . import usage as usage_metadata
+from .children import observations_for_session
 from .core import read_query as read_projection, run_detail, approval_events_for_session, safe_verify as _safe_verify_summary
 
 
@@ -407,6 +408,7 @@ def session_detail(session_id: str) -> dict | None:
         "status_events": [{**json.loads(row['payload'] or '{}'),
                            **{k: v for k, v in dict(row).items() if k != 'payload'}} for row in status_events],
         "run_event_cursors": run_event_cursors,
+        "subagent_observations": observations_for_session(session_id),
         "approval_events": approval_events_for_session(session_id),
         "review_events": review_events_for_session(session_id),
         "usage_breakdown": usage_breakdown_for_session(session_id),

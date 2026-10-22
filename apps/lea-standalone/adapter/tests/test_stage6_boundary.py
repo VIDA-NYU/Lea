@@ -524,7 +524,7 @@ def test_new_observations_are_prioritized_without_starving_expiring_views(databa
         conn.execute('update core_projection_enrollment set observation_id=?,last_scan_at=? where scope=?',('healthy',(now-timedelta(seconds=40)).isoformat(),older))
         conn.execute('update core_projection_enrollment set last_scan_at=? where scope=?',((now-timedelta(seconds=1)).isoformat(),cold))
     selected=[]
-    monkeypatch.setattr(core_observer,'capture',lambda scope:selected.append(scope) or {'state':'observed'})
+    monkeypatch.setattr(core_observer,'capture',lambda scope,*,renew:selected.append(scope) or {'state':'observed'})
     core_observer.maintain();assert selected==[cold]
     with db.write() as conn:conn.execute('update core_observations set expires_at=? where id=?',((now+timedelta(seconds=10)).isoformat(),'healthy'))
     core_observer.maintain();assert selected==[cold,older]

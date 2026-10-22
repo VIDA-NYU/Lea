@@ -252,13 +252,13 @@ import { readFile } from 'node:fs/promises';
 import { transform } from 'esbuild';
 const appSource=await readFile(new URL('./App.tsx',import.meta.url),'utf8');
 const handlers=await transform(appSource.slice(appSource.indexOf('  const handleSaveAndCheck = async'),appSource.indexOf('  // F9:',appSource.indexOf('  const handleSaveAndCheck = async')))
-  +'\nmodule.exports={handleSaveAndCheck,handleVerify};',{loader:'tsx',format:'cjs'});
+  +'\nmodule.exports={handleSaveAndCheck,handleCheckPublished,handleVerify};',{loader:'tsx',format:'cjs'});
 function appCallbacks(x, overrides={}) {
   const calls=[];const noop=name=>(...args)=>calls.push([name,...args]);
   const context={module:{exports:{}},selectedSessionId:'A',sortedCode:[{path:'Target.lean'}],formalizationScope:'project',
     currentFormalizationSnapshot:null,captureSelection:x.hook.captureSelection,
-    useProofSession:{getState:()=>x.proxy,setState:patch=>Object.assign(x.state,patch)},
-    writeSessionFile:async()=>{},leanCheckSession:async()=>({status:'ok'}),verifySession:async()=>({status:'ok'}),
+    useProofSession:{getState:()=>x.proxy,setState:patch=>Object.assign(x.state,patch)},useSessions:{getState:()=>x.sessions},
+    writeSessionFile:async()=>({draft_id:'draft',file_revision:'new-file'}),leanCheckSession:async()=>({status:'ok'}),verifySession:async()=>({status:'ok'}),
     reconcile:noop('reconcile'),refreshSessions:async()=>{},RevisionConflictError:class extends Error{},
     setCanvasRevisionMode:noop('revision'),bumpFormalizationRefresh:noop('refresh'),setError:noop('error'),
     setEditedPath:noop('edited'),setSafeVerify:noop('verify'),...overrides};
@@ -266,10 +266,11 @@ function appCallbacks(x, overrides={}) {
   return {...context.module.exports,calls};
 }
 function deferred(){let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return{promise,resolve,reject};}
+const draftBase={session_id:'A',path:'Target.lean',file_revision:'loaded-file'};
 test('App save/check completion cannot change another conversation or its busy state',async()=>{
   const x=await setup();const write=deferred(),check=deferred();
   const app=appCallbacks(x,{writeSessionFile:()=>write.promise,leanCheckSession:()=>check.promise});
-  const pending=app.handleSaveAndCheck('new content');x.hook.applyDetail(detail('B'));
+  const pending=app.handleSaveAndCheck('new content','Target.lean',draftBase,'draft');x.hook.applyDetail(detail('B'));
   write.resolve({});await flush();assert.equal(x.state.manualCheckSessionId,undefined);
   check.resolve({status:'ok'});await pending;assert.deepEqual(app.calls,[]);x.cleanup();
 });
@@ -279,8 +280,12 @@ test('App delayed verification cannot replace the new chat verdict',async()=>{
   assert.deepEqual(app.calls,[]);x.cleanup();
 });
 test('App active save still reconciles and shows its result',async()=>{
-  const x=await setup();const app=appCallbacks(x);await app.handleSaveAndCheck('new content');
-  assert.deepEqual(app.calls.map(([name])=>name),['reconcile','edited','verify','revision','refresh']);x.cleanup();
+  const x=await setup();const app=appCallbacks(x);
+  const receipt=await app.handleSaveAndCheck('new content','Target.lean',draftBase,'draft');
+  assert.equal(receipt.file_revision,'new-file');
+  assert.deepEqual(app.calls.map(([name])=>name),['edited','verify','refresh']);
+  await app.handleCheckPublished('Target.lean',{...draftBase,file_revision:receipt.file_revision});
+  assert.deepEqual(app.calls.slice(3).map(([name])=>name),['reconcile','edited','verify','revision','refresh']);x.cleanup();
 });
 test('App verification expires on formalization changes within a chat',async()=>{
   const x=await setup();const response=deferred();const app=appCallbacks(x,{verifySession:()=>response.promise});
@@ -347,4 +352,65 @@ test('queued standalone admission expires across navigation away and back to the
   x.hook.applyDetail(detail('B'));x.hook.applyDetail(detail('A'));
   response.resolve();await pending;
   assert.deepEqual(app.calls,[['load','A']]);assert.equal(x.state.messages[0].content,'A');x.cleanup();
+});
+
+test('complete refresh snapshots restore children and approvals before resuming their cursor',async()=>{
+  const x=await setup();
+  const snapshot={...detail('A',true),run_event_cursors:{'run-A':'attempt:40'},
+    subagent_observations:[{child_id:'working',progress:{text:'durable',tool:'read_file',turn:2,message_id:'child-message',stream_sequence:3}},
+      {child_id:'queued',queued:true,progress:{text:''}},
+      {child_id:'failed',finished:true,error:'Provider unavailable',stop_notice:'Stopped',progress:{text:''}}],
+    approval_events:[{id:'history',approval_id:'history',run_id:'old',tool_name:'write_file',args:{},decision:'deny',seq:2.5},
+      {id:'pending',approval_id:'pending',run_id:'run-A',tool_name:'write_file',args:{},seq:3.5}],
+    active_run:{id:'run-A',status:'running',pending_approval:{approval_id:'pending',tool_name:'write_file',args:{}}}};
+  x.hook.applyDetail(snapshot);
+  assert.match(x.sources.at(-1).url,/since=attempt%3A40/);
+  assert.equal(x.state.subagentProgress.working.text,'durable');
+  assert.equal(x.state.subagentQueued.queued,true);
+  assert.equal(x.state.subagentErrors.failed,'Provider unavailable');
+  assert.equal(x.state.subagentStopNotices.failed,'Stopped');
+  assert.equal(x.state.approvals.length,2);
+  assert.equal(x.state.approvals[0].decision,'deny');
+  assert.equal(x.state.approvals[1].decision,null);
+  assert.equal(x.state.approvals[1].seq,3.5);
+  x.sources.at(-1).emit('subagent_progress',{child_id:'working',kind:'text',text:' duplicate',
+    message:{id:'child-message',stream_sequence:3}},'attempt:41');
+  assert.equal(x.state.subagentProgress.working.text,'durable');
+  x.sources.at(-1).emit('subagent_progress',{child_id:'working',kind:'text',text:' next',
+    message:{id:'child-message',stream_sequence:4}},'attempt:42');
+  assert.equal(x.state.subagentProgress.working.text,'durable next');
+  x.hook.applyDetail({...snapshot,run_event_cursors:{'run-A':'attempt:42'},
+    subagent_observations:[{child_id:'working',progress:{text:'durable next',message_id:'child-message',stream_sequence:4}}]},
+    {preservePresentation:true});
+  assert.equal(x.state.subagentProgress.working.text,'durable next');
+  x.sources.at(-1).emit('subagent_progress',{child_id:'working',kind:'text',text:' gap',
+    message:{id:'child-message',stream_sequence:6}},'attempt:43');
+  assert.equal(x.sources.at(-1).closed,true);
+  assert.equal(x.requests.length,1);x.cleanup();
+});
+
+test('historical unresolved gates remain visible without inventing a decision or accepting input',async()=>{
+  const x=await setup();x.hook.applyDetail({...detail('A'),subagent_observations:[],
+    approval_events:[{id:'old-gate',approval_id:'old-gate',run_id:'finished-run',tool_name:'write_file',args:{},decision:null,seq:2.5}]});
+  assert.equal(x.state.approvals.length,1);
+  assert.equal(x.state.approvals[0].decision,null);
+  assert.equal(x.state.approvals[0].actionable,false);x.cleanup();
+});
+
+test('an accepted approval cannot reopen while the worker still exposes its pending gate',async()=>{
+  const x=await setup();x.hook.applyDetail({...detail('A',true),subagent_observations:[],
+    active_run:{id:'run-A',status:'running',pending_approval:{approval_id:'gate',tool_name:'write_file',args:{}}},
+    approval_events:[{id:'gate',approval_id:'gate',run_id:'run-A',decision:'allow',actionable:false,seq:2.5}]});
+  assert.equal(x.state.approvals.length,1);
+  assert.equal(x.state.approvals[0].decision,'allow');assert.equal(x.state.approvals[0].actionable,false);x.cleanup();
+});
+
+test('a pending snapshot accepts first-attempt events from a legacy stream without discarding them',async()=>{
+  const x=await setup();x.hook.applyDetail({...detail('A',true),subagent_observations:[],run_event_cursors:{'run-A':'pending:0'}});
+  const stream=x.sources.at(-1);
+  stream.emit('status',{id:'started',status:'running',message:'Started'},'first:1');
+  stream.emit('approval_requested',{approval_id:'gate',tool_name:'write_file',args:{}},'first:2');
+  assert.equal(x.state.approvals[0].actionable,true);
+  stream.emit('code_step',step('first-code',1),'first:3');
+  assert.equal(x.state.codeSteps[0].id,'first-code');x.cleanup();
 });

@@ -176,6 +176,7 @@ const PROGRESS_SEGMENT_DEFS = [
   { id: "success", label: "Verified", countKey: "success" },
   { id: "disproved", label: "Disproved", countKey: "disproved" },
   { id: "sorry-stubbed", label: "Sorry-stubbed", countKey: "sorryStubbed" },
+  { id: "needs-review", label: "Needs review", countKey: "needsReview" },
   { id: "failed", label: "Failed", countKey: "failed" },
   { id: "out-of-date", label: "Out of date", countKey: "outOfDate" },
   { id: "running", label: "Running", countKey: "inProgress" },
@@ -429,6 +430,7 @@ export function paneProgressBucketForItem(item) {
   if (PROGRESS_IN_PROGRESS_STATUSES.has(status)) return "inProgress";
   if (hasPendingPaneObservations([item]) || ["unknown", "unavailable", "offline"].includes(status)) return "unconfirmed";
   if (item?.inProgress) return "inProgress";
+  if (["needs-review", "needs_review"].includes(status)) return "needsReview";
   if (PROGRESS_SUCCESS_STATUSES.has(status)) return "success";
   if (status === "disproved") return "disproved";
   if (PROGRESS_STUB_STATUSES.has(status)) return "sorryStubbed";
@@ -443,6 +445,7 @@ export function summarizePaneProgress(items) {
     success: 0,
     disproved: 0,
     sorryStubbed: 0,
+    needsReview: 0,
     failed: 0,
     outOfDate: 0,
     unformalized: 0,
@@ -461,6 +464,7 @@ export function formatPaneProgressSummary(summary) {
   appendProgressLabelPart(parts, summary?.disproved, "disproved");
   appendProgressLabelPart(parts, summary?.inProgress, "running");
   appendProgressLabelPart(parts, summary?.unconfirmed, "awaiting SQL status");
+  appendProgressLabelPart(parts, summary?.needsReview, "needs review");
   appendProgressLabelPart(parts, summary?.sorryStubbed, "sorry-stubbed");
   appendProgressLabelPart(parts, summary?.failed, "failed");
   appendProgressLabelPart(parts, summary?.outOfDate, "out of date");
@@ -497,6 +501,7 @@ export function formatPaneProgressLabel(path, summary) {
   appendProgressLabelPart(parts, summary?.outOfDate, "out of date");
   appendProgressLabelPart(parts, summary?.unformalized, "unformalized");
   appendProgressLabelPart(parts, summary?.unconfirmed, "awaiting status");
+  appendProgressLabelPart(parts, summary?.needsReview, "needs review");
   appendProgressLabelPart(parts, summary?.inProgress, "in progress");
   return `${parts.join(", ")}.`;
 }
@@ -804,8 +809,8 @@ export function paneItemActions(item, { editing = false } = {}) {
   const bestEffortAction = { id: "best-effort", label: "Continue best effort" };
 
   let primary = null;
-  if (!editing && item?.review?.eligible && item.status === 'needs-review') {
-    primary = { id: 'approve-result', label: 'Approve result' };
+  if (!editing && item?.status === 'needs-review') {
+    primary = { id: 'approve-result', label: 'Review result' };
   } else if (!editing && wait) {
     primary = dependencyWaitAction(wait);
   } else if (!editing && canRepairPaneItem(item)) {

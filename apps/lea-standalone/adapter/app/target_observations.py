@@ -120,7 +120,23 @@ def maintain(limit=20):
         if not needs_capture:
             with db.read_snapshot():
                 _, reason = observation(fid)
-            unchanged = _snapshot(json.loads(row['inputs_json'])).unchanged()
+            snapshot = _snapshot(json.loads(row['inputs_json']))
+            unchanged = snapshot.unchanged()
+            if unchanged and row['state'] == 'observed' and reason in {None, 'observation_expired'} and (
+                datetime.fromisoformat(row['observed_at']) < datetime.now(timezone.utc) - timedelta(seconds=30)):
+                queries = json.loads(row['queries_json'])
+                with db.write() as conn:
+                    # Revalidate after acquiring the writer. A concurrent edit,
+                    # scope disable or replacement publication cannot be renewed.
+                    current = conn.execute('''select o.observation_id from core_target_observations o
+                        join core_projection_enrollment e on e.scope=o.scope and e.enabled=1
+                        where o.formalization_id=? and o.state='observed' ''', (fid,)).fetchone()
+                    if not current or current[0] != row['observation_id'] or not _matches(conn, queries) or not snapshot.unchanged():
+                        return {'state': 'retry'}
+                    now = datetime.now(timezone.utc)
+                    conn.execute('update core_target_observations set observed_at=?,expires_at=? where formalization_id=?',
+                        (now.isoformat(), (now + timedelta(seconds=LIFETIME_SECONDS)).isoformat(), fid))
+                return {'state': 'observed', 'formalization_id': fid, 'renewed': True}
             needs_capture = bool(reason or not unchanged or
                 datetime.fromisoformat(row['observed_at']) < datetime.now(timezone.utc) - timedelta(seconds=30))
             if not unchanged:

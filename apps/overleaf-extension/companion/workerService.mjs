@@ -39,6 +39,7 @@ import {
   hashFormalizationInput,
   hashTargetText,
   inferLeanDeclarationName,
+  suggestLeanDeclarationName,
   isValidLeanIdentifier,
   parseTargetDocument
 } from "../shared/theoremParser.mjs";
@@ -495,6 +496,18 @@ class ProjectRenamingError extends Error {
   }
 }
 
+class TargetStatusLookupError extends Error {
+  constructor(result) {
+    super('Current proof status could not be loaded. Saved formalizations are retained.');
+    this.code = 'target_status_unavailable';
+    this.status = !result.ok && result.status >= 400 ? result.status : result.ok ? 502 : 503;
+    // Retain the failed observation for diagnosis without substituting job
+    // history, filesystem probes or another execution path for current SQL facts.
+    this.lookup = { status: result.status ?? null, code: adapterErrorCode(result, null),
+      message: result.error || 'The status reply did not contain a target inventory.' };
+  }
+}
+
 function throwIfProjectRenaming(result) {
   if (adapterErrorCode(result, "") === "project_renaming" || result?.body?.renameInProgress) {
     throw new ProjectRenamingError();
@@ -519,6 +532,11 @@ async function withProjectSnapshot(payload, state, build) {
     }
     return result;
   } catch (error) {
+    if (error instanceof TargetStatusLookupError) {
+      const response = errorResponse(error.status, error.code, error.message);
+      response.body.lookup = error.lookup;
+      return response;
+    }
     if (error?.code !== "project_renaming") throw error;
     return errorResponse(409, "project_renaming", error.message);
   }
@@ -1851,7 +1869,9 @@ async function leanPaneManifestSnapshot(payload, state, identity) {
           manifest.items.map((item) => ({
             targetKind: item?.leanKind === "def" ? "definition" : "theorem",
             targetLabel: item?.label || item?.leanDeclarationName || "",
-            declarationName: item?.leanDeclarationName || item?.label || "",
+            declarationName: suggestLeanDeclarationName({ targetText: item?.naturalLanguageLatex,
+              labelSource: item?.labelSource, latexLabel: item?.latexLabel })
+              || item?.leanDeclarationName || item?.label || "",
             displayTitle: item?.leanDeclarationName || item?.label || "",
             statement: item?.naturalLanguageLatex || "",
             // Runs and artifacts store this identity, including uses/context
@@ -2193,15 +2213,10 @@ export async function handleReview(payload, state, { decision = false } = {}) {
   if (!formalizationId) return errorResponse(404, 'review_target_missing', 'The recorded formalization could not be found. Refresh status.');
   const api = { fetchImpl: state.fetchImpl || fetch, baseUrl: chatBaseUrls(state).baseUrl,
     apiKey: state.env?.LEA_API_KEY, formalizationId };
-  let sourceContextRef;
+  let sourceContextRef = target.source_context_ref;
   if (!decision || payload.decision?.action === 'approve') {
-    const source = await prepareOverleafSource(api);
-    if (!source.ok || !source.body?.source_context_ref) {
-      return errorResponse(source.status || 503, 'review_source_unavailable', source.status === 404
-        ? 'Result approval requires the updated Lea adapter. Update and restart it, then retry.'
-        : source.error || 'Current Overleaf source could not be refreshed.');
-    }
-    sourceContextRef = source.body.source_context_ref;
+    if (!sourceContextRef) return errorResponse(409, 'review_source_required',
+      'Refresh the source from the Overleaf tab before reviewing this result.');
   }
   const result = decision
     ? await submitFormalizationReview({ ...api, decision: { ...payload.decision, source_context_ref: sourceContextRef } })
@@ -3150,7 +3165,7 @@ async function createRepairJob({ state, target, linkedJob, breakage, leaSessionI
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const jobId = `repair-${target.targetKind}-${target.targetLabel}-${timestamp}`;
   const logPath = path.join(jobLogDir(state), `${jobId}.log`);
-  if (databaseState) databaseState.appendLog(logPath, "");
+  if (databaseState) await appendLog(logPath, "");
   else { await fs.mkdir(path.dirname(logPath), { recursive: true }); await fs.writeFile(logPath, "", "utf8"); }
   const modelInfo = configuredModelMetadata(state);
 
@@ -6338,18 +6353,6 @@ function validateLeaRuntime(state, { requireApiKey, modelId = null }) {
   return { ok: true };
 }
 
-function suggestLeanNameFromLatexLabel(label) {
-  const withoutPrefix = String(label || "").trim()
-    .replace(/^(?:thm|theorem|lem|lemma|prop|proposition|cor|corollary|def|definition):/i, "");
-  let name = withoutPrefix.replace(/[^A-Za-z0-9_]+/g, "_")
-    .replace(/^_+|_+$/g, "").slice(0, 80);
-  if (!name) return "";
-  if (/^[0-9]/.test(name) || /^(?:theorem|lemma|def|by|where|if|then|else|match)$/.test(name)) {
-    name = `lea_${name}`;
-  }
-  return isValidLeanIdentifier(name) ? name : "";
-}
-
 async function createLeaJob({
   state,
   target,
@@ -6368,13 +6371,12 @@ async function createLeaJob({
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const jobId = `${target.targetKind}-${target.targetLabel}-${timestamp}`;
   const logPath = path.join(jobLogDir(state), `${jobId}.log`);
-  const declarationNameHint = inferLeanDeclarationName(targetText)
-    || (labelSource === "generated" ? suggestLeanNameFromLatexLabel(latexLabel) : "");
+  const declarationNameHint = suggestLeanDeclarationName({ targetText, labelSource, latexLabel });
   const previousSessionJob = findLatestJobWithLeaSession(state.jobs || {}, target.jobKey);
   const previousFormalizationJob = jobsByRecencyDesc(state.jobs || {}, () => true)
     .find((item) => item?.jobKey === target.jobKey && item?.formalizationId);
 
-  if (databaseState) databaseState.appendLog(logPath, "");
+  if (databaseState) await appendLog(logPath, "");
   else { await fs.mkdir(path.dirname(logPath), { recursive: true }); await fs.writeFile(logPath, "", "utf8"); }
   const modelInfo = configuredModelMetadata(state);
 
@@ -9065,7 +9067,8 @@ function mapLeanPaneStatus(statusInfo, item) {
   const status = String(statusInfo?.status || "").toLowerCase();
   const effective = String(statusInfo?.effectiveStatus || "").toLowerCase();
   if (statusInfo?.projection && statusInfo.projection.state !== "observed") return "synchronizing";
-  if (status === "unformalized" || status === "unavailable") return "missing-stub";
+  if (status === "unavailable") return "unknown";
+  if (status === "unformalized") return "missing-stub";
   if (status === "sorry_stub" || effective === "sorry_stub") return "stub-generated";
   if (status === "formalized") return item?.leanKind === "def" ? "defined" : "valid";
   if (status === "disproved") return "disproved";
@@ -9285,7 +9288,10 @@ async function fetchTargetStatusFromAdapter({ state, target, declarations, forma
     formalizationIds
   });
   throwIfProjectRenaming(result);
-  if (!result.ok || !Array.isArray(result.body?.targets)) return null;
+  // A SQL-confirmed absent project has no target ledger. Every other failed
+  // read is uncertainty, never an empty inventory or a missing proof.
+  if (!result.ok && result.status === 404) return null;
+  if (!result.ok || !Array.isArray(result.body?.targets)) throw new TargetStatusLookupError(result);
   return Object.fromEntries(result.body.targets.map((entry) => [entry.declaration_name, {
     ...entry, project_namespace: result.body.project_namespace,
     namespace_revision: result.body.namespace_revision
@@ -9325,6 +9331,9 @@ async function getTheoremStatus({
   const evidence = (linkedJob?.formalizationId
     ? Object.values(ledger || {}).find((entry) => entry?.formalization_id === linkedJob.formalizationId)
     : null) || candidates.map((name) => ledger?.[name]).find((entry) => entry?.formalization_id || entry?.last_batch_outcome) || null;
+  const needsReview = evidence?.validity_status === "needs_review"
+    || (evidence?.review?.requested === true && !evidence.review.approval
+      && !["proved", "defined", "disproved", "stale"].includes(evidence.validity_status));
   if (evidence?.project_namespace) target.projectNamespace = evidence.project_namespace;
   if(evidence?.formalization_id && evidence.projection && evidence.projection.state!=='observed') {
     return withLeaSession({status:evidence.stale?'stale':'unknown',effectiveStatus:evidence.stale?'stale':'unknown',
@@ -9342,11 +9351,13 @@ async function getTheoremStatus({
         artifactContent: typeof evidence.content === "string" ? evidence.content : undefined,
         review: evidence.review,
         reformalization: evidence.reformalization,
-        certification: evidence.certification
+        certification: evidence.certification,
+        leanCheck: { status: evidence.check_current === true ? evidence.check_status : "unchecked",
+          message: evidence.check_detail || null }
       }
     : {};
   const newestFinishedJob = findLatestFinishedJob(jobs, target.jobKey);
-  const unresolvedReviewJob = evidence && evidence.validity_status !== 'needs_review' ? null : findLatestJob(jobs, target.jobKey, "needs_review");
+  const unresolvedReviewJob = evidence && !needsReview ? null : findLatestJob(jobs, target.jobKey, "needs_review");
   // A later successful target run can supersede a paused job. A manual check
   // alone cannot do so, even when it happened after the pause.
   const checkedAfterPause = newestFinishedJob?.status === "paused"
@@ -9356,7 +9367,7 @@ async function getTheoremStatus({
     && Boolean(evidence.completion_run_id)
     && evidence.completion_run_id !== newestFinishedJob.apiRunId;
   if (newestFinishedJob?.status === "paused" && !checkedAfterPause
-      && evidence?.validity_status !== "needs_review" && !unresolvedReviewJob) {
+      && !needsReview && !unresolvedReviewJob) {
     const paused = buildJobResponse({ state, job: newestFinishedJob, status: "paused", target });
     if (evidence?.exists) {
       const entry = {
@@ -9387,11 +9398,11 @@ async function getTheoremStatus({
   // dependent genuinely rebuilds.
   const editBroken = linkedJob?.lastEditCheckStatus === "error";
 
-  if (evidence?.validity_status === "needs_review" && !evidence.exists) {
+  if (needsReview && !evidence.exists) {
     return withLeaSession({ status: "needs_review", targetKind, targetLabel: target.targetLabel,
       targetKey: target.jobKey, formalizationId: evidence.formalization_id || null,
       resultKind: "needs_review", message: evidence.validity_reason,
-      leanCheckPassed: evidence.check_current === true, ...artifactEvidence });
+      leanCheckPassed: evidence.check_current === true && evidence.check_status === "ok", ...artifactEvidence });
   }
 
   if (evidence && evidence.exists) {
@@ -9404,10 +9415,10 @@ async function getTheoremStatus({
     };
     const base = ledgerStatusBase({ leaRepoPath, target, entry });
     const leanStatement = extractLeanStatement(evidence.content || "", entry.name);
-    if (evidence.validity_status === "needs_review") {
+    if (needsReview) {
       return withLeaSession({ status: "needs_review", ...base, ...artifactEvidence,
         resultKind: "needs_review", message: evidence.validity_reason,
-        leanCheckPassed: evidence.check_current === true, leanStatement });
+        leanCheckPassed: evidence.check_current === true && evidence.check_status === "ok", leanStatement });
     }
     if (evidence.check_status === "error" || editBroken) {
       // The newest real verdict is a compile error (manual edit or cascade

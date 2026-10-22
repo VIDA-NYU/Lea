@@ -75,18 +75,28 @@ def register_change_batch(conn: sqlite3.Connection) -> None:
     conn.set_trace_callback(trace)
 
 
-def _wait_for_sql(operation):
-    until = time.monotonic() + WRITE_WAIT_SECONDS
+def _busy_deadline():
+    error = sqlite3.OperationalError('database transaction deadline exceeded')
+    error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    return error
+
+
+def _wait_for_sql(operation, deadline=None):
+    until = deadline if deadline is not None else time.monotonic() + WRITE_WAIT_SECONDS
     while True:
+        if deadline is not None and time.monotonic() >= until:
+            raise _busy_deadline()
         try:
             return operation()
         except sqlite3.OperationalError as exc:
             if (getattr(exc, 'sqlite_errorcode', 0) & 255) not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED} or time.monotonic() >= until:
                 raise
-            time.sleep(.05)
+            time.sleep(min(.05, max(0, until - time.monotonic())))
 
 
 class _Connection(sqlite3.Connection):
+    sql_deadline = None
+
     def execute(self, statement, parameters=()):
         execute = super().execute
         # A pending rollback-journal COMMIT can block new readers and an initial
@@ -94,12 +104,23 @@ class _Connection(sqlite3.Connection):
         # Do not retry a deferred transaction's write upgrade: it may already
         # hold a read lock and must roll back instead of deadlocking the writer.
         kind = statement.lstrip().upper()
+        # Cleanup must work even after a budget expires. A bounded transaction
+        # caps SQLite's own busy handler as well as our retries.
+        cleanup = kind.startswith(('ROLLBACK', 'RELEASE'))
+        deadline = None if cleanup else self.sql_deadline
+        def operation():
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise _busy_deadline()
+                execute(f'pragma busy_timeout = {max(1, min(BUSY_TIMEOUT_MS, int(remaining * 1000)))}')
+            return execute(statement, parameters)
         if kind.startswith(('SELECT', 'WITH')) or (not self.in_transaction and kind.startswith(('INSERT', 'UPDATE', 'DELETE'))):
-            return _wait_for_sql(lambda: execute(statement, parameters))
-        return execute(statement, parameters)
+            return _wait_for_sql(operation, deadline)
+        return operation()
 
 
-def _open(isolation_level: str | None = "") -> sqlite3.Connection:
+def _open(isolation_level: str | None = "", *, deadline=None) -> sqlite3.Connection:
     """Open a configured connection. `isolation_level=""` is the stdlib default
     (implicit deferred transactions); `None` means autocommit, leaving BEGIN/COMMIT
     to the caller — what `write()` needs.
@@ -108,18 +129,20 @@ def _open(isolation_level: str | None = "") -> sqlite3.Connection:
     cascades that depend on that (see `store.delete_project_cascade`), so enabling
     it here would change delete semantics repo-wide.
 
-    WAL is deliberately NOT enabled. It is not needed for correctness — `write()`
-    is safe under the rollback journal — and enabling it *without* `write()` makes
-    things worse: on the deferred read-modify-write below it widens the race,
-    measured at ~110 -> ~155 duplicate seqs per 200 inserts. If WAL is ever turned
-    on for read throughput, it must land after every read-modify-write has moved to
-    `write()`, and on its own merits.
+    Journal policy is set once by the supervised bootstrap, never by a query or
+    on every connection. WAL separates readers from publication commits;
+    read-modify-write operations still require `write()` and BEGIN IMMEDIATE.
     """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=isolation_level, factory=_Connection)
-    conn.row_factory = sqlite3.Row
-    register_change_batch(conn)
-    conn.execute(f"pragma busy_timeout = {BUSY_TIMEOUT_MS}")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.sql_deadline = deadline
+        register_change_batch(conn)
+        conn.execute(f"pragma busy_timeout = {BUSY_TIMEOUT_MS}")
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -148,11 +171,11 @@ def _transaction_boundary(conn, statement):
     open, so retrying it preserves generated results and trigger identities.
     The rollback journal can briefly block either boundary behind readers.
     """
-    return _wait_for_sql(lambda: conn.execute(statement))
+    return _wait_for_sql(lambda: conn.execute(statement), conn.sql_deadline)
 
 
 @contextmanager
-def write() -> Iterator[sqlite3.Connection]:
+def write(*, timeout_seconds=None) -> Iterator[sqlite3.Connection]:
     """A serialized read-modify-write transaction (`BEGIN IMMEDIATE`).
 
     Use this whenever a value being written was computed from a value read in the
@@ -172,20 +195,30 @@ def write() -> Iterator[sqlite3.Connection]:
     0.15s rather than after any wait. BEGIN IMMEDIATE takes the write lock up front,
     so callers queue on `busy_timeout` instead: 200/200, 0 duplicates.
     """
+    deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
     shared = _write_connection.get()
     if shared is not None:
+        previous = shared.sql_deadline
+        shared.sql_deadline = min(d for d in (previous, deadline) if d is not None) if previous is not None or deadline is not None else None
         savepoint='nested_'+uuid4().hex
-        shared.execute('savepoint '+savepoint)
-        try:yield shared
-        except BaseException:
-            shared.execute('rollback to '+savepoint)
+        try:
+            shared.execute('savepoint '+savepoint)
+            try:
+                yield shared
+                if shared.sql_deadline is not None and time.monotonic() >= shared.sql_deadline:
+                    raise _busy_deadline()
+            except BaseException:
+                shared.execute('rollback to '+savepoint)
+                shared.execute('release '+savepoint)
+                raise
             shared.execute('release '+savepoint)
-            raise
-        shared.execute('release '+savepoint)
+        finally:
+            shared.sql_deadline = previous
+            sqlite3.Connection.execute(shared, f'pragma busy_timeout = {BUSY_TIMEOUT_MS}')
         return
     if _snapshot_connection.get() is not None:
         raise RuntimeError("A database snapshot cannot perform writes")
-    conn = _open(isolation_level=None)
+    conn = _open(isolation_level=None, deadline=deadline)
     token = _write_connection.set(conn)
     try:
         _transaction_boundary(conn, "begin immediate")
@@ -255,6 +288,23 @@ def init_db() -> None:
 
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     upgrade_to_head()
+
+
+def configure_concurrency() -> None:
+    """Bootstrap-only journal setup for the same-host API and worker.
+
+    The owner holds the data/workspace locks before changing this persistent
+    setting. Durability defaults and serialized write/fencing rules are unchanged.
+    """
+    if _snapshot_connection.get() is not None or _write_connection.get() is not None:
+        raise RuntimeError('Journal setup cannot run inside an application transaction')
+    conn = _open(isolation_level=None)
+    try:
+        mode = _wait_for_sql(lambda: conn.execute('pragma journal_mode = wal').fetchone()[0])
+        if mode != 'wal':
+            raise RuntimeError('Shared local database storage must support WAL journaling')
+    finally:
+        conn.close()
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:

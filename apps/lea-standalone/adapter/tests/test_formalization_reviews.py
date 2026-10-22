@@ -131,6 +131,27 @@ def test_helper_and_missing_evidence_are_unchecked(tmp_path, monkeypatch):
     assert formalizations.get(target['id'])['validity_status'] == 'unchecked'
 
 
+@pytest.mark.parametrize('check_status', ['ok', 'error'])
+def test_blocked_review_retains_run_identity_and_independent_file_check(tmp_path, monkeypatch, check_status):
+    from app import target_observations
+    from app.queries import proofs
+    session, target, run, _ = setup_target(tmp_path, monkeypatch, kind='definition', project_target=True)
+    store.update_formalization(target['id'], declaration_name='missing_target')
+    if check_status == 'error':
+        store.add_code_step(session['id'], run['id'], 'Claim.lean', content='def helper : Nat := 0\n',
+            check_status='error', check_detail='type mismatch', artifact_kind='definition', formalization_id=target['id'])
+    assert target_observations.publish_run(run['id'])['state'] == 'observed'
+    result = proofs.target_status(store.get_project(target['project_id']), formalization_ids=target['id'])['targets'][0]
+    assert result['review']['requested'] is True
+    assert result['review']['run_id'] == run['id']
+    assert result['review']['eligible'] is False
+    assert result['review']['allowed_outcomes'] == []
+    assert result['validity_status'] in {'unchecked', 'failing'}
+    assert result['check_status'] == check_status
+    assert result['check_current'] is True
+    assert result['certification'] is None
+
+
 def test_legacy_review_recovers_only_unambiguous_checked_named_target(tmp_path, monkeypatch):
     _, target, _, _ = setup_target(tmp_path, monkeypatch)
     with db.connect() as conn:

@@ -3,6 +3,7 @@ import json
 from datetime import datetime,timedelta,timezone
 from . import db
 LIFETIME_SECONDS=15
+PUBLICATION_TIMEOUT_SECONDS=1
 BOUNDARY={'version':1,'ui_access':'database','command_direction':'ui_to_worker',
     'processes':'separate','queries':1,'changes':1,'commands':1,'source_publications':1,'editor':1}
 
@@ -19,7 +20,7 @@ def record_start(identity,pid):
 
 
 def publish(identity,value,capabilities):
-    with db.write() as conn:
+    with db.write(timeout_seconds=PUBLICATION_TIMEOUT_SECONDS) as conn:
         # Queuing for the writer must not consume the heartbeat's new lifetime.
         now=datetime.now(timezone.utc)
         changed=conn.execute('''update worker_process set lifecycle_state=?,heartbeat_at=?,expires_at=?,

@@ -23,6 +23,7 @@ no-lost-rows are the contract.
 """
 
 import threading
+import pytest
 
 from app import db, store
 
@@ -31,9 +32,16 @@ PER_THREAD = 25
 TOTAL = THREADS * PER_THREAD
 
 
-def _fresh_db(tmp_path, monkeypatch):
+@pytest.fixture(params=['delete', 'wal'])
+def journal(request):
+    return request.param
+
+
+def _fresh_db(tmp_path, monkeypatch, journal):
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
     db.init_db()
+    if journal == 'wal':
+        db.configure_concurrency()
 
 
 def _hammer(fn):
@@ -65,8 +73,8 @@ def _seqs(session_id):
     return [r["id"] for r in rows]
 
 
-def test_concurrent_messages_get_unique_seqs(tmp_path, monkeypatch):
-    _fresh_db(tmp_path, monkeypatch)
+def test_concurrent_messages_get_unique_seqs(tmp_path, monkeypatch, journal):
+    _fresh_db(tmp_path, monkeypatch, journal)
     session = store.create_session("Concurrent messages")
     run = store.create_run(session["id"], "gpt-4o", "openai", 3)
 
@@ -78,11 +86,11 @@ def test_concurrent_messages_get_unique_seqs(tmp_path, monkeypatch):
     assert len(set(seqs)) == TOTAL, f"{TOTAL - len(set(seqs))} duplicate seqs"
 
 
-def test_concurrent_mixed_writers_never_collide(tmp_path, monkeypatch):
+def test_concurrent_mixed_writers_never_collide(tmp_path, monkeypatch, journal):
     """Messages and code steps are the same table now, so racing them against each
     other is both the real-world shape (a run narrates while it writes) and the
     worst case for the counter that used to sit between them."""
-    _fresh_db(tmp_path, monkeypatch)
+    _fresh_db(tmp_path, monkeypatch, journal)
     session = store.create_session("Concurrent mixed")
     run = store.create_run(session["id"], "gpt-4o", "openai", 3)
 
@@ -100,7 +108,7 @@ def test_concurrent_mixed_writers_never_collide(tmp_path, monkeypatch):
     assert len(set(seqs)) == TOTAL, f"{TOTAL - len(set(seqs))} rows shared a position"
 
 
-def test_concurrent_writers_do_not_duplicate_a_blob(tmp_path, monkeypatch):
+def test_concurrent_writers_do_not_duplicate_a_blob(tmp_path, monkeypatch, journal):
     """The one read-then-write left in the write path: `_put_blob` looks up a content
     hash before inserting. Racing identical content is what would exercise it.
 
@@ -114,7 +122,7 @@ def test_concurrent_writers_do_not_duplicate_a_blob(tmp_path, monkeypatch):
     So the assertion with teeth here is `not errors` (the broken version fails it),
     not the blob count (true either way). `write()` is what keeps a racing run from
     erroring — the schema is what keeps it from lying."""
-    _fresh_db(tmp_path, monkeypatch)
+    _fresh_db(tmp_path, monkeypatch, journal)
     session = store.create_session("Same bytes, many writers")
     run = store.create_run(session["id"], "gpt-4o", "openai", 3)
     code = "theorem t : True := by trivial\n"
@@ -132,11 +140,11 @@ def test_concurrent_writers_do_not_duplicate_a_blob(tmp_path, monkeypatch):
     assert all(s["code"] == code for s in steps), "a step lost its content under load"
 
 
-def test_sessions_do_not_interleave_under_load(tmp_path, monkeypatch):
+def test_sessions_do_not_interleave_under_load(tmp_path, monkeypatch, journal):
     """Concurrent writes to *different* sessions must not bleed into each other.
     This used to assert each session's counter restarts at 1; ids are global now, so
     the real property is that each session reads back exactly its own rows, ordered."""
-    _fresh_db(tmp_path, monkeypatch)
+    _fresh_db(tmp_path, monkeypatch, journal)
     a = store.create_session("A")
     b = store.create_session("B")
     run_a = store.create_run(a["id"], "gpt-4o", "openai", 3)

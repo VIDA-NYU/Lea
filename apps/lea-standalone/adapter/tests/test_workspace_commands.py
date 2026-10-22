@@ -534,3 +534,17 @@ q.execute(token)
         assert result['state']=='succeeded' and store.get_project(p['id']) is None
         tombstone=tmp_path/'workspace/proofs/.lea-trash'/receipt['command']['id']
         assert tombstone.joinpath('P.lean').read_text()==source
+
+
+def test_project_creation_retries_use_one_durable_receipt(env):
+    from app.api_routes.projects import create_project, ProjectCreate
+    request=ProjectCreate(title='Created once',idempotency_key='project-create-once')
+    with ThreadPoolExecutor(3) as pool:
+        replies=list(pool.map(lambda _:create_project(request),range(3)))
+    ids={reply['command']['id'] for reply in replies}
+    assert len(ids)==1
+    result=execute(env)
+    assert result['state']=='succeeded',result
+    assert create_project(request)['command']['id']==next(iter(ids))
+    with db.connect() as conn:
+        assert conn.execute("select count(*) from projects where title='Created once'").fetchone()[0]==1

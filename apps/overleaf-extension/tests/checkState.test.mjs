@@ -10,7 +10,8 @@ test("projects compiler and attempt facts into Lean Check states", () => {
   assert.equal(projectLeanCheck({ paneStatus: "paused" }).status, "paused");
   assert.equal(projectLeanCheck({ paneStatus: "invalid" }).status, "error");
   assert.equal(projectLeanCheck({ paneStatus: "needs-review", statusInfo: { leanCheckPassed: true } }).status, "checked");
-  assert.equal(projectLeanCheck({ paneStatus: "needs-review", statusInfo: { leanCheckPassed: false } }).status, "unformalized");
+  assert.equal(projectLeanCheck({ paneStatus: "needs-review", statusInfo: { leanCheckPassed: false } }).status, "unconfirmed");
+  assert.equal(projectLeanCheck({ paneStatus: "needs-review", statusInfo: { leanCheck: { status: "error" } } }).status, "error");
 });
 
 test("unknown or synchronizing evidence is never a compiler failure or a current success", () => {
