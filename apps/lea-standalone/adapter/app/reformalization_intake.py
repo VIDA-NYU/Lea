@@ -98,6 +98,11 @@ def for_run(run_id):
     return get(run['reformalization_id']) if run and run.get('reformalization_id') else None
 
 def enqueue(request, project_id):
+    health = execution.health()
+    executor = health.get('capabilities', {}).get('execution', {})
+    if health.get('ready') and not executor.get('available', False):
+        raise HTTPException(503, detail={'error': 'reformalization_executor_unavailable',
+            'message': executor.get('reason') or 'The filesystem executor is unavailable.'})
     if not capability()['admission_enabled']:
         raise HTTPException(503, detail={'error': 'reformalization_unavailable', 'message': execution.capability().get('reason') or 'New reformalizations are disabled; retained work is available.'})
     if not execution.capability()['available']:

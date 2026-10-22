@@ -29,6 +29,22 @@ test('admission retains identity across contention, transport loss and cancellat
   assert.equal(cancelled.stopReason,'user_stop');
 });
 
+test('an unsupported reformalization executor settles without an admission retry', async () => {
+  let requests = 0;
+  const result = await awaitAdmission(async () => {
+    requests++;
+    return { ok: false, status: 503, body: { detail: {
+      error: 'reformalization_executor_unavailable', message: 'No supported filesystem executor.'
+    } } };
+  }, { onWait: () => assert.fail('unsupported execution cannot become ready by retrying'),
+    wait: () => assert.fail('unsupported execution must settle immediately') });
+  assert.equal(requests, 1);
+  assert.equal(result.code, 'reformalization_executor_unavailable');
+  assert.equal(result.retry, false);
+  assert.equal(requestFailure({status: 503, code: 'reformalization_unavailable'}).retry, true,
+    'temporary worker unavailability must retain its existing retry policy');
+});
+
 test('initial run admission retries HTTP busy without becoming a solver failure',async()=>{
   const posted=[];let waits=0;
   const result=await runApiProofJob({baseUrl:'http://fixture',message:'Prove',idempotencyKey:'stable',

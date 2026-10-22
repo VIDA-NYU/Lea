@@ -491,12 +491,20 @@ test("Overleaf manual edits preserve the adapter's pinned proof history", async 
   assert.equal(detail.body.code_steps.at(-1).check_status, "error");
   const repair=await postJson(companionBaseUrl+'/lean-pane/repair/start',await publishedTarget(identity));
   assert.equal(repair.status,200,JSON.stringify(repair.body));assert.ok(repair.body.jobId);
+  const health = await fetch(adapterBaseUrl+'/api/health').then(r=>r.json());
+  const supportsStaging = health.capabilities?.reformalization?.staging === true;
   const repaired=await waitFor(async()=>{const jobs=await readCompanionJobs();const job=jobs[repair.body.jobId];return job?.finishedAt?job:null;},{timeoutMs:180000,label:'staged repair'});
-  assert.equal(repaired.lastRepair?.state,'repaired',JSON.stringify(repaired));
-  const operation=await fetch(adapterBaseUrl+'/api/reformalizations/'+repaired.reformalizationId).then(r=>r.json());
-  assert.equal(operation.state,'settled',JSON.stringify(operation));
+  assert.equal(repaired.lastRepair?.state,supportsStaging?'repaired':'failed',JSON.stringify(repaired));
   const afterRepair=(await fetchApiSessionDetail({fetchImpl:fetch,baseUrl:adapterBaseUrl,sessionId:opened.body.leaSessionId})).body;
-  assert.equal(afterRepair.code_steps.at(-1).code,original,'Preservation-checked body repair restores the original claim');
+  if (supportsStaging) {
+    const operation=await fetch(adapterBaseUrl+'/api/reformalizations/'+repaired.reformalizationId).then(r=>r.json());
+    assert.equal(operation.state,'settled',JSON.stringify(operation));
+    assert.equal(afterRepair.code_steps.at(-1).code,original,'Preservation-checked body repair restores the original claim');
+  } else {
+    assert.equal(repaired.reformalizationId ?? null, null, 'unsupported execution admits no staged operation');
+    assert.match(repaired.lastRepair.failureReason, /filesystem executor/i);
+    assert.equal(afterRepair.code_steps.at(-1).code, broken, 'unsupported repair preserves the current user revision');
+  }
   assert.ok(afterRepair.code_steps.some(step=>step.code===broken),'The manually broken revision remains in canonical history');
   const restored = await saveAfterWork(original);
   assert.equal(restored.status, 200, JSON.stringify(restored.body));

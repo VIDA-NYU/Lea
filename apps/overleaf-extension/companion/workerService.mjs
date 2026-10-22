@@ -3415,6 +3415,9 @@ async function runLeaRepairJob({ state, job, target, snapshot, breakage, prompt,
 // because ..."), falling back to the run/rebuild error.
 async function readRepairFailureReason({ state, job, exit, rebuild }) {
   const fallback = exit?.error || rebuild?.body?.detail || rebuild?.error || "The repaired file still fails to compile.";
+  // Admission failed before a new run existed. The session's previous final
+  // message belongs to an older attempt and cannot explain this failure.
+  if (exit?.phase === 'admission') return fallback;
   if (!job.leaSessionId) return fallback;
   try {
     const detail = await fetchApiSessionDetail({

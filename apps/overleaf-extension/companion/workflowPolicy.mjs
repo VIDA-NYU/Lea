@@ -8,7 +8,8 @@ export function requestFailure(result = {}) {
   const code = result.code || detail?.code || detail?.error || result.body?.error || null;
   const status = result.status ?? result.httpStatus;
   const fenced = ['command_fenced', 'worker_fenced', 'parent_deadline_expired', 'parent_scope_mismatch',
-    'workspace_reconciliation_required', 'revision_conflict', 'source_changed', 'access_denied'].includes(code);
+    'workspace_reconciliation_required', 'revision_conflict', 'source_changed', 'access_denied',
+    'reformalization_executor_unavailable'].includes(code);
   const retry = !fenced && (['project_busy', 'project_renaming', 'database_busy', 'retry_database_busy',
     'projection_unavailable', 'adapter_draining', 'admission_disabled', 'worker_unavailable'].includes(code)
     || status == null || [408, 425, 429, 502, 503, 504].includes(status) || status >= 500);
