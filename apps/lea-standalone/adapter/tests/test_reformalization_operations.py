@@ -57,7 +57,18 @@ def selection():
     return {'path': 'Shared.lean', 'declaration': 'Lea.Study.b', 'kind': 'proved'}
 
 
-def test_claimed_operation_transfers_capacity_and_scope_to_its_run(project,monkeypatch):
+@pytest.fixture
+def admission_executor(monkeypatch):
+    # These SQL/cancellation tests stop before executing a subprocess. Exercise
+    # their contracts on every platform without providing an unconfined runner.
+    monkeypatch.setattr(execution, 'capability', lambda: {'available': True})
+    def forbidden(*args, **kwargs):
+        pytest.fail('Admission/cancellation must not execute a subprocess')
+    monkeypatch.setattr(execution, 'run', forbidden)
+    monkeypatch.setattr(execution, 'popen', forbidden)
+
+
+def test_claimed_operation_transfers_capacity_and_scope_to_its_run(project,monkeypatch,admission_executor):
     from app import commands,bridge,runregistry,runtime
     from app.routes import runs
     p,repo,form,_=project
@@ -165,7 +176,7 @@ def test_real_shared_retry_preserves_a_and_unfinished_c(project, monkeypatch):
         'provider_calls': 0}))
 
 
-def test_cancelled_preparation_stops_before_checks_or_model_work(project, monkeypatch):
+def test_cancelled_preparation_stops_before_checks_or_model_work(project, monkeypatch, admission_executor):
     from lea.check_runtime import CheckFailure
     from lea.runctx import run_context
     p, repo, form, original = project
@@ -919,7 +930,7 @@ def test_logical_owner_excludes_rename_and_delete_between_segments(project, monk
     assert ops.owner(project[0]['id'])['id'] == op['id']
 
 
-def test_standalone_retry_reuses_conversation_and_reload_observes_preparing(project, monkeypatch):
+def test_standalone_retry_reuses_conversation_and_reload_observes_preparing(project, monkeypatch, admission_executor):
     from app.routes import sessions
     p, _, form, _ = project
     prior = store.create_session('Existing work', project_id=p['id'])
