@@ -149,27 +149,17 @@ test("canStubPaneItem offers sorry-stubbing only for an unformalized theorem", (
   assert.equal(canStubPaneItem(undefined), false);
 });
 
-test("canViewPaneItemInLeaUi requires a target identity and a real run or artifact", () => {
+test("canViewPaneItemInLeaUi requires a target identity and a saved session", () => {
   const base = { label: "thm:main", status: "valid" };
-  assert.equal(canViewPaneItemInLeaUi(base), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "defined" }), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "disproved" }), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "needs-review" }), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "in-progress" }), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "stub-generated" }), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "stale" }), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "invalid" }), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "paused" }), true);
-  // Never-formalized or indeterminate items must not appear viewable.
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "missing-stub" }), false);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "unknown" }), false);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "error" }), false);
-  for (const status of ["needs-review", "unknown", "error", "missing-stub"]) {
+  for (const status of ["valid", "defined", "disproved", "needs-review", "in-progress",
+    "stub-generated", "stale", "invalid", "paused", "missing-stub", "unknown", "error"]) {
+    assert.equal(canViewPaneItemInLeaUi({ ...base, status }), false);
     assert.equal(canViewPaneItemInLeaUi({ ...base, status, leaSessionId: "saved-session" }), true);
+    assert.equal(canViewPaneItemInLeaUi({ ...base, status, leaSessionUrl: "http://localhost:5173/?session=saved-session" }), true);
   }
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "needs-review", leanArtifactPath: "Target.lean" }), true);
+  assert.equal(canViewPaneItemInLeaUi({ ...base, leanArtifactPath: "Target.lean" }), false);
   // Without a declaration name or label the session can't be resolved.
-  assert.equal(canViewPaneItemInLeaUi({ status: "valid" }), false);
+  assert.equal(canViewPaneItemInLeaUi({ status: "valid", leaSessionId: "saved-session" }), false);
   assert.equal(canViewPaneItemInLeaUi(undefined), false);
 });
 
@@ -177,7 +167,7 @@ test("paneItemActions puts Formalize primary with Stub in the overflow for an un
   const item = { formalizable: true, inProgress: false, status: "missing-stub", leanKind: "theorem", label: "thm:main" };
   const actions = paneItemActions(item);
   assert.deepEqual(actions.primary, { id: "formalize", label: "Formalize" });
-  assert.deepEqual(actions.rail.map((action) => action.id), ["go-to-source", "chat"]);
+  assert.deepEqual(actions.rail.map((action) => action.id), ["go-to-source", "chat", "view-in-lea"]);
   assert.deepEqual(actions.overflow.map((action) => action.id), ["stub"]);
 });
 

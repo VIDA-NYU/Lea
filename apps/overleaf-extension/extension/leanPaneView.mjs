@@ -687,20 +687,11 @@ export function githubImportMatchedTargetKeys(preview, targets) {
   return githubImportMatchedTargets(preview, targets).map((target) => target.key);
 }
 
-// These statuses imply a recorded run or artifact. A saved session also stays
-// reachable when source freshness, review, or an unavailable check changes the
-// item's status: navigation to its history does not certify the formalization.
-const LEA_UI_VIEWABLE_PANE_STATUSES = new Set([
-  "valid", "defined", "disproved", "in-progress",
-  "stub-generated", "stale", "invalid", "paused", "needs-review"
-]);
-
-// Whether the pane should offer a "View in Lea UI" action for an item. Needs a
-// stable target identity (like chat) to resolve the associated Lea session.
+// Opening LeaChat requires a recorded session. A Lean artifact or status alone
+// does not establish one; saved sessions remain reachable regardless of status.
 export function canViewPaneItemInLeaUi(item) {
   if (!item || !(item.leanDeclarationName || item.label)) return false;
-  return Boolean(item.leaSessionId || item.leaSessionUrl || item.leanArtifactPath)
-    || LEA_UI_VIEWABLE_PANE_STATUSES.has(item.status);
+  return Boolean(item.leaSessionId || item.leaSessionUrl);
 }
 
 // --- Lean-pane chat mirror -------------------------------------------------
@@ -821,7 +812,7 @@ export function paneItemActions(item, { editing = false } = {}) {
 
   const rail = [{ id: "go-to-source", label: "Go to source" }];
   if (canChatPaneItem(item)) rail.push({ id: "chat", label: "Chat" });
-  if (canViewPaneItemInLeaUi(item)) rail.push({ id: "view-in-lea", label: "Open in LeaChat" });
+  if (canChatPaneItem(item)) rail.push({ id: "view-in-lea", label: "Open in LeaChat" });
 
   const overflow = [];
   if (wait && !editing) {

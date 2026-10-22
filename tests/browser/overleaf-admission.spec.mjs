@@ -159,6 +159,9 @@ for (const width of [1280, 760]) test(`Lea Status describes a checked definition
   await page.locator('.ol-lean-project-tree-row').filter({ hasText: 'main.tex' }).click();
   await page.locator('.ol-lean-project-item-header').click();
   const pane = page.locator('.ol-lean-project-pane');
+  const openChat = pane.getByRole('button', { name: 'Open in LeaChat', exact: true });
+  await expect(openChat).toBeDisabled();
+  await expect(openChat).toHaveAttribute('title', 'No LeaChat session is available yet.');
   await expect(pane).toContainText(/Lean Check:\s*checked/);
   await expect(pane).toContainText('Medium confidence');
   await expect(pane).toContainText('The definition checks; the source omits a boundary case.');

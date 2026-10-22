@@ -3647,7 +3647,7 @@
     }
     summaryActions.appendChild(formalizeButton);
     summaryActions.appendChild(renderPaneItemIconAction(item, { id: "go-to-source", label: "Go to source" }));
-    if (leanPaneView.canViewPaneItemInLeaUi(item)) {
+    if (leanPaneView.canChatPaneItem(item)) {
       summaryActions.appendChild(renderPaneItemIconAction(item, { id: "view-in-lea", label: "Open in LeaChat" }));
     }
     summary.appendChild(summaryActions);
@@ -5690,6 +5690,8 @@
     button.innerHTML = PANE_ICON_SVG[action.id] || "";
     button.disabled = action.id === "chat";
     if (action.id === "view-in-lea") {
+      button.disabled = !leanPaneView.canViewPaneItemInLeaUi(item);
+      if (button.disabled) button.title = "No LeaChat session is available yet.";
       const label = document.createElement("span");
       label.textContent = action.label;
       button.appendChild(label);
@@ -5706,6 +5708,7 @@
         return;
       }
       if (action.id === "view-in-lea") {
+        if (button.disabled) return;
         button.disabled = true;
         if (leanPaneStatus) leanPaneStatus.textContent = "Opening Lea session...";
         try {
@@ -5714,7 +5717,7 @@
         } catch (error) {
           if (leanPaneStatus) leanPaneStatus.textContent = normalizeErrorMessage(error);
         } finally {
-          button.disabled = false;
+          button.disabled = !leanPaneView.canViewPaneItemInLeaUi(item);
         }
       }
     });
