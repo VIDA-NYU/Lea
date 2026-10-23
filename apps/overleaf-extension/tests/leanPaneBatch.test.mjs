@@ -5,6 +5,9 @@
 // leanPaneRepair.test.mjs and the per-item run pipeline by companion.test.mjs.
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 import {
   handleStubAll,
@@ -16,7 +19,7 @@ import {
   settleCanceledBatchEntry,
   classifyFormalizeJob,
   reconcileRecoveredBatches
-} from "../companion/server.mjs";
+} from "../companion/workerService.mjs";
 
 const PROJECT = "project-1";
 
@@ -158,6 +161,24 @@ test("cancel of a still-running batch defers settlement to its loop (reports sto
   assert.equal(res.body.done, false);
   assert.equal(res.body.stopping, true);
   assert.equal(batch.cancelRequested, true);
+});
+
+test("batch stop cancels a queued reformalization before a run exists", async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'lea-cancel-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const calls = [];
+  const batch = { batchId: 'queued-retry', operation: 'repair', overleafProjectId: PROJECT,
+    items: [{ state: 'running', runJobId: 'queued-job' }], running: true, done: false };
+  const state = { repairBatches: { [batch.batchId]: batch }, jobsPath: path.join(dir, 'jobs.json'),
+    settings: { leaApiBaseUrl: 'http://127.0.0.1:8001' },
+    jobs: { 'queued-job': { jobId: 'queued-job', reformalizationId: 'operation-B' } },
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url: String(url), method: options.method });
+      return { ok: true, status: 200, text: async () => JSON.stringify({ state: 'retained' }) };
+    } };
+  await handleBatchCancel({ batchId: batch.batchId }, state);
+  assert.deepEqual(calls, [{ url: 'http://127.0.0.1:8001/api/reformalizations/operation-B/cancel', method: 'POST' }]);
+  assert.equal(state.jobs['queued-job'].dependencyCancelRequested, true);
 });
 
 test("stopped Formalize all submits one settled report with run provenance", async () => {

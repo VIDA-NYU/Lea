@@ -1,3 +1,4 @@
+import { observeSessionList } from './lib/sessionObserver.mjs';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatThread } from './components/ChatThread';
@@ -20,8 +21,7 @@ import { createChatSubmission, createCheckpointSubmission } from './lib/overleaf
 import { parseSlashCommand } from './lib/slashCommands.js';
 import { runSlashCommand } from './lib/slashCommandRunner';
 import {
-  pickInitialSession,
-  readDeepLinkFormalizationId,
+  restoreInitialSession,
   stripNavigationParams,
 } from './sessionDeepLink.mjs';
 import { useProofSession } from './stores/proofSession';
@@ -39,6 +39,8 @@ import {
   type SessionDetail,
   type StatusEvent,
   type Formalization,
+  type EditorDraftBase,
+  type FileWriteResult,
   createRun,
   getFormalization,
   listProjectFormalizations,
@@ -64,6 +66,7 @@ export default function App() {
   const refreshSessions = useSessions((s) => s.refreshSessions);
   // F1: projects store — the list, the open project's detail, and open/close.
   const currentProject = useProjects((s) => s.currentProject);
+  const currentProjectDeleted = useProjects((s) => s.currentProjectDeleted);
   const refreshProjects = useProjects((s) => s.refreshProjects);
   const openProject = useProjects((s) => s.openProject);
   const closeProject = useProjects((s) => s.closeProject);
@@ -102,6 +105,9 @@ export default function App() {
   const setError = useProofSession((s) => s.setError);
   const [draft, setDraft] = useState('');
   const [submissionBusy, setSubmissionBusy] = useState(false);
+  const [restoringContext,setRestoringContext]=useState(true);
+  const [restorationFailed, setRestorationFailed] = useState(false);
+  const restorationStarted=useRef(false);
   const [sourceConnection, setSourceConnection] = useState<{ targetId: string; label: string; state: 'preparing' | 'connected' | 'error' } | null>(null);
   const submitting = useRef(false);
   const submitChat = useRef(createChatSubmission({ prepare: prepareOverleafSource, create: createRun }));
@@ -111,7 +117,7 @@ export default function App() {
   // the useLayout hook now (R5).
   const {
     view,
-    setView,
+    setView: setLayoutView,
     canvasCollapsed,
     setCanvasCollapsed,
     sidebarCollapsed,
@@ -121,6 +127,10 @@ export default function App() {
     setDragging,
     mainAreaRef,
   } = useLayout();
+  const setView = (next: Parameters<typeof setLayoutView>[0]) => {
+    useProjects.getState().invalidateNavigation();
+    setLayoutView(next);
+  };
   // editedPath (M20 canvas-edit nudge) now lives in the proofSession store
   // (v2.0.1 R1a): App sets it; ChatThread reads it straight from the store.
   const setEditedPath = useProofSession((s) => s.setEditedPath);
@@ -161,10 +171,10 @@ export default function App() {
     () => sessions.find((s) => s.id === selectedSessionId),
     [sessions, selectedSessionId],
   );
-  const title = selectedSession?.title || 'New theorem session';
+  const title = selectedSession?.title || (restoringContext ? 'Restoring session…' : restorationFailed ? 'Session unavailable' : 'New theorem session');
 
   const sortedCode = useMemo(() => sortCodeSteps(codeSteps), [codeSteps]);
-  const pendingApproval = approvals.find((a) => !a.decision);
+  const pendingApproval = approvals.find((a) => !a.decision && a.actionable !== false);
 
   // The run EventSource lifecycle + session-detail hydration live in a hook now
   // (R2); it reads the proofSession + sessions stores directly.
@@ -173,93 +183,82 @@ export default function App() {
   useEffect(() => {
     const restore = async () => {
       const loaded = await refreshSessions();
-      refreshProjects().catch(() => {});
       useModel.getState().syncFromSettings();
       useModel.getState().loadCatalog();
       // The Overleaf extension's "View in Lea UI" action opens <ui>/?session=<id>;
       // that deep-link takes precedence over the last-opened session.
-      const { sessionId: initialSessionId, source } = pickInitialSession({
+      await restoreInitialSession({
         search: window.location.search,
         savedId: window.localStorage.getItem(SELECTED_SESSION_KEY),
         sessions: loaded,
-      });
-      const deepLinkedFormalizationId = readDeepLinkFormalizationId(
-        window.location.search,
-      );
-      if (source === 'deep-link' || deepLinkedFormalizationId) {
-        // Strip the param so a later reload falls back to the saved-session restore.
-        const cleaned = stripNavigationParams(window.location.search);
-        window.history.replaceState(
-          {},
-          '',
-          `${window.location.pathname}${cleaned}${window.location.hash}`,
-        );
-      }
-      if (deepLinkedFormalizationId) {
-        const formalization = await getFormalization(deepLinkedFormalizationId);
-        const targetSessionId =
-          source === 'deep-link'
-            ? initialSessionId
-            : formalization.sessions[0]?.id;
-        if (targetSessionId && targetSessionId !== initialSessionId) {
-          await loadSession(targetSessionId);
-        }
-        if (targetSessionId) {
-          setFormalizationScope(formalization.id);
+        loadSession,
+        loadFormalization: getFormalization,
+        selectFormalization: (id: string) => {
+          setFormalizationScope(id);
           setCanvasCollapsed(false);
-        } else if (formalization.project_id) {
-          await openProject(formalization.project_id);
-          setView('project');
-        }
-      }
-      if (initialSessionId) {
-        try {
-          await loadSession(initialSessionId);
-        } catch (err) {
-          // A stale saved id is unexpected (it was just found in the list); a bad
-          // deep-link id is plausible — in that case leave the user on a fresh
-          // session rather than surfacing an error.
-          if (source !== 'deep-link') throw err;
-        }
-      }
+        },
+        openProject: async (id: string) => {
+          const project = await openProject(id);
+          if (project) setView('project');
+          return project;
+        },
+        onRestored: () => {
+          // Consume the link only after its session or project loaded successfully.
+          const cleaned = stripNavigationParams(window.location.search);
+          window.history.replaceState(
+            {},
+            '',
+            `${window.location.pathname}${cleaned}${window.location.hash}`,
+          );
+        },
+      });
     };
-    restore().catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    if(restorationStarted.current)return;
+    restorationStarted.current=true;
+    restore().catch((err) => {
+      setRestorationFailed(true);
+      setError(`Could not restore LeaChat: ${err instanceof Error ? err.message : String(err)} Retry loading to open this session.`);
+    })
+      .finally(()=>setRestoringContext(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Subscribe once to the session-list feed. Each `sessions_changed` event
-  // refreshes the sidebar and invalidates the selected formalization's canonical
-  // snapshot. It never rewrites the open session timeline. The browser EventSource auto-reconnects if
-  // the capped server stream recycles. A session started anywhere — including an
-  // Overleaf-driven formalization the companion creates via POST /api/runs —
-  // appears live without a manual refresh.
-  useEffect(() => {
-    const source = new EventSource('/api/sessions/events');
-    source.addEventListener('sessions_changed', () => {
-      refreshSessions().catch(() => {});
+  // One durable observer follows the watermark of a committed list snapshot.
+  // Refreshing data does not choose a conversation, file, or revision.
+  useEffect(() => observeSessionList({
+    refresh: refreshSessions,
+    readCursor: () => useSessions.getState().cursor,
+    onChanged: () => {
       bumpFormalizationRefresh();
-    });
-    return () => source.close();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+      const selected=useSessions.getState().selectedSessionId;
+      if (selected && !useProofSession.getState().isRunning) {
+        const owned = captureSelection(false);
+        void reconcile(selected).catch((err) => {
+          if (owned()) setError(`Could not refresh LeaChat: ${err instanceof Error ? err.message : String(err)} Reload this page to retry.`);
+        });
+      }
+    },
+  }), []);
 
   const loadSession = async (sessionId: string) => {
+    setRestorationFailed(false);
     const detail = await loadOwnedSession(sessionId);
     if (detail) window.localStorage.setItem(SELECTED_SESSION_KEY, detail.id);
+    return detail;
   };
 
   // Open a project's window (F1/F2). Loading its detail also sets it as the
   // selected project (sidebar highlight); the view switch reveals the window.
   const openProjectWindow = (projectId: string) => {
     openProject(projectId)
-      .then(() => setView('project'))
+      .then((detail) => { if (detail) setView('project'); })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   };
 
   const handleCreateProject = async (title: string, description?: string) => {
-    await createAndOpenProject(title, description);
+    const project = await createAndOpenProject(title, description);
     setNewProjectOpen(false);
-    setView('project');
+    if (project) setView('project');
   };
 
   // Leaving a project window back to the loose-chat view.
@@ -313,6 +312,7 @@ export default function App() {
   const handleStartProjectFormalization = async (
     formalization: Formalization,
     message?: string,
+    reformalize = false,
   ) => {
     if (!currentProject) return;
     const content = (
@@ -320,19 +320,52 @@ export default function App() {
       || `Continue working on ${formalization.declaration_name || formalization.display_title}.`
     ).trim();
     setError(undefined);
+    let ownsQueuedSelection: (() => boolean) | undefined;
     try {
-      resetForNewSession();
+      const retrySession = reformalize
+        ? (formalization.sessions.find(session => session.id === selectedSessionId)?.id || formalization.sessions[0]?.id)
+        : undefined;
+      if (retrySession) {
+        if (!await loadSession(retrySession)) return;
+      } else {
+        resetForNewSession();
+      }
+      const owned = captureSelection(false);
       const run = await createRun(
         content,
-        undefined,
+        retrySession,
         useModel.getState().model,
         {
           project_slug: currentProject.slug,
           project_title: currentProject.title,
           project_namespace: currentProject.namespace,
           focus_formalization_id: formalization.id,
+          ...(reformalize ? { artifact_operation: 'reformalize' as const } : {}),
         },
+        operation => {
+          if (!owned()) return;
+          setSelectedSessionId(operation.session_id);
+          setFormalizations([{ ...formalization, reformalization: {
+            id: operation.reformalization_id, state: 'queued', has_drafts: false } }]);
+          setFormalizationScope(formalization.id);
+          setMessages(previous => [...(retrySession === operation.session_id ? previous : []), { id: `queued:${operation.reformalization_id}`, session_id: operation.session_id,
+            role: 'assistant', content: 'Reformalization queued. It will start when this project is available.', created_at: new Date().toISOString() }]);
+          window.localStorage.setItem(SELECTED_SESSION_KEY, operation.session_id);
+          setView('main');
+          ownsQueuedSelection = captureSelection(false);
+        },
+        () => (ownsQueuedSelection || owned)(),
       );
+      if (!run.run_id || !(ownsQueuedSelection || owned)()) return;
+      if (reformalize) {
+        const detail = await loadSession(run.session_id);
+        if (detail) {
+          setFormalizationScope(formalization.id);
+          setView('main');
+          await refreshSessions();
+        }
+        return;
+      }
       setSelectedSessionId(run.session_id);
       setCurrentRunId(run.run_id);
       setRunStatus('running');
@@ -367,18 +400,19 @@ export default function App() {
   };
 
   const handleOpenFormalization = async (formalizationId: string) => {
+    const owned = captureSelection();
     try {
       const formalization = await getFormalization(formalizationId);
+      if (!owned()) return;
       const recentSession = formalization.sessions[0];
       if (recentSession) {
         closeProject();
         setView('main');
-        await loadSession(recentSession.id);
+        if (!await loadSession(recentSession.id)) return;
         setFormalizationScope(formalization.id);
         setCanvasCollapsed(false);
       } else if (formalization.project_id) {
-        await openProject(formalization.project_id);
-        setView('project');
+        if (await openProject(formalization.project_id)) setView('project');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to open formalization.');
@@ -404,6 +438,7 @@ export default function App() {
   }, []);
 
   const resetForNewSession = () => {
+    setRestorationFailed(false);
     closeStream();
     setSelectedSessionId(undefined);
     // One call, not a hand-maintained list of setters. The list version silently
@@ -422,7 +457,7 @@ export default function App() {
 
   const handleSubmit = async (general = false) => {
     const content = draft.trim();
-    if (!content || isRunning || submitting.current) return;
+    if (!content || restoringContext || isRunning || submitting.current) return;
     setError(undefined);
     setEditedPath(undefined);
     setApprovals((prev) => prev.filter((a) => a.decision));
@@ -559,50 +594,43 @@ export default function App() {
     setCanvasCollapsed(false);
   };
 
-  // Canvas editing → write the file, then lean_check; reconcile to pick up the
-  // new user-authored code step. Returns the verdict for the canvas foot.
-  // The canvas passes the file it's showing (#10); fall back to the latest step's
-  // file for the single-file case. So Edit/lean_check and SafeVerify act on the
-  // *chosen* file, not always the newest (possibly scratch) one.
+  // Publication owns the loaded draft's scope and preconditions. Checking has
+  // its own receipt/lifecycle and cannot turn an acknowledged save into a failure.
   const handleSaveAndCheck = async (
     content: string,
-    path?: string,
-    baseRevision?: string,
-  ): Promise<CheckOutcome> => {
-    const target = path ?? sortedCode[sortedCode.length - 1]?.path;
-    if (!selectedSessionId || !target) return { status: 'error', detail: 'No file to edit.' };
-    const owned = captureSelection();
-    const focusId =
-      formalizationScope === 'project' || formalizationScope === 'new'
-        ? undefined : formalizationScope;
+    path: string,
+    base: EditorDraftBase,
+    draftId: string,
+  ): Promise<FileWriteResult> => {
+    const selectionOwned = captureSelection();
+    const owned = () => selectionOwned() && useSessions.getState().selectedSessionId === base.session_id;
     try {
-      await writeSessionFile(
-        selectedSessionId,
-        target,
-        content,
-        'Manual edit from the canvas.',
-        focusId,
-        baseRevision || currentFormalizationSnapshot?.revision_token || undefined,
-      );
+      const publication = await writeSessionFile(base.session_id, path, content, 'Manual edit from the canvas.',
+        base.formalization_id, base.formalization_revision, base.file_revision, draftId);
+      if (owned()) { setEditedPath(path); setSafeVerify(null); bumpFormalizationRefresh(); }
+      return publication;
     } catch (err) {
       if (owned() && err instanceof RevisionConflictError) {
-        setCanvasRevisionMode('current');
-        bumpFormalizationRefresh();
         setError(err.message);
       }
       throw err;
     }
-    if (owned()) useProofSession.setState({ manualCheckSessionId: selectedSessionId });
+  };
+
+  const handleCheckPublished = async (target: string, base: EditorDraftBase): Promise<CheckOutcome> => {
+    const selectionOwned = captureSelection();
+    const owned = () => selectionOwned() && useSessions.getState().selectedSessionId === base.session_id;
+    if (owned()) useProofSession.setState({ manualCheckSessionId: base.session_id });
     let result;
     try {
-      result = await leanCheckSession(selectedSessionId, target, focusId);
+      result = await leanCheckSession(base.session_id, target, base.formalization_id, base.file_revision);
     } finally {
-      if (owned() && useProofSession.getState().manualCheckSessionId === selectedSessionId) {
+      if (owned() && useProofSession.getState().manualCheckSessionId === base.session_id) {
         useProofSession.setState({ manualCheckSessionId: undefined });
       }
     }
     if (!owned()) return result;
-    await reconcile(selectedSessionId);
+    await reconcile(base.session_id);
     await refreshSessions();
     if (!owned()) return result;
     setEditedPath(target); // after reconcile (which clears it) — surface the nudge
@@ -660,6 +688,9 @@ export default function App() {
     />
   );
 
+  if (view === 'project' && currentProjectDeleted)
+    return <main className="p-8"><button onClick={leaveProject}>Back to chats</button>
+      <h1>Project deleted</h1><p>This project is no longer available.</p></main>;
   if (view === 'project' && currentProject)
     return (
       <>
@@ -810,7 +841,9 @@ export default function App() {
             onDraftChange={setDraft}
             onSubmit={() => handleSubmit()}
             onSubmitGeneral={() => handleSubmit(true)}
-            submissionBusy={submissionBusy}
+            submissionBusy={submissionBusy || restoringContext || restorationFailed}
+            restoringSession={restoringContext}
+            onRetryRestore={restorationFailed ? () => window.location.reload() : undefined}
             sourceConnection={sourceConnection}
             onInterrupt={handleInterrupt}
             onResumeRun={async (runId, action = 'resume') => {
@@ -870,6 +903,7 @@ export default function App() {
             sessionId={selectedSessionId}
             onClose={() => setCanvasCollapsed(true)}
             onSaveAndCheck={handleSaveAndCheck}
+            onCheck={handleCheckPublished}
             onVerify={handleVerify}
             onOpenSession={(id) => {
               closeProject();

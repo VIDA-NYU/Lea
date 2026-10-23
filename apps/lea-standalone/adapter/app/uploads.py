@@ -20,6 +20,7 @@ testable against a scratch dir; it never imports config itself.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 import hashlib
 import logging
 import re
@@ -191,7 +192,12 @@ def save_upload(
     existing = {p.name for p in target_dir.iterdir()} if target_dir.exists() else set()
     name = sanitize_filename(filename, existing)
     stored = target_dir / name
-    stored.write_bytes(data)
+    from . import workspace_commands, workspace_files
+    if workspace_commands.current():
+        workspace_commands.authorize()
+        with stored.open('xb') as output:output.write(data)
+    else:
+        stored.write_bytes(data)
 
     warnings: list[dict] = []
     sidecar = extract_text(stored, ext, warnings)
@@ -199,7 +205,18 @@ def save_upload(
     repo = project_repo_dir(project, proofs_root)
     # The upload and (when extracted) its .txt sidecar — nothing else (X2).
     uploaded = [f".lea/files/{name}"] + ([f".lea/files/{sidecar.name}"] if sidecar else [])
-    GitStore(proofs_root).commit_all(repo, f"upload .lea/files/{name}", paths=uploaded)
+    if workspace_commands.current():
+        workspace_files.adopt_materialized(project['id'],[(rel,repo/rel) for rel in uploaded])
+    try:
+        commit=GitStore(proofs_root).commit_all(repo, f"upload .lea/files/{name}", paths=uploaded)
+    except Exception as exc:
+        if workspace_commands.current():
+            from . import db
+            with db.write() as conn:
+                workspace_commands.authorize(conn)
+                for rel in uploaded:
+                    conn.execute("update workspace_files set materialization='provenance_pending',detail=? where scope=? and path=?",(str(exc),'p:'+project['id'],rel))
+        raise
 
     rel_stored = f".lea/files/{name}"
     rel_extracted = f".lea/files/{sidecar.name}" if sidecar else None
@@ -230,7 +247,8 @@ def delete_file(project: dict, proofs_root: Path, file_row: dict) -> bool:
         if rel:
             p = repo / rel
             if p.exists():
-                p.unlink()
+                from .workspace_effects import install_from_snapshot
+                install_from_snapshot(p,None)
     removed = [rel for rel in (file_row.get("stored_path"), file_row.get("extracted_path")) if rel]
     GitStore(proofs_root).commit_all(repo, f"delete {file_row['stored_path']}", paths=removed)
     return store.delete_project_file(file_row["id"])
@@ -364,12 +382,18 @@ def ensure_overleaf_gitignore(project: dict, proofs_root: Path) -> bool:
     return _write_gitignore(base)
 
 
-def commit_mirror(project: dict, proofs_root: Path) -> str:
+def commit_mirror(project: dict, proofs_root: Path, *, reformalization_id: str | None = None) -> str:
     """Commit the project repo after a mirror reconcile (run as a deferred background
     task by the route, so the request returns before git runs)."""
     # A queued commit can outlive its route's reservation. Wait for any intervening
     # rename and resolve the current repo, rather than committing the old path.
-    with project_coordination.mutation(project["id"], wait=True):
+    with ExitStack() as stack:
+        # Background tasks run after the route has released its ContextVar.
+        # Preserve only that route's recorded owner, never a later project's owner.
+        if reformalization_id:
+            from . import reformalizations
+            stack.enter_context(reformalizations.acting(reformalization_id))
+        stack.enter_context(project_coordination.mutation(project["id"], wait=True))
         project = store.get_project(project["id"])
         if project is None:
             return ""

@@ -20,10 +20,11 @@ from .config import (
     PROVIDER_ENDPOINT_ENV, provider_endpoint,
 )
 from . import models_catalog
+from .catalog_service import bundled_catalog, service as catalog_service
 from . import store
 
 
-CONFIG_PATH = ROOT / "config" / "lea.local.toml"
+CONFIG_PATH = Path(os.environ.get("LEA_CONFIG_FILE",ROOT / "config" / "lea.local.toml"))
 API_KEY_FIELDS = {
     "openai": "openai_api_key",
     "anthropic": "anthropic_api_key",
@@ -52,20 +53,9 @@ PERMISSION_TIER_DETAILS = {
         "description": "The agent runs without approval prompts.",
     },
 }
-# Curated shortlist of current models. Not exhaustive — the Settings model field
-# is a searchable combobox that also accepts any custom model ID (provider is
-# inferred from the ID prefix), so models not listed here can still be typed in.
-MODEL_OPTIONS = [
-    {"value": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "family": "openai"},
-    {"value": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "family": "openai"},
-    {"value": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "family": "openai"},
-    {"value": "gpt-5.5", "label": "GPT-5.5", "family": "openai"},
-    {"value": "gpt-5.5-mini", "label": "GPT-5.5 Mini", "family": "openai"},
-    {"value": "claude-opus-4-8", "label": "Claude Opus 4.8", "family": "anthropic"},
-    {"value": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6", "family": "anthropic"},
-    {"value": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "family": "anthropic"},
-    {"value": "gemini/gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro", "family": "google"},
-]
+# One shared snapshot is bundled for both applications. Live suggestions come
+# from the adapter catalog service.
+MODEL_OPTIONS = bundled_catalog()["models"]
 MODEL_FAMILY_BY_VALUE = {str(option["value"]): str(option["family"]) for option in MODEL_OPTIONS}
 KEY_VALIDATORS = {
     "openai": re.compile(r"^sk-[A-Za-z0-9_-]{8,}$"),
@@ -125,18 +115,19 @@ class ApiKeyUpdate:
 
 def settings_payload(path: Path | None = None) -> dict[str, Any]:
     config = load_config(path)
+    effective_keys={**{key:value for key,value in os.environ.items() if re.fullmatch(r'[A-Z][A-Z0-9_]*_(?:API_KEY|AUTH_TOKEN)',key)},**configured_provider_keys(path)}
     return {
         "model": config.model,
         "max_turns": config.max_turns,
         "max_spend_usd": config.max_spend_usd,
         "current_spend_usd": current_spend_usd(),
-        "api_keys": _api_keys_payload(configured_provider_keys(path)),
+        "api_keys": _api_keys_payload(effective_keys),
         # Endpoint overrides (a Portkey gateway URL): effective value + where it came
         # from, so the UI can show an inherited value as a placeholder.
         "provider_endpoints": {
             env: provider_endpoint(env, path) for env in PROVIDER_ENDPOINT_ENV
         },
-        "model_options": MODEL_OPTIONS,
+        "model_options": catalog_service().payload(config.model)["featured"],
         "permission_tier": config_permission_tier(path),
         "permission_tiers": [
             {"value": tier, **PERMISSION_TIER_DETAILS[tier]} for tier in PERMISSION_TIERS
@@ -159,31 +150,12 @@ def _api_keys_payload(keys: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def model_catalog() -> list[dict[str, str]]:
-    """Full LiteLLM chat-model catalog for the searchable picker; falls back to
-    the curated shortlist if LiteLLM is unavailable."""
-    catalog = models_catalog.list_chat_models()
-    if catalog:
-        return catalog
-    return [
-        {"value": str(o["value"]), "label": str(o["label"]), "provider": str(o["family"])}
-        for o in MODEL_OPTIONS
-    ]
+def model_catalog() -> list[dict]:
+    return catalog_service().payload()["models"]
 
 
 def model_catalog_warnings() -> list[dict]:
-    """F3: non-empty when the picker is showing the curated FALLBACK list rather
-    than the live catalog. The fallback is a handful of models against LiteLLM's
-    ~2k, and it also disables the per-model key prompt — a user hunting for a model
-    that isn't there deserves to know it's a stale list, not an exhaustive one."""
-    reason = models_catalog.unavailable_reason()
-    if not reason or models_catalog.list_chat_models():
-        return []
-    return [diagnostics.resolve(
-        "degraded", "settings.catalog_unavailable",
-        f"The full model catalog could not be loaded ({reason}); showing a built-in list.",
-        source="settings",
-    )]
+    return catalog_service().payload()["warnings"]
 
 
 def _required_env_keys(model: str) -> list[str]:
@@ -260,9 +232,9 @@ def validate_configured_model(model: str, path: Path | None = None) -> str:
     return normalized
 
 
-def update_settings(values: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
+def update_settings(values: dict[str, Any], path: Path | None = None, *, database: bool = False) -> dict[str, Any]:
     config_path = path or CONFIG_PATH
-    current_config = load_config(config_path)
+    current_config = load_config() if database else load_config(config_path)
     updates: dict[str, Any] = {}
 
     if "model" in values and values["model"] is not None:
@@ -417,8 +389,19 @@ def update_settings(values: dict[str, Any], path: Path | None = None) -> dict[st
         updates[toml_key] = value
 
     _validate_selected_model_has_key(str(current_config.model), current_keys, updates)
-    _write_toml_updates(config_path, updates)
-    return settings_payload(config_path)
+    if database:
+        from . import settings_policy
+        from .workspace_commands import authorize
+        authorize()
+        _write_toml_updates(config_path,{k:v for k,v in updates.items() if k not in settings_policy.FIELDS})
+        settings_policy.update(updates)
+    else:
+        _write_toml_updates(config_path, updates)
+    if "model" in updates and config_path == CONFIG_PATH:
+        catalog_service().remember_model(str(updates["model"]))
+    if api_key_updates or endpoint_updates:
+        catalog_service().request_refresh()
+    return settings_payload() if database else settings_payload(config_path)
 
 
 def current_spend_usd() -> float:

@@ -43,7 +43,7 @@ test('lost admission response reuses the exact snapshot and request identity', a
   assert.deepEqual(requests[0], requests[1]);
 });
 
-test('definite stale-source rejection reacquires instead of replaying rejected evidence', async () => {
+test('a conflicting admission retains its source and identity for review', async () => {
   let prepared = 0, attempts = 0;
   const submit = createChatSubmission({
     prepare: async () => ({ source_context_ref: `source-${++prepared}` }),
@@ -51,7 +51,7 @@ test('definite stale-source rejection reacquires instead of replaying rejected e
   });
   await assert.rejects(submit(input), /Stale/);
   await submit(input);
-  assert.equal(prepared, 2);
+  assert.equal(prepared, 1);
 });
 
 test('navigation during acquisition prevents admission into the old conversation', async () => {
@@ -76,4 +76,14 @@ test('checkpoint retries also preserve their exact prepared source and identity'
   await resume(request);
   assert.equal(prepared, 1);
   assert.deepEqual(requests, [['paused', 'source-1', 'continue-once'], ['paused', 'source-1', 'continue-once']]);
+});
+
+test('a tab reload retains the complete source-bound request even before target metadata arrives',async()=>{
+  const records=new Map();const storage={getItem:k=>records.get(k),setItem:(k,v)=>records.set(k,v),removeItem:k=>records.delete(k)};
+  const requests=[];
+  const create=async(...args)=>{requests.push(args);if(requests.length===1)throw new TypeError('lost');return {};};
+  await assert.rejects(createChatSubmission({storage,prepare:async()=>({source_context_ref:'frozen'}),create})(input));
+  const reloaded=createChatSubmission({storage,prepare:async()=>{throw new Error('must retain source');},create});
+  await reloaded({...input,formalizations:[]});
+  assert.deepEqual(requests[0],requests[1]);
 });

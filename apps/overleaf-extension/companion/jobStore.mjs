@@ -22,6 +22,19 @@ export function findActiveJob(jobs, jobKey) {
   return Object.values(jobs || {}).find((job) => job.jobKey === jobKey && job.status === "in_progress");
 }
 
+// Project-wide activity must include work outside the currently visible .tex
+// file. Batch activity also covers the gaps between dispatching queued items.
+export function projectActivitySnapshot(jobs, batches, overleafProjectId) {
+  return {
+    activeJobs: Object.values(jobs || {}).filter((job) => (
+      job.overleafProjectId === overleafProjectId && job.status === "in_progress"
+    )).length,
+    activeBatches: Object.values(batches || {}).filter((batch) => (
+      batch.overleafProjectId === overleafProjectId && !batch.done && !batch.pausedOn
+    )).length
+  };
+}
+
 export function findLatestJob(jobs, jobKey, status) {
   return jobsByRecencyDesc(jobs, (job) => job.jobKey === jobKey && job.status === status)[0] || null;
 }

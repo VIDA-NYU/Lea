@@ -1,0 +1,23 @@
+{
+  "architecture": "amd64",
+  "artifact": {
+    "id": 12119227085,
+    "name": "stage8-qualified-binaries-amd64",
+    "size_in_bytes": 4540118239,
+    "expired": false,
+    "digest": "sha256:df8adea3aae23e9fd714006ceed1a911e7e9f679974559a32426b1d0f4f68f3d",
+    "expires_at": "2026-11-01T00:23:51Z"
+  },
+  "local_archive": "/Users/danielarturi/Developer/VIDA_Dev/LeaEcosystem/.release-artifacts/stage8/39081557247/native-amd64.zip",
+  "outer_zip_sha256": "df8adea3aae23e9fd714006ceed1a911e7e9f679974559a32426b1d0f4f68f3d",
+  "inner_archive_sha256": {
+    "strict-bundles.tar.gz": "e4609dd10047df169670ccee382d8805c66db24de46d11baf0155333bee4b6f0",
+    "baseline-source.tar.gz": "ee20ee106c4b2da397c8a193cf9fce725a90599416dff1b174d4454fa4cee9ce",
+    "candidate-source.tar.gz": "f338d472ceee9c9cf9912364e80de5dccbdc6a4a94ba44705cbdece666d6b6f9"
+  },
+  "size_bytes": 4540118239,
+  "github_digest_verified": true,
+  "inner_checksums_verified": true,
+  "reports_match_evidence": true,
+  "release_provenance_verified": true
+}

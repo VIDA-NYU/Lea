@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "platform": "aarch64",
+  "api_workspace_absent": true,
+  "read_only_api": true,
+  "api_restart_preserves_worker": true,
+  "worker_crash_preserves_api_reads": true,
+  "durable_receipt_reused": true,
+  "worker_generation_advanced": true,
+  "api_image": "lea-stage8-api-qualification:local",
+  "worker_image": "lea-stage6-qualification:local",
+  "full_release_image_build": false,
+  "native_linux_lean_qualified": false
+}

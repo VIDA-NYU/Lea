@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T01:45:16.223635+00:00",
+  "scope": "Private SQLite backup and browser content-script harness using original source bytes. No live writes, provider calls or proof runs; SQL batch admission only.",
+  "historical_evidence": {
+    "project_slug": "6ad188c333723b9dbc0bb6fe",
+    "historical_runs": 0,
+    "historical_batches": 0,
+    "historical_targets": 9,
+    "recorded_scope_revision": 57,
+    "last_observed_revision": 2
+  },
+  "workspace_before_proof": {
+    "state": "awaiting_materialization",
+    "processed": 0
+  },
+  "interleaved_capture_and_sync": [
+    {
+      "capture_state": "capturing",
+      "processed": 1,
+      "unchanged_sync_ms": 263.89,
+      "scope_revision": 57
+    },
+    {
+      "capture_state": "capturing",
+      "processed": 1,
+      "unchanged_sync_ms": 258.81,
+      "scope_revision": 57
+    },
+    {
+      "capture_state": "capturing",
+      "processed": 1,
+      "unchanged_sync_ms": 258.66,
+      "scope_revision": 57
+    },
+    {
+      "capture_state": "capturing",
+      "processed": 1,
+      "unchanged_sync_ms": 263.86,
+      "scope_revision": 57
+    },
+    {
+      "capture_state": "capturing",
+      "processed": 1,
+      "unchanged_sync_ms": 279.18,
+      "scope_revision": 57
+    },
+    {
+      "capture_state": "capturing",
+      "processed": 1,
+      "unchanged_sync_ms": 262.06,
+      "scope_revision": 57
+    },
+    {
+      "capture_state": "capturing",
+      "processed": 1,
+      "unchanged_sync_ms": 262.39,
+      "scope_revision": 57
+    },
+    {
+      "capture_state": "capturing",
+      "processed": 1,
+      "unchanged_sync_ms": 262.63,
+      "scope_revision": 57
+    },
+    {
+      "capture_state": "capturing",
+      "processed": 1,
+      "unchanged_sync_ms": 313.2,
+      "scope_revision": 57
+    },
+    {
+      "capture_state": "observed",
+      "processed": 1,
+      "unchanged_sync_ms": 261.36,
+      "scope_revision": 57
+    }
+  ],
+  "planned_targets_after_capture": 9,
+  "browser_batch_items": 9,
+  "source_publications_validated": 10,
+  "frozen_target_bindings": 9,
+  "batch_admission_state": "queued",
+  "source_sha256": {
+    "apps/lea-standalone/adapter/app/store.py": "a81125f153dc32cee2b767e72245b57a23c5d2212837558fd13fb2fdf1049c87",
+    "apps/lea-standalone/adapter/app/github_import_service.py": "bd3c8d9ae5063b67b666b141540add8cba6bcdb5e67e391f71a4287505c4f388",
+    "apps/lea-standalone/adapter/app/workspace_effects.py": "ddf2513cc441b3581932571d7112223a473548888201d26a0735a91eeaa8c1d6",
+    "apps/lea-standalone/adapter/app/workspace_observer.py": "a8bccffad6f1db4b5a20d728b736c1abbd4c3f3a15761229b9f5baa34d9aabe2",
+    "apps/lea-standalone/adapter/tests/test_inventory_sync_stability.py": "31a9b55d4c230bf0b88b75ab016c1a8e96a97506fbe9339d661c6983407f7455"
+  },
+  "validation": {
+    "projection_workspace_import_gate": {
+      "passed": 126,
+      "failed": 0
+    },
+    "focused_inventory_stability": {
+      "passed": 4,
+      "failed": 0
+    },
+    "boundary_file_confirmed_target_gate": {
+      "passed": 47,
+      "failed": 0,
+      "optional_native_editor_skipped": 1
+    },
+    "original_input_browser_harness": {
+      "passed": 1,
+      "failed": 0
+    },
+    "boundary_audit": {
+      "adapter_routes": 179,
+      "companion_branches": 27
+    },
+    "diff_whitespace": "passed",
+    "counts_overlap": true
+  }
+}

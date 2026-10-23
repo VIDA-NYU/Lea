@@ -2,9 +2,16 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import test from "node:test";
 import vm from "node:vm";
 import { buildLeanPaneManifest } from "../shared/leanPaneManifest.mjs";
+import { handleGetStatuses, handleLeanPaneManifest } from "../companion/workerService.mjs";
+
+// A successful project download is a real (empty main.tex) ZIP; the harness
+// overlays its live buffer just as the browser does. Tests for unavailable or
+// delayed archives override this response explicitly.
+const projectZip = Buffer.from("UEsDBBQAAAAAAPW5TV0AAAAAAAAAAAAAAAAIAAAAbWFpbi50ZXhQSwECFAMUAAAAAAD1uU1dAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAgAEAAAAAbWFpbi50ZXhQSwUGAAAAAAEAAQA2AAAAJgAAAAAA", "base64");
 
 const repoRoot = path.resolve(import.meta.dirname, "../../..");
 const contentScriptPath = path.join(repoRoot, "apps/overleaf-extension/extension/content.js");
@@ -26,6 +33,136 @@ const CASES = [
   ["failed with unformalized effective status", { status: "failed", effectiveStatus: "unformalized", leaSessionId: "stale-session" }, false],
   ["failed with sorry_stub effective status", { status: "failed", effectiveStatus: "sorry_stub" }, true]
 ];
+
+test("project activity remains visible with the pane closed and no editor targets", async () => {
+  let projectActivity = { activeJobs: 1, activeBatches: 0 };
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    fetchOverride: async (url) => url.endsWith("/statuses")
+      ? { ok: true, async json() { return { statuses: {}, projectActivity }; } }
+      : undefined
+  });
+  await harness.setVisibility(false);
+  await harness.runTimersAt(250);
+  const button = harness.document.body.querySelector(".ol-lean-pane-trigger");
+  assert.equal(button.classList.contains("is-working"), true);
+  assert.match(button.attributes["aria-label"], /Lea is working/);
+  assert.equal(harness.countSelector(".ol-lean-project-pane"), 0);
+  const request = harness.fetchCalls.find((call) => call.url.endsWith("/statuses"));
+  assert.deepEqual(JSON.parse(request.options.body).targets, []);
+
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickButtonLabel("Close Lean pane");
+  assert.equal(button.classList.contains("is-working"), true);
+  assert.equal(button.attributes["aria-expanded"], "false");
+
+  projectActivity = { activeJobs: 0, activeBatches: 0 };
+  await harness.runTimersAt(3000);
+  assert.equal(button.classList.contains("is-working"), false);
+  assert.equal(button.attributes["aria-label"], "Open Lean project pane");
+});
+
+test("a queued batch keeps the loading wheel active between items and stops when paused", async () => {
+  let projectActivity = { activeJobs: 0, activeBatches: 1 };
+  const harness = createContentHarness({ status: "formalized" }, {}, {
+    fetchOverride: async (url) => url.endsWith("/statuses")
+      ? { ok: true, async json() { return { statuses: {}, projectActivity }; } }
+      : undefined
+  });
+  await harness.loadStatusForVisibleTheorem();
+  const button = harness.document.body.querySelector(".ol-lean-pane-trigger");
+  assert.equal(button.classList.contains("is-working"), true);
+  projectActivity = { activeJobs: 0, activeBatches: 0 };
+  await harness.runTimersAt(3000);
+  assert.equal(button.classList.contains("is-working"), false);
+});
+
+test("the loading wheel starts during formalization admission and clears on rejection", async () => {
+  let rejectStart;
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    storage: { leaTexMirrorEnabled: false },
+    fetchOverride: async (url) => {
+      if (url.endsWith("/formalize")) return new Promise((resolve) => {
+        rejectStart = () => resolve({ ok: false, status: 400, async json() { return { message: "Cannot start this run." }; } });
+      });
+    }
+  });
+  await harness.loadStatusForVisibleTheorem();
+  harness.openTargetPopover();
+  harness.clickButtonText("Formalize");
+  const button = harness.document.body.querySelector(".ol-lean-pane-trigger");
+  assert.equal(button.classList.contains("is-working"), true);
+  await flushPromises();
+  assert.ok(rejectStart);
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickButtonLabel("Close Lean pane");
+  rejectStart();
+  await flushPromises();
+  assert.equal(button.classList.contains("is-working"), false);
+});
+
+test("a status response from before admission cannot clear a newly started formalization", async () => {
+  let releaseStatus;
+  let delayStatus = false;
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    storage: { leaTexMirrorEnabled: false },
+    fetchOverride: async (url) => {
+      if (!url.endsWith("/statuses")) return;
+      const response = { ok: true, async json() { return {
+        statuses: { "theorem:demo_theorem": { status: "unformalized" } },
+        projectActivity: { activeJobs: 0, activeBatches: 0 }
+      }; } };
+      if (delayStatus) return new Promise((resolve) => { releaseStatus = () => resolve(response); });
+      return response;
+    }
+  });
+  await harness.loadStatusForVisibleTheorem();
+  delayStatus = true;
+  await harness.runTimersAt(30000);
+  assert.ok(releaseStatus);
+  const releasePreviousStatus = releaseStatus;
+  harness.openTargetPopover();
+  harness.clickButtonText("Formalize");
+  await flushPromises();
+  const button = harness.document.body.querySelector(".ol-lean-pane-trigger");
+  assert.equal(button.classList.contains("is-working"), true);
+  releasePreviousStatus();
+  await flushPromises();
+  assert.equal(button.classList.contains("is-working"), true);
+  await harness.runTimersAt(250);
+  releaseStatus();
+  await flushPromises();
+  assert.equal(button.classList.contains("is-working"), false);
+});
+
+test("project activity retries after a companion outage and reconciles on tab visibility", async () => {
+  let failing = false;
+  let activeJobs = 1;
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    fetchOverride: async (url) => {
+      if (!url.endsWith("/statuses")) return;
+      if (failing) throw new Error("Companion unavailable");
+      return { ok: true, async json() { return { statuses: {}, projectActivity: { activeJobs, activeBatches: 0 } }; } };
+    }
+  });
+  await harness.loadStatusForVisibleTheorem();
+  const button = harness.document.body.querySelector(".ol-lean-pane-trigger");
+  await harness.setVisibility(true);
+  assert.equal(button.dataset.pageHidden, "true");
+  const callsWhileHidden = harness.fetchCalls.length;
+  await harness.runTimersAt(3000);
+  assert.equal(harness.fetchCalls.length, callsWhileHidden);
+  failing = true;
+  await harness.setVisibility(false);
+  await harness.runTimersAt(250);
+  assert.equal(button.dataset.pageHidden, "false");
+  assert.ok(harness.pendingTimers().includes(5000));
+  failing = false;
+  activeJobs = 0;
+  await harness.runTimersAt(5000);
+  assert.equal(button.classList.contains("is-working"), false);
+});
 
 for (const [name, statusInfo, shouldShow] of CASES) {
   test(`View in Lea UI visibility: ${name}`, async () => {
@@ -113,6 +250,41 @@ test("status refresh sends the canonical version-2 source identity", async () =>
   assert.ok(statusCall, "expected a status request");
   const request = JSON.parse(statusCall.options.body);
   assert.match(request.targets[0].sourceIdentityHash, /^[a-f0-9]{64}$/);
+});
+
+test("opening a document reads statuses without acquiring another tab's source publisher", async () => {
+  const h = createContentHarness({ status: "formalized" }, {}, { fetchOverride: async url => {
+    if (url.endsWith('/source-context/publisher')) return {ok:false,status:409,json:async()=>({detail:{
+      code:'publisher_conflict',generation:1,retry_after_ms:90000,message:'Another tab owns the document publisher.'}})};
+  } });
+  await h.loadStatusForVisibleTheorem();
+  assert.equal(h.hasButtonText('formalized'),true);
+  assert.equal(h.hasButtonText('offline'),false);
+  assert.equal(h.fetchCalls.filter(call=>/\/source-context\/(publisher|publish)$/.test(call.url)).length,0);
+  const request=JSON.parse(h.fetchCalls.find(call=>call.url.endsWith('/statuses')).options.body);
+  assert.match(request.targets[0].sourceIdentityHash,/^[a-f0-9]{64}$/);
+  await h.runTimersAt(30000);
+  assert.equal(h.fetchCalls.filter(call=>/\/source-context\/(publisher|publish)$/.test(call.url)).length,0);
+});
+
+test("an HTTP status error is unavailable, a network failure is offline, and both recover promptly", async () => {
+  let phase='http';
+  const h=createContentHarness({status:'formalized'}, {}, {fetchOverride:async url=>{
+    if(!url.endsWith('/statuses'))return;
+    if(phase==='http')return {ok:false,status:503,json:async()=>({message:'Worker is starting.'})};
+    if(phase==='network')throw new TypeError('Failed to fetch');
+  }});
+  await h.loadStatusForVisibleTheorem();
+  assert.equal(h.hasButtonText('unavailable'),true);
+  assert.equal(h.hasButtonText('offline'),false);
+  assert.match(h.document.body.querySelector('.ol-lean-status-unavailable').title,/Worker is starting/);
+  phase='network';
+  await h.runTimersAt(5000);
+  assert.equal(h.hasButtonText('offline'),true);
+  phase='ready';
+  await h.runTimersAt(5000);
+  assert.equal(h.hasButtonText('formalized'),true);
+  assert.equal(h.hasButtonText('offline'),false);
 });
 
 test("formalize requests and pane refresh hash unchanged targets identically across LaTeX environments", async () => {
@@ -217,6 +389,218 @@ test("definition success renders a defined badge", async () => {
 
   assert.equal(harness.hasButtonText("defined"), true);
   assert.equal(harness.hasButtonText("formalized"), false);
+});
+
+for (const [result, label] of [["proved", "formalized"], ["defined", "defined"], ["disproved", "Counterexample found"]]) {
+  test(`source badges keep recorded ${result} results labelled while SQL status refreshes`, async () => {
+    let fresh = false;
+    const h = createContentHarness({}, {}, { fetchOverride: async url => url.endsWith("/statuses")
+      ? { ok: true, json: async () => ({ statuses: { "theorem:demo_theorem": fresh
+        ? { status: result === "disproved" ? "disproved" : "formalized", resultKind: result === "defined" ? "defined" : "proved", projection: { state: "observed" } }
+        : { status: "unknown", projection: { state: "inputs_changed" },
+            lastObservedResult: { validity_status: result, observed_at: "2026-10-18T15:12:00Z" } } } }) }
+      : undefined });
+    await h.loadStatusForVisibleTheorem();
+    assert.equal(h.hasButtonText(label), true);
+    assert.equal(h.hasButtonText("checking"), false);
+    assert.equal(h.countSelector(".ol-lean-human-approval-approved"), 0);
+    fresh = true;
+    await h.runTimersAt(3000);
+    assert.equal(h.hasButtonText(label), true, "projection freshness must not change the recorded state label");
+    assert.equal(h.fetchCalls.some(call => /formalize|interrupt|restart|cancel/.test(new URL(call.url).pathname)), false);
+  });
+}
+
+test("source badges label unknown SQL status as awaiting and keep active work distinct", async () => {
+  const h = createContentHarness({ status: "unknown", projection: { state: "inputs_changed" } });
+  await h.loadStatusForVisibleTheorem();
+  assert.equal(h.hasButtonText("awaiting status"), true);
+  assert.equal(h.hasButtonText("checking"), false);
+  const active = createContentHarness({ status: "in_progress", lastObservedResult: { validity_status: "proved" } });
+  await active.loadStatusForVisibleTheorem();
+  assert.match(active.document.body.querySelector(".ol-lean-status-in_progress").textContent, /^in progress/);
+  assert.equal(active.hasButtonText("formalized · updating status"), false);
+  const changed = createContentHarness({ status: "unknown", sourceFreshness: "stale",
+    projection: { state: "inputs_changed" }, lastObservedResult: { validity_status: "proved" } });
+  await changed.loadStatusForVisibleTheorem();
+  assert.equal(changed.hasButtonText("out of date"), true);
+  assert.equal(changed.hasButtonText("formalized · updating status"), false);
+});
+
+test("known tag states stay stable across refreshes, expiry and read errors, then follow actual run events", async () => {
+  let phase='known';
+  const response=value=>({ok:true,json:async()=>({statuses:{'theorem:demo_theorem':value}})});
+  const h=createContentHarness({}, {}, {fetchOverride:async url=>{
+    if(!url.endsWith('/statuses'))return;
+    if(phase==='busy')return {ok:false,status:503,json:async()=>({message:'Database status read delayed'})};
+    if(phase==='offline')throw new TypeError('Failed to fetch');
+    if(phase==='active')return response({status:'in_progress'});
+    if(phase==='finished')return response({status:'formalized',resultKind:'proved',projection:{state:'observed'}});
+    if(['pending','expired','success_expired'].includes(phase))return response({status:'unknown',
+      projection:{state:phase==='pending'?'inputs_changed':'observation_expired'},
+      lastObservedResult:{validity_status:phase==='success_expired'?'proved':'planned'}});
+    return response({status:'unformalized',projection:{state:'observed'}});
+  }});
+  await h.loadStatusForVisibleTheorem();
+  assert.equal(h.hasButtonText('unformalized'),true);
+  for(const [next,delay] of [['pending',30000],['expired',3000],['known',3000],['busy',30000],['offline',5000],['known',5000]]){
+    phase=next;await h.runTimersAt(delay);
+    assert.equal(h.hasButtonText('unformalized'),true,`${next} must not replace the known state`);
+    assert.equal(h.hasButtonText('awaiting status'),false);
+    assert.equal(h.hasButtonText('offline'),false);
+  }
+  phase='active';await h.runTimersAt(30000);
+  assert.match(h.document.body.querySelector('.ol-lean-status-in_progress').textContent,/^in progress/);
+  phase='finished';await h.runTimersAt(3000);
+  assert.equal(h.hasButtonText('formalized'),true);
+  phase='success_expired';await h.runTimersAt(30000);
+  assert.equal(h.hasButtonText('formalized'),true);
+  assert.equal(h.hasButtonText('formalized · updating status'),false);
+  assert.equal(h.fetchCalls.some(call=>/\/formalize(?:\/all)?$|\/interrupt$|\/restart$/.test(call.url)),false);
+});
+
+for (const awayView of ["empty", "other tags"]) {
+  test(`scrolling away to ${awayView} and back preserves known tags through an older viewport response`, async () => {
+    let delayStatus = false, releaseStatus;
+    const requestedLabels = [];
+    const h = createContentHarness({}, {}, {
+      storage: { leaTexMirrorEnabled: false },
+      fetchOverride: async (url, options) => {
+        if (!url.endsWith("/statuses")) return;
+        const { targets } = JSON.parse(options.body);
+        requestedLabels.push(targets.map(target => target.targetLabel));
+        const response = { ok: true, status: 200, async json() { return {
+          statuses: Object.fromEntries(targets.map(target => [`${target.targetKind}:${target.targetLabel}`, {
+            status: "formalized", resultKind: target.targetKind === "definition" ? "defined" : "proved",
+            projection: { state: "observed" }
+          }])), projectActivity: { activeJobs: 0, activeBatches: 0 }
+        }; } };
+        if (delayStatus) return new Promise(resolve => { releaseStatus = () => resolve(response); });
+        return response;
+      }
+    });
+    const definition = { ...h.target, targetKind: "definition", targetLabel: "OtherDefinition", coords: { left: 12, top: 50 } };
+    const knownTargets = [h.target, definition];
+    const awayTargets = awayView === "empty" ? [] : [{ ...h.target, targetLabel: "elsewhere" }];
+    const activeTex = "\\begin{theorem}\n% lea: formalize label=demo_theorem\nA theorem.\n\\end{theorem}";
+    const publish = targets => h.window.postMessage({
+      type: "OL_LEAN_TARGETS_VISIBLE", activePath: "main.tex", activeTex, targets, diagnostics: []
+    }, "*");
+    const badges = () => h.document.body.querySelectorAll(".ol-lean-status").map(badge => badge.textContent);
+    const assertKnown = () => assert.deepEqual(badges(), ["formalized", "defined"]);
+
+    await h.loadVisibleTheorems({ activeTex, targets: knownTargets });
+    assertKnown();
+    // A completed refresh for another viewport must not evict these two tags.
+    publish(awayTargets);
+    await h.runTimersAt(250);
+    delayStatus = true;
+    publish(awayTargets);
+    await h.runTimersAt(250);
+    assert.equal(typeof releaseStatus, "function");
+    publish(knownTargets);
+    assertKnown(); // Before any new request: no "awaiting status" flash.
+    await h.runTimersAt(250); // Coalesce the new viewport while the old read waits.
+    releaseStatus();
+    await flushPromises();
+    assertKnown(); // The old response omits these tags: no "unavailable" flash.
+    delayStatus = false;
+    await h.runTimersAt(250);
+    assertKnown();
+    assert.deepEqual(requestedLabels, [
+      ["demo_theorem", "OtherDefinition"], awayTargets.map(target => target.targetLabel),
+      awayTargets.map(target => target.targetLabel), ["demo_theorem", "OtherDefinition"]
+    ]);
+    assert.equal(h.fetchCalls.some(call => /\/formalize(?:\/all)?$|\/interrupt$|\/restart$|\/cancel$/.test(call.url)), false);
+  });
+}
+
+for (const failed of [false, true]) {
+  test(`a previous viewport's delayed ${failed ? "error" : "status"} is ignored even after scrolling back before the debounce`, async () => {
+    let delayStatus = false, releaseStatus, currentStatus = "formalized";
+    const h = createContentHarness({}, {}, {
+      storage: { leaTexMirrorEnabled: false },
+      fetchOverride: async url => {
+        if (!url.endsWith("/statuses")) return;
+        const response = (status, ok = true) => ({ ok, status: ok ? 200 : 503, async json() { return ok
+          ? { statuses: { "theorem:demo_theorem": { status, projection: { state: "observed" } } } }
+          : { message: "Previous viewport read failed" }; } });
+        if (delayStatus) return new Promise(resolve => {
+          releaseStatus = () => resolve(response("unformalized", !failed));
+        });
+        return response(currentStatus);
+      }
+    });
+    await h.loadStatusForVisibleTheorem();
+    delayStatus = true;
+    await h.runTimersAt(30000);
+    assert.equal(typeof releaseStatus, "function");
+    const activeTex = "\\begin{theorem}\n% lea: formalize label=demo_theorem\nA theorem.\n\\end{theorem}";
+    for (const targets of [[], [h.target]]) h.window.postMessage({
+      type: "OL_LEAN_TARGETS_VISIBLE", activePath: "main.tex", activeTex, targets, diagnostics: []
+    }, "*");
+    releaseStatus(); // Arrive before the new viewport's 250 ms debounce fires.
+    await flushPromises();
+    assert.equal(h.hasButtonText("formalized"), true);
+    assert.doesNotMatch(h.document.body.querySelector(".ol-lean-status").title, /Previous viewport|refresh delayed/);
+    delayStatus = false;
+    currentStatus = "paused";
+    await h.runTimersAt(250);
+    assert.equal(h.hasButtonText("paused"), true, "a current response must still update a cached status");
+  });
+}
+
+test("coordinate-only viewport updates do not discard a current status response", async () => {
+  let delayStatus = false, releaseStatus;
+  const h = createContentHarness({ status: "formalized" }, {}, {
+    storage: { leaTexMirrorEnabled: false },
+    fetchOverride: async url => {
+      if (delayStatus && url.endsWith("/statuses")) return new Promise(resolve => {
+        releaseStatus = () => resolve({ ok: true, async json() { return {
+          statuses: { "theorem:demo_theorem": { status: "paused" } }
+        }; } });
+      });
+    }
+  });
+  await h.loadStatusForVisibleTheorem();
+  delayStatus = true;
+  await h.runTimersAt(30000);
+  await h.loadVisibleTheorems({ targets: [{ ...h.target, coords: { left: 12, top: 80 } }] });
+  releaseStatus();
+  await flushPromises();
+  assert.equal(h.hasButtonText("paused"), true);
+});
+
+for(const [status,label,resultKind] of [['unformalized','unformalized'],['formalized','formalized'],
+  ['formalized','defined','defined'],['failed','failed'],['paused','paused'],['sorry_stub','sorry stub']]){
+  test(`known ${label} tags retain presentation when an older SQL response has no display history`,async()=>{
+    let stale=false;
+    const h=createContentHarness({}, {}, {fetchOverride:async url=>url.endsWith('/statuses')
+      ?{ok:true,json:async()=>({statuses:{'theorem:demo_theorem':stale
+        ?{status:'unknown',projection:{state:'observation_expired'},approvalEligible:false}
+        :{status,resultKind,projection:{state:'observed'}}}})}:undefined});
+    await h.loadStatusForVisibleTheorem();
+    assert.equal(h.hasButtonText(label),true);
+    stale=true;
+    await h.runTimersAt(30000);
+    assert.equal(h.hasButtonText(label),true);
+    assert.equal(h.hasButtonText('awaiting status'),false);
+    assert.equal(h.countSelector('.ol-lean-human-approval-approved'),0);
+  });
+}
+
+test('retaining a tag through a read failure does not retain approval eligibility',async()=>{
+  let failed=false;
+  const h=createContentHarness({status:'formalized',leanCheckPassed:true,
+    approvalEligible:true,approvalRevision:'checked-revision',projection:{state:'observed'}},{},{fetchOverride:async url=>{
+      if(failed&&url.endsWith('/statuses'))return {ok:false,status:503,json:async()=>({message:'Status read delayed'})};
+    }});
+  await h.loadStatusForVisibleTheorem();
+  assert.equal(h.document.body.querySelector('.ol-lean-human-approval-source').disabled,false);
+  failed=true;await h.runTimersAt(30000);
+  assert.equal(h.hasButtonText('formalized'),true);
+  assert.equal(h.document.body.querySelector('.ol-lean-human-approval-source').disabled,true);
+  assert.match(h.document.body.querySelector('.ol-lean-status-formalized').title,/Status refresh delayed/);
 });
 
 test("personal approval toggles in browser-local storage and updates the source badge", async () => {
@@ -515,7 +899,7 @@ test("settings popover defaults source pausing off and saves an explicit opt-in"
   await flushPromises();
   const request = harness.fetchCalls.find((call) => String(call.url).endsWith("/settings/lea") && call.options?.method === "POST");
   assert.equal(JSON.parse(request.options.body).leaPauseOnSourceIssue, true);
-  assert.equal(harness.storageState.leaPauseOnSourceIssue, true);
+  assert.equal(harness.storageSetCalls.some(value=>Object.hasOwn(value,'leaPauseOnSourceIssue')),false);
 });
 
 test("settings populate before a slow model catalog and retain edits when it arrives", async () => {
@@ -1363,9 +1747,9 @@ test("Lean pane renders every source file equally with file rows collapsed by de
 
   assert.match(harness.bodyText(), /3 labeled items across 3 \.tex files\./);
   assert.deepEqual(harness.paneTreeRowTexts().map((text) => text.replace(/\s+/g, " ")), [
-    "▸main.tex1 item",
+    "▸main.tex1 item1 verified",
     "▸sections/1 itemmissing stub",
-    "▸supp.tex1 item"
+    "▸supp.tex1 item1 verified"
   ]);
   assert.equal(harness.countSelector(".ol-lean-project-progress"), 2);
   assert.doesNotMatch(harness.bodyText(), /Main theorem/);
@@ -1410,15 +1794,16 @@ test("Lean pane file rows render proportional progress segments", async () => {
 
   const [progress] = harness.paneProgresses();
   assert.equal(progress.role, "img");
-  assert.equal(progress.label, "main.tex: 8 Lea items, 2 verified, 1 disproved, 1 sorry-stubbed, 1 failed, 1 out of date, 2 unformalized, 1 in progress.");
-  assert.equal(progress.inProgress, true);
+  assert.equal(progress.label, "main.tex: 8 Lea items, 2 verified, 1 disproved, 1 sorry-stubbed, 1 failed, 1 out of date, 1 awaiting status, 1 in progress.");
+  assert.equal(progress.inProgress, false, 'active work must not stripe the entire file status bar');
   assert.deepEqual(progress.segments.map((segment) => [segment.bucket, segment.count, segment.width]), [
     ["success", "2", "25%"],
     ["disproved", "1", "12.5%"],
     ["sorry-stubbed", "1", "12.5%"],
     ["failed", "1", "12.5%"],
     ["out-of-date", "1", "12.5%"],
-    ["unformalized", "2", "25%"]
+    ["running", "1", "12.5%"],
+    ["unconfirmed", "1", "12.5%"]
   ]);
 
   harness.clickPaneTreeRowText("main.tex");
@@ -1475,6 +1860,155 @@ for (const failure of ["timeout", "server", "network"]) {
     assert.equal(harness.editTextarea()?.value, "theorem unsaved : True := by trivial");
   });
 }
+
+test("a queued inventory refresh survives the HTTP deadline and coalesces repeated refreshes", async () => {
+  let slow = false, complete = false;
+  const manifest = { ok: true, rootFile: "main.tex", items: [editableItem()], diagnostics: [] };
+  const receipt = { workspace_command: true, command: { id: "inventory-query", state: "queued" } };
+  const h = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/unknown", manifest,
+    fetchOverride: async url => {
+      if (slow && url.endsWith("/lean-pane/manifest")) return { ok: true, status: 202, json: async () => receipt };
+      if (url.endsWith("/commands/inventory-query")) return { ok: true, status: 200, json: async () => complete
+        ? { workspace_command: true, command: { id: "inventory-query", state: "succeeded", result: { statusCode: 200, body: manifest } } }
+        : receipt };
+    }
+  });
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  h.clickPaneTreeRowText("main.tex");
+  h.clickFirstPaneItem();
+  const selected = h.document.body.querySelector(".ol-lean-project-item");
+  h.document.getSelection = () => ({ isCollapsed: false, anchorNode: selected, focusNode: selected });
+  slow = true;
+  const before = h.fetchCalls.filter(call => call.url.endsWith("/lean-pane/manifest")).length;
+  h.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  assert.equal(h.countSelector(".ol-lean-project-pane-refresh-warning"), 0, "ordinary polling must not insert a flashing banner");
+  await h.runTimersAt(10000);
+  await h.runTimersAt(30000);
+  assert.match(h.bodyText(), /taking longer than usual.*while the queued refresh completes/);
+  for (let i = 0; i < 12; i++) {
+    h.clickButtonLabel("Refresh Lean pane");
+    await h.runTimersAt(1000);
+  }
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/lean-pane/manifest")).length, before + 1);
+  assert.equal(h.document.body.querySelector(".ol-lean-project-item"), selected);
+  assert.doesNotMatch(h.bodyText(), /Retrying in 5 seconds/);
+  complete = true;
+  await h.runTimersAt(1000);
+  assert.equal(h.countSelector(".ol-lean-project-pane-refresh-warning"), 0);
+  assert.equal(h.document.body.querySelector(".ol-lean-project-item"), selected);
+  await h.runTimersAt(1500);
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/lean-pane/manifest")).length, before + 2,
+    "all coalesced refreshes produce at most one follow-up");
+});
+
+test("inventory reads current SQL runtime status and retries missing observations without a compiler alarm", async () => {
+  let phase = "pending";
+  const manifest = { ok: true, rootFile: "main.tex", items: [{ ...editableItem(), leaSessionId: "runtime-session" }], diagnostics: [],
+    leanCheckRuntime: { state: "unavailable" }, leanCheckRuntimeMessage: "Lean check runtime unavailable", leanCheckRuntimePolling: true };
+  const h = createContentHarness({ status: "unformalized" }, {}, { manifest,
+    fetchOverride: async (url, options) => {
+      if (!url.endsWith("/lean-pane/check-runtime/runtime-session")) return;
+      assert.ok(!options?.method || options.method === "GET");
+      if (phase === "offline") throw new Error("Status connection lost");
+      const runtime = phase === "pending" ? { state: "unavailable", observation: { state: "pending", message: "Not published yet" } }
+        : { state: phase };
+      return { ok: true, json: async () => ({ runtime, polling: phase !== "ready",
+        message: phase === "pending" ? "Waiting for Lean runtime status" : phase === "unavailable" ? "Lean check runtime unavailable" : "" }) };
+    }
+  });
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  assert.match(h.bodyText(), /Waiting for Lean runtime status/);
+  assert.doesNotMatch(h.bodyText(), /Lean check runtime unavailable/);
+  assert.equal(h.document.body.querySelector(".ol-lean-project-pane-runtime").title, "Not published yet");
+  phase = "offline";
+  await h.runTimersAt(5000);
+  assert.match(h.bodyText(), /Lean runtime status unavailable · retrying/);
+  assert.doesNotMatch(h.bodyText(), /Lean check runtime unavailable/);
+  phase = "unavailable";
+  await h.runTimersAt(5000);
+  assert.match(h.bodyText(), /Lean check runtime unavailable/);
+  assert.equal(h.countSelector(".ol-lean-project-pane-runtime"), 0);
+  phase = "ready";
+  await h.runTimersAt(5000);
+  assert.doesNotMatch(h.bodyText(), /Lean (check )?runtime status? ?unavailable/);
+  assert.equal(h.countSelector(".ol-lean-project-pane-runtime"), 0);
+  assert.equal(h.pendingTimers().filter(delay => delay === 5000).length, 0, "healthy idle runtime stops polling");
+});
+
+test("settled solver results awaiting SQL observations stay neutral in collapsed and expanded inventory", async () => {
+  let fresh = false;
+  const manifest = () => ({ ok: true, rootFile: "main.tex", diagnostics: [],
+    items: Array.from({ length: 9 }, (_, n) => editableItem({ id: `theorem:target_${n}:0`, label: `target_${n}`,
+      inProgress: false, status: fresh ? "valid" : "synchronizing",
+      projection: { state: fresh ? "observed" : "inputs_changed" },
+      leanCheck: { status: fresh ? "checked" : "synchronizing" } })) });
+  const h = createContentHarness({}, {}, { locationPath: "/project/unknown", manifest });
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  const segment = h.document.body.querySelector(".ol-lean-project-progress-segment-unconfirmed");
+  assert.equal(segment.dataset.count, "9");
+  assert.match(segment.title, /Awaiting status/);
+  assert.equal(h.countSelector(".ol-lean-project-progress-segment-unformalized"), 0);
+  assert.equal(h.countSelector(".ol-lean-project-progress-segment-failed"), 0);
+  assert.match(h.bodyText(), /Updating proof statuses/);
+  h.clickPaneTreeRowText("main.tex");
+  assert.equal(h.countSelector(".ol-lean-project-check-chip-synchronizing"), 9);
+  assert.equal(h.countSelector(".ol-lean-project-check-chip-error"), 0);
+  assert.ok(h.pendingTimers().includes(5000), "terminal solver states must not stop observation polling");
+  fresh = true;
+  await h.runTimersAt(5000);
+  assert.equal(h.countSelector(".ol-lean-project-check-chip-checked"), 9);
+  assert.equal(h.countSelector(".ol-lean-project-pane-synchronizing"), 0);
+  assert.equal(h.document.body.querySelector(".ol-lean-project-progress-segment-success").dataset.count, "9");
+  assert.equal(h.pendingTimers().filter(ms => ms === 5000).length, 0);
+});
+
+test("a busy inventory metadata sync retries without a red banner or replaying formalizations", async () => {
+  let busy = true;
+  const h = createContentHarness({}, {}, { locationPath: "/project/unknown", manifest: () => ({ ok: true,
+    rootFile: "main.tex", items: [editableItem({ leanCheck: { status: "checked" } })], diagnostics: [],
+    inventorySync: busy ? { state: "pending", reason: "database_busy",
+      message: "Inventory synchronization is waiting for the project. Retrying automatically; saved formalizations are retained." } : null }) });
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  assert.equal(h.countSelector(".ol-lean-project-pane-diagnostics"), 0);
+  assert.match(h.bodyText(), /Retrying automatically; saved formalizations are retained/);
+  assert.ok(h.pendingTimers().includes(5000));
+  busy = false;
+  await h.runTimersAt(5000);
+  assert.equal(h.countSelector(".ol-lean-project-pane-synchronizing"), 0);
+  assert.equal(h.fetchCalls.filter(c => /\/formalize(?:\/all)?$/.test(c.url)).length, 0);
+});
+
+test("status refresh events share the accepted query instead of filling its worker lane", async () => {
+  let slow = false, complete = false;
+  const receipt = { workspace_command: true, command: { id: "status-query", state: "queued" } };
+  const h = createContentHarness({ status: "unformalized" }, {}, { fetchOverride: async url => {
+    if (slow && url.endsWith("/statuses")) return { ok: true, status: 202, json: async () => receipt };
+    if (url.endsWith("/commands/status-query")) return { ok: true, status: 200, json: async () => complete
+      ? { workspace_command: true, command: { id: "status-query", state: "succeeded", result: { statusCode: 200,
+          body: { statuses: { "theorem:demo_theorem": { status: "formalized" } }, projectActivity: { activeJobs: 0 } } } } }
+      : receipt };
+  } });
+  await h.loadVisibleTheorems();
+  slow = true;
+  const before = h.fetchCalls.filter(call => call.url.endsWith("/statuses")).length;
+  await h.runTimersAt(30000);
+  for (let i = 0; i < 5; i++) await h.setVisibility(false);
+  await h.runTimersAt(250);
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/statuses")).length, before + 1);
+  complete = true;
+  await h.runTimersAt(1000);
+  assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
+});
 
 test("Lean pane initial inventory failure retries without a running item and stops when closed", async () => {
   let fail = true;
@@ -1695,7 +2229,7 @@ test("Lean pane expanded detail shows copy actions only for generated content", 
   assert.match(harness.bodyText(), /workspace\/proofs\/Main\.lean/);
 });
 
-test("Lean pane keeps a visible LeaChat button for a saved session whose status is unknown", async () => {
+test("Lean pane opens a saved LeaChat session from the collapsed summary even when its status is unknown", async () => {
   const harness = createContentHarness({ status: "unformalized" }, {}, {
     manifest: { ok: true, rootFile: "main.tex", diagnostics: [], items: [{
       id: "definition:CapacityEncoding", label: "CapacityEncoding", kind: "definition",
@@ -1708,14 +2242,79 @@ test("Lean pane keeps a visible LeaChat button for a saved session whose status 
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickPaneTreeRowText("main.tex");
-  harness.clickFirstPaneItem();
+  assert.equal(harness.countSelector(".ol-lean-project-item.is-expanded"), 0);
   assert.equal(harness.hasButtonText("Open in LeaChat"), true);
   assert.equal(harness.hasButtonLabel("Open in LeaChat"), true);
+  const summaryActions = harness.document.body.querySelector(".ol-lean-project-summary-actions");
+  assert.equal(summaryActions.querySelector(".ol-lean-open-chat")?.textContent, "Open in LeaChat");
   harness.clickButtonText("Open in LeaChat");
   await flushPromises();
   const opened = harness.runtimeMessages.find((message) => message.type === "OPEN_LEA_SESSION");
   assert.equal(new URL(opened.url).searchParams.get("session"), "saved-session");
   assert.ok(!harness.fetchCalls.some((call) => call.url.endsWith("/lean-pane/chat/session")));
+  assert.equal(harness.countSelector(".ol-lean-project-item.is-expanded"), 0);
+  harness.clickFirstPaneItem();
+  assert.equal(harness.countSelector(".ol-lean-open-chat"), 1);
+  const detailActions = harness.document.body.querySelector(".ol-lean-project-detail-actions");
+  assert.equal(detailActions?.querySelector(".ol-lean-open-chat") || null, null);
+});
+
+for (const [kind, status, session] of [
+  ["theorem", "missing-stub", { leaSessionId: "target" }],
+  ["theorem", "stub-generated", { leaSessionUrl: "http://localhost:5173/?session=target" }],
+  ["definition", "missing-stub", { leaSessionId: "target" }],
+  ["definition", "defined", { leaSessionUrl: "http://localhost:5173/?session=target" }],
+]) {
+  test(`Open in LeaChat stays disabled for a ${status} ${kind} until its session is recorded`, async () => {
+    let item = {
+      id: `${kind}:Example`, label: "Example", kind, status,
+      sourceFile: "main.tex", leanDeclarationName: "Example",
+      leanKind: kind === "definition" ? "def" : "theorem",
+      ...(status !== "missing-stub" ? { leanArtifactPath: "Example.lean" } : {})
+    };
+    const harness = createContentHarness({ status: "unformalized" }, {}, {
+      manifest: () => ({ ok: true, rootFile: "main.tex", diagnostics: [], items: [item] })
+    });
+    await harness.loadVisibleTheorems();
+    harness.clickPaneTrigger();
+    await flushPromises();
+    harness.clickPaneTreeRowText("main.tex");
+    const button = harness.document.body.querySelector(".ol-lean-open-chat");
+    assert.equal(button.disabled, true);
+    assert.equal(button.title, "No LeaChat session is available yet.");
+    const statusBefore = harness.leanPane().querySelector(".ol-lean-project-pane-status").textContent;
+    const requestsBefore = harness.fetchCalls.length;
+    harness.clickButtonText("Open in LeaChat");
+    await flushPromises();
+    assert.equal(harness.fetchCalls.length, requestsBefore);
+    assert.equal(harness.leanPane().querySelector(".ol-lean-project-pane-status").textContent, statusBefore);
+    assert.ok(!harness.runtimeMessages.some((entry) => entry.type === "OPEN_LEA_SESSION"));
+    harness.clickFirstPaneItem();
+    assert.equal(harness.document.body.querySelector(".ol-lean-open-chat").disabled, true);
+
+    item = { ...item, ...session };
+    harness.clickButtonLabel("Refresh Lean pane");
+    await flushPromises();
+    const ready = harness.document.body.querySelector(".ol-lean-open-chat");
+    assert.equal(ready.disabled, false);
+    assert.equal(ready.title, "Open in LeaChat");
+    harness.clickButtonText("Open in LeaChat");
+    await flushPromises();
+    const opened = harness.runtimeMessages.filter((entry) => entry.type === "OPEN_LEA_SESSION");
+    assert.equal(opened.length, 1);
+    assert.equal(new URL(opened[0].url).searchParams.get("session"), "target");
+    assert.ok(!harness.fetchCalls.some((call) => call.url.endsWith("/lean-pane/chat/session")));
+  });
+}
+
+test("View in Lea UI reports a missing saved session instead of opening the homepage", async () => {
+  const harness = createContentHarness({ status: "formalized" });
+  await harness.loadStatusForVisibleTheorem();
+  harness.openTargetPopover();
+  harness.clickButtonText("View in Lea UI");
+  await flushPromises();
+  assert.match(harness.bodyText(), /Lea session link is not available yet/);
+  assert.ok(!harness.runtimeMessages.some((entry) => entry.type === "OPEN_LEA_SESSION"));
 });
 
 test("Lean pane shows navigable uses and used-by relationships across project files", async () => {
@@ -2585,7 +3184,7 @@ test("Formalize all renders an accessible, collapsible queue with active turn pr
     { status: "unformalized" },
     {},
     {
-      locationPath: "/project/unknown",
+      locationPath: "/project/project-1",
       manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
       targetBatch: {
         ok: true,
@@ -2614,7 +3213,7 @@ test("Formalize all renders an accessible, collapsible queue with active turn pr
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickButtonText("Formalize all (8)");
-  await flushPromises();
+  await waitForHarness(() => harness.batchQueue(), "accepted batch queue");
 
   let queue = harness.batchQueue();
   assert.ok(queue, "expected a batch queue card");
@@ -2644,6 +3243,630 @@ test("Formalize all renders an accessible, collapsible queue with active turn pr
   assert.match(queue.text, /Hide 3 completed/);
 });
 
+function queuePaneItem(label, overrides = {}) {
+  return {
+    id: `theorem:${label}:0`, kind: "theorem", label, targetKind: "theorem",
+    status: "missing-stub", sourceFile: "main.tex", sourceStartLine: 1, sourceEndLine: 4,
+    naturalLanguageLatex: `Statement of ${label}.`, leanKind: "theorem",
+    leanDeclarationName: label, formalizable: true, ...overrides
+  };
+}
+
+class DeliveryEventSource {
+  static instances = [];
+  constructor(url) { this.url=url;this.listeners=new Map();DeliveryEventSource.instances.push(this); }
+  addEventListener(type, fn) { this.listeners.set(type,fn); }
+  close() { this.closed=true; }
+  emit(type, payload={}) { this.listeners.get(type)?.({data:JSON.stringify(payload)}); }
+}
+
+async function deliveryPane(options={}) {
+  const h=createContentHarness({status:'unformalized'}, {}, {EventSource:DeliveryEventSource,
+    manifest:{ok:true,rootFile:'main.tex',items:[queuePaneItem('demo_theorem')],diagnostics:[]},...options});
+  await h.loadVisibleTheorems();h.clickPaneTrigger();await flushPromises();
+  return {h,events:DeliveryEventSource.instances.at(-1)};
+}
+
+test('database changes and resync refresh an open Blueprint while unrelated projects are ignored',async()=>{
+  const {h,events}=await deliveryPane();h.clickButtonText('Blueprint');await flushPromises();
+  const reads=()=>h.fetchCalls.filter(call=>call.url.includes('/project/graph')).length;
+  const initial=reads();assert.equal(initial,1);
+  events.emit('jobs-changed',{overleafProjectId:'project-1',changes:[{entity_type:'core_observations'}]});
+  await h.runTimersAt(1500);await flushPromises();assert.equal(reads(),initial+1);
+  events.emit('resync',{overleafProjectId:'project-1',watermark:100});
+  await h.runTimersAt(1500);await flushPromises();assert.equal(reads(),initial+2);
+  events.emit('jobs-changed',{overleafProjectId:'other-project'});
+  events.emit('resync',{overleafProjectId:'other-project'});
+  await h.runTimersAt(1500);await flushPromises();assert.equal(reads(),initial+2);
+});
+
+test('continuous database notifications cannot starve Blueprint refresh',async()=>{
+  const {h,events}=await deliveryPane();h.clickButtonText('Blueprint');await flushPromises();
+  const initial=h.fetchCalls.filter(call=>call.url.includes('/project/graph')).length;
+  for(let i=0;i<4;i++){
+    events.emit('jobs-changed',{overleafProjectId:'project-1'});
+    await h.advanceTime(500);
+  }
+  assert.ok(h.fetchCalls.filter(call=>call.url.includes('/project/graph')).length>initial);
+});
+
+test('Blueprint retries stale observations and retains its graph across a temporary outage', async () => {
+  let phase = 'stale';
+  const {h} = await deliveryPane({fetchOverride(url) {
+    if (!url.includes('/project/graph')) return;
+    if (phase === 'offline') return admissionResponse({message:'Worker unavailable'}, 503);
+    return admissionResponse({nodes:[{key:phase === 'ready' ? 'CURRENT' : 'PREVIOUS',
+      kind:'lemma',lean:null,uses:[],status:'planned',verified:false}],edges:[],
+      projection:{state:phase === 'ready' ? 'observed' : 'inputs_changed'}});
+  }});
+  const previousDocument = globalThis.document;
+  globalThis.document = h.document;
+  try {
+    h.clickButtonText('Blueprint'); await flushPromises();
+    assert.match(h.paneText(), /PREVIOUS/);
+    assert.match(h.paneText(), /Waiting for the current/);
+    phase = 'offline'; await h.runTimersAt(2000); await flushPromises();
+    assert.match(h.paneText(), /PREVIOUS/);
+    assert.match(h.bodyText(), /retrying/);
+    phase = 'ready'; await h.runTimersAt(2000); await flushPromises();
+    assert.match(h.paneText(), /CURRENT/);
+    assert.doesNotMatch(h.paneText(), /PREVIOUS|Waiting for the current/);
+    h.clickButtonText('Items');
+    const reads = h.fetchCalls.filter(call => call.url.includes('/project/graph')).length;
+    await h.advanceTime(10000);
+    assert.equal(h.fetchCalls.filter(call => call.url.includes('/project/graph')).length, reads);
+  } finally { globalThis.document = previousDocument; }
+});
+
+test('Blueprint read warnings remain visible instead of an empty graph or generation action', async () => {
+  const {h} = await deliveryPane({fetchOverride(url) {
+    if (url.includes('/project/graph')) return admissionResponse({nodes:[],edges:[],
+      warnings:[{code:'asset.read_failed',message:'The project blueprint could not be read.'}]});
+  }});
+  h.clickButtonText('Blueprint'); await flushPromises();
+  assert.match(h.paneText(), /could not be read/);
+  assert.doesNotMatch(h.paneText(), /No blueprint nodes yet/);
+  assert.equal(h.document.body.querySelectorAll('button').find(b => b.textContent === 'Generate from formalized theorems').disabled, true);
+});
+
+test('Blueprint generation survives refresh notifications and retains its diagnostics on later reads', async () => {
+  let release, generated = false, current = false;
+  const graph = () => ({ nodes:[{key:generated ? 'GENERATED' : 'PREVIOUS', kind:'lemma',
+    lean:null,uses:[],status:'planned',verified:false}], edges:[],
+    projection:{state:generated ? 'observed' : 'inputs_changed'} });
+  const {h,events} = await deliveryPane({fetchOverride(url) {
+    if (url.endsWith('/project/blueprint/generate')) return new Promise(resolve => {
+      release = () => { generated = true; resolve(admissionResponse({ ...graph(), added:1,
+        warnings:['One recorded declaration needs attention.'] })); };
+    });
+    if (url.includes('/project/graph')) return admissionResponse(current ? graph() : {
+      ...graph(), nodes:[{key:'PREVIOUS',kind:'lemma',lean:null,uses:[],status:'planned',verified:false}],
+      projection:{state:'inputs_changed',observed_at:'2000-01-01T00:00:00Z'} });
+  }});
+  const previousDocument = globalThis.document;
+  globalThis.document = h.document;
+  try {
+    h.clickButtonText('Blueprint'); await flushPromises();
+    h.clickButtonText('Generate from formalized theorems'); await flushPromises();
+    assert.equal(typeof release, 'function');
+    const reads = () => h.fetchCalls.filter(call => call.url.includes('/project/graph')).length;
+    const before = reads();
+    events.emit('jobs-changed',{overleafProjectId:'project-1'});
+    await h.runTimersAt(1500); await h.runTimersAt(2000); await flushPromises();
+    assert.equal(reads(), before);
+    release(); await flushPromises();
+    assert.match(h.paneText(), /GENERATED/);
+    assert.match(h.paneText(), /One recorded declaration needs attention/);
+    await h.runTimersAt(2000); await flushPromises();
+    assert.ok(reads() > before);
+    assert.match(h.paneText(), /GENERATED/);
+    assert.doesNotMatch(h.paneText(), /PREVIOUS/);
+    assert.match(h.paneText(), /One recorded declaration needs attention/);
+    current = true;
+    await h.runTimersAt(2000); await flushPromises();
+    assert.doesNotMatch(h.paneText(), /Waiting for the current/);
+  } finally { globalThis.document = previousDocument; }
+});
+
+test('Blueprint nodes support keyboard selection with named controls and pressed state', async () => {
+  const {h} = await deliveryPane({fetchOverride(url) {
+    if (url.includes('/project/graph')) return admissionResponse({nodes:[{
+      key:'keyboard_node',kind:'lemma',lean:null,uses:[],status:'planned',verified:false,
+      statement:'A keyboard accessible statement.'}],edges:[]});
+  }});
+  const previousDocument = globalThis.document;
+  globalThis.document = h.document;
+  try {
+    h.clickButtonText('Blueprint'); await flushPromises();
+    const node = h.document.body.querySelectorAll('g').find(node => node.getAttribute('role') === 'button');
+    assert.equal(node.getAttribute('role'), 'button');
+    assert.equal(node.getAttribute('tabindex'), '0');
+    assert.match(node.getAttribute('aria-label'), /keyboard_node/);
+    node.dispatchEvent({type:'keydown',key:'Enter'});
+    assert.equal(node.getAttribute('aria-pressed'), 'true');
+    assert.match(h.paneText(), /A keyboard accessible statement/);
+    node.dispatchEvent({type:'keydown',key:' '});
+    assert.equal(node.getAttribute('aria-pressed'), 'false');
+  } finally { globalThis.document = previousDocument; }
+});
+
+test('project navigation replaces its scoped stream and ignores late notifications',async()=>{
+  const {h,events}=await deliveryPane();
+  h.window.location.pathname='/project/project-2';await h.loadVisibleTheorems();
+  const current=DeliveryEventSource.instances.at(-1);
+  assert.equal(events.closed,true);assert.notEqual(current,events);
+  assert.equal(new URL(current.url).searchParams.get('projectId'),'project-2');
+  current.onopen();await h.runTimersAt(1500);
+  const reads=()=>h.fetchCalls.filter(call=>call.url.endsWith('/lean-pane/manifest')).length;
+  const before=reads();events.emit('jobs-changed',{overleafProjectId:'project-1'});
+  await h.runTimersAt(1500);assert.equal(reads(),before);
+  current.emit('jobs-changed',{overleafProjectId:'project-2'});
+  await h.runTimersAt(1500);assert.ok(reads()>before);
+});
+
+test('chat retains its saved transcript through HTTP 503 and catches up on retry',async()=>{
+  let polls=0;
+  const {h}=await deliveryPane({fetchOverride:async url=>{
+    if(url.endsWith('/lean-pane/chat/session'))return admissionResponse({ok:true,leaSessionId:'delivery-session',
+      activeRun:{id:'delivery-run',status:'running'},messages:[{id:'old',role:'assistant',content:'Saved answer'}]});
+    if(url.endsWith('/lean-pane/chat/session/delivery-session')){
+      polls++;
+      return polls===1?admissionResponse({error:'adapter_operation_failed',message:'Temporarily unavailable'},503):
+        admissionResponse({ok:true,leaSessionId:'delivery-session',activeRun:null,messages:[{id:'new',role:'assistant',content:'Completed answer'}]});
+    }
+  }});
+  h.clickPaneTreeRowText('main.tex');h.clickFirstPaneItem();h.clickButtonLabel('Chat');await flushPromises();
+  await h.runTimersAt(5000);await flushPromises();
+  assert.equal(polls,1);assert.match(h.bodyText(),/Saved answer/);
+  assert.ok(h.pendingTimers().includes(8000));
+  await h.runTimersAt(8000);await flushPromises();
+  assert.equal(polls,2);assert.match(h.bodyText(),/Completed answer/);
+});
+
+test('job notifications refresh idle chat and coalesce reads while SQL is slow',async()=>{
+  let polls=0,release;
+  const {h,events}=await deliveryPane({fetchOverride:async url=>{
+    if(url.endsWith('/lean-pane/chat/session'))return admissionResponse({ok:true,leaSessionId:'delivery-idle',activeRun:null,messages:[]});
+    if(url.endsWith('/lean-pane/chat/session/delivery-idle')){
+      polls++;return new Promise(resolve=>{release=()=>resolve(admissionResponse({ok:true,leaSessionId:'delivery-idle',activeRun:null,
+        messages:[{id:'new',role:'assistant',content:'Committed update'}]}));});
+    }
+  }});
+  h.clickPaneTreeRowText('main.tex');h.clickFirstPaneItem();h.clickButtonLabel('Chat');await flushPromises();
+  events.emit('jobs-changed',{overleafProjectId:'other-project'});await flushPromises();assert.equal(polls,0);
+  for(let i=0;i<5;i++)events.emit('jobs-changed',{overleafProjectId:'project-1'});
+  await flushPromises();assert.equal(polls,1);release();await flushPromises();
+  assert.equal(polls,2,'a notification during a slow read requires one catch-up read');
+  release();await flushPromises();
+  assert.match(h.bodyText(),/Committed update/);
+  events.emit('resync',{overleafProjectId:'project-1'});await flushPromises();assert.equal(polls,3);
+  release();await flushPromises();
+});
+
+async function startNavigationQueue(items, entries, options = {}) {
+  const batch = {
+    ok: true, batchId: "navigation-batch", operation: "formalize", done: false,
+    running: true, pausedOn: null, items: entries
+  };
+  const harness = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/project-1",
+    manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
+    targetBatch: batch, repairStatus: batch, ...options
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.leanPane().querySelector(".ol-lean-formalize-all-button").click();
+  await flushPromises();
+  for(let turn=0;turn<100&&!harness.batchQueue()?.progress;turn++)await flushPromises();
+  return harness;
+}
+
+async function progressRefreshHarness() {
+  const state = { processed: 0, accepted: false, done: false, fail: false, hold: false, reads: 0 };
+  class EventSource {
+    static instances = [];
+    constructor() { this.listeners = new Map(); EventSource.instances.push(this); }
+    addEventListener(type, fn) { this.listeners.set(type, fn); }
+    close() {}
+    emit(type) { this.listeners.get(type)?.({ data: '{}' }); }
+  }
+  const items = Array.from({ length: 9 }, (_, i) => queuePaneItem(`t${i}`));
+  const batch = () => ({ ok: true, batchId: 'navigation-batch', operation: 'formalize',
+    running: !state.done, done: state.done, pausedOn: null, items: items.map((item, i) => ({
+      targetKind: 'theorem', targetLabel: item.label,
+      state: i < state.processed ? 'formalized' : i === state.processed ? 'running' : 'pending'
+    })) });
+  const response = (value, status = 200) => ({ ok: status === 200, status, json: async () => value });
+  const h = await startNavigationQueue(items, batch().items, { EventSource,
+    manifest: () => ({ ok: true, rootFile: 'main.tex', diagnostics: [], items: items.map((item, i) => state.accepted
+      ? { ...item, status: i < state.processed ? 'valid' : i === state.processed ? 'in-progress' : 'synchronizing',
+        inProgress: i === state.processed, projection: i === state.processed ? undefined
+          : { state: i < state.processed ? 'observed' : 'inputs_changed' } }
+      : item) }),
+    fetchOverride: async (url) => {
+      if (url.endsWith('/formalize/all')) state.accepted = true;
+      if (!url.endsWith('/lean-pane/repair/status')) return;
+      state.reads++;
+      if (state.fail) return response({ message: 'SQL read temporarily unavailable' }, 503);
+      const snapshot = batch();
+      if (state.hold) await new Promise(resolve => { state.release = resolve; });
+      return response(snapshot);
+    }
+  });
+  for (const source of EventSource.instances) source.onopen?.();
+  await h.runTimersAt(0);
+  return { h, state, events: EventSource.instances[0] };
+}
+
+test('active batch and file inventory advance together every five seconds with a connected push stream', async () => {
+  const { h, state } = await progressRefreshHarness();
+  assert.equal(h.batchQueue().progress.now, '0');
+  assert.match(h.bodyText(), /0 verified · 1 running · 8 awaiting SQL status/);
+  const reads = state.reads;
+  const manifests = h.fetchCalls.filter(c => c.url.endsWith('/lean-pane/manifest')).length;
+  state.processed = 1;
+  await h.runTimersAt(5000);
+  assert.equal(state.reads, reads + 1);
+  assert.equal(h.fetchCalls.filter(c => c.url.endsWith('/lean-pane/manifest')).length, manifests + 1);
+  assert.equal(h.batchQueue().progress.now, '1');
+  assert.match(h.bodyText(), /Current · 2 of 9●t1/);
+  assert.match(h.bodyText(), /1 verified · 1 running · 7 awaiting SQL status/);
+  assert.equal(h.pendingTimers().filter(ms => ms === 5000).length, 1);
+  state.processed = 9; state.done = true;
+  await h.runTimersAt(5000);
+  assert.equal(h.batchQueue().progress.now, '9');
+  assert.match(h.bodyText(), /9 verified/);
+  assert.equal(h.pendingTimers().filter(ms => ms === 5000).length, 0);
+  assert.equal(h.fetchCalls.filter(c => c.url.endsWith('/formalize/all')).length, 1);
+  assert.ok(!h.fetchCalls.some(c => /cancel|restart|interrupt/.test(c.url)));
+});
+
+test('idle after Formalize All retains completed results through failed background status lookups', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lea-idle-refresh-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'workspace'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'pyproject.toml'), '[project]\nname="idle-refresh"\n');
+  fs.writeFileSync(path.join(dir, 'workspace/lakefile.lean'), 'import Lake\n');
+  fs.copyFileSync(path.join(repoRoot, 'apps/lea-standalone/prover/workspace/lean-toolchain'), path.join(dir, 'workspace/lean-toolchain'));
+  const labels = ['idle_one', 'idle_two'];
+  const source = labels.map(label => `\\begin{theorem}\n% lea: formalize label=${label}\nA theorem.\n\\end{theorem}`).join('\n');
+  const phase = { accepted: false, done: false, failure: null, lookups: 0 };
+  const worker = { settings: { leaRepoPath: dir, leaApiBaseUrl: 'http://127.0.0.1:8001', leaTexMirrorEnabled: false },
+    jobsPath: path.join(dir, 'jobs.json'), settingsPath: path.join(dir, 'settings.json'), jobs: {}, env: {},
+    fetchImpl: async url => {
+      if (String(url).endsWith('/identity')) return Response.json({ projectId: 'p1', slug: 'project-1',
+        projectName: 'Idle', namespace: 'Lea.Project1', namespaceRevision: 1 });
+      if (String(url).includes('/target-status')) {
+        phase.lookups++;
+        if (phase.failure === 'network') throw new TypeError('Connection unavailable');
+        if (phase.failure) return Response.json({ detail: { error: 'database_busy', message: 'Database busy' } }, { status: 503 });
+        return Response.json({ targets: new URL(url).searchParams.get('declarations').split(',').map(name => ({
+          declaration_name: name, recorded: phase.done, exists: phase.done, declaration_present: phase.done,
+          formalization_id: `form-${name}`, session_id: `session-${name}`, completion_run_id: `run-${name}`,
+          path: `${name}.lean`, has_sorry: false, check_current: phase.done, check_status: 'ok',
+          validity_status: phase.done ? 'proved' : 'planned', content: `theorem ${name} : True := by trivial\n`
+        })) });
+      }
+      return Response.json({});
+    } };
+  const batch = () => ({ ok: true, batchId: 'idle-batch', operation: 'formalize', running: !phase.done, done: phase.done,
+    items: labels.map(targetLabel => ({ targetKind: 'theorem', targetLabel, state: phase.done ? 'formalized' : 'pending' })) });
+  const response = result => ({ ok: result.statusCode < 400, status: result.statusCode, json: async () => result.body });
+  class EventSource extends DeliveryEventSource { static instances = []; constructor(url) { super(url); EventSource.instances.push(this); } }
+  const h = createContentHarness({}, {}, { EventSource, locationPath: '/project/project-1',
+    targetBatch: batch(), repairStatus: () => batch(),
+    fetchOverride: async (url, options) => {
+      if (url.endsWith('/formalize/all')) {
+        phase.accepted = true;
+        for (const label of labels) worker.jobs[label] = { jobId: label, jobKey: `project-1:theorem:${label}`,
+          status: 'in_progress', targetKind: 'theorem', targetLabel: label, declarationName: label,
+          formalizationId: `form-${label}`, leaSessionId: `session-${label}`, overleafProjectId: 'project-1',
+          projectSlug: 'project-1', startedAt: '2026-01-01T00:00:00Z' };
+        return response({ statusCode: 200, body: batch() });
+      }
+      if (url.endsWith('/lean-pane/repair/status')) return response({ statusCode: 200, body: batch() });
+      // Exercise the real worker snapshot builders; only the SQL API replies
+      // are scripted. A failed nested read must survive the outer envelope.
+      if (url.endsWith('/statuses')) return response(await handleGetStatuses(JSON.parse(options.body), worker));
+      if (url.endsWith('/lean-pane/manifest')) return response(await handleLeanPaneManifest(JSON.parse(options.body), worker));
+    } });
+  await h.loadVisibleTheorems({ activeTex: source, targets: labels.map((targetLabel, index) => ({
+    targetKind: 'theorem', targetLabel, targetText: 'A theorem.', coords: { left: 12, top: 18 + 30 * index }
+  })) });
+  h.clickPaneTrigger(); await flushPromises();
+  h.clickButtonText('Formalize all (2)'); await flushPromises();
+  assert.equal(phase.accepted, true);
+  for (let turn = 0; turn < 100 && !h.batchQueue()?.progress; turn++) await flushPromises();
+  assert.ok(h.batchQueue()?.progress, 'Formalize All has settled its admission');
+  for (const eventSource of EventSource.instances) eventSource.onopen?.();
+  await h.runTimersAt(0);
+  phase.done = true;
+  for (const job of Object.values(worker.jobs)) { job.status = 'formalized'; job.finishedAt = '2026-01-01T00:01:00Z'; }
+  await h.advanceTime(5000);
+  assert.match(h.paneProgresses()[0].label, /2 verified/);
+  assert.equal(h.countSelector('.ol-lean-status-formalized'), 2);
+  const completedJobs = JSON.stringify(worker.jobs);
+  const events = EventSource.instances[0];
+  const inputRequests = () => h.fetchCalls.filter(c => /source-context\/publish|mirror-tex|formalize\/all/.test(c.url));
+  const submissions = inputRequests().length;
+
+  // From here the user never clicks, edits, reloads or switches visibility.
+  // Time and maintenance notifications alone drive several idle refreshes.
+  for (const failure of ['database-busy', 'network']) {
+    phase.failure = failure;
+    const reads = phase.lookups;
+    await h.advanceTime(30000);
+    events.emit('jobs-changed'); await h.advanceTime(1500);
+    assert.ok(phase.lookups > reads, 'Settled proofs still reconcile while idle');
+    assert.match(h.paneProgresses()[0].label, /2 verified/);
+    assert.equal(h.countSelector('.ol-lean-status-formalized'), 2);
+    assert.match(h.bodyText(), /last loaded inventory.*out of date/i);
+    assert.equal(h.countSelector('.ol-lean-project-pane-refresh-warning'), 1);
+    assert.equal(h.countSelector('.ol-lean-project-check-chip-unformalized'), 0);
+    phase.failure = null;
+    await h.advanceTime(30000);
+    assert.equal(h.countSelector('.ol-lean-project-pane-refresh-warning'), 0);
+    assert.match(h.paneProgresses()[0].label, /2 verified/);
+  }
+  assert.equal(JSON.stringify(worker.jobs), completedJobs);
+  assert.equal(inputRequests().length, submissions, 'Idle reconciliation cannot republish source or admit another batch');
+  assert.ok(!h.fetchCalls.some(c => /cancel|restart|interrupt/.test(c.url)));
+});
+
+test('push bursts coalesce the shared batch and inventory read while SQL is slow', async () => {
+  const { h, state, events } = await progressRefreshHarness();
+  const reads = state.reads;
+  state.hold = true;
+  const cycle = h.runTimersAt(5000);
+  await flushPromises();
+  assert.ok(state.release);
+  for (let i = 0; i < 25; i++) events.emit('jobs-changed');
+  const burst = h.runTimersAt(0);
+  await flushPromises();
+  assert.equal(state.reads, reads + 1);
+  state.hold = false; state.release();
+  await Promise.all([cycle, burst]);
+  assert.equal(state.reads, reads + 1);
+  assert.equal(h.fetchCalls.filter(c => c.url.endsWith('/formalize/all')).length, 1);
+});
+
+test('a failed batch SQL read identifies the retained queue and catches up on the next inventory cycle', async () => {
+  const { h, state } = await progressRefreshHarness();
+  state.processed = 1; state.fail = true;
+  await h.runTimersAt(5000);
+  assert.equal(h.batchQueue().progress.now, '0');
+  assert.match(h.bodyText(), /Batch status delayed.*last loaded queue.*retrying automatically/);
+  assert.match(h.bodyText(), /1 verified · 1 running · 7 awaiting SQL status/);
+  state.fail = false;
+  await h.runTimersAt(5000);
+  assert.equal(h.batchQueue().progress.now, '1');
+  assert.doesNotMatch(h.bodyText(), /Batch status delayed/);
+});
+
+test('an old batch SQL response cannot repopulate the panel after a project switch', async () => {
+  const { h, state } = await progressRefreshHarness();
+  state.hold = true;
+  const cycle = h.runTimersAt(5000);
+  await flushPromises();
+  h.window.location.pathname = '/project/other-project';
+  await h.loadVisibleTheorems({ activeTex: 'A different document.' });
+  state.hold = false; state.release();
+  await cycle;
+  assert.equal(h.batchQueue(), null);
+  assert.ok(!h.fetchCalls.some(c => /cancel|restart|interrupt/.test(c.url)));
+});
+
+function queueNavigationButton(harness, label, action, kind = "theorem") {
+  return harness.leanPane().querySelectorAll(".ol-lean-batch-queue-action").find((button) => {
+    const key = JSON.parse(button.dataset.batchNavigationKey);
+    return key[2] === kind && key[3] === label && key[4] === action;
+  });
+}
+
+test("Formalize all keeps both navigation buttons across all queue sections and polling", async () => {
+  const entries = [
+    ["current", "running"], ["next1", "pending"], ["next2", "pending"],
+    ["next3", "pending"], ["next4", "pending"], ["completed", "formalized"],
+    ["failed", "failed"], ["incomplete", "incomplete"], ["review", "needs_review"],
+    ["disproved", "disproved"], ["skipped", "skipped"], ["canceled", "canceled"]
+  ].map(([targetLabel, state]) => ({ targetKind: "theorem", targetLabel, state }));
+  const harness = await startNavigationQueue(entries.map((entry) => queuePaneItem(entry.targetLabel)), entries);
+  const checkButtons = (count) => {
+    const rows = harness.leanPane().querySelectorAll(".ol-lean-batch-queue-item");
+    assert.equal(rows.length, count);
+    for (const row of rows) {
+      const label = row.querySelector("strong").textContent;
+      const buttons = row.querySelectorAll(".ol-lean-batch-queue-action");
+      assert.deepEqual(buttons.map((button) => button.textContent), ["Show in Lean pane", "Open in LeaChat"]);
+      assert.equal(buttons[0].attributes["aria-label"], `Show ${label} in Lean pane`);
+      assert.equal(buttons[1].attributes["aria-label"], `Open ${label} in LeaChat`);
+    }
+  };
+  checkButtons(9);
+  harness.clickButtonText("+1 more queued");
+  harness.clickButtonText("+1 more item needing attention");
+  harness.clickButtonText("Show 1 completed");
+  checkButtons(12);
+  const progress = harness.batchQueue().progress;
+  await harness.runTimersAt(0);
+  checkButtons(12);
+  assert.deepEqual(harness.batchQueue().progress, progress);
+  assert.equal(harness.hasButtonText("Stop"), true);
+});
+
+for (const targetKind of ["theorem", "definition"]) {
+  test(`queue Lean navigation expands and focuses the exact ${targetKind} before an artifact exists`, async () => {
+    const items = [
+      queuePaneItem("same", { sourceFile: "chapters/proofs.tex", leanDeclarationName: "renamed_theorem" }),
+      queuePaneItem("same", { id: "definition:same:1", kind: "definition", targetKind: "definition",
+        leanKind: "def", sourceFile: "chapters/nested/definitions.tex" })
+    ];
+    const harness = await startNavigationQueue(items, [{ targetKind, targetLabel: "same", state: "pending" }]);
+    const progress = harness.batchQueue().progress;
+    const before = harness.fetchCalls.length;
+    queueNavigationButton(harness, "same", "lean-pane", targetKind).click();
+    await flushPromises();
+    const item = items[targetKind === "definition" ? 1 : 0];
+    assert.equal(harness.focusedPaneItemId(), item.id);
+    assert.equal(harness.firstFocusedPaneItemScrolled(), true);
+    assert.equal(harness.countSelector(".ol-lean-project-detail"), 1);
+    assert.ok(harness.paneTreeRowTexts().some((text) => text.includes("chapters/")));
+    assert.ok(harness.paneTreeRowTexts().some((text) => text.includes(path.basename(item.sourceFile))));
+    assert.equal(harness.document.activeElement.closest(".ol-lean-project-item").dataset.itemId, item.id);
+    await harness.runTimersAt(0);
+    assert.equal(harness.document.activeElement.closest(".ol-lean-project-item").dataset.itemId, item.id);
+    assert.deepEqual(harness.batchQueue().progress, progress);
+    assert.ok(!harness.fetchCalls.slice(before).some((call) => /\/(formalize|stub|lean-pane\/chat\/send)$/.test(call.url)));
+  });
+}
+
+test("queued items open their saved LeaChat session and enable new sessions after refresh", async () => {
+  let items = [queuePaneItem("saved", { leaSessionId: "prior-session" }), queuePaneItem("new")];
+  const manifest = () => ({ ok: true, rootFile: "main.tex", items, diagnostics: [] });
+  const harness = await startNavigationQueue(items, items.map((item) => ({
+    targetKind: "theorem", targetLabel: item.label, state: "pending"
+  })), { manifest });
+  const before = harness.fetchCalls.length;
+  const saved = queueNavigationButton(harness, "saved", "lea-chat");
+  assert.equal(saved.disabled, false);
+  saved.click();
+  await flushPromises();
+  let opened = harness.runtimeMessages.filter((message) => message.type === "OPEN_LEA_SESSION");
+  assert.equal(new URL(opened[0].url).searchParams.get("session"), "prior-session");
+  assert.equal(harness.fetchCalls.length, before, "opening a saved session performs no companion request");
+  const pending = queueNavigationButton(harness, "new", "lea-chat");
+  assert.equal(pending.disabled, true);
+  assert.equal(pending.title, "No LeaChat session is available yet.");
+  pending.click();
+  assert.equal(harness.runtimeMessages.filter((message) => message.type === "OPEN_LEA_SESSION").length, 1);
+  items = [items[0], { ...items[1], leaSessionUrl: "http://localhost:5173/?session=new-session&formalization=form-1" }];
+  harness.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  const ready = queueNavigationButton(harness, "new", "lea-chat");
+  assert.equal(ready.disabled, false);
+  ready.click();
+  await flushPromises();
+  opened = harness.runtimeMessages.filter((message) => message.type === "OPEN_LEA_SESSION");
+  assert.equal(opened[1].url, items[1].leaSessionUrl);
+  assert.ok(!harness.fetchCalls.slice(before).some((call) => /\/(formalize|stub|lean-pane\/chat\/(send|session))$/.test(call.url)));
+});
+
+test("queue navigation resolves refreshed manifest items rather than captured item objects", async () => {
+  let item = queuePaneItem("moving", { leaSessionId: "old-session" });
+  const harness = await startNavigationQueue([item], [{ targetKind: "theorem", targetLabel: "moving", state: "running" }], {
+    manifest: () => ({ ok: true, items: [item], diagnostics: [] })
+  });
+  const originalLeanButton = queueNavigationButton(harness, "moving", "lean-pane");
+  const originalChatButton = queueNavigationButton(harness, "moving", "lea-chat");
+  item = { ...item, id: "theorem:moving:7", sourceFile: "nested/moved.tex", leaSessionId: "new-session" };
+  harness.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  originalLeanButton.click();
+  originalChatButton.click();
+  await flushPromises();
+  assert.equal(harness.focusedPaneItemId(), item.id);
+  const opened = harness.runtimeMessages.find((message) => message.type === "OPEN_LEA_SESSION");
+  assert.equal(new URL(opened.url).searchParams.get("session"), "new-session");
+});
+
+for (const situation of ["missing", "ambiguous", "other-project"]) {
+  test(`queue navigation stays disabled for a ${situation} manifest target`, async () => {
+    const unrelated = queuePaneItem("unrelated");
+    const item = queuePaneItem("target", { leaSessionId: "saved-session" });
+    const items = situation === "missing" ? [unrelated]
+      : situation === "ambiguous" ? [item, { ...item, id: "theorem:target:1", sourceFile: "other.tex" }]
+        : [unrelated, { ...item, overleafProjectId: "other-project" }];
+    const harness = await startNavigationQueue(items, [{ targetKind: "theorem", targetLabel: "target", state: "pending" }]);
+    for (const action of ["lean-pane", "lea-chat"]) {
+      const button = queueNavigationButton(harness, "target", action);
+      assert.equal(button.disabled, true);
+      button.click();
+    }
+    assert.equal(harness.focusedPaneItemId(), "");
+    assert.ok(!harness.runtimeMessages.some((message) => message.type === "OPEN_LEA_SESSION"));
+  });
+}
+
+test("queue opening stays busy and preserves keyboard focus across polling, including tab failures", async () => {
+  let finishOpen;
+  const harness = await startNavigationQueue([queuePaneItem("saved", { leaSessionId: "session-1" })], [
+    { targetKind: "theorem", targetLabel: "saved", state: "running" }
+  ], { runtimeSendMessage(message, callback) {
+    if (message.type === "OPEN_LEA_SESSION") finishOpen = callback;
+    else callback?.({ ok: true });
+  } });
+  const button = queueNavigationButton(harness, "saved", "lea-chat");
+  button.focus();
+  button.click();
+  await flushPromises();
+  assert.equal(button.attributes["aria-busy"], "true");
+  await harness.runTimersAt(0);
+  const replacement = queueNavigationButton(harness, "saved", "lea-chat");
+  assert.notEqual(replacement, button);
+  assert.equal(harness.document.activeElement, replacement);
+  assert.equal(replacement.attributes["aria-disabled"], "true");
+  replacement.click();
+  await flushPromises();
+  assert.equal(harness.runtimeMessages.filter((message) => message.type === "OPEN_LEA_SESSION").length, 1);
+  finishOpen({ ok: false, message: "Could not open Lea session tab." });
+  await flushPromises();
+  assert.equal(replacement.attributes["aria-busy"], "false");
+  assert.equal(replacement.attributes["aria-disabled"], "false");
+  assert.match(harness.bodyText(), /Could not open Lea session tab/);
+  const status = harness.leanPane().querySelector(".ol-lean-project-pane-status");
+  assert.equal(status.attributes.role, "status");
+  assert.equal(status.attributes["aria-live"], "polite");
+  harness.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  assert.match(harness.bodyText(), /Could not open Lea session tab/);
+});
+
+test("queue session navigation never falls back to the Lea homepage when a session disappears", async () => {
+  let item = queuePaneItem("saved", { leaSessionId: "session-1" });
+  const harness = await startNavigationQueue([item], [{ targetKind: "theorem", targetLabel: "saved", state: "pending" }], {
+    manifest: () => ({ ok: true, items: [item], diagnostics: [] }),
+    fetchOverride: async (url) => url.endsWith("/lean-pane/chat/session")
+      ? { ok: true, json: async () => ({ ok: true, status: "no-session", leaSessionUrl: null }) } : undefined
+  });
+  const oldButton = queueNavigationButton(harness, "saved", "lea-chat");
+  item = { ...item, leaSessionId: undefined };
+  harness.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  oldButton.click();
+  await flushPromises();
+  assert.match(harness.bodyText(), /No LeaChat session is available yet/);
+  assert.ok(!harness.runtimeMessages.some((message) => message.type === "OPEN_LEA_SESSION"));
+  assert.ok(harness.fetchCalls.some((call) => call.url.endsWith("/lean-pane/chat/session")));
+});
+
+for (const outcome of ["formalized", "failed"]) {
+  test(`queue focus follows a running row into its ${outcome} outcome group`, async () => {
+    const entries = Array.from({ length: 6 }, (_, index) => ({
+      targetKind: "theorem", targetLabel: `failed${index}`, state: "failed"
+    }));
+    entries.push({ targetKind: "theorem", targetLabel: "current", state: "running" });
+    const harness = await startNavigationQueue(entries.map((entry) => queuePaneItem(entry.targetLabel)), entries);
+    queueNavigationButton(harness, "current", "lean-pane").focus();
+    entries.at(-1).state = outcome;
+    await harness.runTimersAt(0);
+    const replacement = queueNavigationButton(harness, "current", "lean-pane");
+    assert.ok(replacement, "the focused outcome remains visible");
+    assert.equal(harness.document.activeElement, replacement);
+    assert.equal(harness.batchQueue().completedCount, outcome === "formalized" ? 1 : 0);
+    assert.equal(harness.batchQueue().attentionItemCount, outcome === "failed" ? 7 : 5);
+  });
+}
+
+for (const operation of ["stub", "repair"]) {
+  test(`${operation} all queue rows do not gain Formalize all navigation controls`, async () => {
+    const batch = { ok: true, batchId: "other-batch", operation, done: false, running: true,
+      items: [{ targetKind: "theorem", targetLabel: "target", state: "running" }] };
+    const harness = await startNavigationQueue([queuePaneItem("target")], batch.items, { targetBatch: batch, repairStatus: batch });
+    assert.equal(harness.countSelector(".ol-lean-batch-queue-action"), 0);
+  });
+}
+
 test("Formalize all limits cost-cap failures to five statements until expanded", async () => {
   const items = Array.from({ length: 9 }, (_unused, index) => ({
     id: `theorem:cap_t${index + 1}:${index}`,
@@ -2662,7 +3885,7 @@ test("Formalize all limits cost-cap failures to five statements until expanded",
     { status: "unformalized" },
     {},
     {
-      locationPath: "/project/unknown",
+      locationPath: "/project/project-1",
       manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
       targetBatch: {
         ok: true,
@@ -2685,7 +3908,7 @@ test("Formalize all limits cost-cap failures to five statements until expanded",
   harness.clickPaneTrigger();
   await flushPromises();
   harness.clickButtonText("Formalize all (9)");
-  await flushPromises();
+  await waitForHarness(() => harness.batchQueue(), "completed cost-cap batch queue");
 
   let queue = harness.batchQueue();
   assert.equal(queue.attentionItemCount, 5);
@@ -2727,7 +3950,7 @@ test("completed Formalize all shows its saved synthesis", async () => {
     leanDeclarationName: label, formalizable: true
   }));
   const harness = createContentHarness({ status: "unformalized" }, {}, {
-    locationPath: "/project/unknown",
+    locationPath: "/project/project-1",
     manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
     targetBatch: {
       ok: true, batchId: report.batch_id, operation: "formalize", done: true,
@@ -2842,7 +4065,7 @@ test("stopping a batch preserves a completed race winner and reports stopped ite
     { status: "unformalized" },
     {},
     {
-      locationPath: "/project/unknown",
+      locationPath: "/project/project-1",
       manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
       targetBatch: {
         ok: true,
@@ -3051,8 +4274,549 @@ test("Lean pane edit 'Save' posts the edited content and renders the cascade imp
   assert.match(harness.bodyText(), /corollary_a: broken by this edit\./);
 });
 
+test('historical review metadata exposes Lea Status without approval controls', async () => {
+  const h = createContentHarness({ status: 'needs_review', review: { eligible: true }, leaSessionId: 'session-1' }, {}, {
+    manifest: { ok: true, rootFile: 'main.tex', diagnostics: [], items: [{
+      id: 'legacy-review', label: 'demo_theorem', kind: 'theorem', status: 'needs-review',
+      review: { eligible: true, approval: { id: 'legacy' } },
+      reformalization: { has_drafts: true, state: 'review' }, formalizable: true,
+      naturalLanguageLatex: 'A theorem.', sourceFile: 'main.tex', leanKind: 'theorem',
+      leanCheck: { status: 'checked' },
+      leaStatus: { confidence: 'high', assessment: { confidence: 'high', scope: 'statement_and_proof', summary: 'The source omits a boundary case.' } }
+    }] }
+  });
+  await h.loadVisibleTheorems();
+  h.openTargetPopover();
+  assert.equal(h.hasButtonText('Review result'), false);
+  h.clickPaneTrigger();
+  await flushPromises();
+  h.clickPaneTreeRowText('main.tex');
+  h.clickFirstPaneItem();
+  assert.match(h.paneText(), /The source omits a boundary case/);
+  assert.match(h.paneText(), /Lean Check/);
+  assert.match(h.paneText(), /Lea Status/);
+  assert.doesNotMatch(h.paneText(), /Needs review|Approved by user|awaits approval/);
+  for (const text of ['Review result', 'Review draft', 'Withdraw approval', 'Approve proof']) {
+    assert.equal(h.hasButtonText(text), false);
+  }
+  assert.ok(!h.fetchCalls.some(call => /\/review\/(context|decision)$/.test(call.url)));
+});
+
+test("Lea tag setup remains available when an empty inventory cannot reach the companion", async () => {
+  const h = createContentHarness({ status: "unformalized" }, {}, {
+    locationPath: "/project/unknown",
+    fetchOverride(url) {
+      if (String(url).endsWith("/lean-pane/manifest")) {
+        return { ok: false, status: 503, json: async () => ({ message: "Companion is offline" }) };
+      }
+    }
+  });
+  await h.loadVisibleTheorems({ activeTex: "" });
+  h.clickPaneTrigger();
+  await flushPromises();
+  await flushPromises();
+  assert.equal(h.hasButtonText("Add Lea tags"), true);
+  const setup = h.document.querySelector(".ol-lean-tags-setup");
+  assert.ok(setup);
+  const status = setup.querySelector(".ol-lean-tags-setup-status");
+  assert.equal(status.attributes["aria-live"], "polite");
+  assert.match(h.bodyText(), /Companion is offline/);
+});
+
+test("opening an Overleaf project adopts its browser title without downloading or creating source mirrors", async () => {
+  const identity = { projectId: "existing", slug: "project-1", overleafProjectId: "project-1",
+    projectName: "project-1", nameSource: "generated", namespace: "Lea.Project1", exists: true };
+  const h = createContentHarness({ status: "unformalized" }, {}, {
+    documentTitle: "Topology Notes — Overleaf", projectIdentity: identity,
+    fetchOverride(url, options) {
+      if (url.endsWith("/project/identity/default-name")) return { ok: true, status: 200,
+        json: async () => ({ identity: { ...identity, projectName: "Topology Notes", nameSource: "overleaf" } }) };
+    }
+  });
+  await h.loadVisibleTheorems({ activeTex: "\\title{Different paper title}\nText" });
+  await flushPromises();
+  const call = h.fetchCalls.find(c => c.url.endsWith("/project/identity/default-name"));
+  assert.ok(call);
+  assert.deepEqual(JSON.parse(call.options.body), { overleafProjectId: "project-1", overleafProjectTitle: "Topology Notes" });
+  assert.equal(h.fetchCalls.some(c => /download\/zip|mirror-tex|\/formalize$/.test(c.url)), false);
+  h.clickPaneTrigger();
+  await flushPromises();
+  assert.match(h.document.querySelector(".ol-lean-project-pane-titlewrap").textContent, /Topology Notes/);
+});
+
+test("opening a previously untouched named project uses only the existing-project endpoint", async () => {
+  const h = createContentHarness({ status: "unformalized" }, {}, {
+    documentTitle: "Untouched - Overleaf",
+    projectIdentity: { exists: false, nameSource: "generated", projectName: "Overleaf Project" },
+    fetchOverride(url) {
+      if (url.endsWith("/project/identity/default-name")) return { ok: false, status: 404,
+        json: async () => ({ error: "project_missing" }) };
+    }
+  });
+  await h.loadVisibleTheorems();
+  assert.equal(h.fetchCalls.filter(c => c.options?.method === "PUT").length, 0);
+  assert.equal(h.fetchCalls.some(c => /download\/zip|mirror-tex/.test(c.url)), false);
+});
+
+for (const [documentTitle, activeTitle, expected, mirrorEnabled] of [
+  ["Source Name - Overleaf", "Other Title", "Source Name", true],
+  ["Overleaf", "Paper Title", "Paper Title", true],
+  ["", "", "", true],
+  ["No Mirror – Overleaf", "Other Title", "No Mirror", false],
+]) {
+  test(`formalization carries the source title separately (${documentTitle || "missing title"}, mirror ${mirrorEnabled})`, async () => {
+    const h = createContentHarness({ status: "unformalized" }, {}, {
+      documentTitle, companionSettings: { leaTexMirrorEnabled: mirrorEnabled },
+      fetchOverride(url) {
+        if (url.includes("/download/zip")) {
+          // Stored main.tex entry; collectProjectTexFiles overlays the live buffer.
+          const zip = Buffer.from("UEsDBBQAAAAAAPW5TV0AAAAAAAAAAAAAAAAIAAAAbWFpbi50ZXhQSwECFAMUAAAAAAD1uU1dAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAgAEAAAAAbWFpbi50ZXhQSwUGAAAAAAEAAQA2AAAAJgAAAAAA", "base64");
+          return { ok: true, arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength) };
+        }
+      }
+    });
+    await h.loadVisibleTheorems({ activeTex: `${activeTitle ? `\\title{${activeTitle}}\n` : ""}\\begin{theorem}\n% lea: formalize label=demo_theorem\nA theorem.\n\\end{theorem}` });
+    h.openTargetPopover();
+    h.clickButtonText("Formalize");
+    await flushPromises();
+    const call = h.fetchCalls.find(c => c.url.endsWith("/formalize"));
+    assert.ok(call);
+    const body = JSON.parse(call.options.body);
+    assert.equal(body.overleafProjectTitle, expected);
+    assert.notEqual(body.projectName, undefined);
+    const mirrors = h.fetchCalls.filter(c => c.url.endsWith("/mirror-tex"));
+    if (mirrorEnabled) {
+      assert.ok(mirrors.length);
+      assert.equal(JSON.parse(mirrors[0].options.body).overleafProjectTitle, expected);
+      await h.loadVisibleTheorems({ activeTex: "\\title{Changed paper title}\nEdited source" });
+      await h.runScheduledTimers();
+      const upsert = h.fetchCalls.find(c => c.url.endsWith("/mirror-tex") && JSON.parse(c.options.body).mode === "upsert");
+      assert.ok(upsert, "activated mirroring should send the edited active buffer");
+      assert.equal(JSON.parse(upsert.options.body).overleafProjectTitle,
+        documentTitle && documentTitle !== "Overleaf" ? expected : "Changed paper title");
+    } else assert.equal(mirrors.length, 0);
+  });
+}
+
+test("Formalize all carries the Overleaf title on every queued item without source mirroring", async () => {
+  const items = ["first", "second"].map((label, index) => ({
+    id: `theorem:${label}:${index}`, kind: "theorem", label, status: "missing-stub",
+    sourceFile: "main.tex", sourceStartLine: index + 1, sourceEndLine: index + 1,
+    naturalLanguageLatex: `Theorem ${label}.`, leanKind: "theorem", formalizable: true
+  }));
+  const h = createContentHarness({ status: "unformalized" }, {}, {
+    documentTitle: "Batch Notes - Overleaf", companionSettings: { leaTexMirrorEnabled: false },
+    manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
+    targetBatch: { ok: true, batchId: "batch", operation: "formalize", done: false, running: true,
+      items: items.map(item => ({ targetKind: "theorem", targetLabel: item.label, state: "pending" })) }
+  });
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  h.clickButtonText("Formalize all (2)");
+  await flushPromises();
+  const call = h.fetchCalls.find(c => c.url.endsWith("/formalize/all"));
+  assert.ok(call);
+  const body = JSON.parse(call.options.body);
+  assert.equal(body.items.length, 2);
+  assert.ok(body.items.every(item => item.overleafProjectTitle === "Batch Notes" && item.projectName === "Test Project"));
+  assert.equal(h.fetchCalls.some(c => c.url.endsWith("/mirror-tex")), false);
+});
+
+for (const mirrorEnabled of [false,true]) {
+  test(`formalization source is browser-published without reverse callbacks (mirror ${mirrorEnabled})`,async()=>{
+    let socket;
+    class EventSource {
+      listeners=new Map();
+      constructor(){socket=this;}
+      addEventListener(type,callback){this.listeners.set(type,callback);}
+      close(){}
+    }
+    const h=createContentHarness({status:'unformalized'},{},{EventSource,companionSettings:{leaTexMirrorEnabled:mirrorEnabled},fetchOverride(url){
+      if(url.includes('/download/zip')){
+        const zip=Buffer.from('UEsDBBQAAAAAAPW5TV0AAAAAAAAAAAAAAAAIAAAAbWFpbi50ZXhQSwECFAMUAAAAAAD1uU1dAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAgAEAAAAAbWFpbi50ZXhQSwUGAAAAAAEAAQA2AAAAJgAAAAAA','base64');
+        return {ok:true,arrayBuffer:async()=>zip.buffer.slice(zip.byteOffset,zip.byteOffset+zip.byteLength)};
+      }
+    }});
+    await h.loadVisibleTheorems();
+    assert.equal(socket.listeners.has('source-refresh-requested'),false);
+    assert.equal(h.fetchCalls.some(call=>call.url.endsWith('/source-context/publish')),false,'status reads do not publish source');
+    h.openTargetPopover();
+    h.clickButtonText('Formalize');
+    await flushPromises();
+    const publication=h.fetchCalls.find(call=>call.url.endsWith('/source-context/publish'));
+    assert.ok(publication,'visible source must be published by the browser');
+    assert.equal(JSON.parse(publication.options.body).source_bundle.targetKey,'demo_theorem');
+    assert.equal(h.fetchCalls.some(call=>call.url.endsWith('/source-context/respond')),false);
+    assert.equal(h.fetchCalls.some(call=>call.url.endsWith('/lean-pane/manifest')),false);
+  });
+}
+
+test('pane refresh preserves selected source/code text until the range is cleared', async () => {
+  const item = editableItem();
+  const harness = createContentHarness({ status: 'formalized' }, {}, {
+    manifest: { ok: true, rootFile: 'main.tex', items: [item], diagnostics: [] },
+  });
+  await harness.loadVisibleTheorems();
+  harness.clickPaneTrigger();
+  await flushPromises();
+  harness.clickPaneTreeRowText('main.tex');
+  harness.clickFirstPaneItem();
+  const selected = harness.document.body.querySelector('.ol-lean-project-item');
+  assert.ok(selected);
+  const selection = { isCollapsed: false, anchorNode: selected, focusNode: selected };
+  harness.document.getSelection = () => selection;
+  harness.clickButtonLabel('Refresh Lean pane');
+  await flushPromises();
+  assert.equal(harness.document.body.querySelector('.ol-lean-project-item'), selected);
+  selection.isCollapsed = true;
+  harness.document.dispatchEvent({ type: 'selectionchange' });
+  await flushPromises();
+  assert.notEqual(harness.document.body.querySelector('.ol-lean-project-item'), selected);
+});
+
+// Batch admission is distinct from the eventual worker-created batch panel.
+test("concurrent batch targets share one publisher identity and ordered publication sequence", async () => {
+  let owner = null, sequence = 0, conflicts = 0;
+  const clients = [], publications = [];
+  const h = createContentHarness({ status: "unformalized" }, {}, {
+    companionSettings:{leaTexMirrorEnabled:false},
+    manifest:{ok:true,rootFile:'main.tex',items:Array.from({length:9},(_,i)=>queuePaneItem(`visible_${i}`)),diagnostics:[]},
+    fetchOverride: async (url, options) => {
+    if (url.endsWith("/source-context/publisher")) {
+      const value = JSON.parse(options.body);
+      clients.push(value.client_id);
+      if (owner && owner !== value.client_id) {
+        conflicts++;
+        return admissionResponse({ detail: { code: "publisher_conflict", generation: 1, retry_after_ms: 90000 } }, 409);
+      }
+      owner = value.client_id;
+      return admissionResponse({ generation: 1, sequence });
+    }
+    if (url.endsWith("/source-context/publish")) {
+      const value = JSON.parse(options.body);
+      assert.equal(value.client_id, owner);
+      assert.equal(value.sequence, ++sequence);
+      publications.push(value);
+      return admissionResponse({ source_context_ref: `source-${sequence}` });
+    }
+  } });
+  const targets = Array.from({ length: 9 }, (_, i) => ({ ...h.target, targetLabel: `visible_${i}` }));
+  await h.loadVisibleTheorems({ targets });
+  assert.equal(publications.length,0,'opening a document does not contend for publication');
+  h.clickPaneTrigger();
+  await flushPromises();
+  h.clickButtonText('Formalize all (9)');
+  await waitForHarness(() => h.fetchCalls.some(call => call.url.endsWith('/formalize/all')),
+    "batch admission after all source publications");
+  assert.equal(new Set(clients).size, 1, "one page must not compete with itself for the document lease");
+  assert.equal(conflicts, 0);
+  assert.equal(publications.length, 9);
+});
+
+async function batchAdmissionHarness(options = {}) {
+  const item = queuePaneItem("queued_target");
+  const h = createContentHarness({ status: "unformalized" }, {}, {
+    manifest: { ok: true, rootFile: "main.tex", items: [item], diagnostics: [] },
+    companionSettings: { leaTexMirrorEnabled: false }, ...options
+  });
+  await h.loadVisibleTheorems();
+  h.clickPaneTrigger();
+  await flushPromises();
+  return h;
+}
+const admissionResponse = (value, status = 200) => ({ ok: status < 400, status, async json() { return value; } });
+const queuedAdmission = { workspace_command: true, command: { id: "sql-command", state: "queued" } };
+const admittedBatch = { batchId: "admitted-batch", operation: "formalize", done: false, running: true,
+  items: [{ targetKind: "theorem", targetLabel: "queued_target", state: "pending" }] };
+
+test("a batch click is visible during source preparation, deduplicated, and preserves source selection", async () => {
+  let release;
+  const h = await batchAdmissionHarness({ fetchOverride: async (url, options) => {
+    if (url.endsWith("/source-context/publish") && JSON.parse(options.body).source_bundle.targetKey === "queued_target") {
+      return new Promise(resolve => { release = () => resolve(admissionResponse({ source_context_ref: "frozen-target" })); });
+    }
+  } });
+  const button = h.document.body.querySelector(".ol-lean-formalize-all-button");
+  const selected = h.document.body.querySelector(".ol-lean-project-tree");
+  const selection = { isCollapsed: false, anchorNode: selected, focusNode: selected };
+  h.document.getSelection = () => selection;
+  button.click();
+  assert.match(h.paneText(), /Preparing source for your request/);
+  button.click(); // A retained/stale DOM listener must also deduplicate.
+  await flushPromises();
+  assert.equal(button.disabled, true);
+  assert.equal(h.document.body.querySelector(".ol-lean-project-tree"), selected);
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 0);
+  release();
+  await flushPromises();
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 1);
+  assert.equal(h.document.body.querySelector(".ol-lean-project-tree"), selected);
+});
+
+test("a displayed batch button retains its target set across a manifest refresh", async () => {
+  let items = [queuePaneItem("queued_target")];
+  const h = await batchAdmissionHarness({ manifest: () => ({ ok: true, items, diagnostics: [] }) });
+  const displayed = h.document.body.querySelector(".ol-lean-formalize-all-button");
+  items = [{ ...items[0], status: "unknown" }];
+  h.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  displayed.click();
+  await flushPromises();
+  const calls = h.fetchCalls.filter(call => call.url.endsWith("/formalize/all"));
+  assert.equal(calls.length, 1);
+  assert.equal(JSON.parse(calls[0].options.body).items[0].targetLabel, "queued_target");
+});
+
+test("Formalize all waits for the complete inventory and includes all ten targets, including saved results", async () => {
+  const items = Array.from({ length: 10 }, (_, i) => ({ ...queuePaneItem(`target_${i}`),
+    sourceFile: i < 6 ? 'main.tex' : 'sections/more.tex', status: i === 0 ? 'valid' : 'missing-stub' }));
+  const h = await batchAdmissionHarness({ fetchOverride(url, options) {
+    if (url.endsWith('/lean-pane/manifest')) {
+      const complete = JSON.parse(options.body).sourceCoverage === 'complete';
+      return admissionResponse({ ok: true, items: complete ? items : items.slice(0, 6), diagnostics: [] });
+    }
+  } });
+  h.document.body.querySelector('.ol-lean-formalize-all-button').click();
+  await waitForHarness(() => h.fetchCalls.some(call => call.url.endsWith('/formalize/all')), "complete project batch admission");
+  const call = h.fetchCalls.find(call => call.url.endsWith('/formalize/all'));
+  assert.ok(call);
+  const submitted = JSON.parse(call.options.body);
+  assert.equal(submitted.scope, 'project');
+  assert.deepEqual(submitted.items.map(item => item.targetLabel), items.map(item => item.label));
+  assert.equal(submitted.items.length, 10);
+  assert.ok(submitted.items.every(item => item.source_context_ref));
+});
+
+test("a collapsed card shows the independent Lean check and Lea Status", async () => {
+  const h = await batchAdmissionHarness({ manifest: { ok: true, diagnostics: [], items: [{
+    ...queuePaneItem('target'), status: 'valid', leanCheck: { status: 'checked' },
+    leaStatus: { confidence: 'high', assessment: { confidence: 'high', scope: 'statement_and_proof' } }
+  }] } });
+  h.clickPaneTreeRowText('main.tex');
+  assert.match(h.paneText(), /Lean Check:\s*checked/);
+  assert.match(h.paneText(), /High confidence/);
+  assert.doesNotMatch(h.paneText(), /Needs review|Review result|awaits approval/);
+});
+
+test('a project batch counts reused proofs separately and keeps them out of needs attention', async () => {
+  const items = ['saved', 'new'].map(queuePaneItem);
+  const h = await startNavigationQueue(items, [
+    { targetKind: 'theorem', targetLabel: 'saved', state: 'skipped', reason: 'existing_proof' },
+    { targetKind: 'theorem', targetLabel: 'new', state: 'formalized' }
+  ]);
+  assert.match(h.batchQueue().text, /1 verified.*0 skipped.*1 already verified/);
+  assert.doesNotMatch(h.batchQueue().text, /Needs attention/);
+  h.clickButtonText('Show 2 completed');
+  assert.equal(h.batchQueue().completedCount, 2);
+});
+
+test("a disconnected click retries then shows SQL acceptance while the worker is unavailable", async () => {
+  let offline = false, failRead = false, complete = false;
+  const h = await batchAdmissionHarness({ fetchOverride: async url => {
+    if (offline && url.endsWith("/settings")) return admissionResponse({ message: "API starting" }, 503);
+    if (url.endsWith("/formalize/all")) return admissionResponse(queuedAdmission, 202);
+    if (url.endsWith("/commands/sql-command")) {
+      if (failRead) throw new TypeError("Connection interrupted");
+      return admissionResponse(complete ? { workspace_command: true, command: { id: "sql-command", state: "succeeded",
+        result: { statusCode: 200, body: admittedBatch } } } : queuedAdmission);
+    }
+  } });
+  offline = true;
+  h.clickButtonText("Formalize all (1)");
+  await flushPromises();
+  assert.match(h.paneText(), /Waiting for a connection.*pending in this tab/);
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 0);
+  offline = false;
+  await h.runTimersAt(1000);
+  assert.match(h.paneText(), /Queued in the database.*Waiting for Lea/);
+  const status = h.document.body.querySelector(".ol-lean-batch-admission").querySelector("p");
+  assert.equal(status.getAttribute("role"), "status");
+  assert.equal(status.getAttribute("aria-live"), "polite");
+  failRead = true;
+  await h.runTimersAt(1000);
+  assert.match(h.paneText(), /request is accepted.*Reconnecting/);
+  failRead = false;
+  complete = true;
+  h.clickButtonText("Retry connection now");
+  await flushPromises();
+  assert.equal(h.countSelector(".ol-lean-batch-admission"), 0);
+  assert.ok(h.batchQueue());
+  const posts = h.fetchCalls.filter(call => call.url.endsWith("/formalize/all"));
+  assert.equal(posts.length, 1, "observing an accepted command must never resubmit it");
+  assert.equal(posts[0].options.headers.get("Prefer"), "respond-async");
+});
+
+test("a publisher lease conflict retains the batch intent without repeated HTTP claims", async () => {
+  let blocked = false, claims = 0;
+  const h = await batchAdmissionHarness({ fetchOverride: async url => {
+    if (blocked && url.endsWith("/source-context/publisher")) {
+      claims++;
+      return admissionResponse({ detail: { code: "publisher_conflict", generation: 7, retry_after_ms: 60000,
+        message: "Another tab owns this document publication" } }, 409);
+    }
+  } });
+  blocked = true;
+  h.clickButtonText("Formalize all (1)");
+  await flushPromises();
+  assert.match(h.paneText(), /Waiting for the source publication lease.*request is pending.*retry automatically/);
+  assert.equal(h.hasButtonText("Dismiss request"), false);
+  assert.equal(h.hasButtonText("Cancel request"), true);
+  assert.ok(h.pendingTimers().some(delay => delay >= 59000 && delay <= 60000));
+  for (let i = 0; i < 3; i++) {
+    h.clickButtonText("Retry connection now");
+    await flushPromises();
+  }
+  assert.equal(claims, 1, "retry controls and all target callers share the cached lease conflict");
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 0);
+  h.clickButtonText("Cancel request");
+  assert.equal(h.countSelector(".ol-lean-batch-admission"), 0);
+});
+
+test("batch admission updates preserve the user's Blueprint view", async () => {
+  let release;
+  const h = await batchAdmissionHarness({ fetchOverride: async url => {
+    if (url.endsWith("/formalize/all")) return admissionResponse(queuedAdmission, 202);
+    if (url.endsWith("/commands/sql-command")) return new Promise(resolve => { release = () => resolve(admissionResponse({
+      workspace_command: true, command: { id: "sql-command", state: "succeeded", result: { statusCode: 200, body: admittedBatch } }
+    })); });
+  } });
+  h.clickButtonText("Formalize all (1)");
+  await flushPromises();
+  await h.runTimersAt(1000);
+  h.clickButtonText("Blueprint");
+  await flushPromises();
+  const blueprint = h.paneText();
+  release();
+  await flushPromises();
+  assert.equal(h.paneText(), blueprint);
+  assert.equal(h.countSelector(".ol-lean-batch-admission"), 0);
+  h.clickButtonText("Items");
+  assert.ok(h.batchQueue());
+});
+
+test("an ambiguous batch POST retains frozen bytes and its idempotency key through reconnect", async () => {
+  let attempts = 0;
+  const h = await batchAdmissionHarness({ fetchOverride: async url => {
+    if (url.endsWith("/formalize/all")) {
+      if (++attempts <= 2) throw new TypeError("Acknowledgement lost");
+      return admissionResponse(queuedAdmission, 202);
+    }
+  } });
+  h.clickButtonText("Formalize all (1)");
+  await flushPromises();
+  assert.match(h.paneText(), /Acceptance is unconfirmed.*same request/);
+  const retry = h.document.body.querySelector(".ol-lean-batch-admission").querySelector("button");
+  retry.click();
+  retry.click();
+  await flushPromises();
+  const posts = h.fetchCalls.filter(call => call.url.endsWith("/formalize/all"));
+  assert.equal(posts.length, 3);
+  assert.equal(new Set(posts.map(call => call.options.body)).size, 1);
+  assert.equal(new Set(posts.map(call => call.options.headers.get("Idempotency-Key"))).size, 1);
+  assert.match(h.paneText(), /Queued in the database/);
+});
+
+for (const changed of ["source", "project", "canceled"]) {
+  test(`batch preparation cannot submit after its ${changed} changes`, async () => {
+    let release;
+    const h = await batchAdmissionHarness({ fetchOverride: async (url, options) => {
+      if (url.endsWith("/source-context/publish") && JSON.parse(options.body).source_bundle.targetKey === "queued_target") {
+        return new Promise(resolve => { release = () => resolve(admissionResponse({ source_context_ref: "frozen-target" })); });
+      }
+    } });
+    h.clickButtonText("Formalize all (1)");
+    await flushPromises();
+    if (changed === "source") h.window.postMessage({ type: "OL_LEAN_TARGETS_VISIBLE", targets: [h.target], activeTex: "Changed source", activePath: "main.tex" });
+    if (changed === "project") h.window.location.pathname = "/project/another-document";
+    if (changed === "canceled") h.clickButtonText("Cancel request");
+    release();
+    await flushPromises();
+    assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 0);
+    if (changed === "source") assert.match(h.paneText(), /document changed before this request was queued/);
+    if (changed === "canceled") assert.equal(h.countSelector(".ol-lean-batch-admission"), 0);
+  });
+}
+
+test("a stale preparation cancel control cannot discard an accepted SQL command", async () => {
+  let release;
+  const h = await batchAdmissionHarness({ fetchOverride: async (url, options) => {
+    if (url.endsWith("/source-context/publish") && JSON.parse(options.body).source_bundle.targetKey === "queued_target") {
+      return new Promise(resolve => { release = () => resolve(admissionResponse({ source_context_ref: "frozen-target" })); });
+    }
+    if (url.endsWith("/formalize/all")) return admissionResponse(queuedAdmission, 202);
+  } });
+  h.clickButtonText("Formalize all (1)");
+  await flushPromises();
+  const cancel = h.document.body.querySelector(".ol-lean-batch-admission").querySelector("button");
+  release();
+  await flushPromises();
+  assert.match(h.paneText(), /Queued in the database/);
+  cancel.click();
+  assert.match(h.paneText(), /Queued in the database/);
+  assert.equal(h.hasButtonText("Formalize all (1)"), false);
+});
+
+test("a timed-out source publication retains the click until publication can reconnect", async () => {
+  let stalled = true;
+  const h = await batchAdmissionHarness({ fetchOverride: async (url, options) => {
+    if (stalled && url.endsWith("/source-context/publish") && JSON.parse(options.body).source_bundle.targetKey === "queued_target") {
+      return new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("Publication timed out")), { once: true }));
+    }
+  } });
+  h.clickButtonText("Formalize all (1)");
+  await flushPromises();
+  await h.runTimersAt(10000);
+  assert.match(h.paneText(), /Waiting for a connection.*pending in this tab/);
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 0);
+  stalled = false;
+  h.clickButtonText("Retry connection now");
+  await flushPromises();
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 1);
+});
+
+for (const status of [429, 422]) {
+  test(`queue admission HTTP ${status} retains or rejects the request explicitly`, async () => {
+    const h = await batchAdmissionHarness({ fetchOverride: async url => {
+      if (url.endsWith("/formalize/all")) return admissionResponse({ message: "Admission rejected" }, status);
+    } });
+    h.clickButtonText("Formalize all (1)");
+    await flushPromises();
+    if (status === 429) {
+      assert.match(h.paneText(), /Lea is busy.*pending in this tab.*retry automatically/);
+      assert.equal(h.hasButtonText("Cancel request"), true, "a capacity rejection can still be withdrawn before admission");
+      h.clickButtonText("Retry connection now");
+      await flushPromises();
+      const posts = h.fetchCalls.filter(call => call.url.endsWith("/formalize/all"));
+      assert.equal(posts.length, 2);
+      assert.equal(posts[0].options.headers.get("Idempotency-Key"), posts[1].options.headers.get("Idempotency-Key"));
+      assert.equal(posts[0].options.body, posts[1].options.body);
+    } else {
+      assert.match(h.paneText(), /Admission rejected/);
+      assert.equal(h.hasButtonText("Retry connection now"), false);
+      assert.equal(h.hasButtonText("Dismiss request"), true);
+    }
+  });
+}
+
+test("a terminal queued-command failure is visible and does not auto-resubmit", async () => {
+  const h = await batchAdmissionHarness({ fetchOverride: async url => {
+    if (url.endsWith("/formalize/all")) return admissionResponse({ workspace_command: true, command: {
+      id: "failed-command", state: "failed", error_status: 503, error: "Worker requires reconciliation" } }, 202);
+  } });
+  h.clickButtonText("Formalize all (1)");
+  await flushPromises();
+  assert.match(h.paneText(), /Worker requires reconciliation/);
+  assert.equal(h.hasButtonText("Retry connection now"), false);
+  await h.runTimersAt(1000);
+  assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/formalize/all")).length, 1);
+  h.clickButtonText("Dismiss request");
+  assert.equal(h.hasButtonText("Formalize all (1)"), true);
+});
+
 function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
   const document = new FakeDocument();
+  document.title = options.documentTitle || "";
   const timers = [];
   const fetchCalls = [];
   const runtimeMessages = [];
@@ -3073,6 +4837,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
     hasRecordedProofs: true
   };
   let nextTimerId = 1;
+  let timerNow = 0;
 
   const window = {
     innerWidth: 1024,
@@ -3171,6 +4936,9 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
           async arrayBuffer() { return new ArrayBuffer(0); }
         };
       }
+      if (String(url).includes("/download/zip")) return {
+        ok: true, arrayBuffer: async () => projectZip.buffer.slice(projectZip.byteOffset, projectZip.byteOffset + projectZip.byteLength)
+      };
       const failingRepairStart = Boolean(options.failRepairStart) && String(url).includes("/lean-pane/repair/start");
       const formalizeRequest = String(url).endsWith("/formalize");
       const formalizeFailure = formalizeRequest
@@ -3231,8 +4999,10 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
               identity: currentProjectIdentity
             };
           }
-          if (String(url).endsWith("/settings") && options.companionSettings) {
-            return options.companionSettings;
+          if(String(url).endsWith('/source-context/publisher'))return {generation:1,sequence:0,lease_seconds:90};
+          if(String(url).endsWith('/source-context/publish'))return {source_context_ref:'published-source',generation:1,sequence:1};
+          if (String(url).endsWith("/settings")) {
+            return {...storageState,...options.companionSettings};
           }
           if (String(url).endsWith("/settings/lea") && fetchOptions?.method === "POST") {
             return { ...options.companionSettings, ...JSON.parse(fetchOptions.body || "{}") };
@@ -3329,7 +5099,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
             return options.repairAll || { ok: true, batchId: "batch-1", done: false, pausedOn: null, items: [] };
           }
           if (String(url).includes("/lean-pane/repair/status")) {
-            return options.repairStatus || options.repairAll || { ok: true, batchId: "batch-1", done: true, pausedOn: null, items: [] };
+            return options.repairStatus || options.repairAll || options.targetBatch || { ok: true, batchId: "batch-1", done: true, pausedOn: null, items: [] };
           }
           return { statuses: { [`${target.targetKind}:${target.targetLabel}`]: statusInfo } };
         }
@@ -3338,7 +5108,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
     globalThis: null,
     setTimeout(callback, delay) {
       const id = nextTimerId++;
-      timers.push({ id, callback, delay });
+      timers.push({ id, callback, delay, due: timerNow + delay });
       return id;
     },
     window,
@@ -3352,6 +5122,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
           : `chrome-extension://test/${file}`,
         sendMessage(message, callback) {
           runtimeMessages.push(message);
+          if (options.runtimeSendMessage) return options.runtimeSendMessage(message, callback);
           callback?.({ ok: true });
         },
         lastError: null
@@ -3418,10 +5189,10 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
     async loadStatusForVisibleTheorem() {
       await this.loadVisibleTheorems();
     },
-    async loadVisibleTheorems({ diagnostics = [], activeTex } = {}) {
+    async loadVisibleTheorems({ diagnostics = [], activeTex, targets = [target] } = {}) {
       window.postMessage({
         type: "OL_LEAN_TARGETS_VISIBLE",
-        targets: [target],
+        targets,
         diagnostics,
         // A caller-supplied activeTex marks the source as changed, which is
         // what schedules a Lean-pane manifest refresh (content.js only
@@ -3676,6 +5447,15 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
       for (const timer of ready) timer.callback();
       await flushPromises();
     },
+    async advanceTime(ms) {
+      const until=timerNow+ms;
+      while(true){
+        const next=timers.filter(timer=>timer.due<=until).sort((a,b)=>a.due-b.due)[0];
+        if(!next)break;
+        timers.splice(timers.indexOf(next),1);timerNow=next.due;next.callback();await flushPromises();
+      }
+      timerNow=until;
+    },
     fetchCalls,
     promptCalls,
     confirmCalls,
@@ -3838,10 +5618,19 @@ async function flushPromises() {
   for (let i = 0; i < 8; i += 1) {
     await Promise.resolve();
   }
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  for (let i = 0; i < 4; i += 1) {
+  for (let turn=0;turn<8;turn++) await new Promise(resolve=>setTimeout(resolve,0));
+  for (let i = 0; i < 12; i += 1) {
     await Promise.resolve();
   }
+}
+
+async function waitForHarness(predicate, description) {
+  const deadline = Date.now() + 2000;
+  do {
+    await flushPromises();
+    if (predicate()) return;
+  } while (Date.now() < deadline);
+  assert.fail(`Timed out waiting for ${description}`);
 }
 
 class FakeDocument {
@@ -3849,6 +5638,8 @@ class FakeDocument {
     this.body = new FakeElement("body");
     this.documentElement = new FakeElement("html");
     this.head = new FakeElement("head");
+    for (const element of [this.body, this.documentElement, this.head]) element.ownerDocument = this;
+    this.activeElement = this.body;
     this._listeners = new Map();
   }
 
@@ -3871,8 +5662,14 @@ class FakeDocument {
   }
 
   createElement(tagName) {
-    return new FakeElement(tagName);
+    const element = new FakeElement(tagName);
+    element.ownerDocument = this;
+    return element;
   }
+
+  querySelector(selector) { return this.body.querySelector(selector); }
+
+  querySelectorAll(selector) { return this.body.querySelectorAll(selector); }
 
   createElementNS(_namespace, tagName) {
     return this.createElement(tagName);
@@ -3933,7 +5730,14 @@ class FakeElement {
     this.scrollIntoViewOptions = null;
   }
 
-  focus() {}
+  get ownerDocument() { return this._ownerDocument || this.parentNode?.ownerDocument; }
+
+  set ownerDocument(value) { this._ownerDocument = value; }
+
+  focus() {
+    this.focused = true;
+    if (this.ownerDocument) this.ownerDocument.activeElement = this;
+  }
 
   blur() {}
 
@@ -4028,6 +5832,12 @@ class FakeElement {
       search.value = "";
       const heading = popover.appendChild(new FakeElement("div"));
       heading.className = "lea-model-picker-heading";
+      const catalogStatus = popover.appendChild(new FakeElement("div"));
+      catalogStatus.className = "lea-model-picker-status";
+      const catalogStatusText = catalogStatus.appendChild(new FakeElement("span"));
+      catalogStatusText.className = "lea-model-picker-status-text";
+      const refreshModels = catalogStatus.appendChild(new FakeElement("button"));
+      refreshModels.className = "lea-model-picker-refresh";
       const results = popover.appendChild(new FakeElement("div"));
       results.className = "lea-model-picker-results";
       return;
@@ -4200,6 +6010,8 @@ class FakeElement {
     }
   }
 
+  getAttribute(name) { return this.attributes[name] ?? null; }
+
   getBoundingClientRect() {
     return { left: 0, top: 0, right: 120, bottom: 32, width: 120, height: 32 };
   }
@@ -4211,6 +6023,15 @@ class FakeElement {
 
   querySelector(selector) {
     return this.querySelectorAll(selector)[0] || null;
+  }
+
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (matchesSelector(node, selector)) return node;
+      node = node.parentNode;
+    }
+    return null;
   }
 
   querySelectorAll(selector) {

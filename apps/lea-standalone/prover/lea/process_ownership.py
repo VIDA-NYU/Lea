@@ -153,6 +153,12 @@ def reap_previous() -> list[int]:
         except (OSError, ValueError, KeyError, TypeError):
             # An unverifiable receipt is retained for inspection.
             unresolved.append(receipt_path.name)
+    # A crash between spawn and receipt registration can leave a live child
+    # holding only its inherited lease. Without a verified PID it cannot be
+    # signalled safely, and a new workspace owner must not publish ready.
+    for lease in root.glob('*.lease'):
+        if _held(lease):unresolved.append(lease.name)
+        else:lease.unlink(missing_ok=True)
     if unresolved:
         raise RuntimeError("Could not verify cleanup of owned Lean server groups: "
                            + ", ".join(unresolved))

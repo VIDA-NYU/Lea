@@ -21,6 +21,7 @@ import {
   githubImportMatchedTargets,
   githubImportMatchedTargetKeys,
   hasInProgressItems,
+  hasPendingPaneObservations,
   highlightLeanLine,
   overlayActiveTex,
   paneItemActions,
@@ -32,6 +33,7 @@ import {
   deriveShareControls,
   filenameFromContentDisposition,
   formatPaneProgressLabel,
+  formatPaneProgressSummary,
   parsePaneLatex,
   reconcileDependentsImpact,
   shouldRefetchLeanPaneFiles,
@@ -147,27 +149,17 @@ test("canStubPaneItem offers sorry-stubbing only for an unformalized theorem", (
   assert.equal(canStubPaneItem(undefined), false);
 });
 
-test("canViewPaneItemInLeaUi requires a target identity and a real run or artifact", () => {
+test("canViewPaneItemInLeaUi requires a target identity and a saved session", () => {
   const base = { label: "thm:main", status: "valid" };
-  assert.equal(canViewPaneItemInLeaUi(base), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "defined" }), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "disproved" }), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "needs-review" }), false);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "in-progress" }), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "stub-generated" }), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "stale" }), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "invalid" }), true);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "paused" }), true);
-  // Never-formalized or indeterminate items must not appear viewable.
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "missing-stub" }), false);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "unknown" }), false);
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "error" }), false);
-  for (const status of ["needs-review", "unknown", "error", "missing-stub"]) {
+  for (const status of ["valid", "defined", "disproved", "needs-review", "in-progress",
+    "stub-generated", "stale", "invalid", "paused", "missing-stub", "unknown", "error"]) {
+    assert.equal(canViewPaneItemInLeaUi({ ...base, status }), false);
     assert.equal(canViewPaneItemInLeaUi({ ...base, status, leaSessionId: "saved-session" }), true);
+    assert.equal(canViewPaneItemInLeaUi({ ...base, status, leaSessionUrl: "http://localhost:5173/?session=saved-session" }), true);
   }
-  assert.equal(canViewPaneItemInLeaUi({ ...base, status: "needs-review", leanArtifactPath: "Target.lean" }), true);
+  assert.equal(canViewPaneItemInLeaUi({ ...base, leanArtifactPath: "Target.lean" }), false);
   // Without a declaration name or label the session can't be resolved.
-  assert.equal(canViewPaneItemInLeaUi({ status: "valid" }), false);
+  assert.equal(canViewPaneItemInLeaUi({ status: "valid", leaSessionId: "saved-session" }), false);
   assert.equal(canViewPaneItemInLeaUi(undefined), false);
 });
 
@@ -175,7 +167,7 @@ test("paneItemActions puts Formalize primary with Stub in the overflow for an un
   const item = { formalizable: true, inProgress: false, status: "missing-stub", leanKind: "theorem", label: "thm:main" };
   const actions = paneItemActions(item);
   assert.deepEqual(actions.primary, { id: "formalize", label: "Formalize" });
-  assert.deepEqual(actions.rail.map((action) => action.id), ["go-to-source", "chat"]);
+  assert.deepEqual(actions.rail.map((action) => action.id), ["go-to-source", "chat", "view-in-lea"]);
   assert.deepEqual(actions.overflow.map((action) => action.id), ["stub"]);
 });
 
@@ -483,9 +475,24 @@ test("paneProgressBucketForItem maps pane and companion statuses to progress buc
     assert.equal(paneProgressBucketForItem({ status }), "failed");
   }
   assert.equal(paneProgressBucketForItem({ status: "stale" }), "outOfDate");
-  for (const status of ["missing-stub", "unformalized", "unknown", "in-progress", undefined, "new-weird-status"]) {
+  for (const status of ["missing-stub", "unformalized", "new-weird-status"]) {
     assert.equal(paneProgressBucketForItem({ status }), "unformalized");
   }
+  assert.equal(paneProgressBucketForItem({ status: "in-progress" }), "inProgress");
+  for (const status of ["unknown", "synchronizing", "unavailable", undefined]) {
+    assert.equal(paneProgressBucketForItem({ status }), "unconfirmed");
+  }
+});
+
+test("visible file summary separates running and SQL-waiting work from verified results", () => {
+  const summary = summarizePaneProgress([{ status: "in-progress" },
+    ...Array.from({ length: 8 }, () => ({ status: "synchronizing", projection: { state: "inputs_changed" } }))]);
+  assert.equal(formatPaneProgressSummary(summary), "0 verified · 1 running · 8 awaiting SQL status");
+  assert.equal(summary.unformalized, 0);
+  assert.equal(summary.inProgress, 1);
+  assert.equal(summary.unconfirmed, 8);
+  assert.deepEqual(paneProgressSegments(summary).map(s => [s.id, s.count]), [["running", 1], ["unconfirmed", 8]]);
+  assert.equal(formatPaneProgressSummary(summarizePaneProgress([{ status: "valid" }, { status: "defined" }])),'2 verified');
 });
 
 test("summarizePaneProgress counts representative fractional file summaries", () => {
@@ -503,9 +510,11 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
     success: 3,
     disproved: 0,
     sorryStubbed: 0,
+    needsReview: 0,
     failed: 1,
     outOfDate: 0,
     unformalized: 4,
+    unconfirmed: 0,
     inProgress: 0
   });
 
@@ -523,9 +532,11 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
     success: 5,
     disproved: 1,
     sorryStubbed: 1,
+    needsReview: 0,
     failed: 0,
     outOfDate: 0,
     unformalized: 1,
+    unconfirmed: 0,
     inProgress: 0
   });
 
@@ -538,11 +549,32 @@ test("summarizePaneProgress counts representative fractional file summaries", ()
     success: 0,
     disproved: 0,
     sorryStubbed: 2,
+    needsReview: 0,
     failed: 0,
     outOfDate: 0,
-    unformalized: 1,
+    unformalized: 0,
+    unconfirmed: 1,
     inProgress: 0
   });
+});
+
+test("a completed batch awaiting SQL evidence has no false failures or missing proofs and keeps polling", () => {
+  const items = Array.from({ length: 9 }, () => ({ status: "synchronizing", inProgress: false,
+    formalizable: true, projection: { state: "inputs_changed" } }));
+  const summary = summarizePaneProgress(items);
+  assert.equal(summary.unconfirmed, 9);
+  assert.equal(summary.failed + summary.unformalized + summary.success, 0);
+  assert.equal(aggregatePaneStatus(items), "synchronizing");
+  assert.equal(formatPaneStatus("synchronizing"), "updating status");
+  assert.match(formatPaneProgressLabel("main.tex", summary), /9 awaiting status/);
+  assert.deepEqual(paneProgressSegments(summary).map(s => [s.id, s.count]), [["unconfirmed", 9]]);
+  assert.equal(hasInProgressItems(items), false);
+  assert.equal(hasPendingPaneObservations(items), true);
+  assert.equal(formalizableItems(items).length, 0);
+  assert.equal(stubbableItems(items).length, 0);
+  const observed = items.map(i => ({ ...i, status: "valid", projection: { state: "observed" } }));
+  assert.equal(hasPendingPaneObservations(observed), false);
+  assert.equal(summarizePaneProgress(observed).success, 9);
 });
 
 test("paneProgressSegments returns ordered nonzero segments with percentages", () => {
@@ -550,6 +582,7 @@ test("paneProgressSegments returns ordered nonzero segments with percentages", (
     total: 8,
     success: 6,
     sorryStubbed: 1,
+    needsReview: 0,
     failed: 0,
     unformalized: 1,
     inProgress: 0
@@ -563,6 +596,7 @@ test("paneProgressSegments returns ordered nonzero segments with percentages", (
     total: 3,
     success: 0,
     sorryStubbed: 2,
+    needsReview: 0,
     failed: 0,
     unformalized: 1,
     inProgress: 0
@@ -610,6 +644,7 @@ test("formatPaneProgressLabel omits zero-count buckets and includes running coun
     total: 8,
     success: 6,
     sorryStubbed: 0,
+    needsReview: 0,
     failed: 1,
     unformalized: 1,
     inProgress: 0
@@ -619,6 +654,7 @@ test("formatPaneProgressLabel omits zero-count buckets and includes running coun
     total: 6,
     success: 2,
     sorryStubbed: 4,
+    needsReview: 0,
     failed: 0,
     unformalized: 0,
     inProgress: 1
@@ -958,8 +994,9 @@ test("stubbableItems / formalizableItems skip completed work in project-level ba
   // restarted in bulk.
   assert.deepEqual(
     formalizableItems(items).map((i) => i.targetLabel),
-    ["fresh_thm", "fresh_def", "stubbed_thm", "broken_thm", "review_thm"]
+    ["fresh_thm", "fresh_def", "stubbed_thm", "broken_thm"]
   );
+  assert.equal(canFormalizePaneItem(items.find(item => item.targetLabel === "review_thm")), true);
 });
 
 // --- Stale-offer reconciliation (docs/PLAN-self-repair-stale-offers.md) ----
@@ -1083,4 +1120,13 @@ test("formatDependentOutcome corrects a stale busy line when the item is now bro
     formatDependentOutcome({ targetLabel: "b", status: "reverified", attributed: true, nowBroken: true }),
     "b: re-checked, still valid -- now broken."
   );
+});
+
+
+test("checked results awaiting review are counted separately from unformalized items", () => {
+  const summary = summarizePaneProgress([{ status: "needs-review" }, { status: "needs_review" }]);
+  assert.equal(summary.needsReview, 2);
+  assert.equal(summary.unformalized, 0);
+  assert.match(formatPaneProgressSummary(summary), /2 needs review/);
+  assert.deepEqual(paneProgressSegments(summary).map(s => [s.id, s.count]), [["needs-review", 2]]);
 });

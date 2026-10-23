@@ -1,0 +1,458 @@
+\scene{PREPARATION / NOT PART OF THE RECORDING}{A 19-minute Lea demonstration}{Leave one minute for compilation, network, or model latency.}
+
+This script demonstrates the Lea extension inside Overleaf. Quoted paragraphs
+are suggested narration; numbered steps are actions. Controls depend on the
+item's current state. A reference proof or a finished example is not evidence
+that an agent just completed a live run.
+
+\cue{Files to keep open}
+\begin{itemize}
+  \item Upload \texttt{lea-overleaf-project.zip} as an Overleaf project. Keep
+    \texttt{main.tex} as its main document and work in Code mode.
+  \item Keep \texttt{copy-paste-snippets.txt} beside this script for the exact edits.
+  \item Keep a second, independently rehearsed Overleaf project ready as a backup.
+    A copied Overleaf project has a different Lea identity; prepare its Lea results
+    separately rather than assuming history transfers.
+\end{itemize}
+
+\cue{Prepare the states before recording}
+\begin{enumerate}
+  \item Start the normal Lea services, load the extension, compile the document,
+    open the floating \textbf{L}, and refresh the pane. Expect \textbf{9 marked items}.
+    The unmarked Doubling zero lemma and the unmarked Shift identity are intentional.
+  \item Formalize \texttt{demo\_double}, then \texttt{demo\_double\_add}, then
+    \texttt{demo\_double\_two}. Inspect the actual names, namespaces, types, and
+    imports. Rehearse snippets F--H so the corollary genuinely depends on the lemma.
+    Restore explicit arguments and a checked corollary for the recording.
+  \item Leave Doubling zero unmarked for the live insertion. Leave the two optional
+    input examples unfinished for the batch demonstration.
+  \item Enable \textbf{Pause formalization when Lea needs author input} before
+    individually formalizing the flawed square claim. Preserve its real finding
+    or checked disproof. If paused, confirm there is a usable saved checkpoint.
+  \item Formalize \texttt{demo\_shifted\_square}, then \texttt{demo\_shift\_one},
+    then \texttt{demo\_shift\_two}. Require an actual shared helper, its checked
+    status, and both consumers' imports before describing the example as reuse.
+  \item Keep a past batch report available. Rehearse ZIP export. Configure a
+    demonstration GitHub remote beforehand only if you intend to show a real push
+    or import. Keep saved credentials concealed throughout the recording.
+\end{enumerate}
+
+\cue{Time checkpoints}
+
+0--3 min: open and mark.\quad
+3--6: formalize and review.\quad
+6--8: chat and edit.\quad
+8--11: fix source.\quad
+11--13: repair.\quad
+13--15: batch.\quad
+15--17: shared results and Blueprint.\quad
+17--19: settings, export, and close.
+
+\textbf{Latency rule:} spend at most about 20 seconds waiting without something
+useful to explain. Then say, ``That run is still working. Here is the same workflow
+on a result I prepared earlier.'' Switch only to a genuinely prepared state.
+
+\clearpage
+\scene{0:00--3:00}{Open Lea and mark a statement}{Start on page 1 of the compiled document, with main.tex open.}
+
+\click
+\begin{enumerate}
+  \item Click the floating \textbf{L} button (\textbf{Lean project pane}). Resize
+    the pane so both source and item details remain readable.
+  \item Expand \texttt{main.tex} and its section. Point out the other two source
+    files and their progress indicators. Use \textbf{Go to source} on Doubling a sum.
+  \item In \texttt{main.tex}, find \texttt{DEMO LIVE INSERT} inside the Doubling zero
+    lemma. Paste snippet A as one new line:
+\end{enumerate}
+\begin{lstlisting}
+% lea: formalize label=demo_double_zero uses={demo_double}
+\end{lstlisting}
+\begin{enumerate}[resume]
+  \item Let Overleaf save. Refresh the Lea pane if the item has not appeared.
+    Expect \textbf{10 marked items}. Click the source badge and show
+    \textbf{Show in Lean pane}, then return to the item's details.
+  \item Point to the definition's \texttt{\string\leadefinition}, the custom
+    \texttt{claim} environment's \texttt{\string\leatheorem}, and the corollary's
+    \texttt{uses} and \texttt{context} fields. The package is already included in
+    this project; explain \textbf{Add Lea tags} if that setup control is offered.
+\end{enumerate}
+
+\say
+``This is a small mathematical document about doubling a natural number.
+Lea adds a formalization workspace alongside the source. I choose which
+mathematical blocks it should work on, and I can jump between the document
+and the corresponding formal result.''
+
+``This lemma was ordinary LaTeX. Adding one comment asks Lea to formalize it;
+the comment does not change the PDF. Inline tags are another supported form.
+They also let me use my own environment names, such as this Claim.''
+
+``The dependency field points to earlier Lea items. The context field gives
+guidance, such as notation or a proof strategy. Explicit labels make this demo
+easy to follow; they are optional when I just want to mark a new item.''
+
+\fallback
+If the pane is empty, refresh after the source saves and check that the extension
+is connected. Do not insert another marker in an already tagged block. If the live
+marker is already present from rehearsal, remove that one line before recording.
+
+\clearpage
+\scene{3:00--6:00}{Formalize and inspect the evidence}{Live target: demo\_double\_zero. Prepared results: definition and additivity.}
+
+\click
+\begin{enumerate}
+  \item Expand Doubling zero. Under \textbf{Other actions}, open the more-actions
+    menu and choose \textbf{Stub} if offered. Show the skeleton and its unfinished
+    obligation. This step is optional; \textbf{Formalize} works directly.
+  \item Click \textbf{Formalize} (or \textbf{Re-formalize} after creating the stub).
+    Expand the live progress/status view. Point out \textbf{Pause}; use it only if
+    the run is still active and the pause/resume path was rehearsed.
+  \item While it runs, expand the prepared Doubling definition and show that it
+    produces a Lean definition with a body, not a theorem requiring a proof.
+  \item Return to Doubling zero when it settles, or explicitly switch to the
+    prepared Doubling a sum result. Show \textbf{Lean code} and its copy control.
+  \item Inspect \textbf{Lean Check}. Expand \textbf{Lea Status details}, read the
+    assessment's scope and any findings, then open \textbf{Update history}.
+  \item Compare the Lean proposition with the LaTeX. On an eligible checked
+    result you have actually reviewed, click the personal \textbf{checkmark}.
+\end{enumerate}
+
+\say
+``A stub gives me a formal statement to work from, but it is still unfinished.
+Formalize asks Lea to complete the task. I can follow its progress, and pause
+an individual run when necessary.''
+
+``Here is the resulting Lean. I check the types, hypotheses, and conclusion
+against the mathematical statement. In this example the domain is the natural
+numbers and the conclusion says that doubling zero gives zero.''
+
+``These two indicators answer different questions. Lean Check reports the
+formal checking result. Lea Status reports Lea's assessment of the source and
+formalization, including findings or remaining obligations. I read the scope:
+an assessment of partial work is not a completed proof.''
+
+``This checkmark records my personal review of this revision and its
+dependencies. It is separate from formal checking, and later changes can
+invalidate it.''
+
+\fallback
+If a run finishes before Pause can be used, leave the completed result intact.
+Show a genuine prepared paused item later. Do not call an unchecked artifact
+verified, or describe confidence alone as a correctness guarantee.
+
+\clearpage
+\scene{6:00--8:00}{Ask a question, then edit the proof}{Prepared target: demo\_double\_add with explicit arguments m and n.}
+
+\click
+\begin{enumerate}
+  \item Expand Doubling a sum. In \textbf{Other actions}, click \textbf{Chat}.
+    Paste snippet B and send it:
+\end{enumerate}
+\begin{lstlisting}
+Explain how the Lean statement matches the LaTeX claim and how the proof
+rearranges addition. Do not change any files.
+\end{lstlisting}
+\begin{enumerate}[resume]
+  \item Read a short portion of the response if it arrives. Point out
+    \textbf{Open in LeaChat}, which continues the same session in the larger UI.
+    Keep the recording focused on the extension.
+  \item Wait until the item's chat run is idle before editing. Choose
+    \textbf{Edit} from the more-actions menu. Preserve the generated imports,
+    namespace, declaration name, and statement. Replace only the proof after
+    \texttt{:=} with snippet C:
+\end{enumerate}
+\begin{lstlisting}
+by
+  simp only [demo_double]
+  ring
+\end{lstlisting}
+\begin{enumerate}[resume]
+  \item Click \textbf{Save}. Inspect the checking result and dependent impact
+    summary. If the generated definition has a qualified name, use the exact name
+    rehearsed for this project. Point out \textbf{Cancel} for discarding a draft.
+\end{enumerate}
+
+\say
+``I can ask questions in the context of this item. Here I want an explanation
+of how the formal statement and proof correspond to the source. The session
+also remains available in LeaChat.''
+
+``I can edit the Lean myself. This replacement keeps the same mathematical
+statement: it unfolds doubling and lets the ring tactic rearrange the
+arithmetic. Saving records and checks my edit, including affected dependents
+when needed. It does not start another agent proof search.''
+
+\fallback
+If chat is slow, show the prepared conversation and identify it as earlier work.
+Do not edit during its active run. If the generated names or statement differ
+from the rehearsed version, use a prepared safe edit or show Edit/Cancel instead
+of pasting a mismatched declaration.
+
+\clearpage
+\scene{8:00--11:00}{Find a source problem and correct it}{Target: demo\_square\_bound in sections/02-source-review.tex.}
+
+\click
+\begin{enumerate}
+  \item Use \textbf{Go to source} on Square versus the original number. Show
+    the original claim and its associated proof, marked as a flawed exercise.
+  \item Open the genuine finding prepared before recording. If demonstrating a
+    new run, first enable \textbf{Pause formalization when Lea needs author input}
+    in the gear menu, save, and start this item individually.
+  \item Expand \textbf{Lea Status details}. Explain the failed sign argument.
+    If the outcome is \textbf{Claim disproved}, inspect whether the counterexample
+    itself is checked. If paused, show the actual \textbf{Resume} control.
+  \item In the source editor, replace the whole theorem and following proof
+    with \textbf{snippet D}. This adds $x\ge1$ and corrects the sign argument.
+    Keep the Lea label \texttt{demo\_square\_bound} unchanged. Let Overleaf save.
+  \item For a compatible paused run, click \textbf{Resume}. For a completed
+    disproof or another settled run, choose \textbf{Re-formalize}. These are
+    different actions; describe the one actually used.
+  \item Inspect the new Lean statement: it must contain the new hypothesis
+    $x\ge1$. If a genuine review candidate is offered, inspect it before
+    \textbf{Approve result}. That applies the reviewed candidate; it is separate
+    from the personal review checkmark.
+\end{enumerate}
+
+\say
+``The original statement says that every real number is at most its square.
+That is false: at one half, the square is one quarter. The author's proof
+also incorrectly assumes that both factors are always nonnegative.''
+
+``Lea should surface the issue rather than quietly insert the missing
+hypothesis. Depending on the run, that can appear as a request for author
+input or as a checked counterexample to the original claim.''
+
+``I am now changing the mathematics explicitly. With the assumption that
+x is at least one, both factors are nonnegative and the proof works.
+I check that the new formal statement includes that assumption.''
+
+\cue{Optional, if time remains}
+After the corrected result is checked, use snippet E to rewrite the displayed
+conclusion as $x^2-x\ge0$. Observe outdated status, then \textbf{Re-formalize}.
+Show that an earlier personal review or assessment does not stay current
+merely because a proof was once checked.
+
+\fallback
+If Resume reports an incompatible checkpoint, keep the message visible and use
+Re-formalize as a fresh attempt. This example has an author proof, so it is not
+the example for the conditional \textbf{Continue best effort} action.
+
+\clearpage
+\scene{11:00--13:00}{Inspect a broken dependent and repair it}{Use the rehearsed additivity-to-corollary dependency.}
+
+\click
+\begin{enumerate}
+  \item Confirm that Doubling a sum and Adding two before doubling are checked
+    and idle. Open the corollary's Lean code. It must really apply
+    \texttt{demo\_double\_add n 2}; snippet F prepares that proof if needed.
+  \item Edit \texttt{demo\_double\_add}. Change only its binder notation from
+    \texttt{(m n : Nat)} to \texttt{\{m n : Nat\}} as in snippet G. Preserve its
+    proposition, name, proof body, imports, and namespace. Click \textbf{Save}.
+  \item Inspect the impact summary and the dependent corollary's error. The
+    lemma remains mathematically the same, but its old explicit application is
+    incompatible with the new implicit arguments.
+  \item Click \textbf{Repair with Lea} on the affected corollary. Point out
+    \textbf{Repair all} if a group is offered. Inspect the resulting code and
+    current Lean Check when the repair settles.
+\end{enumerate}
+
+\say
+``These results are connected by actual Lean dependencies. I am making a
+small interface change: the lemma's two arguments become implicit. Its
+mathematical content stays the same, but an existing caller may need updating.''
+
+``Lea reports the affected work instead of continuing to present its old
+check as current. I can ask Lea to repair the dependent result and then
+inspect what changed.''
+
+\cue{Deterministic manual fallback}
+If agent repair is slow, use a previously completed repair. Alternatively,
+when no agent run is active, edit the dependent lemma application as in snippet H:
+\begin{lstlisting}
+-- Before:
+demo_double_add n 2
+-- After:
+demo_double_add (m := n) (n := 2)
+\end{lstlisting}
+Click \textbf{Save} and inspect the check. Say, ``Here I repaired the call
+manually; Repair with Lea automates that kind of adaptation.''
+
+\fallback
+This is an optional live breakage demonstration, not a required production
+workflow. If the generated corollary does not call the lemma, do not claim the
+edit broke it. If the save is rejected or the calling convention was not
+rehearsed, show the prepared impact and repair example. Avoid leaving a live
+repair active when starting the next batch.
+
+\clearpage
+\scene{13:00--15:00}{Run a batch and inspect its report}{Small remaining targets: standalone proposition and existing Lean.}
+
+\click
+\begin{enumerate}
+  \item Open the optional input forms near the bottom of \texttt{main.tex}.
+    Point out the standalone proposition tag and the \texttt{leacode} block.
+    These are already marked, but can be left unfinished until this step.
+  \item Return to the top of \textbf{Items}. Point out \textbf{Stub all} if
+    eligible theorems remain. Click \textbf{Formalize all} when the project is
+    idle and the source corrections and repairs have settled.
+  \item Show the current item, queued work, and outcomes. Explain that eligible
+    items are ordered by declared dependencies and completed work is not simply
+    restarted. If shared consumers are still unfinished, expect their supporting
+    work to appear as well.
+  \item Point out \textbf{Stop} while the batch is active. Demonstrate it only
+    if that stop/continuation was rehearsed. Use \textbf{Continue remaining} only
+    when the actual paused batch offers it.
+  \item When the batch settles, open \textbf{Formalize all report}. If it is
+    still running, open \textbf{Past Formalize all reports} and identify the
+    selected report as an earlier batch. Inspect outcomes and shared-result counts.
+\end{enumerate}
+
+\say
+``For a larger document I can formalize eligible items as a batch, following
+their declared dependencies. The panel shows what is running, what remains,
+and what needs attention.''
+
+``A finished batch is not a promise that every item succeeded. I read the
+report for checked results, failures, findings, and shared mathematics.
+Source findings stay visible during Formalize all; the batch does not use
+the individual-run pause-on-author-input behavior.''
+
+``These two extra inputs show that I can mark standalone prose or supply
+existing Lean code. Code appearing in the PDF is only source material;
+I still inspect Lea's checking result.''
+
+\fallback
+If no eligible items remain, show the saved report rather than deliberately
+invalidating a checked result. Do not claim the initial marked-item count is a
+count of newly completed proofs. A stub with an unfinished obligation remains
+unfinished even if a stub-generation batch succeeds.
+
+\clearpage
+\scene{15:00--17:00}{Reuse mathematics and view the Blueprint}{Prepared shared example: shifted squares.}
+
+\click
+\begin{enumerate}
+  \item Open \texttt{sections/03-shared-results.tex}. Show the definition
+    $Q_a(x)=(x-a)^2$, the unmarked Shift identity $Q_a(a+t)=t^2$, and its two
+    consumers at $t=1$ and $t=2$.
+  \item Expand \textbf{Shared mathematics}. Select the helper produced or reused
+    by the rehearsed run. Inspect its full signature, checked state, canonical
+    module/import, attempts, and \textbf{Used by} consumers.
+  \item Open both consumer artifacts. Confirm they import and use that same
+    public helper. If a genuine dependency wait is present, use
+    \textbf{View supporting result} and explain automatic continuation. Point
+    out \textbf{Refresh status}, \textbf{Stop waiting}, or \textbf{Continue when ready}
+    only when offered in that state.
+  \item Switch from \textbf{Items} to \textbf{Blueprint}. Click
+    \textbf{Generate from formalized theorems} if a starter graph is needed.
+    Select a doubling node and inspect its kind, status, and dependencies.
+\end{enumerate}
+
+\say
+``Both of these results use the same supporting identity. The identity is
+source mathematics here; it is not an extra tagged document target. Lea can
+create a shared formal result and reuse it for multiple consumers.''
+
+``I verify reuse in the shared record and the generated imports. If the
+helper is already checked, immediate reuse is expected. If it has to be proved,
+the requesting item can wait and continue when the supporting work is ready.''
+
+``Blueprint gives me a project view of the mathematical dependencies. I can
+move from individual proofs to the structure of the formalization and inspect
+which pieces are checked or still need work.''
+
+\fallback
+The source guidance requests shared-helper use, but agent choices are not a
+deterministic test harness. If the live run proves each consumer independently,
+say so; it has not demonstrated shared reuse. Use the prepared genuine shared
+record. Do not invent a new helper attempt when an existing one was reused.
+
+\clearpage
+\scene{17:00--19:00}{Show controls, export, and finish}{Keep this final tour short. Reserve 19:00--20:00 for spillover.}
+
+\click
+\begin{enumerate}
+  \item Click the gear for \textbf{Lea settings and usage}. Show usage and
+    maximum spend, then model selection, maximum turns, source mirroring,
+    and the individual-run author-input pause option. Keep configured API keys hidden.
+  \item Show the project name and Lean namespace. Open \textbf{Edit project name}
+    or \textbf{Edit name}, inspect the preview, then cancel. Avoid renaming the
+    rehearsed project during this recording.
+  \item Open \textbf{Share}, then \textbf{Download .zip}. Confirm the Lean project
+    export is offered or downloaded. Explain that it contains the Lean project,
+    distinct from the LaTeX project used as source.
+  \item Show the configured remote and \textbf{Push to GitHub}. Execute a push
+    only to the intended demo repository if it was prepared for the recording.
+    Otherwise identify this as a tour of the control.
+  \item Show \textbf{Add Lean files from GitHub}. With a prepared repository,
+    inspect an actual import preview and its skipped conflicts before deciding
+    whether to confirm. Imported work still needs the recorded checking process.
+  \item Close the panel and return to page 1 with a checked result visible.
+\end{enumerate}
+
+\say
+``I can choose the model, review usage, and control the run and spend limits
+from the extension. Source mirroring makes surrounding LaTeX available as
+context. The project also has a name and Lean namespace.''
+
+``The formal work is portable: I can download the Lean project, push it to
+a configured GitHub repository, or preview Lean files to add from GitHub.
+For an import I inspect the preview and subsequent checks.''
+
+``We started with mathematical prose, selected the statements to formalize,
+and inspected the Lean and the source findings. We then refined a proof,
+corrected a claim, handled dependencies, and exported the resulting project.''
+
+\fallback
+Do not spend recording time configuring credentials or hunting for a repository.
+If there is no prepared remote, show the available actions and explain them
+without claiming a push or import occurred. The ZIP export is the concrete
+portable result to finish on.
+
+\clearpage
+\scene{REHEARSAL NOTES}{Cuts, feature coverage, and evidence}{Use this page before recording, not as a slide.}
+
+\cue{For a 15-minute version}
+Keep the same sequence. Use these checkpoints:
+\begin{itemize}
+  \item 0--2: open and mark; 2--5: live formalization and review.
+  \item 5--6: chat or a safe manual edit; 6--9: the source correction.
+  \item 9--10: show the prepared repair outcome; 10--12: batch and its report.
+  \item 12--14: shared mathematics and Blueprint; 14--15: ZIP export and close.
+\end{itemize}
+Cut live dependency breakage, the optional second source revision, and the
+GitHub/configuration tour first. Keep the check/status distinction and the
+author's review of the mathematical statement.
+
+\cue{What is covered}
+\begin{itemize}
+  \item Source navigation, file grouping/progress, inline badges, comments,
+    definition/theorem/corollary tags, a custom environment, standalone prose,
+    and an existing-Lean block.
+  \item Labels, declared dependencies, guidance, associated author proofs,
+    optional stubs, individual formalization, and pause/resume controls.
+  \item Lean Check, live Lea Status and history, outdated source, a counterexample
+    or source finding, source corrections and new formalizations, conditional
+    result review, and personal review tied to a revision.
+  \item Item chat, the LeaChat session link, manual edits/checks, dependent impact,
+    individual/group repair, batch actions, saved reports, shared helper reuse,
+    conditional dependency-wait controls, and Blueprint.
+  \item Model/usage/limits, source context, project identity, ZIP export, and the
+    GitHub push/import interfaces.
+\end{itemize}
+
+\cue{Conditional features}
+Not every state is expected in one recording. \textbf{Approve result} needs a
+real review candidate. \textbf{Continue best effort} needs an eligible source
+pause without an associated author proof; the flawed-claim example deliberately
+has a proof. \textbf{Continue remaining} needs a paused batch. Waiting controls
+need a real shared dependency wait. Mention these only in their proper context
+or use separately rehearsed examples.
+
+\cue{What was validated when preparing this kit}
+The LaTeX projects are compiled, the marker inventory and proof associations
+are checked against the extension parser, and the reference Lean proofs are
+checked locally using the repository's Lean/Mathlib toolchain. The reference
+file also checks the false claim's counterexample and the repaired implicit
+argument call. These checks do not certify an unrun agent-generated artifact,
+guarantee model timing, or replace the live Overleaf rehearsal above.

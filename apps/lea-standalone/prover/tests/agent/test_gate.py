@@ -75,11 +75,19 @@ _GATE_WRITE = lambda name, args: name == "write_file"
 
 def test_gate_fires_then_allow_executes():
     install_fake()
-    events = drive(agent.run_events(cfg(), msgs("prove it"), gate=_GATE_WRITE), "allow")
+    recorded = []
+    events = drive(agent.run_events(cfg(), msgs("prove it"), gate=_GATE_WRITE,
+        checkpoint_callback=lambda event, payload: recorded.append((event, payload))), "allow")
     approvals = [e for e in events if isinstance(e, ToolApprovalRequested)]
     check("gate fired once on write_file", len(approvals) == 1 and approvals[0].tool_name == "write_file")
     check("approval carries args", "path" in approvals[0].args)
     check("allowed -> write executed (FileChanged)", any(isinstance(e, FileChanged) for e in events))
+    starts = [p for e, p in recorded if e == "invocation_start" and p["kind"] == "tool"
+              and p["name"] == "write_file"]
+    check("approval names the exact recorded tool invocation", len(starts) == 1
+          and bool(approvals[0].invocation_id) and starts[0]["id"] == approvals[0].invocation_id)
+    check("approved invocation retains its result identity", any(e == "invocation_result"
+          and p["id"] == approvals[0].invocation_id for e, p in recorded))
 
 
 def test_always_session_also_executes():
@@ -90,11 +98,15 @@ def test_always_session_also_executes():
 
 def test_deny_skips_tool():
     install_fake()
-    events = drive(agent.run_events(cfg(max_turns=2), msgs("prove it"), gate=_GATE_WRITE), "deny")
+    recorded = []
+    events = drive(agent.run_events(cfg(max_turns=2), msgs("prove it"), gate=_GATE_WRITE,
+        checkpoint_callback=lambda event, payload: recorded.append((event, payload))), "deny")
     check("gate still fired on deny", any(isinstance(e, ToolApprovalRequested) for e in events))
     check("denied -> NOT executed (no FileChanged)", not any(isinstance(e, FileChanged) for e in events))
     declined = [e for e in events if isinstance(e, ToolResulted) and "declined" in e.content]
     check("denied -> tool result is the declined-error", len(declined) == 1)
+    check("denied approval never records tool dispatch", not any(e == "invocation_start"
+          and p["kind"] == "tool" for e, p in recorded))
 
 
 def test_unknown_decision_is_treated_as_deny():

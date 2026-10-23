@@ -129,26 +129,6 @@ conversation about existing work.
 Output only the single word FORMALIZE or ASSISTANT, with no other text."""
 
 
-_RESULT_CLASSIFIER_PROMPT = """\
-You classify the mathematical outcome of a verified Lean artifact for Lea.
-
-The Lean artifact has already passed the final checker. Your job is only to decide
-what it verified relative to the user's original request.
-
-Reply with exactly one word:
-- PROVED — the artifact proves the user's stated theorem/lemma/conjecture as written.
-- DISPROVED — the artifact proves a negation, contradiction, or counterexample showing
-  the user's stated theorem/lemma/conjecture is false.
-- NEEDS_REVIEW — the relationship is ambiguous, the artifact proves a related but
-  different statement, or you are not certain.
-
-Be conservative. If the user asked for a counterexample and the artifact verifies
-one, reply DISPROVED. If the user asked for a proof but the artifact verifies the
-negation or a counterexample, reply DISPROVED. If unsure, reply NEEDS_REVIEW.
-
-Output only PROVED, DISPROVED, or NEEDS_REVIEW."""
-
-
 def _text_only_history(messages: list, limit: int = 8) -> list[dict]:
     """Flatten messages to a cheap text-only {role, content} list for classification.
 
@@ -269,9 +249,11 @@ def _content_text(content) -> str:
 
 
 def _latest_user_request(messages: list) -> str:
+    # A follow-up such as "yes" must not shadow a retained mathematical target.
     for msg in reversed(messages):
-        if msg.get("mathematical_request"):
-            return json.dumps(msg["mathematical_request"], ensure_ascii=False)
+        if msg.get('mathematical_request'):
+            return json.dumps(msg['mathematical_request'], ensure_ascii=False)
+    for msg in reversed(messages):
         if msg.get("role") != "user" or msg.get("lea_status_context"):
             continue
         if msg.get("lea_continuation_context") or (isinstance(msg.get("content"), list)
@@ -281,70 +263,6 @@ def _latest_user_request(messages: list) -> str:
         if text:
             return text
     return ""
-
-
-def _theorem_signature(path: str | None) -> str:
-    if not path:
-        return ""
-    try:
-        return safeverify.theorem_signature(Path(path).read_text()) or ""
-    except Exception:
-        return ""
-
-
-def _parse_result_kind(text: str) -> str:
-    return {"PROVED": "proved", "DISPROVED": "disproved", "NEEDS_REVIEW": "needs_review"}.get(
-        (text or "").strip().upper(), "needs_review")
-
-
-def _classify_final_result(
-    *,
-    model: str,
-    messages: list,
-    final_text: str,
-    theorem_signature: str,
-    config: LeaConfig,
-) -> tuple[str, str | None, Usage, float]:
-    """Classify a checked artifact relative to the user's request.
-
-    This is intentionally conservative: parse failures, provider errors, or any
-    non-conforming answer become needs_review, not proof success.
-    """
-    source = config.status_context.get("source_bundle") if config.status_reporting else None
-    request = json.dumps(source, ensure_ascii=False) if source else _latest_user_request(messages)
-    classifier_messages = [{
-        "role": "user",
-        "content": (
-            "User request:\n"
-            f"{request or '(unavailable)'}\n\n"
-            "Verified Lean theorem signature:\n"
-            f"{theorem_signature or '(unavailable)'}\n\n"
-            "Final assistant message:\n"
-            f"{final_text or '(unavailable)'}"
-        ),
-    }]
-    text = ""
-    usage = Usage()
-    cost = 0.0
-    try:
-        for event in stream(
-            model,
-            _RESULT_CLASSIFIER_PROMPT,
-            classifier_messages,
-            [],
-            config.model_kwargs,
-            streaming=config.stream,
-        ):
-            if isinstance(event, TextDelta):
-                text += event.text
-            elif isinstance(event, Done):
-                usage.add(event.usage)
-                cost += event.cost
-    except Exception as exc:
-        return "needs_review", f"Result classification failed ({type(exc).__name__}). Review the result or retry.", usage, cost
-    kind = _parse_result_kind(text)
-    detail = text.strip() or None
-    return kind, detail, usage, cost
 
 
 def _domain_cascade_for_check(args: dict, working_dir: str | None, surfaced: set[str]) -> str | None:
@@ -409,7 +327,8 @@ def _meaning_events(tool_name: str, args: dict, result: str) -> list:
 class ProofVerificationState:
     """Track whether the latest Lean proof file has passed a fresh check."""
 
-    def __init__(self):
+    def __init__(self, selection=None, *, allow_sorry=False):
+        self.allow_sorry = allow_sorry
         self.latest_proof_path: str | None = None
         self.unchecked_write = False
         self.latest_check_path: str | None = None
@@ -417,8 +336,16 @@ class ProofVerificationState:
         self.latest_check_passed: bool | None = None
         self.latest_check_execution: dict | None = None
         self.latest_check_content: str | None = None
+        self.selection = dict(selection or {})
+        self.selected_evidence = None
 
     def note_tool_result(self, tool_name: str, args: dict, result: str) -> None:
+        if tool_name == "select_result" and _tool_result_ok(result):
+            self.selection = dict(getattr(result, "selection", None) or self.selection)
+            self.latest_proof_path = str(_run_relative_path(args["path"]))
+            self.unchecked_write = True
+            self.selected_evidence = None
+            return
         raw = args.get("path")
         if not isinstance(raw, str) or not raw:
             return
@@ -431,14 +358,27 @@ class ProofVerificationState:
         path = getattr(result, "snapshot_path", None) or (getattr(result, "execution", None) or {}).get("source_path") or str(_run_relative_path(raw))
         if tool_name in {"write_file", "edit_file"}:
             if _tool_result_ok(result) and path.endswith(".lean"):
+                if self.selection.get("path") and path != str(_run_relative_path(self.selection["path"])):
+                    return
                 self.latest_proof_path = path
                 self.unchecked_write = True
             return
         if tool_name == "lean_check":
+            if self.selection.get("path") and path != str(_run_relative_path(self.selection["path"])):
+                return
             # A proof is only verified if it compiles with no errors AND no `sorry`
             # — `sorry` is a warning, so checking errors alone would accept a
             # skeleton as a finished proof (a false "Proved").
-            passed = not _lean_check_has_error(result) and not _lean_check_has_sorry(result)
+            selected = getattr(result, "selected_result", None)
+            expected = self.selection.get('declaration')
+            selected_name = (selected or {}).get('user_name')
+            matches_selection = bool(selected_name and (selected_name == expected or
+                (expected and '.' not in expected and selected_name.rsplit('.', 1)[-1] == expected)))
+            passed = not _lean_check_has_error(result) and (
+                bool(matches_selection and selected.get("content_sha256") ==
+                     (getattr(result, "execution", None) or {}).get("content_sha256"))
+                if self.selection else self.allow_sorry or not _lean_check_has_sorry(result))
+            self.selected_evidence = selected
             self.latest_proof_path = self.latest_proof_path or path
             self.latest_check_execution = getattr(result, "execution", None)
             self.latest_check_content = getattr(result, "captured_content", None)
@@ -453,7 +393,8 @@ class ProofVerificationState:
             return False
         from .check_evidence import freshness
         return (
-            self.latest_check_content is None
+            bool(self.selection and not self.selected_evidence)
+            or self.latest_check_content is None
             or not freshness(self.latest_check_execution, self.latest_proof_path)[0]
             or self.unchecked_write
             or self.latest_check_path != self.latest_proof_path
@@ -744,6 +685,14 @@ def _run_events_inner(
     # tools register, then select per config (None → all registered tools).
     import_tool_modules(config.tool_modules)
     tools_schema, tool_handlers = build_toolset(config.tools, config.extra_tools)
+    if "select_result" in tool_handlers:
+        system += ("\n\n## Explicit checked result\n"
+                   "If the requested claim is false and you produce a negation or counterexample, "
+                   "call select_result with its path, exact declaration name, and outcome=disproved, "
+                   "then run lean_check on that file before finishing. A differently named disproof "
+                   "must be selected explicitly; prose in your final answer or Lea Status does not "
+                   "set the run outcome. For a proof of the original target use outcome=proved; "
+                   "for its definition use outcome=defined. Never select a helper as the target.")
     if config.status_reporting:
         tools_schema = [schema for schema in tools_schema if schema["name"] != "spawn_subagent"]
         tool_handlers.pop("spawn_subagent", None)
@@ -772,9 +721,11 @@ def _run_events_inner(
         total_usage.usage_details = resume_state.get("usage_details")
     total_cost = float(resume_state.get("cost_usd", 0.0)) if resume_state else 0.0
     from .check_runtime import serialize_result, restore_result
-    proof_state = ProofVerificationState()
+    proof_state = ProofVerificationState(config.selected_result, allow_sorry=config.stub_generation)
     if resume_state:
         proof_state.__dict__.update(resume_state.get("proof_state", {}))
+    # Saved state cannot grant an ordinary proof run the stub completion policy.
+    proof_state.allow_sorry = config.stub_generation
     stall = StallDetector(resume_state.get("stall_detector") if resume_state else None)
     dependency_evidence = resume_state.get("dependency_evidence", {}) if resume_state else {}
     resuming_model = bool(resume_state and resume_state.get("stage") == "model_complete")
@@ -782,6 +733,7 @@ def _run_events_inner(
     turn = (int(resume_state.get("turn", 0)) - (1 if resuming_model else 0)) if resume_state else 0
     last_input_tokens = int(resume_state.get("last_input_tokens", 0)) if resume_state else 0
     surfaced_domains: set[str] = set(resume_state.get("surfaced_domains", [])) if resume_state else set()
+    import_advice_attempted = bool(resume_state.get('import_advice_attempted')) if resume_state else False
 
     def save_position(stage: str, *, assistant_parts=None, tool_calls=None,
                       completed_tools=None, final_result=None,
@@ -802,6 +754,7 @@ def _run_events_inner(
             "last_status_wall": time.time() - max(0.0, time.monotonic() - last_status_at),
             "tools_since_status": tools_since_status,
             "reporting_stop": reporting_stop,
+            "import_advice_attempted": import_advice_attempted,
         }
         if assistant_parts is not None:
             state["assistant_parts"] = assistant_parts
@@ -874,11 +827,15 @@ def _run_events_inner(
     if resume_state and resume_state.get("stage") == "final_result":
         final = resume_state["final_result"]
         kind, detail = final['kind'], final['detail']
+        if kind == 'needs_review':
+            kind = 'incomplete'
         if kind in {'proved', 'disproved', 'defined'} and not proof_state.latest_proof_verified():
-            kind, detail = 'needs_review', 'Saved completion has no current proof evidence. Recheck the current revision.'
-        yield Finished("completed", final["text"], turn, session_id, model,
+            kind, detail = 'incomplete', 'Saved completion has no current proof evidence. Recheck the current revision.'
+        yield Finished("assistant" if kind == "incomplete" else "completed", final["text"], turn, session_id, model,
                        total_usage, total_cost, transcript(turn),
-                       result_kind=kind, result_detail=detail)
+                       result_kind=kind, result_detail=detail,
+                       candidate_path=proof_state.latest_proof_path,
+                       selected_result=proof_state.selected_evidence)
         return
     if resume_state and reporting_stop == "stalled":
         yield Finished("stalled", stall.explanation(proof_state), turn, session_id, model,
@@ -1082,7 +1039,7 @@ def _run_events_inner(
 
         if not tool_calls:
             text = "".join(p["text"] for p in assistant_parts if p["type"] == "text")
-            if assistant_mode or (config.prompt_variant in {"overleaf_continuation", "interactive_overleaf"} and not proof_state.latest_proof_path):
+            if not config.stub_generation and (assistant_mode or (config.prompt_variant in {"overleaf_continuation", "interactive_overleaf"} and not proof_state.latest_proof_path)):
                 # Chat/assistant turn — not a formalization run, so skip the
                 # final proof gate entirely.
                 yield Finished("assistant", text or "(no response)", turn, session_id, model,
@@ -1101,7 +1058,9 @@ def _run_events_inner(
                     return
                 if (yield from failed_gate()):
                     return
-                messages.append({"role": "user", "content": _NO_PROOF_ARTIFACT_MESSAGE})
+                messages.append({"role": "user", "content": (
+                    "Write the requested theorem with a sorry body and run lean_check before stopping."
+                    if config.stub_generation else _NO_PROOF_ARTIFACT_MESSAGE)})
                 save_position("turn_boundary")
                 continue
             if proof_state.needs_final_check():
@@ -1176,31 +1135,40 @@ def _run_events_inner(
                 if (yield from failed_gate()):
                     return
                 diagnostic = proof_state.latest_check_output or "No successful lean_check was observed."
-                messages.append({"role": "user", "content": f"{_FINAL_GATE_FAILURE_MESSAGE}\n\n{diagnostic}"})
+                instruction = ("The statement stub needs a current passing lean_check. Fix compilation errors and retain its sorry body."
+                               if config.stub_generation else _FINAL_GATE_FAILURE_MESSAGE)
+                messages.append({"role": "user", "content": f"{instruction}\n\n{diagnostic}"})
                 save_position("turn_boundary")
                 continue
 
+            if config.stub_generation:
+                # The adapter binds this fresh check to the named theorem and its
+                # own sorry body. Stub completion carries no proof outcome.
+                yield Finished("stubbed", text or "Checked statement stub.", turn, session_id,
+                               model, total_usage, total_cost, transcript(turn),
+                               candidate_path=proof_state.latest_proof_path)
+                return
+
             final_text = text or "(no response)"
-            result_kind, result_detail, result_usage, result_cost = _classify_final_result(
-                model=model,
-                messages=messages,
-                final_text=final_text,
-                theorem_signature=safeverify.theorem_signature(proof_state.latest_check_content or "") or "",
-                config=config,
-            )
-            total_usage.add(result_usage)
-            total_cost += result_cost
-            if result_usage.input_tokens or result_usage.output_tokens or result_cost or result_usage.usage_details:
-                yield UsageUpdated(result_usage.input_tokens, result_usage.output_tokens, result_cost, result_usage.usage_details)
+            # Lean verifies the selected outcome. Correspondence and any caveats
+            # are already reported through Lea Status and its description.
+            result_kind = proof_state.selection.get("kind") or "proved"
+            result_detail = None
             if not proof_state.latest_proof_verified():
-                result_kind, result_detail = "needs_review", "Proof inputs changed after the final check. Recheck the current revision."
+                yield Finished("assistant", final_text, turn, session_id, model,
+                               total_usage, total_cost, transcript(turn),
+                               result_kind="incomplete",
+                               result_detail="Proof inputs changed after the final check.")
+                return
             save_position("final_result", final_result={
                 "text": final_text, "kind": result_kind, "detail": result_detail,
             })
             final_transcript = transcript(turn)
             yield Finished("completed", final_text, turn, session_id, model,
                            total_usage, total_cost, final_transcript,
-                           result_kind=result_kind, result_detail=result_detail)
+                           result_kind=result_kind, result_detail=result_detail,
+                           candidate_path=proof_state.latest_proof_path,
+                           selected_result=proof_state.selected_evidence)
             return
 
         def _exec_tool(tc):
@@ -1213,7 +1181,7 @@ def _run_events_inner(
             around a broken tool. `diagnostics.report` is the human's copy; the loop
             drains it in Phase 4. Reporting (not yielding) is what lets this stay a
             plain function callable from an E3 worker thread."""
-            invocation_id = uuid.uuid4().hex
+            invocation_id = tc.get('_invocation_id') or uuid.uuid4().hex
             _record("invocation_start", {"id": invocation_id, "kind": "tool",
                                          "name": tc["name"], "turn": turn,
                                          "call_index": tc.get("_index"),
@@ -1278,7 +1246,8 @@ def _run_events_inner(
                 continue
             approved = True
             if gate is not None and gate(tc["name"], tc["args"]):
-                decision = yield ToolApprovalRequested(tc["name"], tc["args"])
+                tc['_invocation_id']=uuid.uuid4().hex
+                decision = yield ToolApprovalRequested(tc["name"], tc["args"],tc['_invocation_id'])
                 approved = decision in ("allow", "always_session")
             if not approved:
                 refused_idx.add(idx)
@@ -1319,7 +1288,7 @@ def _run_events_inner(
                 if isinstance(plan, str):
                     results_by_idx[idx] = plan  # refused → no child, no started event
                 else:
-                    tc["_invocation_id"] = uuid.uuid4().hex
+                    tc["_invocation_id"] = tc.get('_invocation_id') or uuid.uuid4().hex
                     _record("invocation_start", {"id": tc["_invocation_id"], "kind": "tool",
                                                  "name": "spawn_subagent", "turn": turn,
                                                  "call_index": idx, "input": tc["args"]})
@@ -1392,7 +1361,9 @@ def _run_events_inner(
                                                  "turn": turn, "call_index": idx,
                                                  "input": tc["args"]})
                     try:
-                        payload = validate_payload(tc["args"])
+                        # The host checks durable invocation identity before enforcing
+                        # the new final contract, so an accepted pre-upgrade call can replay.
+                        payload = validate_payload(tc["args"], allow_legacy_final=True)
                         ack = yield LeaStatusUpdateRequested(payload, f"{turn}:{idx}:{tc.get('id') or ''}")
                         if not isinstance(ack, LeaStatusUpdateAck):
                             raise ValueError("Reporting host did not acknowledge publication")
@@ -1416,7 +1387,12 @@ def _run_events_inner(
                     # Checkers can recover or compile for minutes. Drain their
                     # human-facing events while they run, preserving serial tool
                     # order and the invocation's ContextVars on the worker.
-                    if tc["name"] in {"lean_check", "suggest_imports"}:
+                    if tc['name'] == 'suggest_imports' and import_advice_attempted:
+                        result = ('Import analysis already attempted for this activation. Keep the targeted imports '
+                                  'and complete using the passing lean_check; do not retry import advice.')
+                    elif tc["name"] in {"lean_check", "suggest_imports"}:
+                        if tc['name'] == 'suggest_imports':
+                            import_advice_attempted = True
                         pending = {}
                         ctx = contextvars.copy_context()
                         def check_work(call=tc):

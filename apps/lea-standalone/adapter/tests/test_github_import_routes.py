@@ -56,7 +56,7 @@ def test_by_slug_preview_ensures_an_empty_destination_and_forwards_targets(tmp_p
         return {"preview_id": "preview-1", "project": kwargs["project"]}
 
     monkeypatch.setattr(projects_route.github_import_service, "preview_import", fake_preview)
-    result = projects_route.preview_project_github_import_by_slug(
+    result = projects_route.preview_project_github_import_by_slug.worker(
         "overleaf-doc",
         GithubImportPreviewRequest(
             repository_url="https://github.com/owner/repo",
@@ -84,15 +84,15 @@ def test_by_slug_preview_ensures_an_empty_destination_and_forwards_targets(tmp_p
 
 def test_import_routes_return_structured_source_errors_and_scope_progress(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    first = projects_route.create_project(projects_route.ProjectCreate(title="First"))
-    second = projects_route.create_project(projects_route.ProjectCreate(title="Second"))
+    first = projects_route.create_project.worker(projects_route.ProjectCreate(title="First"))
+    second = projects_route.create_project.worker(projects_route.ProjectCreate(title="Second"))
 
     def invalid_source(**_kwargs):
         raise GitHubSourceError("bad repository", "invalid_repository_url")
 
     monkeypatch.setattr(projects_route.github_import_service, "preview_import", invalid_source)
     with pytest.raises(HTTPException) as exc:
-        projects_route.preview_project_github_import(
+        projects_route.preview_project_github_import.worker(
             first["id"],
             GithubImportPreviewRequest(repository_url="https://example.com/not-github"),
         )
@@ -113,7 +113,7 @@ def test_import_routes_return_structured_source_errors_and_scope_progress(tmp_pa
     assert wrong_project.value.status_code == 404
 
     with pytest.raises(HTTPException) as busy:
-        projects_route.write_project_file(
+        projects_route.write_project_file.worker(
             first["id"], FilePut(path="New.lean", content="theorem new : True := by trivial\n")
         )
     assert busy.value.status_code == 409
@@ -122,7 +122,7 @@ def test_import_routes_return_structured_source_errors_and_scope_progress(tmp_pa
 
 def test_target_status_exposes_the_session_that_owns_the_current_artifact(tmp_path, monkeypatch):
     proofs_root = _setup(tmp_path, monkeypatch)
-    project = projects_route.create_project(projects_route.ProjectCreate(title="Imported"))
+    project = projects_route.create_project.worker(projects_route.ProjectCreate(title="Imported"))
     formalization = store.create_formalization(
         project_id=project["id"],
         loose_session_id=None,
@@ -157,7 +157,7 @@ def test_target_status_exposes_the_session_that_owns_the_current_artifact(tmp_pa
         formalization_id=formalization["id"],
     )
 
-    result = projects_route.project_target_status_by_slug(
+    result = projects_route.project_target_status_by_slug.worker(
         project["slug"], declarations="imported_proof"
     )
 

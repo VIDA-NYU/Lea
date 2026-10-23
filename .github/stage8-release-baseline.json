@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "source": "3ee22220d926ac0604b4dc227579fd4b47a87251",
+  "repository": "https://github.com/VIDA-NYU/Lea.git",
+  "ref": "refs/tags/codex/stage8-schema51-baseline-20261022",
+  "schema": "0051_idle_observation_renewal",
+  "boundary_version": 1,
+  "description": "Retained schema-0051 source before the merge-readiness fixes; must pass production qualification before it is eligible as a rollback target."
+}

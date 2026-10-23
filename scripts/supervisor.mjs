@@ -1,11 +1,14 @@
-// One process owner for the adapter, frontend, and optional companion.
+// One supervisor; independently owned API, workspace worker and UI transports.
 // Run: node scripts/supervisor.mjs adapter|ui|stack
-import { spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRootEnv } from "./env.mjs";
 import { assertServicesAvailable } from "./dev-stack-preflight.mjs";
+import { createProcessSupervisor } from "./process-supervisor.mjs";
+import { serviceEnvironment } from "./service-env.mjs";
+import { createServiceDiagnostics } from "./service-diagnostics.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadRootEnv();
@@ -32,52 +35,54 @@ try {
 }
 
 const owned = new Map();
-const crashes = [];
+const owner = createProcessSupervisor({ prefix: "[supervisor]", onUnexpectedExit: () => true });
+const crashes = new Map();
 const delays = [1000, 2000, 5000];
 let stopping = false;
-let adapterChild = null;
-let stopResolve = null;
+const dataDir = process.env.LEA_DATABASE_FILE ? path.dirname(path.resolve(process.env.LEA_DATABASE_FILE))
+  : path.resolve(root, process.env.LEA_SHARED_DATA_DIR || 'apps/lea-standalone/data');
+const diagnostics = createServiceDiagnostics(path.join(dataDir, 'worker-diagnostics'), {
+  secrets: Object.entries(process.env).filter(([key]) => /API_KEY|AUTH_TOKEN|GITHUB_TOKEN|PASSWORD|SECRET/i.test(key)).map(([, value]) => value),
+});
 
 function start(label, command, args, cwd, { restart = false } = {}) {
-  if (stopping) return null;
-  const child = spawn(command, args, {
-    cwd, env: process.env, stdio: "inherit", detached: true,
+  if (stopping || owner.stopping) return null;
+  const child = owner.spawn(label, command, args, {
+    cwd, env: serviceEnvironment(label), stdio: label === 'worker' ? ['inherit', 'inherit', 'pipe'] : "inherit", detached: true,
   });
+  diagnostics.attach(label, child);
   owned.set(label, child);
-  if (label === "adapter") adapterChild = child;
   child.on("exit", async (code, signal) => {
     if (owned.get(label) !== child) return;
     owned.delete(label);
-    if (label === "adapter") {
+    if (label === "adapter" || label === "worker") {
       await reapOwnedGroup(child.pid);
-      if (stopping) {
-        stopResolve?.();
+      if (stopping || owner.stopping) return;
+      if (code === 0 && !signal) {
+        console.log(`[supervisor] ${label} stopped cleanly; other services remain available.`);
         return;
       }
       const now = Date.now();
-      crashes.push(now);
-      while (crashes.length && crashes[0] < now - 300000) crashes.shift();
-      if (crashes.length > 3) {
-        console.error("[supervisor] Adapter crash loop: more than three exits in five minutes.");
+      const history = crashes.get(label) || [];
+      crashes.set(label, history);
+      history.push(now);
+      while (history.length && history[0] < now - 300000) history.shift();
+      if (history.length > 3) {
+        diagnostics.event('service.restart_limit', { service: label, pid: child.pid, code, signal });
+        console.error(`[supervisor] ${label} crash loop: automatic restart stopped; other services remain available.`);
         process.exitCode = 1;
-        await stop({ force: true });
         return;
       }
-      const delay = delays[crashes.length - 1];
-      console.error(`[supervisor] Adapter exited (${signal || code}); restarting in ${delay / 1000}s.`);
-      setTimeout(startAdapter, delay);
-    } else if (!stopping && restart) {
+      const delay = delays[history.length - 1];
+      diagnostics.event('service.restart_scheduled', { service: label, delay_ms: delay, code, signal });
+      console.error(`[supervisor] ${label} exited (${signal || code}); restarting in ${delay / 1000}s.`);
+      setTimeout(() => startService(label), delay);
+    } else if (!stopping && !owner.stopping && restart) {
       console.error(`[supervisor] ${label} exited (${signal || code}); restarting it.`);
       setTimeout(() => startService(label), 1000);
     }
   });
   return child;
-}
-
-function signalGroup(child, signal) {
-  if (!child?.pid) return;
-  try { process.kill(-child.pid, signal); }
-  catch (error) { if (error.code !== "ESRCH") throw error; }
 }
 
 async function reapOwnedGroup(pid) {
@@ -94,6 +99,8 @@ function startAdapter() {
 }
 
 function startService(label) {
+  if (label === "adapter") return startAdapter();
+  if (label === "worker") return start("worker", python, ["run_worker.py"], adapterDir);
   if (label === "web") {
     const vite = path.join(root, "node_modules/.bin/vite");
     start("web", vite, ["--host", "0.0.0.0", "--strictPort"],
@@ -103,40 +110,19 @@ function startService(label) {
   }
 }
 
-async function requestDrain(force = false) {
-  try {
-    const response = await fetch("http://127.0.0.1:8001/api/runtime/restart", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ shutdown: true, force }),
-      signal: AbortSignal.timeout(3000),
-    });
-    return response.ok;
-  } catch { return false; }
-}
-
-async function stop({ force = false } = {}) {
+function stop(code = 0) {
   if (stopping) return;
   stopping = true;
-  const child = adapterChild;
-  if (child && owned.get("adapter") === child) {
-    const requested = await requestDrain(force);
-    if (!requested) signalGroup(child, "SIGTERM");
-    await new Promise((resolve) => {
-      stopResolve = resolve;
-      if (!owned.has("adapter")) resolve();
-    });
-  }
-  for (const [label, service] of owned) {
-    if (label !== "adapter") signalGroup(service, "SIGTERM");
-  }
-  await Promise.all([...owned.values()].map((service) => new Promise((resolve) => {
-    if (service.exitCode !== null || service.signalCode !== null) return resolve();
-    service.once("exit", resolve);
-  })));
+  owner.stop(code);
 }
 
-process.on("SIGINT", () => { void stop(); });
-process.on("SIGTERM", () => { void stop(); });
+try {
+  execFileSync(python, ["bootstrap.py"], { cwd: adapterDir, env: process.env, stdio: "inherit" });
+} catch (error) {
+  console.error("[supervisor] Database bootstrap failed; no serving process was started.");
+  process.exit(1);
+}
+startService("worker");
 startAdapter();
 if (mode !== "adapter") startService("web");
 if (mode === "stack") startService("companion");

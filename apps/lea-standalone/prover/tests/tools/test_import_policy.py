@@ -94,7 +94,7 @@ def test_suggest_imports_parses_linter_and_cleans_scratch() -> None:
         (lake_root / "lakefile.lean").write_text("package Test\n")
         proof = lake_root / "Proof.lean"
         proof.write_text(
-            "import Mathlib\n\n"
+            "import Mathlib.Data.Nat.Notation\n\n"
             "theorem one_plus_one : (1 : Nat) + 1 = 2 := by norm_num\n"
         )
         captured: dict[str, object] = {}
@@ -119,7 +119,8 @@ def test_suggest_imports_parses_linter_and_cleans_scratch() -> None:
 
         source = str(captured.get("source", ""))
         scratch = captured.get("path")
-        check("analysis copy uses broad import internally", "import Mathlib\n" in source)
+        check("analysis copy avoids broad import", "import Mathlib\n" not in source)
+        check("analysis copy imports only the linter scaffolding", tools._IMPORT_ANALYSIS_MODULE in source)
         check("analysis copy enables import-bump linter", "#import_bumps\n" in source)
         check("suggestion contains declaration import",
               "import Mathlib.Data.Nat.Notation" in out)
@@ -128,7 +129,7 @@ def test_suggest_imports_parses_linter_and_cleans_scratch() -> None:
         check("suggestion excludes Mathlib barrel", "\nimport Mathlib\n" not in f"\n{out}")
         check("analysis scratch is removed",
               isinstance(scratch, Path) and not scratch.exists())
-        check("original proof is untouched", proof.read_text().startswith("import Mathlib\n"))
+        check("original proof is untouched", proof.read_text().startswith("import Mathlib.Data.Nat.Notation\n"))
 
 
 def test_suggest_imports_keeps_needed_current_imports() -> None:

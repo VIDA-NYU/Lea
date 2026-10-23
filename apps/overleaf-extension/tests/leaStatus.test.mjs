@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { applyLeaStatusEvent, normalizeLeaStatus, leaStatusLabel } from '../shared/leaStatus.mjs';
 import { acceptStatusEvent } from '../companion/leaStatus.mjs';
 import { startApiRun } from '../companion/leaApiClient.mjs';
-import { handleLeaCheckRetry } from '../companion/server.mjs';
+import { handleLeaCheckRetry } from '../companion/workerService.mjs';
 const event = (changes = {}) => ({ formalization_id: 'form', run_id: 'run', run_generation: 1,
   sequence: 1, assessment: { confidence: 'high', summary: 'Main argument checked', scope: 'partial_artifact' },
   attention: 'source_issue', ...changes });
@@ -17,7 +17,7 @@ test('confidence, source attention, compiler verdict and freshness are independe
 });
 
 test('confidence includes assessment scope without changing compiler status', () => {
-  for (const [scope, label] of [['source_only', 'Source assessment'], ['partial_artifact', 'Partial artifact'], ['statement_and_proof', 'Statement and proof']]) {
+  for (const [scope, label] of [['source_only', 'Source assessment'], ['statement_only', 'Statement only'], ['definition', 'Definition'], ['partial_artifact', 'Partial artifact'], ['statement_and_proof', 'Statement and proof']]) {
     const status = { assessment: { confidence: 'high', scope }, freshness: 'current', leanCheck: 'unformalized' };
     assert.equal(leaStatusLabel(status), `High confidence · ${label}`);
     assert.equal(normalizeLeaStatus(status).leanCheck, 'unformalized');

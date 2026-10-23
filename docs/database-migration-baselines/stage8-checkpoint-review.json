@@ -1,0 +1,8 @@
+{
+  "path": "apps/lea-standalone/prover/lea/lsp_daemon.py",
+  "old_sha256": "fb41025a4c226582cc54ebc502349649f92aca1364b348b97754e4a3cbcda0c2",
+  "new_sha256": "452bd08070ca3723bed417bace042ade66474dc1f9bc55329ceed305a82374eb",
+  "executable_ast_identical": true,
+  "other_tool_digests_unchanged": true,
+  "compatibility": "exact predecessor/destination at a settled turn only"
+}

@@ -1,0 +1,1185 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T01:17:33.299591+00:00",
+  "system": "Darwin",
+  "architecture": "arm64",
+  "isolation": "macOS Seatbelt; all writes confined to disposable project, shared packages read-only; network denied",
+  "timing_semantics": "Inclusive phase times; preparation contains dependency resolution/build. Queue and cleanup may overlap other phase times. cProfile cumulative times are nested.",
+  "source_sha256": {
+    "apps/lea-standalone/prover/lea/check_evidence.py": "33a76b589b2319d355d20b86cc0377e749453c48d1b8b6ebf06293c47b3303ed",
+    "apps/lea-standalone/prover/lea/lean_checks.py": "37579130a5b22c74c644bb3f0ae4d48de1302cde5f8ccc848ee68ea2d69e37a5",
+    "apps/lea-standalone/prover/lea/check_runtime.py": "144f8247d3ec89227c260a1507ce23b9899fb2a0924803d26f314b08407b0ee6",
+    "apps/lea-standalone/prover/lea/tools.py": "fac9fd81e96f02bf7e8f07c981ee0eca2b4372da6ac800574bfba27fc40ce776",
+    "apps/lea-standalone/prover/lea/result_selection.py": "968d6f576b7ccb973c36ab59d50ab100ca54790faf7fdc8f472231fc9255b724",
+    "apps/lea-standalone/prover/lea/LibraryInspect.lean": "248a1a7e458db0e4c33b41e307611341384881704929aef33b71fad42800758c",
+    "scripts/profile-lean-checks.py": "ccb49af8e93029fa6b0f725a490b9d54c33b0a998338700673feb57a22422d2f"
+  },
+  "cases": [
+    {
+      "case": "missing_even_import",
+      "status": "error",
+      "wall_ms": 12411.77,
+      "execution": {
+        "check_id": "da3b153cdd6d440b803cbf0b100de48d",
+        "daemon_generation": "d47a0a7a04874a9b8413c4cd3e83dfda",
+        "backend": "lsp",
+        "cold_reason": null,
+        "failure": null,
+        "attempts": 1,
+        "timings_ms": {
+          "queue": 0.28,
+          "initialization": 708.0,
+          "lsp": 1357.58,
+          "cold": 0.0,
+          "total": 12410.31,
+          "source": 0.51,
+          "dependency_resolution": 7640.91,
+          "dependency_build": 781.68,
+          "preparation": 10101.72,
+          "evidence_hash": 0.76,
+          "guard_setup": 42.24,
+          "validation": 63.89,
+          "cleanup": 28.73
+        },
+        "content_sha256": "a6285ca556d15fe861b6d8af1c665eb3b31302b6a2062d4db38e89242865492f",
+        "evidence_version": 1,
+        "environment_sha256": "10937a2dac5d326b7b28a2837761cc899e3dc3dd194670f1e391cd5315655348"
+      },
+      "environment_files": 1078,
+      "evidence_json_bytes": 449028,
+      "profile": [
+        {
+          "function": "<built-in method builtins.next>",
+          "file": "~",
+          "line": 0,
+          "calls": 122,
+          "self_seconds": 0.0004,
+          "cumulative_seconds": 10.1736
+        },
+        {
+          "function": "context",
+          "file": "check_runtime.py",
+          "line": 60,
+          "calls": 4,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 10.1727
+        },
+        {
+          "function": "__enter__",
+          "file": "contextlib.py",
+          "line": 136,
+          "calls": 55,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 10.1445
+        },
+        {
+          "function": "prepared_environment",
+          "file": "check_evidence.py",
+          "line": 514,
+          "calls": 2,
+          "self_seconds": 0.0004,
+          "cumulative_seconds": 10.1017
+        },
+        {
+          "function": "manifest",
+          "file": "check_evidence.py",
+          "line": 291,
+          "calls": 4,
+          "self_seconds": 0.0002,
+          "cumulative_seconds": 9.3141
+        },
+        {
+          "function": "_command",
+          "file": "check_evidence.py",
+          "line": 229,
+          "calls": 11,
+          "self_seconds": 0.0014,
+          "cumulative_seconds": 8.4222
+        },
+        {
+          "function": "communicate",
+          "file": "subprocess.py",
+          "line": 1177,
+          "calls": 89,
+          "self_seconds": 0.0003,
+          "cumulative_seconds": 8.3598
+        },
+        {
+          "function": "_communicate",
+          "file": "subprocess.py",
+          "line": 2093,
+          "calls": 89,
+          "self_seconds": 0.0021,
+          "cumulative_seconds": 8.3594
+        },
+        {
+          "function": "select",
+          "file": "selectors.py",
+          "line": 385,
+          "calls": 110,
+          "self_seconds": 0.0008,
+          "cumulative_seconds": 8.3528
+        },
+        {
+          "function": "<method 'poll' of 'select.poll' objects>",
+          "file": "~",
+          "line": 0,
+          "calls": 110,
+          "self_seconds": 8.3519,
+          "cumulative_seconds": 8.3519
+        },
+        {
+          "function": "add",
+          "file": "check_evidence.py",
+          "line": 325,
+          "calls": 1476,
+          "self_seconds": 0.0199,
+          "cumulative_seconds": 7.7107
+        },
+        {
+          "function": "_resolve",
+          "file": "check_evidence.py",
+          "line": 258,
+          "calls": 20,
+          "self_seconds": 0.0005,
+          "cumulative_seconds": 7.6425
+        },
+        {
+          "function": "check_file",
+          "file": "lean_checks.py",
+          "line": 23,
+          "calls": 2,
+          "self_seconds": 0.0002,
+          "cumulative_seconds": 2.2593
+        },
+        {
+          "function": "check_via_lsp",
+          "file": "lsp_daemon.py",
+          "line": 712,
+          "calls": 2,
+          "self_seconds": 0.0001,
+          "cumulative_seconds": 2.1661
+        },
+        {
+          "function": "_request",
+          "file": "lsp_daemon.py",
+          "line": 458,
+          "calls": 2,
+          "self_seconds": 0.0001,
+          "cumulative_seconds": 2.0595
+        },
+        {
+          "function": "get",
+          "file": "queue.py",
+          "line": 177,
+          "calls": 43,
+          "self_seconds": 0.0002,
+          "cumulative_seconds": 2.0572
+        },
+        {
+          "function": "wait",
+          "file": "threading.py",
+          "line": 337,
+          "calls": 24,
+          "self_seconds": 0.0005,
+          "cumulative_seconds": 2.0568
+        },
+        {
+          "function": "<method 'acquire' of '_thread.lock' objects>",
+          "file": "~",
+          "line": 0,
+          "calls": 160,
+          "self_seconds": 1.831,
+          "cumulative_seconds": 1.831
+        },
+        {
+          "function": "check",
+          "file": "lsp_daemon.py",
+          "line": 343,
+          "calls": 1,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 1.3578
+        },
+        {
+          "function": "record",
+          "file": "check_evidence.py",
+          "line": 317,
+          "calls": 4636,
+          "self_seconds": 0.0106,
+          "cumulative_seconds": 0.7661
+        }
+      ]
+    },
+    {
+      "case": "unqualified_lemma",
+      "status": "error",
+      "wall_ms": 16011.77,
+      "execution": {
+        "check_id": "85a35ed57c1d42f0b19fd52419ffa16e",
+        "daemon_generation": "d47a0a7a04874a9b8413c4cd3e83dfda",
+        "backend": "lsp",
+        "cold_reason": null,
+        "failure": null,
+        "attempts": 1,
+        "timings_ms": {
+          "queue": 0.12,
+          "initialization": 0.0,
+          "lsp": 2121.46,
+          "cold": 0.0,
+          "total": 16010.02,
+          "source": 0.53,
+          "dependency_resolution": 7615.89,
+          "dependency_build": 827.0,
+          "preparation": 13299.85,
+          "evidence_hash": 2.82,
+          "guard_setup": 112.88,
+          "validation": 167.76,
+          "cleanup": 66.18
+        },
+        "content_sha256": "262b5298794a4e70e878b90aa02d79cea331135b37d717f31fca28523dad71a8",
+        "evidence_version": 1,
+        "environment_sha256": "2ebea4ce6ddbc6cf91048b657771a63a8061581d667c0ece86c5555621824757"
+      },
+      "environment_files": 2909,
+      "evidence_json_bytes": 1223177,
+      "profile": [
+        {
+          "function": "check_file",
+          "file": "lean_checks.py",
+          "line": 23,
+          "calls": 1,
+          "self_seconds": 0.0005,
+          "cumulative_seconds": 16.0101
+        },
+        {
+          "function": "<built-in method builtins.next>",
+          "file": "~",
+          "line": 0,
+          "calls": 178,
+          "self_seconds": 0.0001,
+          "cumulative_seconds": 13.4795
+        },
+        {
+          "function": "context",
+          "file": "check_runtime.py",
+          "line": 60,
+          "calls": 4,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 13.4789
+        },
+        {
+          "function": "__enter__",
+          "file": "contextlib.py",
+          "line": 136,
+          "calls": 83,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 13.4131
+        },
+        {
+          "function": "prepared_environment",
+          "file": "check_evidence.py",
+          "line": 514,
+          "calls": 2,
+          "self_seconds": 0.0014,
+          "cumulative_seconds": 13.2999
+        },
+        {
+          "function": "manifest",
+          "file": "check_evidence.py",
+          "line": 291,
+          "calls": 4,
+          "self_seconds": 0.0002,
+          "cumulative_seconds": 11.6184
+        },
+        {
+          "function": "add",
+          "file": "check_evidence.py",
+          "line": 325,
+          "calls": 4160,
+          "self_seconds": 0.0536,
+          "cumulative_seconds": 10.0754
+        },
+        {
+          "function": "_command",
+          "file": "check_evidence.py",
+          "line": 229,
+          "calls": 11,
+          "self_seconds": 0.0017,
+          "cumulative_seconds": 8.4425
+        },
+        {
+          "function": "communicate",
+          "file": "subprocess.py",
+          "line": 1177,
+          "calls": 89,
+          "self_seconds": 0.0003,
+          "cumulative_seconds": 8.3805
+        },
+        {
+          "function": "_communicate",
+          "file": "subprocess.py",
+          "line": 2093,
+          "calls": 89,
+          "self_seconds": 0.002,
+          "cumulative_seconds": 8.3802
+        },
+        {
+          "function": "select",
+          "file": "selectors.py",
+          "line": 385,
+          "calls": 110,
+          "self_seconds": 0.0199,
+          "cumulative_seconds": 8.3737
+        },
+        {
+          "function": "<method 'poll' of 'select.poll' objects>",
+          "file": "~",
+          "line": 0,
+          "calls": 110,
+          "self_seconds": 7.852,
+          "cumulative_seconds": 7.852
+        },
+        {
+          "function": "_resolve",
+          "file": "check_evidence.py",
+          "line": 258,
+          "calls": 28,
+          "self_seconds": 0.0005,
+          "cumulative_seconds": 7.6173
+        },
+        {
+          "function": "check_via_lsp",
+          "file": "lsp_daemon.py",
+          "line": 712,
+          "calls": 1,
+          "self_seconds": 0.0002,
+          "cumulative_seconds": 2.3596
+        },
+        {
+          "function": "check",
+          "file": "lsp_daemon.py",
+          "line": 343,
+          "calls": 1,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 2.1217
+        },
+        {
+          "function": "_request",
+          "file": "lsp_daemon.py",
+          "line": 458,
+          "calls": 1,
+          "self_seconds": 0.0001,
+          "cumulative_seconds": 2.1211
+        },
+        {
+          "function": "get",
+          "file": "queue.py",
+          "line": 177,
+          "calls": 47,
+          "self_seconds": 0.0002,
+          "cumulative_seconds": 2.1191
+        },
+        {
+          "function": "wait",
+          "file": "threading.py",
+          "line": 337,
+          "calls": 21,
+          "self_seconds": 0.0005,
+          "cumulative_seconds": 2.1188
+        },
+        {
+          "function": "is_relative_to",
+          "file": "__init__.py",
+          "line": 498,
+          "calls": 19540,
+          "self_seconds": 0.0177,
+          "cumulative_seconds": 2.0372
+        },
+        {
+          "function": "__contains__",
+          "file": "<frozen _collections_abc>",
+          "line": 1021,
+          "calls": 19543,
+          "self_seconds": 0.1068,
+          "cumulative_seconds": 1.9722
+        }
+      ]
+    },
+    {
+      "case": "corrected_proof",
+      "status": "ok",
+      "wall_ms": 3508.38,
+      "execution": {
+        "check_id": "b573939e346c433381a20ae26ead8263",
+        "daemon_generation": "d47a0a7a04874a9b8413c4cd3e83dfda",
+        "backend": "lsp",
+        "cold_reason": null,
+        "failure": null,
+        "attempts": 1,
+        "timings_ms": {
+          "queue": 0.12,
+          "initialization": 0.0,
+          "lsp": 208.06,
+          "cold": 0.0,
+          "total": 3506.93,
+          "source": 0.78,
+          "dependency_resolution": 1572.28,
+          "preparation": 2770.9,
+          "evidence_hash": 2.53,
+          "guard_setup": 100.29,
+          "validation": 168.36,
+          "cleanup": 52.71
+        },
+        "content_sha256": "da3dc5f9d5de9c199e81cc036489d1bfa846e9dd9237b15352d5156b4721468e",
+        "evidence_version": 1,
+        "environment_sha256": "2ebea4ce6ddbc6cf91048b657771a63a8061581d667c0ece86c5555621824757"
+      },
+      "environment_files": 2909,
+      "evidence_json_bytes": 1223146,
+      "profile": [
+        {
+          "function": "check_file",
+          "file": "lean_checks.py",
+          "line": 23,
+          "calls": 1,
+          "self_seconds": 0.0004,
+          "cumulative_seconds": 3.507
+        },
+        {
+          "function": "<built-in method builtins.next>",
+          "file": "~",
+          "line": 0,
+          "calls": 80,
+          "self_seconds": 0.0001,
+          "cumulative_seconds": 2.9245
+        },
+        {
+          "function": "context",
+          "file": "check_runtime.py",
+          "line": 60,
+          "calls": 4,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 2.9239
+        },
+        {
+          "function": "__enter__",
+          "file": "contextlib.py",
+          "line": 136,
+          "calls": 37,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 2.8715
+        },
+        {
+          "function": "prepared_environment",
+          "file": "check_evidence.py",
+          "line": 514,
+          "calls": 2,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 2.7709
+        },
+        {
+          "function": "manifest",
+          "file": "check_evidence.py",
+          "line": 291,
+          "calls": 1,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 2.2866
+        },
+        {
+          "function": "_resolve",
+          "file": "check_evidence.py",
+          "line": 258,
+          "calls": 7,
+          "self_seconds": 0.0001,
+          "cumulative_seconds": 1.5727
+        },
+        {
+          "function": "_command",
+          "file": "check_evidence.py",
+          "line": 229,
+          "calls": 2,
+          "self_seconds": 0.0003,
+          "cumulative_seconds": 1.5722
+        },
+        {
+          "function": "communicate",
+          "file": "subprocess.py",
+          "line": 1177,
+          "calls": 16,
+          "self_seconds": 0.0001,
+          "cumulative_seconds": 1.5607
+        },
+        {
+          "function": "_communicate",
+          "file": "subprocess.py",
+          "line": 2093,
+          "calls": 16,
+          "self_seconds": 0.0005,
+          "cumulative_seconds": 1.5606
+        },
+        {
+          "function": "select",
+          "file": "selectors.py",
+          "line": 385,
+          "calls": 20,
+          "self_seconds": 0.057,
+          "cumulative_seconds": 1.5593
+        },
+        {
+          "function": "<method 'poll' of 'select.poll' objects>",
+          "file": "~",
+          "line": 0,
+          "calls": 20,
+          "self_seconds": 1.3561,
+          "cumulative_seconds": 1.3561
+        },
+        {
+          "function": "add",
+          "file": "check_evidence.py",
+          "line": 325,
+          "calls": 1040,
+          "self_seconds": 0.013,
+          "cumulative_seconds": 0.7137
+        },
+        {
+          "function": "is_relative_to",
+          "file": "__init__.py",
+          "line": 498,
+          "calls": 4885,
+          "self_seconds": 0.0044,
+          "cumulative_seconds": 0.5132
+        },
+        {
+          "function": "__contains__",
+          "file": "<frozen _collections_abc>",
+          "line": 1021,
+          "calls": 4888,
+          "self_seconds": 0.0268,
+          "cumulative_seconds": 0.4971
+        },
+        {
+          "function": "resolve",
+          "file": "__init__.py",
+          "line": 932,
+          "calls": 8871,
+          "self_seconds": 0.0046,
+          "cumulative_seconds": 0.4848
+        },
+        {
+          "function": "observed_changed",
+          "file": "check_evidence.py",
+          "line": 446,
+          "calls": 1,
+          "self_seconds": 0.0004,
+          "cumulative_seconds": 0.4813
+        },
+        {
+          "function": "_observed_changed",
+          "file": "check_evidence.py",
+          "line": 457,
+          "calls": 1,
+          "self_seconds": 0.0088,
+          "cumulative_seconds": 0.481
+        },
+        {
+          "function": "realpath",
+          "file": "<frozen posixpath>",
+          "line": 388,
+          "calls": 8871,
+          "self_seconds": 0.0949,
+          "cumulative_seconds": 0.4631
+        },
+        {
+          "function": "_identity",
+          "file": "check_evidence.py",
+          "line": 282,
+          "calls": 4189,
+          "self_seconds": 0.0052,
+          "cumulative_seconds": 0.4567
+        }
+      ]
+    },
+    {
+      "case": "same_imports_edit",
+      "status": "ok",
+      "wall_ms": 5332.71,
+      "execution": {
+        "check_id": "5283c6e2a86c4e93a48e920b9ef230dc",
+        "daemon_generation": "d47a0a7a04874a9b8413c4cd3e83dfda",
+        "backend": "lsp",
+        "cold_reason": null,
+        "failure": null,
+        "attempts": 1,
+        "timings_ms": {
+          "queue": 0.13,
+          "initialization": 0.0,
+          "lsp": 2169.08,
+          "cold": 0.0,
+          "total": 5331.23,
+          "source": 0.49,
+          "dependency_resolution": 1470.0,
+          "preparation": 2633.74,
+          "evidence_hash": 2.43,
+          "guard_setup": 100.51,
+          "validation": 161.76,
+          "cleanup": 62.41
+        },
+        "content_sha256": "f2d9f8fb3c7b5e90ff92b1c4a2a0cc4267a222b2b8c3ba2d1c1d9089e86fdecb",
+        "evidence_version": 1,
+        "environment_sha256": "2ebea4ce6ddbc6cf91048b657771a63a8061581d667c0ece86c5555621824757"
+      },
+      "environment_files": 2909,
+      "evidence_json_bytes": 1223147,
+      "profile": [
+        {
+          "function": "check_file",
+          "file": "lean_checks.py",
+          "line": 23,
+          "calls": 1,
+          "self_seconds": 0.0005,
+          "cumulative_seconds": 5.3313
+        },
+        {
+          "function": "<built-in method builtins.next>",
+          "file": "~",
+          "line": 0,
+          "calls": 80,
+          "self_seconds": 0.0001,
+          "cumulative_seconds": 2.7973
+        },
+        {
+          "function": "context",
+          "file": "check_runtime.py",
+          "line": 60,
+          "calls": 4,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 2.7967
+        },
+        {
+          "function": "__enter__",
+          "file": "contextlib.py",
+          "line": 136,
+          "calls": 37,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 2.7346
+        },
+        {
+          "function": "prepared_environment",
+          "file": "check_evidence.py",
+          "line": 514,
+          "calls": 2,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 2.6338
+        },
+        {
+          "function": "check_via_lsp",
+          "file": "lsp_daemon.py",
+          "line": 712,
+          "calls": 1,
+          "self_seconds": 0.0007,
+          "cumulative_seconds": 2.3695
+        },
+        {
+          "function": "manifest",
+          "file": "check_evidence.py",
+          "line": 291,
+          "calls": 1,
+          "self_seconds": 0.0001,
+          "cumulative_seconds": 2.1759
+        },
+        {
+          "function": "check",
+          "file": "lsp_daemon.py",
+          "line": 343,
+          "calls": 1,
+          "self_seconds": 0.0001,
+          "cumulative_seconds": 2.1694
+        },
+        {
+          "function": "_request",
+          "file": "lsp_daemon.py",
+          "line": 458,
+          "calls": 1,
+          "self_seconds": 0.0001,
+          "cumulative_seconds": 2.1687
+        },
+        {
+          "function": "get",
+          "file": "queue.py",
+          "line": 177,
+          "calls": 46,
+          "self_seconds": 0.0005,
+          "cumulative_seconds": 2.1664
+        },
+        {
+          "function": "wait",
+          "file": "threading.py",
+          "line": 337,
+          "calls": 21,
+          "self_seconds": 0.0012,
+          "cumulative_seconds": 2.1658
+        },
+        {
+          "function": "<method 'acquire' of '_thread.lock' objects>",
+          "file": "~",
+          "line": 0,
+          "calls": 146,
+          "self_seconds": 1.7186,
+          "cumulative_seconds": 1.7186
+        },
+        {
+          "function": "_resolve",
+          "file": "check_evidence.py",
+          "line": 258,
+          "calls": 7,
+          "self_seconds": 0.0001,
+          "cumulative_seconds": 1.4704
+        },
+        {
+          "function": "_command",
+          "file": "check_evidence.py",
+          "line": 229,
+          "calls": 2,
+          "self_seconds": 0.0003,
+          "cumulative_seconds": 1.47
+        },
+        {
+          "function": "communicate",
+          "file": "subprocess.py",
+          "line": 1177,
+          "calls": 15,
+          "self_seconds": 0.0001,
+          "cumulative_seconds": 1.4557
+        },
+        {
+          "function": "_communicate",
+          "file": "subprocess.py",
+          "line": 2093,
+          "calls": 15,
+          "self_seconds": 0.0004,
+          "cumulative_seconds": 1.4556
+        },
+        {
+          "function": "select",
+          "file": "selectors.py",
+          "line": 385,
+          "calls": 19,
+          "self_seconds": 0.0912,
+          "cumulative_seconds": 1.4544
+        },
+        {
+          "function": "<method 'poll' of 'select.poll' objects>",
+          "file": "~",
+          "line": 0,
+          "calls": 19,
+          "self_seconds": 1.3629,
+          "cumulative_seconds": 1.3629
+        },
+        {
+          "function": "add",
+          "file": "check_evidence.py",
+          "line": 325,
+          "calls": 1040,
+          "self_seconds": 0.0137,
+          "cumulative_seconds": 0.7053
+        },
+        {
+          "function": "is_relative_to",
+          "file": "__init__.py",
+          "line": 498,
+          "calls": 4885,
+          "self_seconds": 0.0044,
+          "cumulative_seconds": 0.5097
+        }
+      ]
+    },
+    {
+      "case": "unchanged_warm",
+      "status": "ok",
+      "wall_ms": 1946.26,
+      "execution": {
+        "check_id": "b9c5ef87ad8a4594992b3a700fae621d",
+        "daemon_generation": "d47a0a7a04874a9b8413c4cd3e83dfda",
+        "backend": "lsp",
+        "cold_reason": null,
+        "failure": null,
+        "attempts": 1,
+        "timings_ms": {
+          "queue": 0.13,
+          "initialization": 0.0,
+          "lsp": 210.74,
+          "cold": 0.0,
+          "total": 1945.15,
+          "source": 0.79,
+          "preparation": 1197.75,
+          "evidence_hash": 2.58,
+          "guard_setup": 123.0,
+          "validation": 134.92,
+          "cleanup": 53.44
+        },
+        "content_sha256": "f2d9f8fb3c7b5e90ff92b1c4a2a0cc4267a222b2b8c3ba2d1c1d9089e86fdecb",
+        "evidence_version": 1,
+        "environment_sha256": "2ebea4ce6ddbc6cf91048b657771a63a8061581d667c0ece86c5555621824757"
+      },
+      "environment_files": 2909,
+      "evidence_json_bytes": 1223112,
+      "profile": [
+        {
+          "function": "check_file",
+          "file": "lean_checks.py",
+          "line": 23,
+          "calls": 1,
+          "self_seconds": 0.0004,
+          "cumulative_seconds": 1.9452
+        },
+        {
+          "function": "<built-in method builtins.next>",
+          "file": "~",
+          "line": 0,
+          "calls": 56,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 1.3748
+        },
+        {
+          "function": "context",
+          "file": "check_runtime.py",
+          "line": 60,
+          "calls": 4,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 1.3742
+        },
+        {
+          "function": "__enter__",
+          "file": "contextlib.py",
+          "line": 136,
+          "calls": 25,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 1.321
+        },
+        {
+          "function": "prepared_environment",
+          "file": "check_evidence.py",
+          "line": 514,
+          "calls": 2,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 1.1978
+        },
+        {
+          "function": "manifest",
+          "file": "check_evidence.py",
+          "line": 291,
+          "calls": 1,
+          "self_seconds": 0.0,
+          "cumulative_seconds": 0.7502
+        },
+        {
+          "function": "add",
+          "file": "check_evidence.py",
+          "line": 325,
+          "calls": 1040,
+          "self_seconds": 0.0148,
+          "cumulative_seconds": 0.7498
+        },
+        {
+          "function": "is_relative_to",
+          "file": "__init__.py",
+          "line": 498,
+          "calls": 4885,
+          "self_seconds": 0.0049,
+          "cumulative_seconds": 0.5361
+        },
+        {
+          "function": "__contains__",
+          "file": "<frozen _collections_abc>",
+          "line": 1021,
+          "calls": 4888,
+          "self_seconds": 0.0285,
+          "cumulative_seconds": 0.5188
+        },
+        {
+          "function": "_identity",
+          "file": "check_evidence.py",
+          "line": 282,
+          "calls": 4189,
+          "self_seconds": 0.0057,
+          "cumulative_seconds": 0.4773
+        },
+        {
+          "function": "resolve",
+          "file": "__init__.py",
+          "line": 932,
+          "calls": 8854,
+          "self_seconds": 0.0047,
+          "cumulative_seconds": 0.4695
+        },
+        {
+          "function": "realpath",
+          "file": "<frozen posixpath>",
+          "line": 388,
+          "calls": 8854,
+          "self_seconds": 0.0973,
+          "cumulative_seconds": 0.4472
+        },
+        {
+          "function": "observed_changed",
+          "file": "check_evidence.py",
+          "line": 446,
+          "calls": 1,
+          "self_seconds": 0.0003,
+          "cumulative_seconds": 0.4448
+        },
+        {
+          "function": "_observed_changed",
+          "file": "check_evidence.py",
+          "line": 457,
+          "calls": 1,
+          "self_seconds": 0.0081,
+          "cumulative_seconds": 0.4446
+        },
+        {
+          "function": "check_via_lsp",
+          "file": "lsp_daemon.py",
+          "line": 712,
+          "calls": 1,
+          "self_seconds": 0.0005,
+          "cumulative_seconds": 0.4323
+        },
+        {
+          "function": "record",
+          "file": "check_evidence.py",
+          "line": 317,
+          "calls": 3026,
+          "self_seconds": 0.008,
+          "cumulative_seconds": 0.4285
+        },
+        {
+          "function": "__iter__",
+          "file": "<frozen _collections_abc>",
+          "line": 1011,
+          "calls": 84956,
+          "self_seconds": 0.0203,
+          "cumulative_seconds": 0.3844
+        },
+        {
+          "function": "__getitem__",
+          "file": "__init__.py",
+          "line": 63,
+          "calls": 87031,
+          "self_seconds": 0.0607,
+          "cumulative_seconds": 0.3745
+        },
+        {
+          "function": "_runtime_files",
+          "file": "check_evidence.py",
+          "line": 391,
+          "calls": 2,
+          "self_seconds": 0.0112,
+          "cumulative_seconds": 0.3627
+        },
+        {
+          "function": "<built-in method posix.lstat>",
+          "file": "~",
+          "line": 0,
+          "calls": 153104,
+          "self_seconds": 0.2705,
+          "cumulative_seconds": 0.2705
+        }
+      ]
+    },
+    {
+      "case": "compiler_selected_result",
+      "status": "ok",
+      "execution": {
+        "check_id": "897061dca7764126a1aaded98b54fce9",
+        "daemon_generation": "d47a0a7a04874a9b8413c4cd3e83dfda",
+        "backend": "lsp",
+        "cold_reason": null,
+        "failure": null,
+        "attempts": 1,
+        "timings_ms": {
+          "queue": 0.08,
+          "initialization": 0.0,
+          "lsp": 204.18,
+          "cold": 0.0,
+          "total": 5876.56,
+          "source": 0.21,
+          "preparation": 509.19,
+          "evidence_hash": 2.48,
+          "guard_setup": 59.53,
+          "validation": 81.96,
+          "cleanup": 33.99,
+          "result_inspection": 4838.88
+        },
+        "content_sha256": "f2d9f8fb3c7b5e90ff92b1c4a2a0cc4267a222b2b8c3ba2d1c1d9089e86fdecb",
+        "evidence_version": 1,
+        "environment_sha256": "2ebea4ce6ddbc6cf91048b657771a63a8061581d667c0ece86c5555621824757",
+        "selected_result": {
+          "axioms": [
+            "propext"
+          ],
+          "body_expr": null,
+          "dependencies": [
+            "Nat",
+            "Even",
+            "instAddNat",
+            "Dvd.dvd",
+            "Nat.instDvd",
+            "Nat",
+            "Even",
+            "instAddNat",
+            "Dvd.dvd",
+            "Nat.instDvd",
+            "Exists.casesOn",
+            "Eq",
+            "HAdd.hAdd",
+            "instHAdd",
+            "Eq.ndrec",
+            "HMul.hMul",
+            "instHMul",
+            "instMulNat",
+            "Exists.intro",
+            "Nat.add_mul",
+            "Eq.symm"
+          ],
+          "full_name": "Lea.Misc.multiple_of_even_is_even",
+          "kind": "theorem",
+          "level_params": [],
+          "range": {
+            "end_column": 34,
+            "end_line": 7,
+            "start_column": 0,
+            "start_line": 4
+          },
+          "type": "\u2200 (n m : Nat), Even.{0} n \u2192 Dvd.dvd.{0} n m \u2192 Even.{0} m",
+          "type_expr": [
+            "forall",
+            "Lean.BinderInfo.default",
+            [
+              "constant",
+              "Nat",
+              []
+            ],
+            [
+              "forall",
+              "Lean.BinderInfo.default",
+              [
+                "constant",
+                "Nat",
+                []
+              ],
+              [
+                "forall",
+                "Lean.BinderInfo.default",
+                [
+                  "apply",
+                  [
+                    "apply",
+                    [
+                      "apply",
+                      [
+                        "constant",
+                        "Even",
+                        [
+                          "zero"
+                        ]
+                      ],
+                      [
+                        "constant",
+                        "Nat",
+                        []
+                      ]
+                    ],
+                    [
+                      "constant",
+                      "instAddNat",
+                      []
+                    ]
+                  ],
+                  [
+                    "bound",
+                    1
+                  ]
+                ],
+                [
+                  "forall",
+                  "Lean.BinderInfo.default",
+                  [
+                    "apply",
+                    [
+                      "apply",
+                      [
+                        "apply",
+                        [
+                          "apply",
+                          [
+                            "constant",
+                            "Dvd.dvd",
+                            [
+                              "zero"
+                            ]
+                          ],
+                          [
+                            "constant",
+                            "Nat",
+                            []
+                          ]
+                        ],
+                        [
+                          "constant",
+                          "Nat.instDvd",
+                          []
+                        ]
+                      ],
+                      [
+                        "bound",
+                        2
+                      ]
+                    ],
+                    [
+                      "bound",
+                      1
+                    ]
+                  ],
+                  [
+                    "apply",
+                    [
+                      "apply",
+                      [
+                        "apply",
+                        [
+                          "constant",
+                          "Even",
+                          [
+                            "zero"
+                          ]
+                        ],
+                        [
+                          "constant",
+                          "Nat",
+                          []
+                        ]
+                      ],
+                      [
+                        "constant",
+                        "instAddNat",
+                        []
+                      ]
+                    ],
+                    [
+                      "bound",
+                      2
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ],
+          "user_name": "Lea.Misc.multiple_of_even_is_even",
+          "visibility": "public",
+          "content_sha256": "f2d9f8fb3c7b5e90ff92b1c4a2a0cc4267a222b2b8c3ba2d1c1d9089e86fdecb",
+          "signature": "Lea.Misc.multiple_of_even_is_even : \u2200 (n m : Nat), Even.{0} n \u2192 Dvd.dvd.{0} n m \u2192 Even.{0} m"
+        }
+      }
+    }
+  ]
+}

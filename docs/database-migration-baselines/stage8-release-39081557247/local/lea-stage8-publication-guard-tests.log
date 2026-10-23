@@ -1,0 +1,15 @@
+test_backup_restore_does_not_qualify_as_binary_rollback (test_release_bundle.ReleaseBundleTests.test_backup_restore_does_not_qualify_as_binary_rollback) ... ok
+test_different_source_is_rejected (test_release_bundle.ReleaseBundleTests.test_different_source_is_rejected) ... ok
+test_emulated_qualification_is_rejected (test_release_bundle.ReleaseBundleTests.test_emulated_qualification_is_rejected) ... ok
+test_failed_kernel_probe_is_rejected (test_release_bundle.ReleaseBundleTests.test_failed_kernel_probe_is_rejected) ... ok
+test_host_architecture_cannot_be_hidden_by_native_flag (test_release_bundle.ReleaseBundleTests.test_host_architecture_cannot_be_hidden_by_native_flag) ... ok
+test_missing_historical_migration_is_rejected (test_release_bundle.ReleaseBundleTests.test_missing_historical_migration_is_rejected) ... ok
+test_qualified_pair_is_accepted (test_release_bundle.ReleaseBundleTests.test_qualified_pair_is_accepted) ... ok
+test_retagging_identical_binaries_is_rejected (test_release_bundle.ReleaseBundleTests.test_retagging_identical_binaries_is_rejected) ... ok
+test_rollback_of_another_candidate_is_rejected (test_release_bundle.ReleaseBundleTests.test_rollback_of_another_candidate_is_rejected) ... ok
+test_wrong_role_architecture_is_rejected (test_release_bundle.ReleaseBundleTests.test_wrong_role_architecture_is_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 10 tests in 0.001s
+
+OK

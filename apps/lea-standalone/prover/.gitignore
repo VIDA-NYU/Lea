@@ -26,6 +26,10 @@ workspace/proofs/*
 workspace/*.lean
 !workspace/lakefile.lean
 workspace/projects/*
+workspace/.lea-worker.lock
+workspace/.lea-owned-processes/
+workspace/.lea-workspace-id
+workspace/.lea-runtime/
 
 # SafeVerify scratch (target/submission .lean + .olean, written then cleaned up)
 workspace/.sv_scratch/

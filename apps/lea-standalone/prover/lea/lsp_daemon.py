@@ -1,7 +1,8 @@
 """Persistent Lean servers, with bounded recovery and per-Lake-root ownership.
 
-The editor WebSocket server is independent. This module owns only subprocesses it
-starts, and a check is complete only after exact-version diagnostics and Lean's
+The queued editor worker uses a separate pool of non-certifying daemon instances.
+This module owns only subprocesses it starts, and a check is complete only after
+exact-version diagnostics and Lean's
 waitForDiagnostics barrier have both arrived.
 """
 from __future__ import annotations
@@ -15,6 +16,7 @@ from pathlib import Path
 from queue import Empty, Full, Queue
 import select
 import subprocess
+from . import execution as command_executor
 import sys
 import threading
 import time
@@ -86,7 +88,7 @@ class _Transport:
                     command = [sys.executable, "-c", startup_gate,
                                str(gate_read), *self._command]
                     pass_fds = (lease.fd, gate_read)
-                proc = subprocess.Popen(
+                proc = command_executor.popen(
                     command, cwd=self._cwd, stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
                     start_new_session=True,
@@ -732,6 +734,8 @@ def check_via_lsp(file_path, content, lake_root, *, budget=None):
                 budget.execution["daemon_generation"] = daemon.generation
                 if daemon.stale:
                     raise CheckFailure("stale_generation", "Dependencies changed during Lean initialization")
+                from .check_evidence import observe
+                observe(key, budget.execution.get('environment'), generation=daemon.generation)
                 result = daemon.check(file_path, content, budget=budget)
                 with state.condition:
                     if daemon.stale:
@@ -802,11 +806,13 @@ def check_via_lsp(file_path, content, lake_root, *, budget=None):
                 state.condition.notify_all()
 
 
-def mark_stale(lake_root):
+def mark_stale(lake_root, *, generation=None):
     key, state = _root(lake_root)
     with state.condition:
-        state.revision += 1
         daemon = _daemons.get(key)
+        if generation is not None and (daemon is None or daemon.generation != generation):
+            return  # A late check must not invalidate its healthy replacement.
+        state.revision += 1
         if daemon is not None:
             daemon.stale = True
 

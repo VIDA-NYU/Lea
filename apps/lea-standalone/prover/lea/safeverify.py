@@ -35,6 +35,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from . import execution as command_executor
 import threading
 from pathlib import Path
 
@@ -288,7 +289,7 @@ def _replay_env(lake_project: Path) -> dict[str, str]:
 
 def _compile_to_olean(source: Path, out: Path, lake_project: Path, timeout: int) -> tuple[bool, str]:
     try:
-        result = subprocess.run(
+        result = command_executor.run(
             ["lake", "env", "lean", "-o", str(out.resolve()), str(source.resolve())],
             capture_output=True, text=True, timeout=timeout,
             cwd=str(lake_project),
@@ -340,7 +341,7 @@ def verify_proof(
                 return False, f"Submission compile failed: {out}"
 
             try:
-                result = subprocess.run(
+                result = command_executor.run(
                     ["lake", "exe", "safe_verify", "-v",
                      str(target_olean.resolve()), str(submission_olean.resolve()),
                      "--disallow-partial", "-s", str(report_path.resolve())],
@@ -359,3 +360,16 @@ def verify_proof(
         finally:
             for p in (target_olean, submission_olean, report_path):
                 p.unlink(missing_ok=True)
+
+
+def verify_selected_module(olean: Path, declaration: str, lake_project: Path,
+                           scratch: Path) -> tuple[bool, str]:
+    """Replay actual compiled bytes; select only the result's transitive trust."""
+    report = scratch / 'selected-report.json'
+    with _verify_sem:
+        result = command_executor.run(['lake', 'exe', 'safe_verify', '--disallow-partial',
+            '--declaration', declaration, str(olean.resolve()), str(olean.resolve()),
+            '-s', str(report.resolve())], cwd=str(SAFE_VERIFY_DIR), env=_replay_env(lake_project),
+            capture_output=True, text=True, timeout=600)
+    output = (result.stdout + '\n' + result.stderr).strip()
+    return result.returncode == 0, output

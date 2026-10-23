@@ -33,7 +33,7 @@ export type SessionStatus =
   | 'disproved'
   | 'needs_review';
 // ── Run-level status (a single proof attempt) ─────────────────────────────────
-// 'proved' / 'disproved' are checked-artifact outcomes; 'needs_review' is
+// 'proved' / 'disproved' are checked-artifact outcomes; legacy 'needs_review' is
 // preserved as classifier metadata, not a primary session/code status.
 // 'answered' = a chat / QA / sketch turn that finished cleanly but proved nothing.
 export type RunStatus =
@@ -50,6 +50,8 @@ export type RunStatus =
 export interface RunSummary {
   id: string;
   status: RunStatus | string;
+  autonomous?: boolean;
+  approval_mode?: ApprovalMode;
   focus_formalization_id?: string | null;
   focus_source_hash?: string | null;
   result_kind?: 'proved' | 'disproved' | 'needs_review' | string | null;
@@ -72,6 +74,7 @@ export interface RunSummary {
 // ── Per-tool approval gate (D19) ──────────────────────────────────────────────
 export type GatedTool = 'bash' | 'write_file' | 'edit_file';
 export type ApprovalDecision = 'allow' | 'deny' | 'always_session';
+export type ApprovalMode = 'stepwise' | 'none';
 
 export interface SessionSummary {
   id: string;
@@ -137,6 +140,7 @@ export interface Project {
   namespace: string;
   repo_path: string;
   remote_url?: string | null;
+  overleaf_linked?: boolean;
   created_at: string;
   updated_at: string;
   session_count?: number;
@@ -145,6 +149,7 @@ export interface Project {
 // GET /api/projects/{id}: the project meta plus its sessions (the project window).
 export interface ProjectDetail extends Project {
   sessions: SessionSummary[];
+  cursor?: number;
 }
 
 export type FormalizationValidity =
@@ -155,13 +160,19 @@ export type FormalizationValidity =
   | 'proved'
   | 'defined'
   | 'disproved'
-  | 'needs_review'
   | 'stale';
 
 export interface FormalizationFile {
   formalization_id: string;
   path: string;
   role: 'primary' | 'support' | 'generated';
+}
+
+export interface ResultApproval {
+  id: string;
+  outcome: 'proved' | 'defined' | 'disproved';
+  created_at: string;
+  revision_token: string;
 }
 
 export interface Formalization {
@@ -180,6 +191,17 @@ export interface Formalization {
   completion_run_id?: string | null;
   declaration_kind?: string | null;
   check_current?: boolean;
+  reformalization?: { id: string; state: string; has_drafts: boolean; detail?: string; repair_needed?: string[] } | null;
+  review?: {
+    requested?: boolean;
+    eligible: boolean;
+    reason: string;
+    revision_token: string | null;
+    allowed_outcomes: Array<'proved' | 'defined' | 'disproved'>;
+    approval: ResultApproval | null;
+    run_id?: string | null;
+  };
+  certification?: { source: 'run' | 'user_review'; outcome: string; run_id?: string | null; review_event_id?: string } | null;
   latest_check?: {
     code_step_id: string;
     path: string;
@@ -226,6 +248,8 @@ export interface FormalizationCurrentSnapshot {
     is_current: boolean;
   } | null;
   validity_status: FormalizationValidity | string;
+  review?: Formalization['review'];
+  certification?: Formalization['certification'];
   safe_verify?: Formalization['safe_verify'];
 }
 
@@ -552,12 +576,20 @@ export interface ChatMessage {
   kind?: 'assistant' | 'edit_note' | string;
   seq?: number;
   created_at: string;
-  // Frontend-only marker for the streaming bubble before its persisted twin lands.
+  // Stable persisted partials and the legacy transient streaming bubble.
   live?: boolean;
+  stream_state?: 'streaming' | 'final' | 'interrupted';
+  stream_attempt_id?: string;
+  stream_sequence?: number;
 }
 
 export interface CodeStep {
+  projection?: {state:string;observed_at?:string|null;expires_at?:string|null};
   id: string;
+  artifact_scope?: 'attempt' | 'canonical';
+  blob_id?: string | null;
+  baseline_blob_id?: string;
+  selected_result?: { declaration: string; kind: string; axioms: string[] };
   session_id: string;
   run_id?: string | null;
   formalization_id?: string | null;
@@ -598,6 +630,8 @@ export interface LeanCheckRuntime {
   retry_after_ms?: number;
   last_failure?: { kind: string; message: string; [key: string]: unknown } | null;
   episode_id?: string | null;
+  // Failure to observe runtime health is separate from a compiler failure.
+  observation?: { state: 'pending' | 'unavailable'; message?: string };
 }
 
 export interface StatusEvent {
@@ -625,9 +659,11 @@ export interface PendingApproval {
 
 // An approval as kept in the thread history: gains a `decision` once resolved
 // (so denied/allowed cards stay visible) + a synthetic `seq` for interleaving.
-export type ApprovalRecord = PendingApproval & { decision?: string | null; seq?: number };
+export type ApprovalRecord = PendingApproval & { decision?: string | null; seq?: number; actionable?: boolean };
 
 export interface ApprovalEvent {
+  actionable?: boolean;
+  seq?: number;
   id: string;
   session_id?: string;
   run_id?: string;
@@ -669,6 +705,8 @@ export interface UsageBreakdownRow {
 export interface ActiveRun {
   id: string;
   status: RunStatus | string;
+  autonomous?: boolean;
+  approval_mode?: ApprovalMode;
   stop_reason?: string | null;
   stop_requested_reason?: string | null;
   model?: string;
@@ -745,6 +783,19 @@ export interface Diagnostic {
 }
 
 export interface SessionDetail extends SessionSummary {
+  subagent_observations?: Array<{
+    child_id: string;
+    queued?: boolean;
+    finished?: boolean;
+    error?: string | null;
+    stop_notice?: string | null;
+    progress: { text: string; turn?: number; tool?: string; check?: string;
+      message_id?: string; stream_sequence?: number };
+  }>;
+  /** Per-attempt replay barriers captured with this SQL snapshot. */
+  run_event_cursors?: Record<string, string>;
+  // Includes source preparation and continuations awaiting execution capacity.
+  queued_reformalizations?: Array<{ id: string }>;
   lean_check_runtime?: LeanCheckRuntime;
   messages: ChatMessage[];
   code_steps: CodeStep[];

@@ -39,7 +39,10 @@ def project_step(step, record=None):
         current, reason = freshness(execution, absolute, snapshot=current_snapshot())
     except (KeyError, ValueError, TypeError, OSError):
         current, reason = False, 'missing_evidence'
-    return {**step, 'check_current': current, 'check_stale_reason': reason}
+    selected = execution.get('selected_result') if 'execution' in locals() else None
+    return {**step, 'check_current': current, 'check_stale_reason': reason,
+            **({'selected_result': {'declaration': selected['user_name'], 'kind': selected['kind'],
+                'axioms': selected['axioms']}} if selected else {})}
 
 
 def effective_status(step):
@@ -67,6 +70,8 @@ def record_check(session_id, path, absolute, result, *, expected=None, require_c
         except (OSError, UnicodeError):
             disk = None
         with db.write() as conn:
+            from .workspace_commands import authorize
+            authorize(conn)
             session = conn.execute('select * from sessions where id=?', (session_id,)).fetchone()
             if not session:
                 return False, None

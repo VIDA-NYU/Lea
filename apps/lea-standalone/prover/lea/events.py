@@ -49,6 +49,7 @@ class ToolApprovalRequested:
     policy (run_events just asks via the `gate` hook)."""
     tool_name: str
     args: dict
+    invocation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -240,13 +241,18 @@ class SubagentFinished:
 
 @dataclass(frozen=True)
 class Finished:
-    """Terminal event. `reason` is "completed" or "max_turns".
+    """Terminal event, including "stubbed" for a checked statement placeholder.
+
+    "stubbed" carries no proof result_kind and is validated independently by
+    the host before it can be saved as an intentionally incomplete artifact.
 
     `result_kind` is set for completed proof artifacts:
       'proved'       — the user's stated claim was verified
       'disproved'    — the user's stated claim was shown false
-      'needs_review' — Lean checked an artifact, but its relation to the request
-                       is ambiguous and should not be displayed as proof success
+      'defined'      — the selected definition passed its check
+      'incomplete'   — the checked inputs changed before completion
+
+    Correspondence findings are carried by Lea Status and its description.
     """
     reason: str
     text: str
@@ -258,6 +264,9 @@ class Finished:
     transcript: dict
     result_kind: str | None = None
     result_detail: str | None = None
+    # Explicit final artifact association, independent of outcome classification.
+    candidate_path: str | None = None
+    selected_result: dict | None = None
 
 
 # Union of everything run_events() can yield — handy for type annotations.

@@ -61,7 +61,7 @@ with tempfile.TemporaryDirectory(prefix='lea-audit-dependency-') as tmp:
         assert formalizations.get(target['id'])['validity_status'] == 'proved' 
     cfg = LeaConfig(model='test', max_turns=3, lea_root=root)
     with patch.object(routes, 'load_config', lambda: cfg):
-        saved = routes.write_project_file(project['id'], routes.FilePut(
+        saved = routes.write_project_file.worker(project['id'], routes.FilePut(
             path='Upstream.lean', content=up.replace('theorem base', 'theorem renamed')))
         old = routes.project_target_status_by_slug(project['slug'],
             declarations=f'{namespace}.dependent', formalization_ids=targets['dependent']['id'])['targets'][0]

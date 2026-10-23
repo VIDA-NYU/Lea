@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { isDualCheckStatus, normalizeLeaCheck, projectLeanCheck } from "../shared/checkState.mjs";
 
-test("projects compiler and attempt facts into the six Lean Check states", () => {
+test("projects compiler and attempt facts into Lean Check states", () => {
   assert.equal(projectLeanCheck({ paneStatus: "missing-stub" }).status, "unformalized");
   assert.equal(projectLeanCheck({ paneStatus: "stub-generated" }).status, "stubbed");
   assert.equal(projectLeanCheck({ paneStatus: "in-progress" }).status, "in-progress");
@@ -10,7 +10,19 @@ test("projects compiler and attempt facts into the six Lean Check states", () =>
   assert.equal(projectLeanCheck({ paneStatus: "paused" }).status, "paused");
   assert.equal(projectLeanCheck({ paneStatus: "invalid" }).status, "error");
   assert.equal(projectLeanCheck({ paneStatus: "needs-review", statusInfo: { leanCheckPassed: true } }).status, "checked");
-  assert.equal(projectLeanCheck({ paneStatus: "needs-review", statusInfo: { leanCheckPassed: false } }).status, "unformalized");
+  assert.equal(projectLeanCheck({ paneStatus: "needs-review", statusInfo: { leanCheckPassed: false } }).status, "unconfirmed");
+  assert.equal(projectLeanCheck({ paneStatus: "needs-review", statusInfo: { leanCheck: { status: "error" } } }).status, "error");
+});
+
+test("unknown or synchronizing evidence is never a compiler failure or a current success", () => {
+  assert.equal(projectLeanCheck({ paneStatus: "unknown" }).status, "unconfirmed");
+  for (const state of ["inputs_changed", "capturing", "observation_expired", "reconciling"]) {
+    const projected = projectLeanCheck({ paneStatus: "valid", statusInfo: { projection: { state } } });
+    assert.equal(projected.status, "synchronizing");
+    assert.equal(isDualCheckStatus({ leanCheck: projected, leaCheck: normalizeLeaCheck(null) }), true);
+  }
+  assert.equal(projectLeanCheck({ paneStatus: "valid", statusInfo: { projection: { state: "observed" } } }).status, "checked");
+  assert.equal(projectLeanCheck({ paneStatus: "invalid" }).status, "error");
 });
 
 test("normalizes missing semantic evidence to an explained N/A", () => {
@@ -19,4 +31,12 @@ test("normalizes missing semantic evidence to an explained N/A", () => {
     leanCheck: projectLeanCheck({ paneStatus: "valid" }),
     leaCheck: normalizeLeaCheck({ status: "warning" })
   }), true);
+});
+
+test("a current file check is independent of target completion", () => {
+  for (const paneStatus of ["unknown", "unavailable"]) {
+    assert.equal(projectLeanCheck({ paneStatus, statusInfo: { leanCheck: { status: "ok" } } }).status, "checked");
+    assert.equal(projectLeanCheck({ paneStatus, statusInfo: { leanCheck: { status: "error" } } }).status, "error");
+    assert.equal(projectLeanCheck({ paneStatus, statusInfo: { projection: { state: "inputs_changed" }, leanCheck: { status: "ok" } } }).status, "synchronizing");
+  }
 });

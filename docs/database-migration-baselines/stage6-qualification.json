@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "status": "qualified_development_cutover",
+  "captured_at": "2026-10-17T21:33:43.839086+00:00",
+  "native": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "release": "25.5.0",
+    "python": "3.14.4",
+    "sqlite": "3.53.1",
+    "node": "v22.22.3",
+    "repair_toolchain": "Lean 4.29.0"
+  },
+  "linux": {
+    "system": "Linux",
+    "machine": "aarch64",
+    "python": "3.13.11",
+    "sqlite": "3.40.1",
+    "node": "v22.23.3"
+  },
+  "gates": {
+    "native_adapter_full_run": {
+      "passed": 1448,
+      "fixtures_requiring_interface_update": 3,
+      "resolved_by": "native_adapter_fixture_rerun",
+      "note": "The full run found three old reader mocks. They were migrated to SQL interfaces, then passed on rerun."
+    },
+    "native_adapter_fixture_rerun": {
+      "passed": 3,
+      "failed": 0
+    },
+    "native_observer_and_boundary": {
+      "passed": 49,
+      "failed": 0
+    },
+    "native_terminal_and_solver": {
+      "passed": 51,
+      "failed": 0
+    },
+    "native_bridge_run_and_solver": {
+      "passed": 119,
+      "failed": 0
+    },
+    "linux_source_queue_workspace_migration_observer_retention": {
+      "passed": 159,
+      "failed": 0
+    },
+    "javascript_scripts_extension_frontend": {
+      "passed": 933,
+      "failed": 0
+    },
+    "browser": {
+      "passed": 9,
+      "failed": 0
+    },
+    "native_http_workflows": {
+      "passed": 14,
+      "failed": 0
+    },
+    "native_repair_restart_control_publication_sequence": {
+      "passed": 5,
+      "failed": 0
+    },
+    "linux_stateless_http_and_exact_replay": {
+      "passed": 2,
+      "failed": 0
+    },
+    "typescript": "passed",
+    "production_frontend_build": "passed",
+    "boundary_audit": "Boundary register covers 172 adapter routes and 27 companion dispatch branches."
+  },
+  "baseline": "stage6-http-macos-arm64.json",
+  "source_sha256": {
+    "scripts/benchmark-db-boundary.py": "2ebbfb5e4f5b43413647b22eb06f5eb374e458f0c4f882c17fdb64dfe5dd4fe6",
+    "apps/lea-standalone/adapter/app/db.py": "f20e41edd8ae3a5ac117eb564ef2c7de9e901b4839c64314cfbc95985ae40532",
+    "apps/lea-standalone/adapter/app/store.py": "70820112b44c8639145010e1c1d2e6628803094dcbb3766ec6212e8a9c34c891",
+    "apps/lea-standalone/adapter/app/bridge.py": "ec0e1c8f777700c1ce66d31fffa44fc5552e168f7f7f3c5f732febca3a3ec530",
+    "apps/lea-standalone/adapter/app/commands.py": "01798aa7a6f616049a5d2b79e777999bf737eb556072f39d268ebb5d0d7cdb59",
+    "apps/lea-standalone/adapter/app/command_host.py": "4d67345c8ea3c47a2e34f6806fa36b5167bb97cc5c5d28ca8890f578a66bbd32",
+    "apps/lea-standalone/adapter/app/run_commands.py": "45448cb57240ff84a641c87c966697b52a412e8f1d8fa931feff35fbaaa83959",
+    "apps/lea-standalone/adapter/app/command_execution.py": "81bf56e7e993c4d0c0d765087fd02ac7f0fc1855eda88d7bd4c81042889b004e",
+    "apps/lea-standalone/adapter/app/main.py": "ae32a9c9ff555453b4f49f4af1f024b1e4baa82213edf74e6083511c0a395dd6",
+    "apps/lea-standalone/adapter/app/workspace_commands.py": "3990134db2c47501c1976fa954e4cc343b7357636bbc96b254ece64f3e3894cb",
+    "apps/lea-standalone/adapter/app/workspace_files.py": "eabdb3ab0476ff6d1563dd2b510c36ee2a6e49dbb0b3a18f7ac5359a43e9e1de",
+    "apps/lea-standalone/adapter/app/workspace_effects.py": "6363704f381102d41aeff1745bede89dc11916d66c90c29379b8764322e5fbe3",
+    "apps/lea-standalone/adapter/app/workspace_edits.py": "1bb1bec781d195f97cb85fc1ff53680783edc4671189ceae11297e339ced5a35",
+    "apps/lea-standalone/adapter/app/routes/workspace.py": "132019ee26fd4f7f9771a3d0e89f438bba00c97acf9699a73826a779e7291958",
+    "apps/lea-standalone/adapter/app/routes/projects.py": "61659b77b2c96c1b71c77e1b18d9d3299b0a823f7148a788532e7bebccbfd235",
+    "apps/lea-standalone/adapter/app/routes/sessions.py": "ffe9cda0ecf8b1d25c4a97cfc7d8b3cc376a5f262a4f926d7c1228b4b4af1575",
+    "apps/lea-standalone/adapter/app/projects.py": "bafb430485ff1c88d841d0f4147882432fa83ae22a0821228cd05558184157b1",
+    "apps/lea-standalone/adapter/app/uploads.py": "93548faacb47048571b70b4b79954201de78906d00f176da6610b7f506080d00",
+    "apps/lea-standalone/adapter/app/proof_files.py": "6f1846408bac16fd2844aa0bc9f321e78afd65800a41a91f7e319d46b876a2e3",
+    "apps/lea-standalone/adapter/app/proof_evidence.py": "ade37d4851251ce20fd92888052d6ddcd72bf3b583d72a6ad415788e86f3e77a",
+    "apps/lea-standalone/adapter/app/project_dependencies.py": "8d10b92fd1342ef46d42b14c8bdea92c166909d1166e9ce953ced9d8aab0a013",
+    "apps/lea-standalone/adapter/app/reformalization_apply.py": "b5e8118e7d12c3b0289ef5ef5e1140951770e124bcb37f4e8058902e5b1b74db",
+    "apps/lea-standalone/adapter/app/formalization_reviews.py": "5f955f77a97102902a0170604e03397640e950c031c0ace64a2d523fa1d07209",
+    "apps/lea-standalone/adapter/app/reformalization_review.py": "f9203ab54798476a1688128ed33939cb70ca2447dee93c57136229c96f772643",
+    "apps/lea-standalone/adapter/migrations/versions/0043_workspace_commands.py": "1620947348a301126f3fcb0456669e6b8c0f1c191cfc210891f0b4220c85ed94",
+    "apps/lea-standalone/adapter/app/source_publications.py": "cd7158304f306a3d22f4061e36eeaa40ee8c0055560166f927f12f2ceb7e5d84",
+    "apps/lea-standalone/adapter/app/companion_service.py": "30dee986cbbee8149afb49934850dd3c5946306f7cb82616e4aca79c100fa531",
+    "apps/lea-standalone/adapter/app/companion_import.py": "3d9cdfb7b3535af527c19ecc035604e7672c59143cefe5300c80416bc4730fff",
+    "apps/lea-standalone/adapter/app/peripheral_views.py": "e14801b8750f38b8d9aa8ecca664464242f7d2fd212dcbd1d440a27642dc6cf3",
+    "apps/lea-standalone/adapter/app/settings_policy.py": "5c6903253dd0c4752bbe47775da33084975b9a3eb50a1590f0c7a5dc064ba925",
+    "apps/lea-standalone/adapter/app/routes/companion.py": "67218af69ef78a1a0a1ed634e1dfe6648acd3b14effc3fc4a2a9fe58133b51c0",
+    "apps/lea-standalone/adapter/app/routes/overleaf_source.py": "05458e1f14584ea9ee427fff1b10b56a3888e0238fb247c33c269427c031330e",
+    "apps/lea-standalone/adapter/app/routes/runs.py": "8a69e07d801c0ce2027d60e8aacb108195783f2b8c2bf04049fc5253e4cf2e6b",
+    "apps/lea-standalone/adapter/migrations/versions/0044_source_companion_projections.py": "45e33db495ea50e64aa9b3233f925f491924a44cf1d4804b12dee89b71874557",
+    "apps/lea-standalone/adapter/migrations/versions/0045_source_archive_references.py": "dd639cdc96bbfc47eb302c4556c40f7419530c1c236d37b86e93af0488bc15d8",
+    "apps/lea-standalone/adapter/migrations/versions/0046_project_namespace_generation.py": "5d6f0d256f1be383e91704de9155edeaf27d84689b367d2ddcd65bf7886e5e06",
+    "apps/lea-standalone/adapter/app/queries/identity.py": "b0fa99ccf3bb26c676bc9eddcd39d498a003d9a301287e0e5f6d2482fc737356",
+    "apps/lea-standalone/adapter/app/queries/sources.py": "16359a03b2461780e0b49b9f4d1ed565fe96b1121d5a1c453f64358a868bce7a",
+    "apps/overleaf-extension/companion/server.mjs": "30fe26031a6261679407110eeb95e129ded914eaebf3bb774de96b2030d9c785",
+    "apps/overleaf-extension/companion/worker.mjs": "28d230fdc0d8e7c0b8c9145c90c69354fdec240ef744c64b528e77ff67d74374",
+    "apps/overleaf-extension/companion/workerService.mjs": "5e4eba01099b017dc79ccfad0b807f8033f7d5fb725832bbe0b072d9c6d1bf2b",
+    "apps/overleaf-extension/companion/databaseState.mjs": "19362fac3c5738a1df1c9f02e0c086b256ddb6d5653160853dca2ece42bba03b",
+    "apps/overleaf-extension/extension/sourcePublisher.mjs": "ddfde645cb3a2e0ec6280aaebe4e76da7da1525be13fd52883f2279b1d5a5b3e",
+    "apps/overleaf-extension/extension/commandClient.mjs": "183e8a753ba0c28bd97ced8852d979f24e6f6ef8cd8f8f4c6f9d91e2e0827957",
+    "apps/overleaf-extension/companion/leaApiClient.mjs": "250ce04465c43f72d6c50be0cba03d24bb160d0f3a8486901841ffce6105c64f",
+    "apps/overleaf-extension/extension/content.js": "54e28f49a0a1f1e087dc23df097bab00f55edf49dc355e277842236c415da98c",
+    "apps/lea-standalone/adapter/app/core_query_dispatch.py": "e275614ffb4c300636fd32e037d49382e60cb433fef8aa396c41a43eb14f9a5b",
+    "apps/lea-standalone/adapter/app/core_observer.py": "51260c1e26b5e3d0a100403e017715a51598738535009d3c65d74156fb31e2b8",
+    "apps/lea-standalone/adapter/app/queries/core.py": "260bd9b0abb0aabd1de89391efff8bac43342f27369f06704cd1c192ed1065c3",
+    "apps/lea-standalone/adapter/app/queries/proofs.py": "e03a3696b4aa024878ee449e722c1bc25551a9dd70d32956a2bff05bb6be5af1",
+    "apps/lea-standalone/adapter/app/queries/sessions.py": "93f23c5425b091577b66e3899301f2fc02edb0a0e049b2b45e9e53162306baa2"
+  },
+  "limitations": [
+    "Temporary databases/workspaces and scripted model responses; no paid inference or external Git push.",
+    "Native staged repair uses Lean 4.29.0; Linux HTTP qualification excludes native repair because the audit image has no supported confined Lean executor.",
+    "Linux ARM64 uses a qualification image with current source mounted read-only, not a complete production Mathlib image.",
+    "Native AMD64, full image release, Stage 7 LSP replacement and Stage 8 process confinement remain outstanding.",
+    "Legacy imports were qualified on fixtures. The user database is migrated at the next adapter startup; originals and digest archives remain."
+  ],
+  "test_source_sha256": {
+    "apps/lea-standalone/adapter/tests/test_stage6_boundary.py": "c75f94c206845e127a8a15966a9fded4662bc6f151503ac53561b50e984502c1",
+    "tests/integration/formalize.e2e.test.mjs": "3db01ca73145197050aa2589ed9ba9f9c9cfde19c9f243adbb5c60e7f44c895c",
+    "tests/integration/adapter_entry.py": "dd329c3200e09a09f908b58779dbf6c7e531c6d7d845867d22e971d9118092b0"
+  }
+}

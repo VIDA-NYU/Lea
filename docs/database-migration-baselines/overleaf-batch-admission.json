@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T02:00:40.477144+00:00",
+  "scope": "Development regression qualification using the shipped browser content script/styles and stateless HTTP transport with isolated host/API fixtures. No live database changes, prover execution or provider calls.",
+  "findings": [
+    "The batch launcher previously gave only a generic activity indicator during source/mirror preparation and waited for worker completion before displaying a batch.",
+    "The displayed button recomputed its eligible target set on click and the batch dispatcher silently returned for an empty set.",
+    "A disconnected or ambiguous request did not retain a batch-level retry intent after its two immediate transport attempts."
+  ],
+  "behavior": {
+    "intent": "Capture the displayed target set and project synchronously; retain one browser intent per project while this tab remains open.",
+    "preparation": "Show preparing or waiting state immediately; publish immutable source through SQL before executable admission. Source/document changes before submission require an explicit new request.",
+    "admission": "Prefer: respond-async on /formalize/all and /stub/all returns HTTP 202 with the original SQL command receipt without observing a worker.",
+    "retry": "Freeze destination, JSON bytes and idempotency key after preparation. Retry connection/deadline/capacity failures with exponential 1–30 second backoff; once accepted, only read its command receipt.",
+    "deadlines": "Source publisher, full mirror, admission and receipt exchanges are bounded to ten seconds each. Accepted commands have no browser-imposed execution cancellation.",
+    "withdrawal": "Cancel unsent preparations and explicitly rejected capacity attempts locally. Stale controls cannot discard accepted or ambiguous requests. Worker-terminal errors are displayed without automatic resubmission.",
+    "selection": "Update the admission surface without replacing selected source/code; defer selected admission text updates until the range clears. Automatic results preserve the Items/Blueprint view.",
+    "authority": "Only SQL admission/receipts/publications are used. Existing queue quotas, frozen source bindings and worker-side validation are unchanged.",
+    "durability_limit": "Unaccepted intent exists in the open browser tab. It is not represented as database-queued before acknowledgement. Accepted work belongs to the durable SQL queue."
+  },
+  "validation": {
+    "overleaf_suite": {
+      "tests": 817,
+      "pass": 817,
+      "fail": 0,
+      "skipped": 0
+    },
+    "content_script_vm_cases": 160,
+    "new_content_script_regressions": 13,
+    "browser_cases": 1,
+    "browser_observations": [
+      "Startup outage is visible and retries into SQL acceptance without a worker.",
+      "Repeated launch produces one business POST.",
+      "Automatic receipt observations preserve source text selection.",
+      "Desktop waiting and narrow-pane queued screenshots reviewed; no overflow."
+    ],
+    "boundary_audit": {
+      "adapter_routes": 179,
+      "companion_dispatch_branches": 27,
+      "result": "pass"
+    },
+    "whitespace_check": "pass",
+    "release_qualification": "No new production image or rollback qualification is claimed."
+  },
+  "source_sha256": {
+    "apps/overleaf-extension/extension/content.js": "d60e8edc7b145b4907c9f0be6de5984ac64191ad22580b44c78fba4cb055cf9b",
+    "apps/overleaf-extension/extension/commandClient.mjs": "b9e360b193ac7748e095e168a3253353ad4e6abb4cef9e59e4435feb786980ac",
+    "apps/overleaf-extension/companion/server.mjs": "85e7d1229c858d447508d8914d4549dc0a7677edcfc6718edef7b53a49fa8d15",
+    "apps/overleaf-extension/tests/contentActions.test.mjs": "3c4651be59a252e4925811cb8a87e2a7976617948f4f61704f2a3cc39abffd6e",
+    "apps/overleaf-extension/tests/databaseTransport.test.mjs": "9ed4a0b25162789e9e79af7d81c3288265fbccacbda5f8de948b555ceef36e2d",
+    "tests/browser/overleaf-admission.spec.mjs": "c64d894f8f3c978f62affc5397b4adbc0c0a09a2401610b45e869d299cd7fcd1",
+    "docs/database-boundary-inventory.json": "6d93df720c88294d26d7c4b9cfee3af71bd9ef5bcf18266ad1dfec9d3ab269cf"
+  }
+}

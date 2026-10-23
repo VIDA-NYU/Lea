@@ -15,7 +15,7 @@ files, because CORS does not do what it looks like it does here:
   browser's point of view, so no CORS check fires. The `Host` header is the only place
   the attacker's name still shows up, which is why it is checked here.
 * **WebSockets are not subject to CORS.** The LSP endpoint (`routes/sessions.lsp_socket`)
-  has to check `Origin` itself; the HTTP middleware never sees the handshake.
+  rejects every client before accept; the HTTP middleware never sees the handshake.
 
 The rule for both headers is *loopback identity*, not an exact string match. A
 localhost service is legitimately addressed as `localhost`, `127.0.0.1`, or `[::1]`,

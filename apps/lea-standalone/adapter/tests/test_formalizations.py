@@ -30,9 +30,9 @@ def test_manual_check_cannot_certify_a_different_disproof(tmp_path, monkeypatch)
     store.add_code_step(session['id'], None, 'Counterexample.lean',
         content='theorem unrelated : True := by trivial\n', check_status='ok',
         artifact_kind='proof', formalization_id=target['id'])
-    assert formalizations.get(target['id'])['validity_status'] == 'needs_review'
-    assert store.session_detail(session['id'])['status'] == 'needs_review'
-    assert store.list_sessions()[0]['status'] == 'needs_review'
+    assert formalizations.get(target['id'])['validity_status'] == 'unchecked'
+    assert store.session_detail(session['id'])['status'] == 'unchecked'
+    assert store.list_sessions()[0]['status'] == 'unchecked'
 
 
 def _fresh(tmp_path, monkeypatch):
@@ -57,6 +57,7 @@ def test_migration_adds_scoped_tables_columns_constraints_and_indexes(
 ):
     path = _fresh(tmp_path, monkeypatch)
     with sqlite3.connect(path) as conn:
+        db.register_change_batch(conn)
         tables = {
             row[0]
             for row in conn.execute(

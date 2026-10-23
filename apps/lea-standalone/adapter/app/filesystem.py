@@ -115,6 +115,18 @@ def write_text_file(project: dict, proofs_root: Path, rel: str, content: str) ->
     + commit-on-write, any file in the repo. Parent dirs are created as needed."""
     repo = project_repo_dir(project, proofs_root)
     abs_path = safe_abs(repo, rel)
+    from . import workspace_commands, workspace_files
+    if workspace_commands.current() is not None:
+        rel = abs_path.relative_to(repo.resolve()).as_posix()
+        saved = workspace_files.save(None, rel, abs_path, content, project_id=project['id'])
+        try:
+            commit = GitStore(proofs_root).commit_all(repo, f'edit {rel}', paths=[rel])
+        except Exception as exc:
+            workspace_files.provenance(saved['effect_id'], detail=str(exc))
+            from fastapi import HTTPException
+            raise HTTPException(500, detail={'code': 'content_saved_commit_failed', 'message': 'Content is saved in the database; Git provenance could not be recorded.', 'effect_id': saved['effect_id']}) from exc
+        workspace_files.provenance(saved['effect_id'], commit)
+        return commit
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     abs_path.write_text(content)
     # Scoped to the edited file (X2) — this repo is shared across a project's sessions.
@@ -122,18 +134,43 @@ def write_text_file(project: dict, proofs_root: Path, rel: str, content: str) ->
 
 
 def export_zip(repo: Path) -> bytes:
-    """A zip of the whole repo (excluding :data:`IGNORED_DIRS`), built in memory. The
-    proofs repo is small (source + ``.lea/`` assets; oleans live under the hidden
-    ``.lake``), so in-memory is fine. Entries are nested under a top folder named for
-    the repo dir, in sorted order for reproducibility."""
-    buf = io.BytesIO()
-    top = repo.name
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for dirpath, dirnames, filenames in os.walk(repo):
-            # Prune hidden dirs in place so os.walk never descends into them.
-            dirnames[:] = sorted(d for d in dirnames if d not in IGNORED_DIRS)
-            for name in sorted(filenames):
-                full = Path(dirpath) / name
-                rel = full.relative_to(repo)
-                zf.write(full, arcname=str(Path(top) / rel))
+    """A bounded, stable archive. External replacement cannot redirect a read."""
+    limit=64*1024*1024;total=0;entries=0
+    buf=io.BytesIO();top=repo.name;manifest=[]
+    if repo.is_symlink():raise FilesystemError('Repository symlinks cannot be exported','bad_path')
+    with zipfile.ZipFile(buf,'w',zipfile.ZIP_DEFLATED) as archive:
+        for directory,dirs,names in os.walk(repo,followlinks=False):
+            dirs[:]=sorted(d for d in dirs if d not in IGNORED_DIRS|{'.lea-trash','displaced'} and not (Path(directory)/d).is_symlink())
+            for name in sorted(names):
+                entries+=1
+                if entries>10000:raise FilesystemError('Export exceeds 10000 files','too_large')
+                relative=(Path(directory)/name).relative_to(repo)
+                descriptor=os.open(repo,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+                try:
+                    for part in relative.parts[:-1]:
+                        child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=descriptor);os.close(descriptor);descriptor=child
+                    file=os.open(relative.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=descriptor)
+                    with os.fdopen(file,'rb') as source:
+                        import stat
+                        info=os.fstat(source.fileno())
+                        if not stat.S_ISREG(info.st_mode):raise FilesystemError('Unsupported export entry','bad_path')
+                        if total+info.st_size>limit:raise FilesystemError('Export input exceeds 64 MiB','too_large')
+                        with archive.open(str(Path(top)/relative),'w') as destination:
+                            while True:
+                                chunk=source.read(min(65536,limit-total+1))
+                                if not chunk:break
+                                total+=len(chunk)
+                                if total>limit:raise FilesystemError('Export input exceeds 64 MiB','too_large')
+                                destination.write(chunk)
+                                if buf.tell()>limit:raise FilesystemError('Export result exceeds 64 MiB','too_large')
+                        after=os.fstat(source.fileno())
+                        signature=lambda st:(st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns)
+                        if signature(info)!=signature(after):raise FilesystemError('Workspace changed during export; request it again','changed')
+                        manifest.append((repo/relative,signature(after)))
+                except OSError as exc:raise FilesystemError('Export destination changed or is unavailable','changed') from exc
+                finally:os.close(descriptor)
+    if buf.tell()>limit:raise FilesystemError('Export result exceeds 64 MiB','too_large')
+    for path,expected in manifest:
+        current=path.stat(follow_symlinks=False)
+        if (current.st_ino,current.st_size,current.st_mtime_ns,current.st_ctime_ns)!=expected:raise FilesystemError('Workspace changed during export; request it again','changed')
     return buf.getvalue()

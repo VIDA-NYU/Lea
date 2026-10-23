@@ -22,6 +22,8 @@ type Updater<T> = T | ((current: T) => T);
 // cleared when the child finishes.
 export interface SubagentLive {
   text: string;       // the child's assistant narration for the current turn (accumulates)
+  message_id?: string;
+  stream_sequence?: number;
   tool?: string;      // the tool it is currently running, if any
   check?: string;     // its latest lean_check verdict ('ok' | 'error')
   turn?: number;      // its current turn

@@ -143,6 +143,18 @@ def upgrade_to_head() -> None:
 
             snapshot(tag=current or "unstamped")  # raises BackupError -> no migration
 
+        # An unstamped adoption or deliberate early-revision repair replays the
+        # historical timeline rebuild. SQLite validates cross-table triggers
+        # during its intermediate rename, when `timeline` is briefly absent.
+        # Revision 0040 recreates these two triggers before service can start.
+        # The migration owner holds the data/migration lock and has backed up
+        # first; a failed upgrade still refuses startup and resumes at its stamp.
+        if current is None or current[:4] < '0040':
+            from .db import connect
+            with connect() as conn:
+                for name in ('core_blob_update','core_blob_delete'):
+                    conn.execute(f'drop trigger if exists {name}')
+
         command.upgrade(_config(), "head")
 
 

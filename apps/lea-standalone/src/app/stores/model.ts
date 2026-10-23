@@ -6,6 +6,7 @@ import {
   saveSettings,
   type ModelCatalogEntry,
   type ModelOption,
+  type ModelCatalogPayload,
 } from '../lib/api';
 import { useProofSession } from './proofSession';
 
@@ -21,6 +22,9 @@ interface ModelState {
   model?: string;
   modelCatalog: ModelCatalogEntry[];
   modelFeatured: ModelOption[];
+  catalogPayload?: ModelCatalogPayload;
+  catalogError?: string;
+  catalogLoading: boolean;
   // True when the active model's provider key is not configured (M19 nudge).
   keyMissing: boolean;
 
@@ -29,7 +33,7 @@ interface ModelState {
   // Load the active model + featured list from settings, then check the key.
   syncFromSettings: () => Promise<void>;
   // Load the full model catalog from the API.
-  loadCatalog: () => Promise<void>;
+  loadCatalog: (refresh?: boolean) => Promise<void>;
   // Change the active model (M9): optimistic, persists to the same config the
   // Settings page writes; rolls back + surfaces an error banner on failure.
   changeModel: (next: string) => Promise<void>;
@@ -39,6 +43,7 @@ export const useModel = create<ModelState>((set, get) => ({
   model: undefined,
   modelCatalog: [],
   modelFeatured: [],
+  catalogLoading: false,
   keyMissing: false,
 
   checkKey: async (model) => {
@@ -68,11 +73,19 @@ export const useModel = create<ModelState>((set, get) => ({
     }
   },
 
-  loadCatalog: async () => {
+  loadCatalog: async (refresh = false) => {
+    if (get().catalogLoading) return;
+    set({ catalogLoading: true });
     try {
-      set({ modelCatalog: await fetchModelCatalog() });
-    } catch {
-      /* ignore */
+      const payload = await fetchModelCatalog(refresh);
+      const changed = !payload.revision || payload.revision !== get().catalogPayload?.revision;
+      set({ catalogPayload: payload, catalogError: undefined,
+        ...(changed ? { modelCatalog: payload.models } : {}),
+        ...(changed && payload.featured ? { modelFeatured: payload.featured } : {}) });
+    } catch (error) {
+      set({ catalogError: 'Could not refresh models. Showing saved data; try Refresh models.' });
+    } finally {
+      set({ catalogLoading: false });
     }
   },
 

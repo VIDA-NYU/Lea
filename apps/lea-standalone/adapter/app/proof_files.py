@@ -47,6 +47,8 @@ def _same(left, right):
 
 def check(session_id, path, absolute: Path, checker, *, formalization_id=None,
           author=None, summary=None, expected=None):
+    from .workspace_commands import authorize
+    authorize()
     from lea.check_evidence import public_execution, coordinator, lake_root
     session = _session(session_id)
     with project_coordination.mutation(session.get("project_id")):
@@ -61,6 +63,7 @@ def check(session_id, path, absolute: Path, checker, *, formalization_id=None,
         result = checker(str(absolute), allow_cold=False) if author == "cascade" else checker(str(absolute))
         execution = getattr(result, "execution", None) or {}
         with coordinator(lake_root(absolute) or absolute.parent).lease(), file_guard(absolute):
+            authorize()
             if execution.get("content_sha256") != digest:
                 conflict()
             try:
@@ -100,6 +103,12 @@ def _materialize(path: Path, content: str):
 
 def save(session_id, path, absolute: Path, content: str, *, formalization_id=None,
          base_revision=None, note=None):
+    from . import workspace_commands, workspace_files
+    if workspace_commands.current() is not None:
+        result = workspace_files.save(session_id, path, absolute, content,
+            formalization_id=formalization_id, base_revision=base_revision, note=note)
+        workspace_files.provenance(result['effect_id'])
+        return result
     session = _session(session_id)
     project_id = session.get("project_id")
     if store.has_active_run(session_id) or (project_id and (store.project_has_active_run(project_id) or store.project_has_active_import(project_id))):
@@ -148,6 +157,8 @@ def save(session_id, path, absolute: Path, content: str, *, formalization_id=Non
 
 
 def verify(session_id, path, absolute: Path, verifier, *, formalization_id=None):
+    from .workspace_commands import authorize
+    authorize()
     from lea.check_evidence import coordinator, lake_root
     session = _session(session_id)
     with project_coordination.mutation(session.get("project_id")):
@@ -158,6 +169,7 @@ def verify(session_id, path, absolute: Path, verifier, *, formalization_id=None)
                 conflict()
         result = verifier(str(absolute))
         with coordinator(lake_root(absolute) or absolute.parent).lease(), file_guard(absolute):
+            authorize()
             try:
                 if absolute.read_bytes() != content:
                     conflict()

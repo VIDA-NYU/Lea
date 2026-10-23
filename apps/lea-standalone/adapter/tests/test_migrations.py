@@ -30,6 +30,108 @@ BASELINE_TABLES = {
 }
 
 
+def test_status_history_upgrade_recovers_retained_and_compacted_events(tmp_path, monkeypatch):
+    import json
+    from alembic import command
+    from app import store
+    from app.queries.sessions import session_detail
+    monkeypatch.setattr(db, 'DB_PATH', tmp_path / 'status-history.sqlite')
+    command.upgrade(migrations._config(), '0048_process_boundary')
+    session = store.create_session('Legacy event history')
+    run = store.create_run(session['id'], 'fixture', None, 3)
+    tool = json.dumps({'status': 'tool_call', 'message': 'Running read_file', 'turn': 2})
+    checked = json.dumps({'status': 'lean_check', 'message': 'lean_check: ok', 'check_status': 'ok'})
+    with db.write() as conn:
+        event_id = conn.execute("insert into run_events(run_id,attempt_id,type,payload) values (?,'','status',?)",
+                                (run['id'], tool)).lastrowid
+        conn.execute("insert into run_observation_records values (?,'','status','tool',?,?)", (run['id'], event_id, tool))
+        conn.execute("insert into run_observation_records values (?,'','status','latest',?,?)", (run['id'], event_id + 1, checked))
+    command.upgrade(migrations._config(), 'head')
+    from app import bootstrap, release_info
+    bootstrap.require_schema()
+    assert release_info.identity()['schema'] == migrations.head_revision()
+    history = session_detail(session['id'])['status_events']
+    assert len(history) == 2
+    assert history[0]['message'] == 'Running read_file'
+    assert history[0]['turn'] == 2
+    assert history[1]['check_status'] == 'ok'
+
+
+def test_overleaf_policy_backfills_only_recorded_provenance(tmp_path, monkeypatch):
+    from alembic import command
+    from app import store
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "legacy.sqlite3")
+    command.upgrade(migrations._config(), "0033_formalization_reviews")
+    projects = {name: store.create_project(name) for name in (
+        "session", "historical-run", "formalization", "mirror", "ordinary",
+    )}
+    store.create_session("Overleaf", project_id=projects["session"]["id"], origin="overleaf")
+    historical = store.create_session("Detached", origin="overleaf")
+    ordinary = store.create_session("UI", project_id=projects["ordinary"]["id"])
+    store.create_formalization(project_id=projects["formalization"]["id"], loose_session_id=None,
+                               display_title="Imported target", origin="overleaf")
+    store.create_project_file(projects["mirror"]["id"], "main.tex", ".lea/files/overleaf/main.tex", kind="overleaf")
+    with db.write() as conn:
+        for name, session_id, autonomous in (
+            ("historical-run", historical["id"], 0), ("ordinary", ordinary["id"], 1),
+        ):
+            conn.execute("""insert into runs (id,session_id,project_id,status,autonomous,model,created_at,updated_at)
+                values (?, ?, ?, 'pending', ?, 'm', 't', 't')""",
+                (name, session_id, projects[name]["id"], autonomous))
+        conn.execute("update runs set pending_approval = ? where id = 'historical-run'",
+                     ('{"approval_id":"keep","tool_name":"write_file","args":{}}',))
+    db.init_db()
+    assert {p["slug"] for p in store.list_projects() if p["overleaf_linked"]} == {
+        "session", "historical-run", "formalization", "mirror",
+    }
+    assert store.get_run("ordinary")["approval_mode"] == "none"
+    historical_row = store.get_run("historical-run")
+    assert historical_row["approval_mode"] == "stepwise"
+    assert historical_row["pending_approval"]["approval_id"] == "keep"
+    assert historical_row["status"] == "pending"
+    db.init_db()
+    assert migrations.current_revision() == migrations.head_revision()
+    assert store.get_run("historical-run")["approval_mode"] == "stepwise"
+
+
+def test_overleaf_policy_unstamped_adoption_preserves_existing_modes(tmp_path, monkeypatch):
+    from app import store
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "unstamped.sqlite3")
+    db.init_db()
+    project = store.create_project("linked-without-files")
+    store.mark_project_overleaf_linked(project["id"])
+    session = store.create_session("Interactive", project_id=project["id"])
+    run = store.create_run(session["id"], "m", None, 3, approval_mode="none")
+    with db.write() as conn:
+        conn.execute("delete from alembic_version")
+    db.init_db()
+    assert store.get_run(run["id"])["approval_mode"] == "none"
+    assert store.get_run(run["id"])["autonomous"] is False
+    assert store.get_project(project["id"])["overleaf_linked"] is True
+
+
+def test_overleaf_policy_fresh_defaults_and_constraints(tmp_path, monkeypatch):
+    from app import store
+
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "fresh.sqlite3")
+    db.init_db()
+    project = store.create_project("ordinary")
+    session = store.create_session("UI")
+    run = store.create_run(session["id"], "m", None, 3)
+    assert project["overleaf_linked"] is False
+    assert store.get_run(run["id"])["approval_mode"] == "stepwise"
+    for sql in (
+        "update projects set overleaf_linked = 2",
+        "update projects set overleaf_linked = null",
+        "update runs set approval_mode = 'unknown'",
+        "update runs set approval_mode = null",
+    ):
+        with pytest.raises(sqlite3.IntegrityError), db.write() as conn:
+            conn.execute(sql)
+
+
 def _cols(path, table: str) -> set[str]:
     with sqlite3.connect(path) as conn:
         return {r[1] for r in conn.execute(f"pragma table_info({table})")}
@@ -74,6 +176,7 @@ def test_baseline_is_a_noop_on_a_preexisting_database(tmp_path, monkeypatch):
     # Simulate the pre-Alembic database: schema present, data present, no stamp.
     db.init_db()
     with sqlite3.connect(path) as conn:
+        db.register_change_batch(conn)
         conn.execute(
             "insert into sessions (id, title, origin, created_at, updated_at)"
             " values ('s1','keep me','ui','t','t')"
@@ -103,6 +206,7 @@ def test_reconcile_repairs_a_legacy_database_missing_artifact_kind(tmp_path, mon
 
     # Rewind to the pre-98d69ef shape, keeping a row to prove data survives.
     with sqlite3.connect(path) as conn:
+        db.register_change_batch(conn)
         conn.execute(
             "insert into sessions (id, title, origin, created_at, updated_at)"
             " values ('s1','legacy','ui','t','t')"

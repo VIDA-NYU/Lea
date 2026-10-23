@@ -52,6 +52,7 @@ def legacy(tmp_path, monkeypatch):
 
 def _seed(path, rows_sql):
     with sqlite3.connect(path) as conn:
+        db.register_change_batch(conn)
         conn.executescript(rows_sql)
         conn.execute("delete from timeline")  # ensure the backfill has work to do
         conn.execute("delete from alembic_version")

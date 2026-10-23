@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, PanelLeftOpen } from 'lucide-react';
-import { sessionExportUrl, interruptSubagent } from '../lib/api';
+import { Download, LoaderCircle, PanelLeftOpen } from 'lucide-react';
+import { sessionExportUrl, downloadWorkspaceExport, interruptSubagent } from '../lib/api';
 import type {
   ApprovalDecision,
   ApprovalRecord,
@@ -79,6 +79,8 @@ export function ChatThread({
   onSubmit,
   onSubmitGeneral,
   submissionBusy = false,
+  restoringSession = false,
+  onRetryRestore,
   sourceConnection,
   onInterrupt,
   onResumeRun,
@@ -100,6 +102,8 @@ export function ChatThread({
   onSubmit: () => void;
   onSubmitGeneral?: () => void;
   submissionBusy?: boolean;
+  restoringSession?: boolean;
+  onRetryRestore?: () => void;
   sourceConnection?: { targetId: string; label: string; state: 'preparing' | 'connected' | 'error' } | null;
   onInterrupt: () => void;
   onResumeRun?: (runId: string, action?: 'resume' | 'continue') => Promise<void> | void;
@@ -336,7 +340,7 @@ export function ChatThread({
     for (const a of approvals) {
       nodes.push({
         kind: 'approval',
-        key: `a:${a.approval_id}`,
+        key: `a:${a.run_id}:${a.approval_id}`,
         runId: a.run_id ?? null,
         seqKey: typeof a.seq === 'number' ? a.seq : Number.MAX_SAFE_INTEGER,
         approval: a,
@@ -414,19 +418,19 @@ export function ChatThread({
   const latestStopReason = stopReasons.length ? stopReasons[stopReasons.length - 1] : undefined;
   const runIds = Object.keys(runStatusById);
   const latestRunId = runIds.length ? runIds[runIds.length - 1] : undefined;
+  const currentTarget = formalizations.find(item =>
+    (formalizationScope === item.id || (formalizationScope === 'project' && formalizations.length === 1)));
   const headChip = isRunning
     ? { cls: 'run', text: currentRunId && runRecoveryById[currentRunId]?.state === 'recovering'
       ? '● recovering saved progress' : '● proving' }
-    : (session?.status === 'needs_review' || formalizations.some((item) =>
-        item.validity_status === 'needs_review' &&
-        (formalizationScope === item.id || (formalizationScope === 'project' && formalizations.length === 1))))
-    ? { cls: 'warn', text: 'Needs review' }
+    : currentTarget && currentTarget.activity.status === 'idle'
+    ? { cls: formalizationStatusClass(currentTarget.validity_status, 'idle'), text: currentTarget.validity_status }
     : latestProofStatus === 'stubbed'
     ? { cls: 'run', text: '○ stubbed' }
     : latestRunOutcome === 'disproved' && latestProofStatus === 'proved'
     ? { cls: 'warn', text: '⊘ disproved' }
     : latestRunOutcome === 'needs_review'
-    ? { cls: 'warn', text: 'Needs review' }
+    ? { cls: 'idle', text: 'unchecked' }
     : (latestRunOutcome === 'proved' || latestRunOutcome === 'success') &&
         latestRunResultKind === 'defined' &&
         (latestProofStatus === 'proved' || latestProofStatus === 'defined')
@@ -446,7 +450,7 @@ export function ChatThread({
   // streaming text (the gap after submit + between turns while a tool runs) and
   // we're not paused on an approval. The live bubble (live:true) means text is
   // already flowing, so the indicator yields to it.
-  const hasPendingApproval = approvals.some((a) => !a.decision);
+  const hasPendingApproval = approvals.some((a) => !a.decision && a.actionable !== false);
   const thinking =
     isRunning &&
     !hasPendingApproval &&
@@ -588,6 +592,7 @@ export function ChatThread({
           <a
             className="head-download"
             href={sessionExportUrl(session.id)}
+            onClick={(event)=>{event.preventDefault();downloadWorkspaceExport(sessionExportUrl(session.id)).catch(error=>window.alert(String(error)));}}
             download
             title="Download this session's files as a zip"
           >
@@ -610,9 +615,16 @@ export function ChatThread({
         )}
       </div>
 
-      <div className="thread" ref={scrollRef} onScroll={onScroll}>
+      <div className="thread" ref={scrollRef} onScroll={onScroll} aria-busy={restoringSession}>
         <div className="thread-inner">
-          {items.length === 0 && !error && (
+          {restoringSession && !error && (
+            <div className="session-restore" role="status">
+              <LoaderCircle size={20} className="session-restore-spinner" aria-hidden="true" />
+              <strong>Restoring session…</strong>
+              <p>Loading your conversation and proof context.</p>
+            </div>
+          )}
+          {items.length === 0 && !error && !restoringSession && (
             <div className="thread-empty">
               Enter a theorem or natural-language proof task to start Lea.
             </div>
@@ -680,7 +692,6 @@ export function ChatThread({
                 {finished && completion === 'defined' && <DefinedCard steps={steps} session={session} />}
                 {finished && completion === 'disproved' && <DisprovedCard steps={steps} session={session} />}
                 {finished && completion === 'stubbed' && <StubCard steps={steps} session={session} />}
-                {finished && resultKind === 'needs_review' && <ReviewNote />}
               </Fragment>
             );
           })}
@@ -714,7 +725,10 @@ export function ChatThread({
           {/* The banner survives, narrowed (v2.4) to client-side action failures —
               a fetch that didn't land, a button that failed. Everything the run
               reports is a Diagnostic with a place to live. */}
-          {error && <div className="err-banner">{error}</div>}
+          {error && <div className="err-banner" role="alert">
+            {error}
+            {onRetryRestore && <button className="restore-retry" onClick={onRetryRestore}>Retry loading</button>}
+          </div>}
         </div>
       </div>
 
@@ -939,8 +953,7 @@ function FormalizationScope({ session }: { session?: SessionSummary }) {
                 box to clip, which is how a whole prompt ended up spilling across the rail. */}
             <span className="form-label">{item.declaration_name || item.display_title}</span>
             <small title={item.validity_reason || undefined}>
-              {item.activity.status !== 'idle' ? item.activity.status : item.validity_status === 'needs_review' ? 'Needs review' : item.validity_status}
-              {item.validity_status === 'needs_review' && item.check_current ? ' · Lean check passed' : ''}
+              {item.activity.status !== 'idle' ? item.activity.status : item.validity_status}
             </small>
           </button>
         ))}
@@ -1073,7 +1086,7 @@ function formalizationStatusClass(validity: string, activity: string): string {
   if (activity !== 'idle') return 'run';
   if (validity === 'proved' || validity === 'defined') return 'ok';
   if (validity === 'failing') return 'fail';
-  if (validity === 'stale' || validity === 'needs_review') return 'warn';
+  if (validity === 'stale') return 'warn';
   return 'idle';
 }
 
@@ -1470,14 +1483,6 @@ function DisprovedCard({ steps, session }: { steps: number; session?: SessionSum
   );
 }
 
-function ReviewNote() {
-  return (
-    <div className="final review">
-      <div className="fhead">○ Review note — Lean checked this artifact, but Lea could not confirm it exactly matches the original request.</div>
-    </div>
-  );
-}
-
 function StubCard({ steps, session }: { steps: number; session?: SessionSummary }) {
   return (
     <div className="final stub">
@@ -1500,19 +1505,19 @@ function ApprovalCard({
   busy,
   onDecide,
 }: {
-  approval: PendingApproval;
+  approval: ApprovalRecord;
   decision?: string | null;
   busy: boolean;
   onDecide: (decision: ApprovalDecision) => void;
 }) {
   const preview = approvalPreview(approval);
-  const resolved = !!decision;
+  const resolved = !!decision || approval.actionable === false;
   return (
     <div className={`approval ${resolved ? 'resolved' : ''}`}>
       <div className="ahead">
         🛡{' '}
         {resolved
-          ? decisionHeadline(decision as string, approval.tool_name)
+          ? decision ? decisionHeadline(decision, approval.tool_name) : `${approval.tool_name} — no longer pending`
           : `Approve ${approval.tool_name}?`}
       </div>
       {preview && <div className="acode">{preview}</div>}
@@ -1521,7 +1526,7 @@ function ApprovalCard({
           className="resolved-tag"
           style={decision === 'deny' ? { color: 'var(--red)' } : undefined}
         >
-          {decisionTag(decision as string)}
+          {decision ? decisionTag(decision) : 'no longer pending'}
         </span>
       ) : (
         <div className="actions">

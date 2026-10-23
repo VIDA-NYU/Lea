@@ -20,6 +20,8 @@ structure Settings where
   allowedAxioms : Array Name := #[`propext, `Quot.sound, `Classical.choice]
   /-- Optional path to save JSON output -/
   jsonOutputPath : Option System.FilePath := none
+  /-- Audit this actual compiled result against its own type after kernel replay. -/
+  selectedDeclaration : Option Name := none
 deriving Inhabited
 
 /-- Parsed declarations from target and submission files.

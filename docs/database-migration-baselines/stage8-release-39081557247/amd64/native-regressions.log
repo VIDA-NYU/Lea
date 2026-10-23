@@ -1,0 +1,7 @@
+Prepared 3 packages in 92ms
+Installed 3 packages in 4ms
+ + iniconfig==2.3.0
+ + pluggy==1.6.0
+ + pytest==9.0.3
+.............s.......................................                    [100%]
+52 passed, 1 skipped in 73.74s (0:01:13)

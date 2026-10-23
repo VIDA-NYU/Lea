@@ -1,0 +1,1839 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T04:59:33.532990+00:00",
+  "platform": {
+    "system": "Darwin",
+    "machine": "arm64"
+  },
+  "scope": "Import advice, fresh SQL dependency admission, and checking with real observers and SQL stop gates. Development activation only.",
+  "changes": {
+    "import_advice": {
+      "completion_prerequisite": false,
+      "timeout_seconds": 10,
+      "maximum_attempts_per_saved_execution": 1,
+      "compiler": "separate cold process; no LSP fallback",
+      "analysis_import": "Mathlib.Tactic.Linter.MinImports",
+      "umbrella_analysis_allowed": false,
+      "source_modified": false,
+      "advice_is_proof_evidence": false,
+      "timeout_preserves_shared_daemon": true
+    },
+    "dependency_admission": {
+      "source": "SQL target-status GET, one snapshot for all requested dependencies and kinds per poll",
+      "poll_ms": 500,
+      "wait_slice_ms": 30000,
+      "automatic_reconciliation_interval_ms": 5000,
+      "durable_pre_admission_wait": true,
+      "cancellable": true,
+      "worker_epoch_fenced": true,
+      "permanent_access_rejection_retried": false,
+      "stale_or_missing_dependency_accepted": false,
+      "get_triggers_execution": false
+    },
+    "checking": {
+      "stop_snapshot": "Stop reason, deadline, current command ownership in one short SQL read snapshot",
+      "manifest_poll_interval_ms": 50,
+      "interval_begins": "After prior SQL stop poll returns",
+      "cancellation_observations_cached": false,
+      "new_metrics": [
+        "timings_ms.cancellation",
+        "cancellation_polls"
+      ],
+      "proof_integrity_guards_preserved": true
+    }
+  },
+  "regressions": [
+    {
+      "suite": "Overleaf extension complete suite",
+      "passed": 842,
+      "failed": 0,
+      "seconds": 30.97,
+      "note": "Includes first seven new projection wait cases; two subsequently added access-rejection/epoch tests also passed in a separate targeted run."
+    },
+    {
+      "suite": "Additional projection access rejection and epoch fencing",
+      "passed": 2,
+      "failed": 0
+    },
+    {
+      "suite": "Check evidence, profiling, import advice, core projections/real evidence, checkpoint continuation, native LSP recovery",
+      "passed": 124,
+      "subtests_passed": 5,
+      "failed": 0,
+      "seconds": 75.65
+    },
+    {
+      "suite": "Process boundary, worker stability, solver command gates",
+      "passed": 41,
+      "skipped": 1,
+      "failed": 0,
+      "seconds": 70.15,
+      "skip_reason": "Native editor qualification requires its explicit opt-in."
+    },
+    {
+      "suite": "Final separate-compiler advice and completion/checkpoint tests",
+      "passed": 4,
+      "failed": 0,
+      "seconds": 1.22
+    },
+    {
+      "suite": "Targeted import policy native module runner",
+      "passed_checks": 19,
+      "failed": 0
+    },
+    {
+      "suite": "Boundary register audit",
+      "adapter_routes": 179,
+      "companion_dispatch_branches": 27,
+      "passed": true
+    }
+  ],
+  "slow_sql_regression": {
+    "dependency_sidecars": 1000,
+    "simulated_file_work_ms": 1,
+    "simulated_stop_read_ms": 75,
+    "previous_behavior": "A stop read slower than the 50 ms interval retriggered on nearly every file and exhausted the 10 s budget.",
+    "qualified_behavior": "Finishes below 5 simulated seconds with fewer than 40 current stop/ownership polls.",
+    "deterministic_simulation": true
+  },
+  "native_observer_load": {
+    "harness": "scripts/profile-live-checks.py",
+    "providers_or_network_used": false,
+    "production_database_or_workspace_modified": false,
+    "real_sql_ownership_checks": true,
+    "real_core_and_workspace_observers": true,
+    "same_shared_daemon_after_advice": true,
+    "comparison": {
+      "cold": {
+        "before_total_ms": 29499.74,
+        "after_total_ms": 26859.65,
+        "reduction_percent": 8.9,
+        "before_preparation_ms": 24893.29,
+        "after_preparation_ms": 22394.38
+      },
+      "proof_edit": {
+        "before_total_ms": 3736.36,
+        "after_total_ms": 2615.98,
+        "reduction_percent": 30.0,
+        "before_preparation_ms": 2201.34,
+        "after_preparation_ms": 1121.19
+      },
+      "warm": {
+        "before_total_ms": 3887.48,
+        "after_total_ms": 2936.07,
+        "reduction_percent": 24.5,
+        "before_preparation_ms": 2380.4,
+        "after_preparation_ms": 1533.36
+      }
+    },
+    "before": {
+      "version": 1,
+      "captured_at": "2026-10-18T04:43:54.507891+00:00",
+      "source_sha256": {
+        "apps/lea-standalone/adapter/app/bridge.py": "2d8de6bf6c966fc61c3bc10ac38796aa008b005afcdb9b51f84d0135573e1f50",
+        "apps/lea-standalone/adapter/app/core_observer.py": "51260c1e26b5e3d0a100403e017715a51598738535009d3c65d74156fb31e2b8",
+        "apps/lea-standalone/prover/lea/check_evidence.py": "c77db0a08702f6f2148f7b654aaddffdb33de515eae379fdd472a3e847d672a3",
+        "apps/lea-standalone/prover/lea/check_runtime.py": "144f8247d3ec89227c260a1507ce23b9899fb2a0924803d26f314b08407b0ee6",
+        "apps/lea-standalone/prover/lea/tools.py": "fac9fd81e96f02bf7e8f07c981ee0eca2b4372da6ac800574bfba27fc40ce776",
+        "scripts/profile-live-checks.py": "f70676467a4a4a423ef5883b6e6e57e96a0c46ec09415848714e9bfc2d43f9d6"
+      },
+      "isolation": "Disposable SQL/workspace; real core/workspace observers and SQL ownership reads; macOS confinement; packages read-only; no network/providers",
+      "cases": [
+        {
+          "case": "cold",
+          "execution": {
+            "check_id": "95e34c19119c4f6aa876b26d2a756d41",
+            "daemon_generation": "0732ae4c0a46486ca134ad288d632383",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 125.44,
+              "initialization": 816.98,
+              "lsp": 2404.45,
+              "cold": 0.0,
+              "total": 29499.74,
+              "source": 0.48,
+              "dependency_resolution": 15159.62,
+              "dependency_build": 920.86,
+              "preparation": 24893.29,
+              "evidence_hash": 5.33,
+              "guard_setup": 202.09,
+              "validation": 345.75,
+              "cleanup": 120.29
+            },
+            "content_sha256": "9bb47763a27db7b575d15f7946220a145aa575abadde65eb4e8d3f39c5ff9b61",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b"
+          },
+          "environment_files": 5979,
+          "profile": [
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "calls": 2,
+              "self_seconds": 0.0014,
+              "cumulative_seconds": 24.8933
+            },
+            {
+              "function": "manifest",
+              "file": "check_evidence.py",
+              "calls": 3,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 23.9172
+            },
+            {
+              "function": "add",
+              "file": "check_evidence.py",
+              "calls": 7149,
+              "self_seconds": 0.089,
+              "cumulative_seconds": 22.1346
+            },
+            {
+              "function": "communicate",
+              "file": "subprocess.py",
+              "calls": 144,
+              "self_seconds": 0.2303,
+              "cumulative_seconds": 15.493
+            },
+            {
+              "function": "_command",
+              "file": "check_evidence.py",
+              "calls": 21,
+              "self_seconds": 0.0017,
+              "cumulative_seconds": 13.1293
+            },
+            {
+              "function": "_resolve",
+              "file": "check_evidence.py",
+              "calls": 30,
+              "self_seconds": 0.0009,
+              "cumulative_seconds": 12.3593
+            },
+            {
+              "function": "_communicate",
+              "file": "subprocess.py",
+              "calls": 144,
+              "self_seconds": 0.0037,
+              "cumulative_seconds": 12.0381
+            },
+            {
+              "function": "select",
+              "file": "selectors.py",
+              "calls": 185,
+              "self_seconds": 0.0013,
+              "cumulative_seconds": 11.5059
+            },
+            {
+              "function": "<method 'poll' of 'select.poll' objects>",
+              "file": "~",
+              "calls": 185,
+              "self_seconds": 11.459,
+              "cumulative_seconds": 11.459
+            },
+            {
+              "function": "remaining",
+              "file": "check_runtime.py",
+              "calls": 377,
+              "self_seconds": 0.0024,
+              "cumulative_seconds": 8.1657
+            },
+            {
+              "function": "<lambda>",
+              "file": "lean_checks.py",
+              "calls": 356,
+              "self_seconds": 0.0523,
+              "cumulative_seconds": 7.2993
+            },
+            {
+              "function": "should_stop",
+              "file": "profile-live-checks.py",
+              "calls": 356,
+              "self_seconds": 0.0123,
+              "cumulative_seconds": 6.4338
+            },
+            {
+              "function": "wait",
+              "file": "threading.py",
+              "calls": 29,
+              "self_seconds": 0.0005,
+              "cumulative_seconds": 5.3751
+            },
+            {
+              "function": "<method 'execute' of 'sqlite3.Connection' objects>",
+              "file": "~",
+              "calls": 2225,
+              "self_seconds": 6.7449,
+              "cumulative_seconds": 5.2837
+            },
+            {
+              "function": "wait",
+              "file": "threading.py",
+              "calls": 52,
+              "self_seconds": 0.001,
+              "cumulative_seconds": 5.2329
+            },
+            {
+              "function": "<method 'acquire' of '_thread.lock' objects>",
+              "file": "~",
+              "calls": 308,
+              "self_seconds": 2.861,
+              "cumulative_seconds": 5.2302
+            },
+            {
+              "function": "poll",
+              "file": "check_evidence.py",
+              "calls": 25587,
+              "self_seconds": 0.0074,
+              "cumulative_seconds": 4.8774
+            },
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "calls": 1,
+              "self_seconds": 0.0009,
+              "cumulative_seconds": 4.3324
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "calls": 2,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 3.8493
+            },
+            {
+              "function": "_imports_for_source",
+              "file": "check_evidence.py",
+              "calls": 2274,
+              "self_seconds": 0.0052,
+              "cumulative_seconds": 3.3185
+            }
+          ]
+        },
+        {
+          "case": "proof_edit",
+          "execution": {
+            "check_id": "40809eb7ddbf4ba4b2383f05101e8563",
+            "daemon_generation": "0732ae4c0a46486ca134ad288d632383",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 49.2,
+              "initialization": 0.0,
+              "lsp": 252.99,
+              "cold": 0.0,
+              "total": 3736.36,
+              "source": 0.5,
+              "preparation": 2201.34,
+              "evidence_hash": 5.23,
+              "guard_setup": 272.76,
+              "validation": 290.55,
+              "cleanup": 117.33
+            },
+            "content_sha256": "9e0765c39611d52da419d9d2298cf32c0f0db565a72fc3474a8e6ac0d6d23dec",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b"
+          },
+          "environment_files": 5979,
+          "profile": [
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "calls": 2,
+              "self_seconds": 0.0019,
+              "cumulative_seconds": 3.7196
+            },
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "calls": 321,
+              "self_seconds": 0.0007,
+              "cumulative_seconds": 2.7197
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 2.5915
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "calls": 153,
+              "self_seconds": 0.0002,
+              "cumulative_seconds": 2.574
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "calls": 2,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 2.185
+            },
+            {
+              "function": "record",
+              "file": "check_evidence.py",
+              "calls": 6146,
+              "self_seconds": 0.0123,
+              "cumulative_seconds": 1.8878
+            },
+            {
+              "function": "manifest",
+              "file": "check_evidence.py",
+              "calls": 1,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 1.5231
+            },
+            {
+              "function": "add",
+              "file": "check_evidence.py",
+              "calls": 2383,
+              "self_seconds": 0.0252,
+              "cumulative_seconds": 1.5072
+            },
+            {
+              "function": "remaining",
+              "file": "check_runtime.py",
+              "calls": 60,
+              "self_seconds": 0.0002,
+              "cumulative_seconds": 1.4733
+            },
+            {
+              "function": "poll",
+              "file": "check_evidence.py",
+              "calls": 8529,
+              "self_seconds": 0.0023,
+              "cumulative_seconds": 1.4721
+            },
+            {
+              "function": "<lambda>",
+              "file": "lean_checks.py",
+              "calls": 42,
+              "self_seconds": 0.0003,
+              "cumulative_seconds": 1.0971
+            },
+            {
+              "function": "_runtime_files",
+              "file": "check_evidence.py",
+              "calls": 2,
+              "self_seconds": 0.0219,
+              "cumulative_seconds": 0.9265
+            },
+            {
+              "function": "should_stop",
+              "file": "profile-live-checks.py",
+              "calls": 42,
+              "self_seconds": 0.0005,
+              "cumulative_seconds": 0.8731
+            },
+            {
+              "function": "resolve",
+              "file": "__init__.py",
+              "calls": 12028,
+              "self_seconds": 0.0065,
+              "cumulative_seconds": 0.835
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "calls": 1,
+              "self_seconds": 0.0007,
+              "cumulative_seconds": 0.8154
+            },
+            {
+              "function": "realpath",
+              "file": "<frozen posixpath>",
+              "calls": 12028,
+              "self_seconds": 0.1357,
+              "cumulative_seconds": 0.8046
+            },
+            {
+              "function": "observed_changed",
+              "file": "check_evidence.py",
+              "calls": 1,
+              "self_seconds": 0.001,
+              "cumulative_seconds": 0.6406
+            },
+            {
+              "function": "_observed_changed",
+              "file": "check_evidence.py",
+              "calls": 1,
+              "self_seconds": 0.008,
+              "cumulative_seconds": 0.6397
+            },
+            {
+              "function": "__exit__",
+              "file": "contextlib.py",
+              "calls": 153,
+              "self_seconds": 0.0004,
+              "cumulative_seconds": 0.6245
+            },
+            {
+              "function": "stat",
+              "file": "__init__.py",
+              "calls": 49095,
+              "self_seconds": 0.0089,
+              "cumulative_seconds": 0.5869
+            }
+          ]
+        },
+        {
+          "case": "warm",
+          "execution": {
+            "check_id": "d6d5b027429a4c90b34b0d28cf4690d5",
+            "daemon_generation": "0732ae4c0a46486ca134ad288d632383",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 47.87,
+              "initialization": 0.0,
+              "lsp": 258.81,
+              "cold": 0.0,
+              "total": 3887.48,
+              "source": 0.52,
+              "preparation": 2380.4,
+              "evidence_hash": 4.92,
+              "guard_setup": 225.64,
+              "validation": 299.46,
+              "cleanup": 114.77
+            },
+            "content_sha256": "9e0765c39611d52da419d9d2298cf32c0f0db565a72fc3474a8e6ac0d6d23dec",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b"
+          },
+          "environment_files": 5979,
+          "profile": [
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "calls": 1,
+              "self_seconds": 0.0009,
+              "cumulative_seconds": 3.8875
+            },
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "calls": 330,
+              "self_seconds": 0.0014,
+              "cumulative_seconds": 2.8372
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 2.7208
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "calls": 157,
+              "self_seconds": 0.0003,
+              "cumulative_seconds": 2.7054
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "calls": 2,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 2.3804
+            },
+            {
+              "function": "manifest",
+              "file": "check_evidence.py",
+              "calls": 1,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 1.7343
+            },
+            {
+              "function": "add",
+              "file": "check_evidence.py",
+              "calls": 2383,
+              "self_seconds": 0.0206,
+              "cumulative_seconds": 1.702
+            },
+            {
+              "function": "remaining",
+              "file": "check_runtime.py",
+              "calls": 52,
+              "self_seconds": 0.0024,
+              "cumulative_seconds": 1.2866
+            },
+            {
+              "function": "<genexpr>",
+              "file": "check_evidence.py",
+              "calls": 35915,
+              "self_seconds": 0.0275,
+              "cumulative_seconds": 1.2819
+            },
+            {
+              "function": "poll",
+              "file": "check_evidence.py",
+              "calls": 8529,
+              "self_seconds": 0.0026,
+              "cumulative_seconds": 1.2046
+            },
+            {
+              "function": "observation",
+              "file": "check_evidence.py",
+              "calls": 23942,
+              "self_seconds": 0.0209,
+              "cumulative_seconds": 1.1231
+            },
+            {
+              "function": "<lambda>",
+              "file": "lean_checks.py",
+              "calls": 46,
+              "self_seconds": 0.0004,
+              "cumulative_seconds": 1.0837
+            },
+            {
+              "function": "record",
+              "file": "check_evidence.py",
+              "calls": 6146,
+              "self_seconds": 0.0129,
+              "cumulative_seconds": 1.0372
+            },
+            {
+              "function": "should_stop",
+              "file": "profile-live-checks.py",
+              "calls": 46,
+              "self_seconds": 0.0007,
+              "cumulative_seconds": 0.882
+            },
+            {
+              "function": "resolve",
+              "file": "__init__.py",
+              "calls": 12035,
+              "self_seconds": 0.0076,
+              "cumulative_seconds": 0.8731
+            },
+            {
+              "function": "_runtime_files",
+              "file": "check_evidence.py",
+              "calls": 2,
+              "self_seconds": 0.021,
+              "cumulative_seconds": 0.8644
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "calls": 1,
+              "self_seconds": 0.0007,
+              "cumulative_seconds": 0.8293
+            },
+            {
+              "function": "realpath",
+              "file": "<frozen posixpath>",
+              "calls": 12035,
+              "self_seconds": 0.1363,
+              "cumulative_seconds": 0.8019
+            },
+            {
+              "function": "observed_changed",
+              "file": "check_evidence.py",
+              "calls": 1,
+              "self_seconds": 0.001,
+              "cumulative_seconds": 0.6243
+            },
+            {
+              "function": "_observed_changed",
+              "file": "check_evidence.py",
+              "calls": 1,
+              "self_seconds": 0.0078,
+              "cumulative_seconds": 0.6234
+            }
+          ]
+        }
+      ],
+      "observer_scans": [
+        {
+          "seconds": 0.512,
+          "state": "retry"
+        },
+        {
+          "seconds": 0.379,
+          "state": "observed"
+        },
+        {
+          "seconds": 0.079,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.038,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.128,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.061,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.087,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.037,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.157,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.038,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.091,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.038,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.092,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.152,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.056,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.073,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.037,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.085,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.066,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.108,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.115,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.052,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.117,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.082,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.158,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.084,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.038,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.988,
+          "state": "observed"
+        },
+        {
+          "seconds": 0.042,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.114,
+          "state": "waiting"
+        },
+        {
+          "seconds": 1.447,
+          "state": "observed"
+        },
+        {
+          "seconds": 0.038,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.04,
+          "state": "waiting"
+        }
+      ],
+      "observer_errors": []
+    },
+    "after": {
+      "version": 1,
+      "captured_at": "2026-10-18T04:55:20.567070+00:00",
+      "source_sha256": {
+        "apps/lea-standalone/adapter/app/bridge.py": "fb82db37062e974e5c0e673a8ae4e2b7483375c5ab1f12da2742d7f09237dea9",
+        "apps/lea-standalone/adapter/app/core_observer.py": "51260c1e26b5e3d0a100403e017715a51598738535009d3c65d74156fb31e2b8",
+        "apps/lea-standalone/prover/lea/check_evidence.py": "91e19f1cca5a3baff2ed1d487d462d5ef629372e5f2581486aeec880663a8935",
+        "apps/lea-standalone/prover/lea/check_runtime.py": "b24ae2fde27f65f1e25dfbf28352061fe9bbe4347c89a266a8f0a7f0bfcdc66f",
+        "apps/lea-standalone/prover/lea/tools.py": "51488b0f579390e2f49e42274c19c7dea6eea14c41393cda369d25069653f78c",
+        "scripts/profile-live-checks.py": "6a97131e7c9b741b172914f8adc8b808689bab17f9c3c85f90db51b11f45b3c4"
+      },
+      "isolation": "Disposable SQL/workspace; real core/workspace observers and SQL ownership reads; macOS confinement; packages read-only; no network/providers",
+      "cases": [
+        {
+          "case": "cold",
+          "execution": {
+            "check_id": "b2eed6d9b9724d20b9c850a42fed49d3",
+            "daemon_generation": "5ee7bc56f4904deba42109eabf937650",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 42.44,
+              "initialization": 754.94,
+              "lsp": 2356.18,
+              "cold": 0.0,
+              "total": 26859.65,
+              "cancellation": 2978.97,
+              "source": 0.58,
+              "dependency_resolution": 15045.61,
+              "dependency_build": 946.09,
+              "preparation": 22394.38,
+              "evidence_hash": 5.52,
+              "guard_setup": 204.95,
+              "validation": 341.22,
+              "cleanup": 126.8
+            },
+            "cancellation_polls": 306,
+            "content_sha256": "9bb47763a27db7b575d15f7946220a145aa575abadde65eb4e8d3f39c5ff9b61",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b"
+          },
+          "environment_files": 5979,
+          "profile": [
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "calls": 1662,
+              "self_seconds": 0.0024,
+              "cumulative_seconds": 22.9053
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 22.7262
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "calls": 818,
+              "self_seconds": 0.0007,
+              "cumulative_seconds": 22.7222
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "calls": 2,
+              "self_seconds": 0.0014,
+              "cumulative_seconds": 22.3944
+            },
+            {
+              "function": "manifest",
+              "file": "check_evidence.py",
+              "calls": 3,
+              "self_seconds": 0.0002,
+              "cumulative_seconds": 21.3781
+            },
+            {
+              "function": "add",
+              "file": "check_evidence.py",
+              "calls": 7149,
+              "self_seconds": 0.0823,
+              "cumulative_seconds": 19.7323
+            },
+            {
+              "function": "communicate",
+              "file": "subprocess.py",
+              "calls": 150,
+              "self_seconds": 0.2468,
+              "cumulative_seconds": 15.3977
+            },
+            {
+              "function": "_resolve",
+              "file": "check_evidence.py",
+              "calls": 30,
+              "self_seconds": 0.0009,
+              "cumulative_seconds": 15.0485
+            },
+            {
+              "function": "_command",
+              "file": "check_evidence.py",
+              "calls": 21,
+              "self_seconds": 0.0018,
+              "cumulative_seconds": 14.4349
+            },
+            {
+              "function": "_communicate",
+              "file": "subprocess.py",
+              "calls": 150,
+              "self_seconds": 0.0039,
+              "cumulative_seconds": 13.3319
+            },
+            {
+              "function": "select",
+              "file": "selectors.py",
+              "calls": 191,
+              "self_seconds": 0.0013,
+              "cumulative_seconds": 13.098
+            },
+            {
+              "function": "<method 'poll' of 'select.poll' objects>",
+              "file": "~",
+              "calls": 191,
+              "self_seconds": 13.0928,
+              "cumulative_seconds": 13.0928
+            },
+            {
+              "function": "record",
+              "file": "check_evidence.py",
+              "calls": 18438,
+              "self_seconds": 0.0418,
+              "cumulative_seconds": 8.4695
+            },
+            {
+              "function": "__exit__",
+              "file": "contextlib.py",
+              "calls": 819,
+              "self_seconds": 0.0018,
+              "cumulative_seconds": 6.3729
+            },
+            {
+              "function": "maintain",
+              "file": "core_observer.py",
+              "calls": 24,
+              "self_seconds": 0.0003,
+              "cumulative_seconds": 5.6962
+            },
+            {
+              "function": "wait",
+              "file": "threading.py",
+              "calls": 27,
+              "self_seconds": 0.0003,
+              "cumulative_seconds": 5.0837
+            },
+            {
+              "function": "wait",
+              "file": "threading.py",
+              "calls": 53,
+              "self_seconds": 0.0011,
+              "cumulative_seconds": 4.9318
+            },
+            {
+              "function": "<method 'acquire' of '_thread.lock' objects>",
+              "file": "~",
+              "calls": 308,
+              "self_seconds": 2.8265,
+              "cumulative_seconds": 4.9314
+            },
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "calls": 2,
+              "self_seconds": 0.0009,
+              "cumulative_seconds": 4.2109
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "calls": 2,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 3.7338
+            }
+          ]
+        },
+        {
+          "case": "proof_edit",
+          "execution": {
+            "check_id": "2508fb0cce4546fd89458e4b903517d9",
+            "daemon_generation": "5ee7bc56f4904deba42109eabf937650",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 24.94,
+              "initialization": 0.0,
+              "lsp": 235.19,
+              "cold": 0.0,
+              "total": 2615.98,
+              "cancellation": 225.21,
+              "source": 0.48,
+              "preparation": 1121.19,
+              "evidence_hash": 5.3,
+              "guard_setup": 271.36,
+              "validation": 289.7,
+              "cleanup": 113.95
+            },
+            "cancellation_polls": 24,
+            "content_sha256": "9e0765c39611d52da419d9d2298cf32c0f0db565a72fc3474a8e6ac0d6d23dec",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b"
+          },
+          "environment_files": 5979,
+          "profile": [
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "calls": 2,
+              "self_seconds": 0.0019,
+              "cumulative_seconds": 2.6074
+            },
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "calls": 241,
+              "self_seconds": 0.0009,
+              "cumulative_seconds": 1.5716
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 1.5065
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "calls": 113,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 1.445
+            },
+            {
+              "function": "resolve",
+              "file": "__init__.py",
+              "calls": 12010,
+              "self_seconds": 0.0087,
+              "cumulative_seconds": 0.9405
+            },
+            {
+              "function": "realpath",
+              "file": "<frozen posixpath>",
+              "calls": 12010,
+              "self_seconds": 0.1354,
+              "cumulative_seconds": 0.814
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "calls": 1,
+              "self_seconds": 0.0007,
+              "cumulative_seconds": 0.796
+            },
+            {
+              "function": "unchanged",
+              "file": "check_evidence.py",
+              "calls": 8,
+              "self_seconds": 0.0053,
+              "cumulative_seconds": 0.7331
+            },
+            {
+              "function": "<genexpr>",
+              "file": "check_evidence.py",
+              "calls": 29932,
+              "self_seconds": 0.0195,
+              "cumulative_seconds": 0.6798
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "calls": 2,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 0.6416
+            },
+            {
+              "function": "observed_changed",
+              "file": "check_evidence.py",
+              "calls": 1,
+              "self_seconds": 0.0011,
+              "cumulative_seconds": 0.6416
+            },
+            {
+              "function": "_observed_changed",
+              "file": "check_evidence.py",
+              "calls": 1,
+              "self_seconds": 0.0071,
+              "cumulative_seconds": 0.6404
+            },
+            {
+              "function": "<built-in method posix.lstat>",
+              "file": "~",
+              "calls": 216749,
+              "self_seconds": 0.5648,
+              "cumulative_seconds": 0.566
+            },
+            {
+              "function": "<built-in method posix.stat>",
+              "file": "~",
+              "calls": 51630,
+              "self_seconds": 0.2586,
+              "cumulative_seconds": 0.561
+            },
+            {
+              "function": "stat",
+              "file": "__init__.py",
+              "calls": 49095,
+              "self_seconds": 0.0092,
+              "cumulative_seconds": 0.5468
+            },
+            {
+              "function": "observe",
+              "file": "check_evidence.py",
+              "calls": 1,
+              "self_seconds": 0.0017,
+              "cumulative_seconds": 0.5344
+            },
+            {
+              "function": "_runtime_files",
+              "file": "check_evidence.py",
+              "calls": 2,
+              "self_seconds": 0.0108,
+              "cumulative_seconds": 0.5192
+            },
+            {
+              "function": "manifest",
+              "file": "check_evidence.py",
+              "calls": 1,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 0.4657
+            },
+            {
+              "function": "__str__",
+              "file": "__init__.py",
+              "calls": 137258,
+              "self_seconds": 0.0963,
+              "cumulative_seconds": 0.4498
+            },
+            {
+              "function": "add",
+              "file": "check_evidence.py",
+              "calls": 2383,
+              "self_seconds": 0.0255,
+              "cumulative_seconds": 0.4486
+            }
+          ]
+        },
+        {
+          "case": "warm",
+          "execution": {
+            "check_id": "8aed499435c641cd803aee7c79d982e9",
+            "daemon_generation": "5ee7bc56f4904deba42109eabf937650",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 24.82,
+              "initialization": 0.0,
+              "lsp": 236.06,
+              "cold": 0.0,
+              "total": 2936.07,
+              "cancellation": 276.97,
+              "source": 0.46,
+              "preparation": 1533.36,
+              "evidence_hash": 4.9,
+              "guard_setup": 219.32,
+              "validation": 286.05,
+              "cleanup": 112.62
+            },
+            "cancellation_polls": 27,
+            "content_sha256": "9e0765c39611d52da419d9d2298cf32c0f0db565a72fc3474a8e6ac0d6d23dec",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b"
+          },
+          "environment_files": 5979,
+          "profile": [
+            {
+              "function": "resolve",
+              "file": "__init__.py",
+              "calls": 12016,
+              "self_seconds": 0.0219,
+              "cumulative_seconds": 4.1269
+            },
+            {
+              "function": "observation",
+              "file": "check_evidence.py",
+              "calls": 23942,
+              "self_seconds": 0.028,
+              "cumulative_seconds": 2.962
+            },
+            {
+              "function": "check_file",
+              "file": "lean_checks.py",
+              "calls": 1,
+              "self_seconds": 0.0009,
+              "cumulative_seconds": 2.9361
+            },
+            {
+              "function": "<built-in method builtins.next>",
+              "file": "~",
+              "calls": 246,
+              "self_seconds": 0.0005,
+              "cumulative_seconds": 1.9297
+            },
+            {
+              "function": "context",
+              "file": "check_runtime.py",
+              "calls": 4,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 1.8653
+            },
+            {
+              "function": "__enter__",
+              "file": "contextlib.py",
+              "calls": 115,
+              "self_seconds": 0.0001,
+              "cumulative_seconds": 1.8056
+            },
+            {
+              "function": "prepared_environment",
+              "file": "check_evidence.py",
+              "calls": 2,
+              "self_seconds": 0.0,
+              "cumulative_seconds": 1.5334
+            },
+            {
+              "function": "observed_changed",
+              "file": "check_evidence.py",
+              "calls": 1,
+              "self_seconds": 0.0011,
+              "cumulative_seconds": 1.525
+            },
+            {
+              "function": "_observed_changed",
+              "file": "check_evidence.py",
+              "calls": 1,
+              "self_seconds": 0.0075,
+              "cumulative_seconds": 1.5155
+            },
+            {
+              "function": "_runtime_files",
+              "file": "check_evidence.py",
+              "calls": 2,
+              "self_seconds": 0.0046,
+              "cumulative_seconds": 1.3588
+            },
+            {
+              "function": "realpath",
+              "file": "<frozen posixpath>",
+              "calls": 12016,
+              "self_seconds": 0.1309,
+              "cumulative_seconds": 0.9586
+            },
+            {
+              "function": "check_via_lsp",
+              "file": "lsp_daemon.py",
+              "calls": 1,
+              "self_seconds": 0.0009,
+              "cumulative_seconds": 0.7624
+            },
+            {
+              "function": "<built-in method posix.lstat>",
+              "file": "~",
+              "calls": 216815,
+              "self_seconds": 0.6201,
+              "cumulative_seconds": 0.6747
+            },
+            {
+              "function": "unchanged",
+              "file": "check_evidence.py",
+              "calls": 8,
+              "self_seconds": 0.0056,
+              "cumulative_seconds": 0.6376
+            },
+            {
+              "function": "stat",
+              "file": "__init__.py",
+              "calls": 61062,
+              "self_seconds": 0.0211,
+              "cumulative_seconds": 0.6338
+            },
+            {
+              "function": "<built-in method posix.stat>",
+              "file": "~",
+              "calls": 63614,
+              "self_seconds": 0.3246,
+              "cumulative_seconds": 0.5428
+            },
+            {
+              "function": "read",
+              "file": "read_projections.py",
+              "calls": 8,
+              "self_seconds": 0.0007,
+              "cumulative_seconds": 0.5347
+            },
+            {
+              "function": "<genexpr>",
+              "file": "check_evidence.py",
+              "calls": 35915,
+              "self_seconds": 0.0239,
+              "cumulative_seconds": 0.5103
+            },
+            {
+              "function": "observe",
+              "file": "check_evidence.py",
+              "calls": 1,
+              "self_seconds": 0.0023,
+              "cumulative_seconds": 0.4997
+            },
+            {
+              "function": "__str__",
+              "file": "__init__.py",
+              "calls": 155277,
+              "self_seconds": 0.1151,
+              "cumulative_seconds": 0.4939
+            }
+          ]
+        },
+        {
+          "case": "advisory_import_analysis",
+          "seconds": 10.053,
+          "result": "Import analysis skipped: the optional analysis did not finish within its budget or could not elaborate. Keep the current targeted imports. A passing lean_check remains valid for its checked inputs; proceed to completion without retrying import advice.\nError: Lean check deadline exceeded during cold"
+        },
+        {
+          "case": "post_advice_warm",
+          "execution": {
+            "check_id": "b66720e85e2e4bbeaac03fb0fa93a567",
+            "daemon_generation": "5ee7bc56f4904deba42109eabf937650",
+            "backend": "lsp",
+            "cold_reason": null,
+            "failure": null,
+            "attempts": 1,
+            "timings_ms": {
+              "queue": 23.32,
+              "initialization": 0.0,
+              "lsp": 234.17,
+              "cold": 0.0,
+              "total": 1577.15,
+              "cancellation": 191.97,
+              "source": 0.3,
+              "preparation": 632.37,
+              "evidence_hash": 5.66,
+              "guard_setup": 143.82,
+              "validation": 148.78,
+              "cleanup": 63.25
+            },
+            "cancellation_polls": 20,
+            "content_sha256": "9e0765c39611d52da419d9d2298cf32c0f0db565a72fc3474a8e6ac0d6d23dec",
+            "evidence_version": 1,
+            "environment_sha256": "ad8145fcd1bbe18a6b671673d865533eca935446ca0d5e690fa63b8fc0630a9b"
+          }
+        }
+      ],
+      "observer_scans": [
+        {
+          "seconds": 0.403,
+          "state": "observed"
+        },
+        {
+          "seconds": 0.069,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.037,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.037,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.036,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.058,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.053,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.035,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.083,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.037,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.077,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.036,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.102,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.136,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.039,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.065,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.057,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.037,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.082,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.063,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.061,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.038,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.04,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.038,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.038,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.039,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.338,
+          "state": "observed"
+        },
+        {
+          "seconds": 0.063,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.959,
+          "state": "observed"
+        },
+        {
+          "seconds": 0.042,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.928,
+          "state": "observed"
+        },
+        {
+          "seconds": 0.059,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.038,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.053,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.062,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.057,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.039,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.037,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.056,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.084,
+          "state": "waiting"
+        },
+        {
+          "seconds": 0.047,
+          "state": "waiting"
+        }
+      ],
+      "observer_errors": []
+    }
+  },
+  "activation": {
+    "captured_at": "2026-10-18T04:58:14.389610+00:00",
+    "before": {
+      "runtime_id": "9d2c70429d874ed8aa5c8db40f5869f0",
+      "generation": 1,
+      "ready": true,
+      "lifecycle_state": "ready",
+      "active_runs": 0,
+      "active_operations": 0,
+      "queued_runs": 0,
+      "worker_heartbeat_at": "2026-10-18T04:58:13.363097+00:00",
+      "worker_observation": "observed",
+      "release": {
+        "version": 1,
+        "source": "development",
+        "schema": "0048_process_boundary"
+      },
+      "database_boundary": {
+        "version": 1,
+        "ui_access": "database",
+        "command_direction": "ui_to_worker",
+        "processes": "separate",
+        "queries": 1,
+        "changes": 1,
+        "commands": 1,
+        "source_publications": 1,
+        "editor": 1
+      },
+      "last_failure": null
+    },
+    "retained_before": {
+      "runs": {
+        "count": 3,
+        "sha256": "9ffe332a6a7ec875fcb1adfdbe4e51974ab37f9ea5930e7236c937fd10958796"
+      },
+      "run_attempts": {
+        "count": 3,
+        "sha256": "ed3f7b92345f94f96630177c982c41859966f19725682647e2e90468eb53d0ad"
+      },
+      "run_checkpoints": {
+        "count": 6,
+        "sha256": "bd4b2bbd40fb5400d43e4d45947a03d2d5460ccca51bc1c557f664e8eb2832ac"
+      },
+      "proof_check_evidence": {
+        "count": 6,
+        "sha256": "82e7871d371cae0daa17f2545e211ae03f5183839f4f3d5b3f679fd01c42df2a"
+      },
+      "artifact_blobs": {
+        "count": 30,
+        "sha256": "8057ec8494e0a4ac554a19da91d32f4ac64e5d0665d9106dad43ac727fc7b7f9"
+      },
+      "formalize_batch_reports": {
+        "count": 1,
+        "sha256": "4c5e05594a5d792a72f51d4a658c502c383939a2aead8a25b6a0cb6ef98b0015"
+      }
+    },
+    "health_samples": [
+      {
+        "runtime_id": "9d2c70429d874ed8aa5c8db40f5869f0",
+        "generation": 1,
+        "ready": true,
+        "lifecycle_state": "ready",
+        "active_runs": 0,
+        "active_operations": 0,
+        "queued_runs": 0,
+        "worker_heartbeat_at": "2026-10-18T04:58:13.363097+00:00",
+        "worker_observation": "observed",
+        "release": {
+          "version": 1,
+          "source": "development",
+          "schema": "0048_process_boundary"
+        },
+        "database_boundary": {
+          "version": 1,
+          "ui_access": "database",
+          "command_direction": "ui_to_worker",
+          "processes": "separate",
+          "queries": 1,
+          "changes": 1,
+          "commands": 1,
+          "source_publications": 1,
+          "editor": 1
+        },
+        "last_failure": null
+      },
+      {
+        "runtime_id": "9d2c70429d874ed8aa5c8db40f5869f0",
+        "generation": 1,
+        "ready": false,
+        "lifecycle_state": "stopping",
+        "active_runs": 0,
+        "active_operations": 0,
+        "queued_runs": 0,
+        "worker_heartbeat_at": "2026-10-18T04:58:14.880787+00:00",
+        "worker_observation": "observed",
+        "release": {
+          "version": 1,
+          "source": "development",
+          "schema": "0048_process_boundary"
+        },
+        "database_boundary": {
+          "version": 1,
+          "ui_access": "database",
+          "command_direction": "ui_to_worker",
+          "processes": "separate",
+          "queries": 1,
+          "changes": 1,
+          "commands": 1,
+          "source_publications": 1,
+          "editor": 1
+        },
+        "last_failure": null
+      },
+      {
+        "runtime_id": "9d2c70429d874ed8aa5c8db40f5869f0",
+        "generation": 1,
+        "ready": false,
+        "lifecycle_state": "stopping",
+        "active_runs": 0,
+        "active_operations": 0,
+        "queued_runs": 0,
+        "worker_heartbeat_at": "2026-10-18T04:58:15.902515+00:00",
+        "worker_observation": "observed",
+        "release": {
+          "version": 1,
+          "source": "development",
+          "schema": "0048_process_boundary"
+        },
+        "database_boundary": {
+          "version": 1,
+          "ui_access": "database",
+          "command_direction": "ui_to_worker",
+          "processes": "separate",
+          "queries": 1,
+          "changes": 1,
+          "commands": 1,
+          "source_publications": 1,
+          "editor": 1
+        },
+        "last_failure": null
+      },
+      {
+        "runtime_id": "9d2c70429d874ed8aa5c8db40f5869f0",
+        "generation": 1,
+        "ready": false,
+        "lifecycle_state": "stopping",
+        "active_runs": 0,
+        "active_operations": 0,
+        "queued_runs": 0,
+        "worker_heartbeat_at": "2026-10-18T04:58:15.902515+00:00",
+        "worker_observation": "observed",
+        "release": {
+          "version": 1,
+          "source": "development",
+          "schema": "0048_process_boundary"
+        },
+        "database_boundary": {
+          "version": 1,
+          "ui_access": "database",
+          "command_direction": "ui_to_worker",
+          "processes": "separate",
+          "queries": 1,
+          "changes": 1,
+          "commands": 1,
+          "source_publications": 1,
+          "editor": 1
+        },
+        "last_failure": null
+      },
+      {
+        "runtime_id": "15783bd4a2ef4755adbbaec047ceb6db",
+        "generation": 2,
+        "ready": true,
+        "lifecycle_state": "ready",
+        "active_runs": 0,
+        "active_operations": 0,
+        "queued_runs": 0,
+        "worker_heartbeat_at": "2026-10-18T04:58:18.657825+00:00",
+        "worker_observation": "observed",
+        "release": {
+          "version": 1,
+          "source": "development",
+          "schema": "0048_process_boundary"
+        },
+        "database_boundary": {
+          "version": 1,
+          "ui_access": "database",
+          "command_direction": "ui_to_worker",
+          "processes": "separate",
+          "queries": 1,
+          "changes": 1,
+          "commands": 1,
+          "source_publications": 1,
+          "editor": 1
+        },
+        "last_failure": null
+      }
+    ],
+    "command": {
+      "id": "83fcab6e8e2245f8b4ce14249386a538",
+      "admission_id": 256,
+      "producer_id": "compatibility:local",
+      "kind": "runtime.control",
+      "version": 1,
+      "lane": "control",
+      "state": "queued",
+      "project_id": null,
+      "session_id": null,
+      "formalization_id": null,
+      "generation": 0,
+      "attempt_id": null,
+      "created_at": "2026-10-18T04:58:14.620113+00:00",
+      "deadline": "2026-10-19T04:58:14.620113+00:00",
+      "error": null,
+      "result": null
+    },
+    "after": {
+      "runtime_id": "15783bd4a2ef4755adbbaec047ceb6db",
+      "generation": 2,
+      "ready": true,
+      "lifecycle_state": "ready",
+      "active_runs": 0,
+      "active_operations": 0,
+      "queued_runs": 0,
+      "worker_heartbeat_at": "2026-10-18T04:58:18.657825+00:00",
+      "worker_observation": "observed",
+      "release": {
+        "version": 1,
+        "source": "development",
+        "schema": "0048_process_boundary"
+      },
+      "database_boundary": {
+        "version": 1,
+        "ui_access": "database",
+        "command_direction": "ui_to_worker",
+        "processes": "separate",
+        "queries": 1,
+        "changes": 1,
+        "commands": 1,
+        "source_publications": 1,
+        "editor": 1
+      },
+      "last_failure": null
+    },
+    "retained_after": {
+      "runs": {
+        "count": 3,
+        "sha256": "9ffe332a6a7ec875fcb1adfdbe4e51974ab37f9ea5930e7236c937fd10958796"
+      },
+      "run_attempts": {
+        "count": 3,
+        "sha256": "ed3f7b92345f94f96630177c982c41859966f19725682647e2e90468eb53d0ad"
+      },
+      "run_checkpoints": {
+        "count": 6,
+        "sha256": "bd4b2bbd40fb5400d43e4d45947a03d2d5460ccca51bc1c557f664e8eb2832ac"
+      },
+      "proof_check_evidence": {
+        "count": 6,
+        "sha256": "82e7871d371cae0daa17f2545e211ae03f5183839f4f3d5b3f679fd01c42df2a"
+      },
+      "artifact_blobs": {
+        "count": 30,
+        "sha256": "8057ec8494e0a4ac554a19da91d32f4ac64e5d0665d9106dad43ac727fc7b7f9"
+      },
+      "formalize_batch_reports": {
+        "count": 1,
+        "sha256": "4c5e05594a5d792a72f51d4a658c502c383939a2aead8a25b6a0cb6ef98b0015"
+      }
+    },
+    "retained_unchanged": true,
+    "settled_control": {
+      "id": "83fcab6e8e2245f8b4ce14249386a538",
+      "kind": "runtime.control",
+      "state": "succeeded",
+      "error": null
+    },
+    "follow_up": {
+      "worker_heartbeat_at": "2026-10-18T04:59:54.476681+00:00",
+      "ready": true,
+      "generation": 2,
+      "active_runs": 0,
+      "active_operations": 0,
+      "queued_runs": 0,
+      "last_failure": null,
+      "batch_report_state": "ready",
+      "batch_report_attempts": 1
+    }
+  },
+  "source_sha256": {
+    "apps/lea-standalone/prover/lea/agent.py": "8fd569a5c3952c5ec431ed597695eaed91fa1c95d29e555d13fdb8afa6671654",
+    "apps/lea-standalone/prover/lea/prompt.py": "224a05d17a656d523915344175f2cf8d15fde37443d22c3c18502737d01af23d",
+    "apps/lea-standalone/prover/lea/tools.py": "51488b0f579390e2f49e42274c19c7dea6eea14c41393cda369d25069653f78c",
+    "apps/lea-standalone/prover/lea/check_evidence.py": "91e19f1cca5a3baff2ed1d487d462d5ef629372e5f2581486aeec880663a8935",
+    "apps/lea-standalone/prover/lea/check_runtime.py": "b24ae2fde27f65f1e25dfbf28352061fe9bbe4347c89a266a8f0a7f0bfcdc66f",
+    "apps/lea-standalone/adapter/app/bridge.py": "fb82db37062e974e5c0e673a8ae4e2b7483375c5ab1f12da2742d7f09237dea9",
+    "apps/overleaf-extension/companion/workerService.mjs": "6c9af4fda2c4db9413661fc64b180688af38b76d511a46b4f2616576f36547c1",
+    "apps/overleaf-extension/tests/companion.test.mjs": "3e764b6013a1d34ccc904c5e94251846f50b807d4e7db3dd40aef49128b23bd6",
+    "apps/lea-standalone/adapter/tests/test_import_advice.py": "1d1238a123ef9bb528258e63d7be2929c78c893380a25d7c951cf2fd257b6137",
+    "apps/lea-standalone/adapter/tests/test_check_profiling.py": "ddd21596ef375612bfd57e15578e6a27cbda642c996d2326880d6ae4bee8b33e",
+    "apps/lea-standalone/adapter/tests/test_worker_stability.py": "ec9e30072c5eca7b5264a76c50c134f256c6de3eb49a613142dddc0dd1988abd",
+    "apps/lea-standalone/prover/tests/tools/test_import_policy.py": "8cb49f507482e5489682f17c63378cf2bc155edf07775b4eb60e651cb348dd4b",
+    "scripts/profile-live-checks.py": "6a97131e7c9b741b172914f8adc8b808689bab17f9c3c85f90db51b11f45b3c4"
+  },
+  "limits": [
+    "Disposable native fixture uses targeted real-number/ring imports. It is not a paid Formalize All replay or a production latency guarantee.",
+    "The historical 202.7 s check was not fully reproduced; the slow-stop-poll feedback path is reproduced deterministically and the real observer fixture provides a separate measurement.",
+    "Cold dependency discovery remains material (about 15 s in this fixture); timing phases overlap and must not be added together.",
+    "Import analysis deadline covers check preparation and compilation; bounded process cleanup adds a small wall-clock margin.",
+    "The 30 s projection wait slice includes bounded metadata requests; batch intent is retained between automatic reconciliation passes.",
+    "Executable/tool contract compatibility remains strict. Existing paused attempts need a fresh Re-formalize after loading these changes; no checkpoint rewriting or automatic paid replay.",
+    "No schema migration or public route was added. Production images were not rebuilt or republished."
+  ]
+}

@@ -95,6 +95,10 @@
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+.lea-model-picker-status { display: flex; gap: 8px; align-items: flex-start; padding: 7px; font: 400 12px/1.5 var(--ol-sans); color: var(--ol-muted); }
+.lea-model-picker-status span { min-width: 0; overflow-wrap: anywhere; }
+.lea-model-picker-status button { flex: none; border: 0; background: transparent; color: var(--ol-ink); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.lea-model-picker-status button:disabled { opacity: .6; cursor: wait; }
 
 .lea-model-picker-option {
   display: flex;

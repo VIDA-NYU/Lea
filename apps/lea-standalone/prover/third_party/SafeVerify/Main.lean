@@ -354,6 +354,7 @@ def settingsFromParsed (p : Parsed) : SafeVerify.Settings where
   verbose := p.hasFlag "verbose"
   allowedAxioms := #[`propext, `Quot.sound, `Classical.choice]
   jsonOutputPath := p.flag? "save" |>.map (·.as! System.FilePath)
+  selectedDeclaration := p.flag? "declaration" |>.map (fun value => value.as! String |>.toName)
 
 /--
 Takes two olean files, and checks whether the second file
@@ -400,7 +401,16 @@ def runMain (p : Parsed) : IO UInt32 := do
   validateNewDefinitionNatLiterals targetDecls submissionDecls
 
   -- Create the Decls context
-  let decls : SafeVerify.Decls := { targetDecls := targetDecls, submissionDecls := supplementedDecls }
+  let decls : SafeVerify.Decls ← match settings.selectedDeclaration with
+    | none => pure { targetDecls := targetDecls, submissionDecls := supplementedDecls }
+    | some name => do
+      let some info := submissionDecls.get? name
+        | throw <| IO.userError s!"selected declaration '{name}' is absent from the compiled module"
+      -- Replay above checks the actual module's proof terms. Limit correspondence
+      -- and axiom checks to the selected result; its axiom set is transitive.
+      -- No source is rewritten and private names keep their actual module identity.
+      let selected := ({} : HashMap Name Info).insert name info
+      pure { targetDecls := selected, submissionDecls := selected }
 
   -- Run the main SafeVerify check (runs in ReaderT Settings (ReaderT Decls (StateT State IO)))
   let (_, finalState) ← (runSafeVerify.run settings |>.run decls |>.run {})
@@ -431,6 +441,7 @@ def mainCmd : Cmd := `[Cli|
     "disallow-partial"; "Disallow partial definitions"
     v, "verbose"; "Enable verbose error messages showing detailed type information"
     s, "save" : System.FilePath; "Save output to a JSON file"
+    "declaration" : String; "Audit one actual compiled declaration and its transitive axioms"
 
   ARGS:
     target : System.FilePath; "The target file"

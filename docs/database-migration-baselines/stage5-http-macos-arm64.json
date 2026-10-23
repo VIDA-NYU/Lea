@@ -1,0 +1,182 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-17T04:00:11.289416+00:00",
+  "workload": "synthetic history and SQLite operations; no paid solver or compiler",
+  "environment": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "release": "25.5.0",
+    "python": "3.14.4",
+    "sqlite": "3.53.1"
+  },
+  "measurements": [],
+  "http": {
+    "startup_ms": 1899.37,
+    "health": {
+      "ok": true,
+      "runtime_id": "08a01d2c3e0442f89b86d4b00e358a0f",
+      "ready": true,
+      "restart_supported": false,
+      "lifecycle_state": "ready",
+      "active_runs": 0,
+      "active_operations": 0,
+      "queued_runs": 0,
+      "recovery_capability_version": 1,
+      "capabilities": {
+        "lea_status": {
+          "version": 1,
+          "admission_enabled": true,
+          "independent_checks": false,
+          "source_pause_policy": 1
+        },
+        "overleaf_source_refresh": {
+          "version": 1
+        },
+        "project_library": {
+          "version": 1,
+          "dependency_coordination": true
+        },
+        "reformalization": {
+          "version": 1,
+          "staging": true,
+          "serialization": "project",
+          "automatic_shared_files": true,
+          "admission_enabled": true
+        },
+        "core_projections": {
+          "version": 1,
+          "enrollment": "opt_in",
+          "observation_lifetime_seconds": 120
+        },
+        "commands": {
+          "version": 1,
+          "admission_enabled": true,
+          "synthetic_only": false,
+          "producer_kinds": [
+            "operator",
+            "compatibility"
+          ],
+          "kinds": [
+            "child.stop",
+            "operation.cancel",
+            "operation.dispatch",
+            "run.approve",
+            "run.execute",
+            "run.stop",
+            "runtime.control",
+            "synthetic.control",
+            "synthetic.echo",
+            "synthetic.editor",
+            "synthetic.uncertain",
+            "workspace.execute"
+          ],
+          "external_kinds": [
+            "synthetic.control",
+            "synthetic.echo",
+            "synthetic.editor",
+            "synthetic.uncertain"
+          ],
+          "solver_admission": "local_compatibility_translator",
+          "solver_version": 1,
+          "controls_enabled": true,
+          "workspace_version": 1,
+          "workspace_admission": "local_typed_translator",
+          "workspace_edits_require_base": true
+        }
+      }
+    },
+    "health_read": {
+      "samples": 24,
+      "p50_ms": 9.669,
+      "p95_ms": 32.172,
+      "max_ms": 45.201
+    },
+    "disconnected_observer_does_not_cancel": true,
+    "reconnect_first_frame_matches": true,
+    "parked_session_detail": {
+      "samples": 24,
+      "p50_ms": 258.351,
+      "p95_ms": 331.281,
+      "max_ms": 681.156
+    },
+    "cancellation_acceptance": {
+      "samples": 8,
+      "p50_ms": 30.054,
+      "p95_ms": 79.244,
+      "max_ms": 79.244
+    },
+    "session_list": {
+      "samples": 24,
+      "p50_ms": 31.587,
+      "p95_ms": 197.938,
+      "max_ms": 236.767
+    },
+    "workspace": {
+      "save_acceptance": {
+        "samples": 8,
+        "p50_ms": 14.438,
+        "p95_ms": 39.374,
+        "max_ms": 39.374
+      },
+      "save_observed_completion": {
+        "samples": 8,
+        "p50_ms": 588.361,
+        "p95_ms": 618.54,
+        "max_ms": 618.54
+      },
+      "check_acceptance": {
+        "samples": 8,
+        "p50_ms": 12.474,
+        "p95_ms": 43.678,
+        "max_ms": 43.678
+      },
+      "check_observed_completion": {
+        "samples": 8,
+        "p50_ms": 519.49,
+        "p95_ms": 874.934,
+        "max_ms": 874.934
+      },
+      "failed_lean_verdict_successful_commands": 1,
+      "final_sql_content_matches": true,
+      "compiler": "scripted exact-byte check; no native Lean or paid provider"
+    }
+  },
+  "executor_capability": {
+    "available": true,
+    "backend": "macos-seatbelt",
+    "reason": null
+  },
+  "source_sha256": {
+    "scripts/benchmark-db-boundary.py": "044d4dfecf5e2139b5bdaef721e5cceb0e3ababa06db876cdf39682080910b1c",
+    "apps/lea-standalone/adapter/app/db.py": "8adfa16d04ccd04df24291dd5e776a6ec84ad6225b494dd557694325188d4b99",
+    "apps/lea-standalone/adapter/app/store.py": "6d34f9b62047851877f9ca7efed96b438044e3f15a657f6b9e84fb4f69aa3eed",
+    "apps/lea-standalone/adapter/app/bridge.py": "36cebe335a3fc0e8534a2219debdce1160e34893426f52bf833f51b9ee51ad5a",
+    "apps/lea-standalone/adapter/app/commands.py": "d20c77fedda12da59b5523e26d90fd4104a01bcb641f6f3f5a113926ee44ceb0",
+    "apps/lea-standalone/adapter/app/command_host.py": "381d6fb3d149b6cda19ae42258d20fa0a6a1f37f18d0cb003085e2d410103339",
+    "apps/lea-standalone/adapter/app/run_commands.py": "418d00448d67cb0f09a217f8507e768d0acf5e7445b02327ce7d92a1fd72d56c",
+    "apps/lea-standalone/adapter/app/command_execution.py": "4382bccf1ed98f76135cbc63c9deb785ca2946d1bc5032ba60ac9867accd13ba",
+    "apps/lea-standalone/adapter/app/main.py": "b824e461c047a764e0b18cb917e4e19a571a8d49f0f3c92a669d9122f261f412",
+    "apps/lea-standalone/adapter/app/workspace_commands.py": "d00224ef1b6a5ae84c9bdc4ff07bb952356b3c6b8f186ef8871ef1ef28e25da7",
+    "apps/lea-standalone/adapter/app/workspace_files.py": "eabdb3ab0476ff6d1563dd2b510c36ee2a6e49dbb0b3a18f7ac5359a43e9e1de",
+    "apps/lea-standalone/adapter/app/workspace_effects.py": "6363704f381102d41aeff1745bede89dc11916d66c90c29379b8764322e5fbe3",
+    "apps/lea-standalone/adapter/app/workspace_edits.py": "1bb1bec781d195f97cb85fc1ff53680783edc4671189ceae11297e339ced5a35",
+    "apps/lea-standalone/adapter/app/routes/workspace.py": "132019ee26fd4f7f9771a3d0e89f438bba00c97acf9699a73826a779e7291958",
+    "apps/lea-standalone/adapter/app/routes/projects.py": "178f781702508ae0fe0b9fc2d51233e3166ce7d77281c82d958824f3bc35f239",
+    "apps/lea-standalone/adapter/app/routes/sessions.py": "77e9287fd7daba40af671ddde3a086474ea1a9034f7b0ea807f40f18bb770c4c",
+    "apps/lea-standalone/adapter/app/projects.py": "536ffae779d54a5909e14a6cc5b014bfe2fcffe8768c2783218556e602c17aee",
+    "apps/lea-standalone/adapter/app/uploads.py": "93548faacb47048571b70b4b79954201de78906d00f176da6610b7f506080d00",
+    "apps/lea-standalone/adapter/app/proof_files.py": "6f1846408bac16fd2844aa0bc9f321e78afd65800a41a91f7e319d46b876a2e3",
+    "apps/lea-standalone/adapter/app/proof_evidence.py": "ade37d4851251ce20fd92888052d6ddcd72bf3b583d72a6ad415788e86f3e77a",
+    "apps/lea-standalone/adapter/app/project_dependencies.py": "8d10b92fd1342ef46d42b14c8bdea92c166909d1166e9ce953ced9d8aab0a013",
+    "apps/lea-standalone/adapter/app/reformalization_apply.py": "b5e8118e7d12c3b0289ef5ef5e1140951770e124bcb37f4e8058902e5b1b74db",
+    "apps/lea-standalone/adapter/app/formalization_reviews.py": "5f955f77a97102902a0170604e03397640e950c031c0ace64a2d523fa1d07209",
+    "apps/lea-standalone/adapter/app/reformalization_review.py": "f9203ab54798476a1688128ed33939cb70ca2447dee93c57136229c96f772643",
+    "apps/lea-standalone/adapter/migrations/versions/0043_workspace_commands.py": "1620947348a301126f3fcb0456669e6b8c0f1c191cfc210891f0b4220c85ed94"
+  },
+  "peak_rss_platform_units": 56541184,
+  "limitations": [
+    "Synthetic fixtures do not measure provider/Lean latency or production project throughput.",
+    "Queue storage sweeps do not measure provider or solver service throughput.",
+    "WAL trial changes only the temporary database; current application journal policy is unchanged."
+  ]
+}

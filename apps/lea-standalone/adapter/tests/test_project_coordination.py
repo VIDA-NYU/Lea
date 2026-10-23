@@ -43,7 +43,7 @@ def fixture_project(tmp_path, monkeypatch, title="Old Name"):
 
 
 def rename(project):
-    return routes.update_project_identity_by_slug(project["slug"], ProjectIdentityUpdate(
+    return routes.update_project_identity_by_slug.worker(project["slug"], ProjectIdentityUpdate(
         project_name="New Name", mode="rename-namespace", namespace="Lea.NewName",
         expected_namespace=project["namespace"],
     ))
@@ -82,22 +82,22 @@ def test_reads_and_mutations_defer_for_entire_migration(tmp_path, monkeypatch, b
         try:
             assert entered.wait(5)
             for reader in (
-                lambda: routes.project_target_status_by_slug(project["slug"], declarations="alpha,beta,gamma"),
-                lambda: routes.project_artifacts_by_slug(project["slug"]),
-                lambda: routes.get_project_identity_by_slug(project["slug"]),
-                lambda: routes.get_graph_by_slug(project["slug"]),
+                lambda: routes.project_target_status_by_slug.worker(project["slug"], declarations="alpha,beta,gamma"),
+                lambda: routes.get_graph_by_slug.worker(project["slug"]),
             ):
                 assert_renaming(reader)
+            assert len(routes.project_artifacts_by_slug(project["slug"])["artifacts"]) == 3
+            assert routes.get_project_identity_by_slug(project["slug"])["projectId"] == project["id"]
             assert_renaming(lambda: rename(project))
             assert_renaming(lambda: runs.create_run(RunRequest(message="new run", project_slug=project["slug"])))
-            assert_renaming(lambda: routes.write_project_file(project["id"], FilePut(path="alpha.lean", content="x")))
+            assert_renaming(lambda: routes.write_project_file.worker(project["id"], FilePut(path="alpha.lean", content="x")))
             session = store.list_project_sessions(project["id"])[0]
-            assert_renaming(lambda: sessions.session_detail(session["id"]))
-            assert_renaming(lambda: formalizations.project_formalizations(project["id"]))
+            assert_renaming(lambda: sessions.session_detail.worker(session["id"]))
+            assert_renaming(lambda: formalizations.project_formalizations.worker(project["id"]))
             artifact = store.list_artifacts_for_scope(project["id"])[0]
-            assert_renaming(lambda: formalizations.formalization_current(artifact["formalization_id"]))
-            assert_renaming(lambda: sessions.write_file_session(session["id"], FileWriteRequest(path="alpha.lean", content="x")))
-            assert_renaming(lambda: routes.sync_project_formalizations_by_slug(
+            assert_renaming(lambda: formalizations.formalization_current.worker(artifact["formalization_id"]))
+            assert_renaming(lambda: sessions.write_file_session.worker(session["id"], FileWriteRequest(path="alpha.lean", content="x")))
+            assert_renaming(lambda: routes.sync_project_formalizations_by_slug.worker(
                 project["slug"], routes.FormalizationTargetSyncRequest(targets=[])))
             assert routes.get_project_identity_by_slug(other["slug"])["renameInProgress"] is False
         finally:
@@ -105,7 +105,7 @@ def test_reads_and_mutations_defer_for_entire_migration(tmp_path, monkeypatch, b
         result = pending.result(timeout=5)
     assert result["identity"]["namespaceRevision"] != revision
     assert result["identity"]["renameInProgress"] is False
-    evidence = routes.project_target_status_by_slug(project["slug"], declarations="alpha,beta,gamma")
+    evidence = routes.project_target_status_by_slug.worker(project["slug"], declarations="alpha,beta,gamma")
     assert evidence["namespace_revision"] == result["identity"]["namespaceRevision"]
     assert evidence["project_namespace"] == "Lea.NewName"
     assert len(evidence["targets"]) == 3
@@ -123,7 +123,7 @@ def test_read_spanning_a_complete_rename_cannot_publish(tmp_path, monkeypatch):
         assert release.wait(5)
     monkeypatch.setattr(routes, "_ensure_artifacts_backfilled", paused_backfill)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        pending = pool.submit(routes.project_target_status_by_slug, project["slug"], "alpha,beta,gamma")
+        pending = pool.submit(routes.project_target_status_by_slug.worker, project["slug"], "alpha,beta,gamma")
         try:
             assert entered.wait(5)
             rename(project)
@@ -142,14 +142,14 @@ def test_migration_exception_releases_guard_and_rotates_revision(tmp_path, monke
         rename(project)
     assert coordination.snapshot(project["id"])["renameInProgress"] is False
     assert coordination.snapshot(project["id"])["namespaceRevision"] != revision
-    assert routes.project_target_status_by_slug(project["slug"], declarations="alpha")["targets"][0]["exists"]
+    assert routes.project_target_status_by_slug.worker(project["slug"], declarations="alpha")["targets"][0]["exists"]
 
 
 def test_failed_migration_checks_remain_failures(tmp_path, monkeypatch):
     project, _ = fixture_project(tmp_path, monkeypatch)
     monkeypatch.setattr(routes, "interface_check", lambda _: SimpleNamespace(status="error", detail="type mismatch"))
     assert len(rename(project)["migration"]["failedFiles"]) == 3
-    targets = routes.project_target_status_by_slug(project["slug"], declarations="alpha,beta,gamma")["targets"]
+    targets = routes.project_target_status_by_slug.worker(project["slug"], declarations="alpha,beta,gamma")["targets"]
     assert all(item["validity_status"] == "failing" and item["check_status"] == "error" for item in targets)
 
 
@@ -213,13 +213,16 @@ def test_retryable_read_contract_over_http(tmp_path, monkeypatch):
     identity = client.get(f"{base}/identity").json()
     statuses = client.get(f"{base}/target-status?declarations=alpha,beta,gamma").json()
     assert statuses["namespace_revision"] == identity["namespaceRevision"]
-    with coordination.migration(project["id"]):
-        for endpoint in ("identity", "target-status?declarations=alpha", "artifacts", "graph", "blueprint"):
-            response = client.get(f"{base}/{endpoint}")
-            assert response.status_code == 409
-            assert response.headers["Retry-After"] == "1"
-            assert response.json()["detail"]["error"] == "project_renaming"
-    assert client.get(f"{base}/identity").json()["namespaceRevision"] != identity["namespaceRevision"]
+    from app import peripheral_views
+    peripheral_views.capture('get_graph_by_slug',{'slug':project['slug']})
+    peripheral_views.capture('get_blueprint_by_slug',{'slug':project['slug']})
+    with coordination.migration(project['id']):
+        for endpoint in ('identity','target-status?declarations=alpha','artifacts','graph','blueprint'):
+            assert client.get(f'{base}/{endpoint}').status_code == 200
+    assert client.get(f'{base}/identity').json()['namespaceRevision'] == identity['namespaceRevision']
+    rename(project)
+    assert client.get(f'{base}/identity').json()['namespaceRevision'] > identity['namespaceRevision']
+
 
 
 # This module mocks compiler behavior; bind those mock verdicts to their inputs.

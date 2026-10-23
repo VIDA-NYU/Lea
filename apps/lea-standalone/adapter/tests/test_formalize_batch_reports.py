@@ -249,6 +249,32 @@ def test_restart_marks_unfinished_summary_retryable(tmp_path, monkeypatch):
     assert reports.get("project-one", "formalize-batch-1")["state"] == "narrative_unavailable"
 
 
+def test_batch_narrative_receives_partial_scope_and_document_context(tmp_path, monkeypatch):
+    seed(tmp_path, monkeypatch)
+    assessment = dict(confidence="medium", scope="partial_artifact", summary="The RHS was encoded.",
+        correspondence=dict(scope_summary="Only the complex right-hand sum.",
+            omitted_source_parts=["The coefficient identity."], context_status="incomplete",
+            context_summary="The applicability of the later domain convention is unresolved.", context_evidence=[]))
+    with db.write() as conn:
+        conn.execute("update lea_status_updates set assessment_json=? where id='u-one'", (json.dumps(assessment),))
+    reports.create("project-one", payload())
+    monkeypatch.setattr(reports, "load_config", lambda: SimpleNamespace(model="test-model"))
+
+    def completion(model, system, messages, *args, **kwargs):
+        item = next(item for item in json.loads(messages[0]["content"])["items"] if item["label"] == "target")
+        assert item["assessment_scope"] == "partial_artifact"
+        assert item["correspondence"]["scope_summary"] == "Only the complex right-hand sum."
+        assert item["correspondence"]["omitted_source_parts"] == ["The coefficient identity."]
+        assert item["correspondence"]["context_status"] == "incomplete"
+        assert "do not describe a partial encoding as the complete source result" in system
+        yield TextDelta("The partial encoding omits the coefficient identity.")
+        yield Done(Usage(1, 1), 0)
+
+    monkeypatch.setattr(reports, "stream", completion)
+    reports.generate("formalize-batch-1")
+    assert reports.get("project-one", "formalize-batch-1")["state"] == "ready"
+
+
 def test_project_report_routes_persist_and_read_after_generation(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from app.main import app
@@ -265,7 +291,22 @@ def test_project_report_routes_persist_and_read_after_generation(tmp_path, monke
     with TestClient(app, base_url="http://127.0.0.1:8001") as client:
         created = client.post(root, json=payload())
         assert created.status_code == 200
-        assert created.json()["facts"]["counts"]["verified"] == 1
+        assert created.json()['command']['state']=='queued'
+        # HTTP lifespan is SQL-only. Start the private executor explicitly in
+        # this embedded domain fixture; real process separation is tested apart.
+        from app.routes import formalize_batch_reports as private_report_routes
+        from app import command_host
+        command_host.start()
+        import time
+        command_id=created.json()['command']['id']
+        deadline=time.monotonic()+15
+        while True:
+            result=client.get('/api/workspace/commands/'+command_id).json()['command']
+            if result['state'] in {'succeeded','failed'}:break
+            assert time.monotonic()<deadline,result
+            time.sleep(.05)
+        assert result['state']=='succeeded',result
+        assert result['result']['facts']['counts']['verified']==1
         assert client.post(root, json=payload()).status_code == 200
         listed = client.get(root).json()
         assert listed["reports"][0]["batch_id"] == "formalize-batch-1"

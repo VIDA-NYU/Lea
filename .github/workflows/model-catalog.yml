@@ -1,0 +1,60 @@
+name: Model catalog maintenance
+on:
+  schedule:
+    - cron: '17 9 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+concurrency:
+  group: model-catalog-maintenance
+  cancel-in-progress: false
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.14'
+      - name: Refresh bundled capability data
+        run: python scripts/refresh-model-snapshot.py
+      - name: Check LiteLLM updates
+        run: |
+          uv lock --upgrade-package litellm --directory apps/lea-standalone/adapter
+          uv lock --upgrade-package litellm --directory apps/lea-standalone/prover
+      - run: npm ci
+      - run: uv sync --frozen --directory apps/lea-standalone/adapter
+      - name: Catalog regressions
+        env:
+          LITELLM_LOCAL_MODEL_COST_MAP: 'true'
+          LEA_MODEL_CATALOG_OFFLINE: 'true'
+        run: |
+          python -m unittest discover -s tests/local_preparation -p test_model_catalog_snapshot.py
+          cd apps/lea-standalone/adapter
+          .venv/bin/python -m pytest tests/test_model_catalog.py tests/test_model_routing.py tests/test_settings.py tests/test_checkpoint_continuation.py
+          cd ../../..
+          node --test apps/overleaf-extension/tests/modelPicker.test.mjs apps/lea-standalone/src/app/modelCatalog.test.mjs
+          npm run typecheck -w apps/lea-standalone
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          branch: codex/model-catalog-maintenance
+          title: Refresh model catalog and provider compatibility metadata
+          commit-message: Refresh shared model snapshot and LiteLLM locks
+          body: |
+            Updates the shared offline model snapshot from public capability metadata.
+            Weekly runs also check LiteLLM updates for both lockfiles. Runtime catalogs
+            continue to refresh independently without waiting for this change.
+            Catalog, routing, settings, picker regressions and TypeScript checks passed.
+          add-paths: |
+            packages/lea-model-catalog/models.json
+            apps/lea-standalone/adapter/uv.lock
+            apps/lea-standalone/prover/uv.lock

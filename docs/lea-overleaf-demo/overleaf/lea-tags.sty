@@ -1,0 +1,82 @@
+% lea-tags.sty
+%
+% Invisible LaTeX commands that mark a theorem, lemma, proposition,
+% corollary, or definition for the Lea Overleaf extension, without requiring
+% the enclosing environment to have a recognized name (theorem, lemma, ...).
+%
+% Each command takes a metadata argument (which may be empty and is never
+% typeset) and an optional second argument: the statement
+% itself. If you supply the second argument, it IS typeset (so it renders
+% normally in the PDF) and no enclosing environment is needed at all:
+%
+%   \leatheorem{uses={right_triangle}}
+%   {In a right triangle, the square of the hypotenuse equals the sum of
+%   the squares of the other two sides.}
+%
+% If you omit it, the command typesets nothing and the statement is taken
+% from the smallest enclosing LaTeX environment instead:
+%
+%   \begin{claim}\label{clm:foo}
+%   \leatheorem{uses={bar}, context={Treat foo as a Nat predicate.}}
+%   Statement text...
+%   \end{claim}
+%
+% `claim` does not need to be theorem/lemma/proposition/corollary/definition
+% -- any \begin{...}...\end{...} environment works, because the tag itself
+% states what kind of target it is. Either way, LaTeX still parses both
+% arguments as balanced groups, which is what gives you a real compile
+% error if the metadata is malformed (e.g. an unbalanced brace in
+% context={...}), instead of a silently unrecognized marker.
+%
+% See docs/FEATURE-overleaf-inline-lea-tags.md in the lea-ecosystem repo for
+% the full design and the metadata field reference (label, uses, context,
+% kind).
+%
+% Caveat for the standalone (two-argument) form: a tag with no second
+% argument, immediately followed by an unrelated standalone {...} group with
+% nothing but whitespace between them, WILL have that group absorbed as its
+% body -- this matches ordinary TeX argument scanning, not a bug in this
+% package. Avoid that adjacency if you don't intend a body argument.
+%
+% If you don't want a second project file, the extension's options page can
+% copy this same set of command definitions (minus the two lines below) as
+% a paste-into-your-preamble snippet instead of \usepackage{lea-tags}.
+%
+% Finally, `leacode` is a code-block variant of the tags above: its body is
+% typeset verbatim as a Lean code listing (via the `listings` package) instead
+% of as prose, and that same code text is what gets sent to Lea -- exactly as
+% the other tags' statements are. Its required metadata argument may be empty
+% (write {}); it is never typeset, only read by the extension:
+%
+%   \begin{leacode}{uses={my_lemma}}
+%   theorem add_zero (n : Nat) : n + 0 = n := by simp
+%   \end{leacode}
+%
+% Like the generic \lea{...} command, `kind=` is honored (default: theorem).
+
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{lea-tags}[2026/07/07 v0.3 Lea inline formalization tags]
+\RequirePackage{xparse}
+\RequirePackage{listings}
+
+% Generic form: caller states kind= explicitly, e.g.
+%   \lea{kind=theorem, label=foo, uses={bar}, context={...}}
+%   \lea{kind=definition, label=foo, context={...}}
+\NewDocumentCommand{\lea}{m g}{\IfValueT{#2}{#2}}
+
+% Named convenience wrappers, equivalent to \lea{kind=...,<args>}.
+\NewDocumentCommand{\leatheorem}{m g}{\IfValueT{#2}{#2}}
+\NewDocumentCommand{\lealemma}{m g}{\IfValueT{#2}{#2}}
+\NewDocumentCommand{\leaproposition}{m g}{\IfValueT{#2}{#2}}
+\NewDocumentCommand{\leacorollary}{m g}{\IfValueT{#2}{#2}}
+\NewDocumentCommand{\leadefinition}{m g}{\IfValueT{#2}{#2}}
+
+% Code-block form: renders its body verbatim as a Lean listing. The one
+% required argument (#1) is the usual metadata argument -- it is consumed but
+% never typeset, so it stays invisible in the PDF just like the tag commands'
+% metadata argument does. The body is read verbatim by `listings`, so Lean's
+% own characters (_ \ { } -> ...) survive untouched.
+\lstnewenvironment{leacode}[1]{%
+  \lstset{basicstyle=\ttfamily\small,breaklines=true,columns=fullflexible,%
+    keepspaces=true,showstringspaces=false,frame=none}%
+}{}

@@ -3,10 +3,11 @@ import asyncio
 import hashlib
 from dataclasses import replace
 from queue import Queue
+from published_source_fixtures import publish_for
 
 import pytest
 from fastapi import HTTPException
-from app import bridge, db, lea_status, lea_status_store, overleaf_source, store, uploads
+from app import bridge, commands, db, lea_status, lea_status_store, overleaf_source, run_commands, store, uploads
 from app.config import LeaConfig
 from app.routes import runs
 from lea import agent
@@ -35,9 +36,7 @@ def target(tmp_path, monkeypatch):
 
 
 def refresh(original, source=None, **kwargs):
-    reference = overleaf_source.new_request(original["formalization"]["id"])
-    overleaf_source.respond(reference, source or bundle(), document_id="doc", **kwargs)
-    return reference
+    return publish_for(original['formalization']['id'],source or bundle(),**kwargs)
 
 
 def chat(original, reference=None, **kwargs):
@@ -45,57 +44,51 @@ def chat(original, reference=None, **kwargs):
         focus_formalization_id=original["formalization"]["id"], source_context_ref=reference, **kwargs)
 
 
-def test_prepare_waits_for_matching_extension_response_without_a_run(target):
-    original, _ = target
-    async def drive():
-        task = asyncio.create_task(overleaf_source.prepare(original["formalization"]["id"]))
-        await asyncio.sleep(0)
-        pending = overleaf_source.pending()
-        assert pending == [dict(request_id=pending[0]["request_id"],
-            formalization_id=original["formalization"]["id"], overleafProjectId="doc",
-            targetKind="theorem", targetLabel="target")]
-        overleaf_source.respond(pending[0]["request_id"], bundle(), document_id="doc")
-        result = await task
-        assert result["source_context_ref"] == pending[0]["request_id"]
-        assert result["source_bundle_hash"] == bundle()["bundleHash"]
-    asyncio.run(drive())
+def claim_run(run_id):
+    """Source materialization runs under the same ownership as the real worker."""
+    import json
+    epoch = commands.start_worker("handoff-test-worker")
+    run_commands.ensure_run(run_id)
+    while token := commands.claim("handoff-test-worker", epoch, "compute", kinds={"run.execute"}):
+        selected = json.loads(token["payload_json"])["run_id"]
+        if selected == run_id:
+            return token
+        # The fixture's original run was already cancelled before this follow-up.
+        assert store.get_run(selected)["status"] not in {"pending", "running"}
+        commands.complete(token, {"run_id": selected, "already_terminal": True})
+    pytest.fail("The admitted run has no execution command")
+
+
+def test_prepare_looks_up_published_source_without_browser_or_run(target):
+    original,_=target
+    with pytest.raises(ValueError,match='No published source'):
+        asyncio.run(overleaf_source.prepare(original['formalization']['id']))
+    ref=refresh(original)
+    assert asyncio.run(overleaf_source.prepare(original['formalization']['id']))['source_context_ref']==ref
     with db.connect() as conn:
-        assert conn.execute("select count(*) from runs").fetchone()[0] == 1
+        assert conn.execute('select count(*) from runs').fetchone()[0]==1
+        assert conn.execute('select count(*) from overleaf_source_requests').fetchone()[0]==0
 
 
-@pytest.mark.parametrize("problem", ["document", "target", "hash", "expired"])
-def test_bad_response_never_becomes_source(target, problem):
-    original, _ = target
-    reference = overleaf_source.new_request(original["formalization"]["id"])
-    source = bundle()
-    if problem == "target":
-        source["targetKey"] = "other"
+@pytest.mark.parametrize('problem',['document','target','hash','expired'])
+def test_bad_publication_never_becomes_source(target,problem):
+    from app import source_publications as source
+    original,_=target
+    value=bundle()
+    source.publisher(source.PublisherRequest(document_id='doc',client_id='fixture'))
+    document='other' if problem=='document' else 'doc'
+    if problem=='target':
+        value['targetKey']='other'
         from app.source_context import source_hash
-        source["bundleHash"] = source_hash(source)
-        source["sourceIdentityHash"] = source_hash(source, identity=True)
-    if problem == "hash": source["proof"] = "changed without hashing"
-    if problem == "expired":
-        with db.write() as conn:
-            conn.execute("update overleaf_source_requests set expires_at = '2000' where id = ?", (reference,))
-    with pytest.raises(ValueError):
-        overleaf_source.respond(reference, source, document_id="other" if problem == "document" else "doc")
-    with db.connect() as conn:
-        assert conn.execute("select state from overleaf_source_requests where id = ?", (reference,)).fetchone()[0] == "pending"
-
-
-def test_acquisition_error_and_timeout_leave_no_chat_run(target, monkeypatch):
-    original, _ = target
-    async def unavailable():
-        task = asyncio.create_task(overleaf_source.prepare(original["formalization"]["id"]))
-        await asyncio.sleep(0)
-        request = overleaf_source.pending()[0]
-        overleaf_source.respond(request["request_id"], None, "Target was deleted.", "doc")
-        with pytest.raises(ValueError, match="deleted"): await task
-    asyncio.run(unavailable())
-    monkeypatch.setattr(overleaf_source, "REFRESH_SECONDS", 0.01)
-    with pytest.raises(TimeoutError):
-        asyncio.run(overleaf_source.prepare(original["formalization"]["id"]))
-    assert overleaf_source.pending() == []
+        value['bundleHash']=source_hash(value)
+        value['sourceIdentityHash']=source_hash(value,identity=True)
+    if problem=='hash':value['proof']='changed without hashing'
+    if problem=='expired':
+        with db.write() as conn:conn.execute("update source_publishers set lease_until='2000'")
+    with pytest.raises((HTTPException,ValueError)):
+        source.publish(source.PublicationRequest(document_id=document,client_id='fixture',generation=1,sequence=1,
+            formalization_id=original['formalization']['id'],source_bundle=value))
+    with db.connect() as conn:assert conn.execute('select count(*) from source_publications').fetchone()[0]==0
 
 
 def test_chat_admits_frozen_context_and_replays_after_reference_expiry(target):
@@ -109,7 +102,7 @@ def test_chat_admits_frozen_context_and_replays_after_reference_expiry(target):
     from app.source_context import validate_source
     assert lea_status_store.context(row["id"])["source_bundle"] == validate_source(bundle())
     with db.write() as conn:
-        conn.execute("update overleaf_source_requests set expires_at = '2000' where id = ?", (reference,))
+        conn.execute("update source_publishers set lease_until='2000' where document_id='doc'")
     assert runs.create_run(request)["run_id"] == first["run_id"]
 
 
@@ -121,38 +114,70 @@ def test_newer_source_rejects_old_snapshot_at_admission_and_dispatch(target, mon
     with pytest.raises(HTTPException) as error:
         runs.create_run(chat(original, reference))
     assert error.value.status_code == 409
-    with pytest.raises(ValueError, match="changed before execution"):
+    token = claim_run(admitted["run_id"])
+    with run_commands.executing(token), pytest.raises(ValueError, match="changed"):
         overleaf_source.validate_run(admitted["run_id"], cfg.lea_root / "workspace" / "proofs")
     monkeypatch.setattr(bridge, "run_events", lambda *_args, **_kwargs: pytest.fail("Stale source must never reach the model"))
     bridge.run_lea(bridge.RunnerContext(session_id=admitted["session_id"], run_id=admitted["run_id"],
-        task="Inspect", config=cfg, events=Queue(), purpose="overleaf_continuation"))
+        task="Inspect", config=cfg, events=Queue(), purpose="overleaf_continuation", command_token=token))
     row = store.get_run(admitted["run_id"])
     assert row["status"] == "failed" and row["stop_reason"] == "source_changed"
     assert row["cost_usd"] == 0 and row["usage_status"] == "final"
     assert lea_status_store.context(admitted["run_id"])["source_bundle"]["proof"] == "By triviality."
 
 
-def test_mirror_change_rejects_snapshot_even_when_target_identity_is_same(target):
-    original, cfg = target
-    project = store.create_project("handoff-project", "Handoff project", "Lea.Handoff")
-    with db.write() as conn:
-        conn.execute("update formalizations set project_id = ?, loose_session_id = null where id = ?", (project["id"], original["formalization"]["id"]))
-    files = {"main.tex": "Current statement\r\nand proof\r\n", "defs.tex": "dependency"}
-    base = uploads.overleaf_dir(project, cfg.lea_root / "workspace" / "proofs")
-    base.mkdir(parents=True)
-    for path, content in files.items():
-        (base / path).write_bytes(content.encode())
-    source = bundle()
-    source["mirror"] = dict(revision="revision", mirroredFileCount=2, verified=True)
-    from app.source_context import source_hash
-    source["bundleHash"] = source_hash(source)
-    hashes = {path: hashlib.sha256(content.encode()).hexdigest() for path, content in files.items()}
-    reference = refresh(original, source, mirrored_files=hashes)
+def test_mirror_disk_change_does_not_affect_sql_source_admission(target):
+    original,cfg=target
+    ref=refresh(original,files={'main.tex':'published bytes'})
+    (cfg.lea_root/'external.tex').write_text('external change')
     with db.connect() as conn:
-        assert overleaf_source.resolve(conn, reference, original["formalization"]["id"])["bundleHash"] == source["bundleHash"]
-    (base / "defs.tex").write_text("edited dependency")
-    with db.connect() as conn, pytest.raises(ValueError, match="changed"):
-        overleaf_source.resolve(conn, reference, original["formalization"]["id"])
+        assert overleaf_source.resolve(conn,ref,original['formalization']['id'])['bundleHash']==bundle()['bundleHash']
+    refresh(original,files={'main.tex':'changed published bytes'})
+    with db.connect() as conn,pytest.raises(ValueError,match='changed'):
+        overleaf_source.resolve(conn,ref,original['formalization']['id'])
+
+
+def project_retry(target, monkeypatch):
+    from app import projects, reformalizations as ops, runregistry, runtime
+    from app.routes import projects as project_routes
+    from lea import execution
+
+    original, cfg = target
+    proofs = cfg.lea_root / "workspace" / "proofs"
+    project = projects.ensure_project("doc", proofs, title="Study", namespace="Lea.Study")
+    monkeypatch.setattr(project_routes, "load_config", lambda: cfg)
+    monkeypatch.setattr(execution, "capability", lambda: {"available": True})
+    monkeypatch.setattr(runtime, "accepting_work", lambda: True)
+    monkeypatch.setattr(runregistry, "registry", runregistry.RunRegistry(max_concurrent=2))
+    with db.write() as conn:
+        conn.execute("update formalizations set project_id=?,loose_session_id=null where id=?",
+                     (project["id"], original["formalization"]["id"]))
+        conn.execute("update sessions set project_id=? where id=?", (project["id"], original["session"]["id"]))
+    repo = projects.project_repo_dir(project, proofs)
+    (repo / "target.lean").write_text("namespace Lea.Study\ntheorem target : True := by trivial\nend Lea.Study\n")
+    (repo / "dependent.lean").write_text("import Lea.Study.target\nnamespace Lea.Study\ntheorem dependent : True := target\nend Lea.Study\n")
+    store.link_formalization_file(original["formalization"]["id"], "target.lean", "primary")
+    uploads.sync_overleaf_tex(project, proofs, [{"path": "main.tex", "content": "Original source"}], commit=False)
+    reference=refresh(original,files={'main.tex':'Original source'})
+    op = ops.enqueue(dict(message="Retry target", project_slug="doc", purpose="overleaf_solver",source_context_ref=reference,
+        session_id=original["session"]["id"], focus_formalization_id=original["formalization"]["id"]), project["id"])
+    return original, project, repo, op
+
+
+@pytest.mark.parametrize('phase',['active','applying'])
+def test_source_archive_publication_remains_sql_only_during_reserved_work(target,monkeypatch,phase):
+    from app import reformalizations as ops
+    from app.routes import projects as project_routes
+    original,project,repo,op=project_retry(target,monkeypatch)
+    ops.update(op['id'],phase)
+    before=(repo/'.lea/files/overleaf/main.tex').read_text()
+    result=project_routes.mirror_overleaf_tex('doc',project_routes.MirrorRequest(files=[project_routes.MirrorFile(path='main.tex',content='Published while reserved')]))
+    assert result['materialization']=='deferred_until_worker_binding'
+    assert (repo/'.lea/files/overleaf/main.tex').read_text()==before
+    reference=refresh(original,files={'main.tex':'New immutable source'})
+    with db.connect() as conn:assert conn.execute('select id from source_publications where id=?',(reference,)).fetchone()
+    assert ops.actor() is None
+    ops.cancel(op['id'])
 
 
 def test_interactive_tool_publication_is_durable_and_approval_gate_is_preserved(target, monkeypatch):
@@ -170,7 +195,8 @@ def test_interactive_tool_publication_is_durable_and_approval_gate_is_preserved(
             result["session_id"], "test", Usage(1, 1), 0, {})
     monkeypatch.setattr(bridge, "run_events", fake)
     bridge.run_lea(bridge.RunnerContext(session_id=result["session_id"], run_id=result["run_id"],
-        task="Inspect the missing case", config=cfg, events=events, purpose="overleaf_continuation"))
+        task="Inspect the missing case", config=cfg, events=events, purpose="overleaf_continuation",
+        command_token=claim_run(result["run_id"])))
     assert len(lea_status.history(original["formalization"]["id"])["updates"]) == 1
     assert any(event["type"] == "lea_status_updated" for event in list(events.queue))
 

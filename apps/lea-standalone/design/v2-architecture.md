@@ -1,5 +1,10 @@
 # LeaUI v2 — Backend Architecture & Decisions
 
+> Historical decisions. The [database-mediated specification](../../../docs/FEATURE-database-mediated-lea.md)
+> and [Stage 8 runtime guide](../../../docs/STAGE8-process-boundary.md) supersede
+> D1's web-process execution and D3/D7's filesystem/Git-only content authority.
+> SQLite owns UI content and results; a separate worker owns workspace execution.
+
 > Status: **living doc.** This is the source of truth for the **backend + data**
 > design. Scope is **v2 core**; the **projects** feature (Instructions, Memory,
 > Files) is deferred to **v2.1**. UI design lives separately in

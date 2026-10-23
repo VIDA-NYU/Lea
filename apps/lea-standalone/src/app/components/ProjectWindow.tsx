@@ -11,6 +11,7 @@ import { FilesCard } from './FilesCard';
 import { BlueprintTab } from './BlueprintTab';
 import { FilesystemTab } from './FilesystemTab';
 import { SkillsMcpTab } from './SkillsMcpTab';
+import { useProofSession } from '../stores/proofSession';
 
 type Tab = 'overview' | 'formalizations' | 'blueprint' | 'filesystem' | 'skills-mcp';
 
@@ -36,13 +37,14 @@ export function ProjectWindow({
   project: ProjectDetail;
   onBack: () => void;
   onStartProof: (message: string) => Promise<void> | void;
-  onStartFormalization: (formalization: Formalization, message?: string) => Promise<void> | void;
+  onStartFormalization: (formalization: Formalization, message?: string, reformalize?: boolean) => Promise<void> | void;
   onOpenSession: (sessionId: string) => void;
 }) {
   const [tab, setTab] = useState<Tab>('overview');
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [importSignal, setImportSignal] = useState(0);
+  const observationToken = useProofSession(state => state.formalizationRefreshToken);
   const allSessions = project.sessions ?? [];
   // ROOTS only. A sub-agent is a session row (`parent_id` = the coordinator that
   // spawned it), and the project payload returns children alongside roots so callers
@@ -59,7 +61,7 @@ export function ProjectWindow({
   const docSignal = allSessions.reduce(
     (max, s) => Math.max(max, Date.parse(s.updated_at) || 0),
     0,
-  ) + importSignal;
+  ) + importSignal + observationToken;
 
   const submit = async () => {
     const message = draft.trim();
@@ -207,7 +209,7 @@ function FormalizationsTab({
   projectId: string;
   refreshSignal: number;
   onOpenSession: (sessionId: string) => void;
-  onStartFormalization: (formalization: Formalization) => Promise<void> | void;
+  onStartFormalization: (formalization: Formalization, message?: string, reformalize?: boolean) => Promise<void> | void;
 }) {
   const [items, setItems] = useState<Formalization[]>([]);
   const [summary, setSummary] = useState<Record<string, number>>({});
@@ -216,13 +218,16 @@ function FormalizationsTab({
   const [error, setError] = useState<string>();
 
   useEffect(() => {
+    let current = true;
     listProjectFormalizations(projectId)
       .then((result) => {
+        if (!current) return;
         setItems(result.formalizations);
         setSummary(result.summary);
         setError(undefined);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+      .catch((err) => { if (current) setError(err instanceof Error ? err.message : String(err)); });
+    return () => { current = false; };
   }, [projectId, refreshSignal]);
 
   const filtered = useMemo(() => {
@@ -246,7 +251,6 @@ function FormalizationsTab({
         {!!summary.proved && <span className="ok">{summary.proved} proved</span>}
         {!!summary.failing && <span className="fail">{summary.failing} failing</span>}
         {!!summary.stale && <span className="warn">{summary.stale} stale</span>}
-        {!!summary.needs_review && <span className="warn">{summary.needs_review} Needs review</span>}
         {!!summary.active_run_count && <span>{summary.active_run_count} active</span>}
       </div>
       <div className="pw-form-controls">
@@ -257,7 +261,7 @@ function FormalizationsTab({
         />
         <select value={status} onChange={(event) => setStatus(event.target.value)}>
           <option value="all">All statuses</option>
-          {['draft', 'planned', 'unchecked', 'failing', 'proved', 'defined', 'disproved', 'needs_review', 'stale']
+          {['draft', 'planned', 'unchecked', 'failing', 'proved', 'defined', 'disproved', 'stale']
             .map((value) => <option key={value} value={value}>{value.replace('_', ' ')}</option>)}
         </select>
       </div>
@@ -285,9 +289,8 @@ function FormalizationsTab({
                 </span>
                 <span className="pw-form-state" title={item.validity_reason || undefined}>
                   {item.activity.status !== 'idle'
-                    ? `${item.activity.status} · ${item.validity_status === 'needs_review' ? 'Needs review' : item.validity_status}`
-                    : item.validity_status === 'needs_review' ? 'Needs review' : item.validity_status}
-                  {item.validity_status === 'needs_review' && item.check_current ? ' · Lean check passed' : ''}
+                    ? `${item.activity.status} · ${item.validity_status}`
+                    : item.validity_status}
                 </span>
               </button>
               <button
@@ -296,6 +299,10 @@ function FormalizationsTab({
               >
                 New conversation
               </button>
+              {item.primary_path && <button className="pw-form-continue" type="button"
+                onClick={() => onStartFormalization(item, `Reformalize ${item.declaration_name || item.display_title} from the current source. Preserve existing work.`, true)}>
+                Re-formalize
+              </button>}
             </li>
           );
         })}
@@ -308,7 +315,6 @@ function formalizationDotClass(item: Formalization): string {
   if (item.activity.status !== 'idle') return 'run';
   if (item.validity_status === 'proved' || item.validity_status === 'defined') return 'ok';
   if (item.validity_status === 'failing') return 'fail';
-  if (item.validity_status === 'needs_review') return 'warn';
   return 'idle';
 }
 
@@ -316,6 +322,6 @@ function sessionDotClass(status: SessionStatus | string): string {
   if (status === 'ok' || status === 'proved' || status === 'defined') return 'ok';
   if (status === 'error') return 'fail';
   if (status === 'running' || status === 'disproved') return 'run';
-  if (status === 'needs_review') return 'warn';
+  if (status === 'needs_review') return 'idle';
   return 'idle';
 }

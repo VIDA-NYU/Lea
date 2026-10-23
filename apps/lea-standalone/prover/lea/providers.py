@@ -16,6 +16,7 @@ Anthropic-family models (any route) get prompt-cache breakpoints — see
 import json
 import math
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import Any
@@ -90,6 +91,21 @@ class Done:
 
 
 _WARNED_MODELS: set[str] = set()
+_CATALOG_RESPONSES_MODELS: frozenset[str] = frozenset()
+
+
+def set_catalog_models(models: list[dict]) -> None:
+    """Atomically replace discovery hints, without touching LiteLLM's globals.
+
+    Already built requests retain their route and parameters. These hints let
+    new, non-GPT-named OpenAI models use their declared Responses protocol.
+    """
+    global _CATALOG_RESPONSES_MODELS
+    _CATALOG_RESPONSES_MODELS = frozenset(
+        m["value"].removeprefix("openai/").removeprefix("responses/")
+        for m in models if m.get("provider") == "openai" and m.get("mode") == "responses"
+        and m.get("compatibility") != "unsupported"
+    )
 
 
 def _to_openai_tools(tools: list) -> list:
@@ -156,6 +172,26 @@ def _is_openai_gpt_5_6(model: str) -> bool:
     if normalized.startswith("responses/"):
         normalized = normalized.removeprefix("responses/")
     return normalized == "gpt-5.6" or normalized.startswith("gpt-5.6-")
+
+
+def _uses_openai_responses(model: str) -> bool:
+    """Direct OpenAI Responses routes, including future IDs absent from LiteLLM.
+
+    No global LiteLLM metadata is changed by catalog refreshes. The route is
+    resolved once for each call, and reasoning items stay in Lea's transcript.
+    """
+    bare = model.removeprefix("openai/")
+    if "/" in bare and not bare.startswith("responses/"):
+        return False
+    if bare.startswith("responses/"):
+        return True
+    if bare in _CATALOG_RESPONSES_MODELS:
+        return True
+    spec = getattr(litellm, "model_cost", {}).get(bare, {})
+    if spec.get("mode") == "responses" and spec.get("litellm_provider") == "openai":
+        return True
+    match = re.match(r"^gpt-(\d+)(?:\.(\d+))?(?:-|$)", bare)
+    return bool(match and (int(match[1]), int(match[2] or 0)) >= (5, 6))
 
 
 # --- Portkey AI gateway -------------------------------------------------------
@@ -332,6 +368,12 @@ def _litellm_model(model: str, *, portkey_native: bool = False) -> str:
         return f"openai/{portkey_model_name(model)}"
     if _is_openai_gpt_5_6(model) and "/" not in model:
         return f"openai/{model}"
+    if _uses_openai_responses(model) and not _is_openai_gpt_5_6(model):
+        return "openai/responses/" + model.removeprefix("openai/").removeprefix("responses/")
+    if model.startswith("gpt-") or re.match(r"^o\d", model):
+        return f"openai/{model}"
+    if model.startswith("claude-"):
+        return f"anthropic/{model}"
     return model
 
 
@@ -384,22 +426,23 @@ def _with_cache_breakpoints(oai_messages: list) -> list:
     return out
 
 
-def _gpt_5_6_kwargs(tools: list, model_kwargs: dict) -> dict:
-    """Return the smallest Responses-compatible request policy for GPT-5.6.
+def _responses_kwargs(tools: list, model_kwargs: dict, *, default_effort: str | None = None) -> dict:
+    """Stateless Responses policy; retain GPT-5.6's historical medium effort.
 
-    Lea's flagship formalization route historically used GPT-5.5's effective
-    ``medium`` reasoning.  Making that explicit both preserves the behavior and
-    tells LiteLLM to bridge a tool-bearing GPT-5.6 call to Responses.  Because Lea
-    owns and persists its transcript (rather than a ``previous_response_id``), the
-    encrypted reasoning item is requested for exact manual replay.
+    Other models use their provider default unless the caller selects an effort.
+    New IDs need an explicit per-request allowance with older LiteLLM versions.
     """
     out = dict(model_kwargs)
-    effort = out.setdefault("reasoning_effort", "medium")
-    if effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
-        raise ValueError(
-            "reasoning_effort for GPT-5.6 must be one of "
-            "none, low, medium, high, xhigh, or max"
-        )
+    if default_effort:
+        out.setdefault("reasoning_effort", default_effort)
+    effort = out.get("reasoning_effort")
+    if effort is not None:
+        if effort not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}:
+            raise ValueError("Unsupported reasoning_effort for this Responses request")
+        allowed = list(out.get("allowed_openai_params") or [])
+        if "reasoning_effort" not in allowed:
+            allowed.append("reasoning_effort")
+        out["allowed_openai_params"] = allowed
     if tools:
         # LiteLLM's completion() signature is Chat-shaped.  Responses-only
         # parameters passed at the top level are filtered before its bridge in
@@ -407,7 +450,7 @@ def _gpt_5_6_kwargs(tools: list, model_kwargs: dict) -> dict:
         # transformation promotes these supported keys into the Responses request.
         raw_extra_body = out.get("extra_body") or {}
         if not isinstance(raw_extra_body, dict):
-            raise ValueError("extra_body must be an object when using GPT-5.6 tools")
+            raise ValueError("extra_body must be an object when using Responses tools")
         extra_body = dict(raw_extra_body)
         if "store" in out:
             extra_body["store"] = out.pop("store")
@@ -418,7 +461,7 @@ def _gpt_5_6_kwargs(tools: list, model_kwargs: dict) -> dict:
         else:
             include = extra_body.get("include", [])
         if not isinstance(include, list):
-            raise ValueError("include must be a list when using GPT-5.6 tools")
+            raise ValueError("include must be a list when using Responses tools")
         if "reasoning.encrypted_content" not in include:
             # Copy a caller-owned list before extending it.
             include = [*include, "reasoning.encrypted_content"]
@@ -621,14 +664,14 @@ def stream(model: str, system: str, messages: list, tools: list,
                 file=sys.stderr,
             )
 
-    is_gpt_5_6 = _is_openai_gpt_5_6(model)
-    if is_gpt_5_6:
-        model_kwargs = _gpt_5_6_kwargs(tools, model_kwargs)
+    responses = _uses_openai_responses(model)
+    if responses:
+        model_kwargs = _responses_kwargs(tools, model_kwargs, default_effort="medium" if _is_openai_gpt_5_6(model) else None)
     if portkey:
         model_kwargs = _portkey_kwargs(model_kwargs)
     call = _build_call(
         model, _litellm_model(model), system, messages, tools, model_kwargs,
-        include_reasoning=is_gpt_5_6,
+        include_reasoning=responses,
         # Through the gateway's chat-completions translation the breakpoints are
         # dropped from tool results (see _portkey_anthropic_kwargs) — not worth
         # the list-shaped system message it would cost.

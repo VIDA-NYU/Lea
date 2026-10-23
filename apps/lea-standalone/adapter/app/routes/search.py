@@ -9,6 +9,7 @@ load-bearing, not a nicety. The query work lives in `store.search_sessions`
 
 from __future__ import annotations
 
+from ..core_query_dispatch import database_query
 from fastapi import APIRouter
 
 from .. import formalizations, store
@@ -17,6 +18,7 @@ router = APIRouter()
 
 
 @router.get("/api/search")
+@database_query('search')
 def search(q: str = "") -> dict:
     session_hits = [
         {**row, "result_type": "session"}

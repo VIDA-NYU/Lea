@@ -34,6 +34,12 @@ def load_overrides_checked() -> tuple[dict[str, dict], str | None]:
     A file that simply doesn't exist is NOT a failure: no overrides is the default state.
     Only an unreadable or malformed one is reported.
     """
+    from . import db
+    if _OVERRIDES_PATH==ROOT/'config'/'subagent-overrides.json' and db.DB_PATH.exists():
+        with db.connect() as conn:
+            if conn.execute("select 1 from sqlite_master where type='table' and name='application_settings'").fetchone():
+                row=conn.execute("select payload from application_settings where id='subagent_overrides'").fetchone()
+                if row:return json.loads(row[0]),None
     try:
         raw = _OVERRIDES_PATH.read_text()
     except FileNotFoundError:
@@ -97,5 +103,12 @@ def save_override(name: str, override: dict) -> dict:
         everything.pop(name, None)
     # Atomic (S6): a truncate-then-write left every role reset to defaults if it
     # was interrupted, and this file sits beside the secrets one.
-    write_private_text(_OVERRIDES_PATH, json.dumps(everything, indent=2))
+    from . import db
+    if _OVERRIDES_PATH==ROOT/'config'/'subagent-overrides.json' and db.DB_PATH.exists():
+        with db.write() as conn:
+            from .workspace_commands import authorize
+            authorize(conn)
+            conn.execute('insert into application_settings values(?,?,?,?) on conflict(id) do update set payload=excluded.payload,updated_at=excluded.updated_at',
+                ('subagent_overrides',json.dumps(everything),'{"source":"user_command","version":1}',db.utc_now()))
+    else:write_private_text(_OVERRIDES_PATH,json.dumps(everything,indent=2))
     return clean

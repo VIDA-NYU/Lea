@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { listSessions, type SessionSummary } from '../lib/api';
+import { sessionListSnapshot, type SessionSummary } from '../lib/api';
+import { useProjects } from './projects';
 
 /**
  * The sessions store (v2.0.1 R3) — the session list + which one is open.
@@ -10,6 +11,7 @@ import { listSessions, type SessionSummary } from '../lib/api';
  */
 interface SessionsState {
   sessions: SessionSummary[];
+  cursor?: number;
   setSessions: (sessions: SessionSummary[]) => void;
   selectedSessionId?: string;
   setSelectedSessionId: (id?: string) => void;
@@ -18,14 +20,21 @@ interface SessionsState {
   refreshSessions: () => Promise<SessionSummary[]>;
 }
 
+let refreshVersion = 0;
 export const useSessions = create<SessionsState>((set) => ({
   sessions: [],
   setSessions: (sessions) => set({ sessions }),
   selectedSessionId: undefined,
   setSelectedSessionId: (selectedSessionId) => set({ selectedSessionId }),
   refreshSessions: async () => {
-    const loaded = await listSessions();
-    set({ sessions: loaded });
-    return loaded;
+    const version = ++refreshVersion;
+    const snapshot = await sessionListSnapshot();
+    // Request ownership handles delayed responses. A fresh server snapshot may
+    // legitimately have a lower watermark after restoring a database backup.
+    if (version === refreshVersion) {
+      set(snapshot);
+      if (snapshot.projects) useProjects.getState().applySnapshot(snapshot.projects, snapshot.sessions);
+    }
+    return snapshot.sessions;
   },
 }));

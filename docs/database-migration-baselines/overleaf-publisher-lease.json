@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T02:11:11.056301+00:00",
+  "scope": "Publisher contention development fix. Runtime inspection was read-only. Regression qualification uses isolated databases, SQL-style HTTP fixtures and the shipped browser code; no live commands or provider calls were submitted.",
+  "runtime_baseline": {
+    "captured_at": "2026-10-18T02:03:03.067761+00:00",
+    "publisher_rows": 1,
+    "publisher_generation": 1,
+    "publisher_sequence": 1,
+    "source_publications": 1,
+    "batch_submissions": 0,
+    "lease_until": "2026-10-18T02:03:17.675418+00:00"
+  },
+  "reproduced_failure": {
+    "scenario": "Nine concurrent visible targets lazily initialize their source publisher before the dynamic import resolves.",
+    "distinct_publisher_clients_before_fix": 9,
+    "mock_limitation": "Earlier HTTP fixtures accepted every publisher claimant and did not enforce one document owner.",
+    "before_log_assertion": "one page must not compete with itself for the document lease: 9 !== 1"
+  },
+  "fix": {
+    "shared_initialization": "Assign a shared promise synchronously before awaiting the module; all captures share its single identity, serialization tail and publication sequence.",
+    "server_lease_metadata": "A publisher-conflict response includes the current generation, lease_until and remaining retry_after_ms. The rejected claim changes no publisher row.",
+    "contention": "Cache one lease conflict per document and suppress additional claims from other targets or manual retry controls until expiry; reset on navigation.",
+    "generation_recovery": "Learn the observed generation while blocked. After expiry, retry its CAS. An already expired generation can be learned and claimed immediately.",
+    "pending_batch": "Treat only structured publisher lease conflicts as temporary preparation failures. Retain the batch intent and display lease waiting, while other source conflicts retain their rejection semantics.",
+    "fencing": "Live ownership checks and generation/sequence CAS are unchanged. Lost ownership clears recent receipts/archive reuse. Both publication response-loss attempts honor lease conflict fencing.",
+    "boundary": "All publication and command admission remains through SQL API endpoints. No direct worker, workspace or editor callback access was introduced."
+  },
+  "validation": {
+    "overleaf_suite": {
+      "tests": 824,
+      "pass": 824,
+      "fail": 0,
+      "skipped": 0
+    },
+    "content_script_vm_cases": 162,
+    "publisher_transport_cases": 14,
+    "stage6_sql_boundary_tests": {
+      "passed": 35
+    },
+    "process_and_handoff_tests": {
+      "passed": 26,
+      "skipped": 1,
+      "skip_reason": "Explicit native confined Lean qualification; no Lean execution changed."
+    },
+    "chromium_cases": {
+      "passed": 2,
+      "nine_target_lease_case": {
+        "distinct_clients": 1,
+        "sources": 9,
+        "publication_sequences": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "business_submissions": 1,
+        "pre_expiry_claim_requests": 1
+      }
+    },
+    "visual_check": "Reviewed the lease-waiting surface at narrow pane width; text and controls fit the existing pane.",
+    "boundary_audit": {
+      "adapter_routes": 179,
+      "companion_dispatch_branches": 27,
+      "result": "pass"
+    },
+    "whitespace_check": "pass",
+    "release_scope": "No new production image or rollback qualification is claimed."
+  },
+  "source_sha256": {
+    "apps/overleaf-extension/extension/content.js": "5549c3e2d6a33ce53ca78cfc77364bdec276cfc0a827eae824151394d9f08930",
+    "apps/overleaf-extension/extension/sourcePublisher.mjs": "0969921b0cc8e8fb919eac11b535ddc30e88059eb13112c8a7c8783c8a707955",
+    "apps/overleaf-extension/tests/contentActions.test.mjs": "132e5eeebfe86892422e676233399408a2f8ec2902a957b47170bb12feb2c52d",
+    "apps/overleaf-extension/tests/databaseTransport.test.mjs": "ae9196f99c2f80625108956939b883ea8302442d57f7f475419de4be81f81187",
+    "apps/lea-standalone/adapter/app/source_publications.py": "e880b68fb31be9a6a4c4e25db35bbc4a051046e257bf3db92f04fe39980bccec",
+    "apps/lea-standalone/adapter/tests/test_stage6_boundary.py": "14e57c723fc3fc30884570494376778de4b34388c8bbb32a2bf4bcd832a9318a",
+    "tests/browser/overleaf-admission.spec.mjs": "b38f04226ed95248a3d68facefe7751480e615b96501c40e0a3e4bc11e59c8b8"
+  }
+}

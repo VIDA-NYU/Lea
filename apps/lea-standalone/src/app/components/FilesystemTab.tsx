@@ -16,6 +16,7 @@ import {
   getProjectTree,
   getSettings,
   projectExportUrl,
+  downloadWorkspaceExport,
   pushProject,
   putProjectFile,
   setProjectRemote,
@@ -176,7 +177,7 @@ export function FilesystemTab({
         >
           <Github size={13} /> Share
         </button>
-        <a className="fs-export" href={projectExportUrl(projectId)} download title="Download the whole project as a zip">
+        <a className="fs-export" href={projectExportUrl(projectId)} onClick={(event)=>{event.preventDefault();downloadWorkspaceExport(projectExportUrl(projectId)).catch(error=>setTreeError(String(error)));}} title="Download the whole project as a zip">
           <Download size={13} /> Export
         </a>
       </div>
@@ -345,9 +346,14 @@ function FileViewer({
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [check, setCheck] = useState<CheckVerdict>(null);
+  const fileRevision = useRef<string | undefined>(undefined);
+  const fileGeneration = useRef(0);
+  const latestDraft = useRef(draft);
+  latestDraft.current = draft;
 
   useEffect(() => {
     let cancelled = false;
+    fileGeneration.current += 1;
     setLoading(true);
     setEditing(false);
     setCheck(null);
@@ -355,6 +361,7 @@ function FileViewer({
       .then((f) => {
         if (cancelled) return;
         setContent(f.content);
+        fileRevision.current = f.file_revision;
         setBinary(f.binary);
         setError(null);
       })
@@ -369,16 +376,21 @@ function FileViewer({
     if (saving) return;
     setSaving(true);
     setError(null);
+    const generation = fileGeneration.current;
+    const submitted = draft;
     try {
-      const result = await putProjectFile(projectId, path, draft);
-      setContent(draft);
+      const result = await putProjectFile(projectId, path, submitted, fileRevision.current);
+      if (generation !== fileGeneration.current) return;
+      fileRevision.current = result.file_revision;
+      setContent(submitted);
       setCheck(result.check ?? null);
-      setEditing(false);
+      if (latestDraft.current === submitted) setEditing(false);
       onSaved();
     } catch (err) {
+      if (generation !== fileGeneration.current) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSaving(false);
+      if (generation === fileGeneration.current) setSaving(false);
     }
   };
 
@@ -413,7 +425,7 @@ function FileViewer({
         <div className="fs-muted fs-err">{error}</div>
       ) : binary ? (
         <div className="fs-empty">
-          This file isn’t text. <a href={projectExportUrl(projectId)} download>Export the project</a> to get it.
+          This file isn’t text. <a href={projectExportUrl(projectId)} onClick={(event)=>{event.preventDefault();downloadWorkspaceExport(projectExportUrl(projectId)).catch(error=>setError(String(error)));}}>Export the project</a> to get it.
         </div>
       ) : editing ? (
         <div className="fs-editor">

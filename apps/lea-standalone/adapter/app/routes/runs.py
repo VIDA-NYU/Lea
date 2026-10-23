@@ -1,12 +1,13 @@
 """Run endpoints: enqueue, observe over SSE, interrupt, and approve tools.
 
-POST enqueues into the bridge's capacity-aware FIFO dispatcher. GET /events is
-a pure observer: pending runs announce their queue position, live runs replay
-and tail their rejoinable broker, and terminal runs synthesize ``done`` when the
-in-memory broker has already been retired.
+POST commits a run and regulated SQL command together. GET /events is
+a pure SQL observer: pending runs announce their queue position, live runs replay
+and tail committed events, and terminal runs synthesize ``done`` after retention.
 """
 
 from __future__ import annotations
+
+from .. import peripheral_views
 
 import asyncio
 import hashlib
@@ -16,7 +17,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, PlainTextResponse
 from pydantic import BaseModel, StrictBool
 
 from ..config import load_config, permission_tier
@@ -24,9 +25,8 @@ from .. import bridge
 from .. import diagnostics
 from .. import formalizations as formalization_service
 from .. import github_import_service
-from ..bridge import request_stop, request_subagent_stop
+from .. import commands,run_commands
 from .. import projects
-from .. import runbroker
 from .. import runregistry
 from .. import settings as settings_service
 from .. import store
@@ -69,6 +69,8 @@ class NewFormalizationRequest(BaseModel):
 
 class RunRequest(BaseModel):
     message: str
+    artifact_operation: str | None = None
+    source_update_evidence: dict | None = None
     idempotency_key: str | None = None
     timeout_seconds: int | None = None
     session_id: str | None = None
@@ -79,7 +81,8 @@ class RunRequest(BaseModel):
     # Autonomous run (D19): when true the run uses no per-tool approval gate. Its
     # purpose selects the non-interactive prompt: ordinary autonomous work uses the
     # default autoformalizer; Overleaf translation uses overleaf_faithful. Defaults
-    # false, preserving the interactive UI's gated collaborator prompt.
+    # false, preserving the interactive UI's collaborator prompt. Approval policy
+    # is resolved separately; Overleaf-linked chats skip the per-tool gate.
     autonomous: bool = False
     # Project namespace (the Overleaf document slug). When present, a new session is
     # tagged with a project of this slug (created on first use) so per-document usage
@@ -87,6 +90,7 @@ class RunRequest(BaseModel):
     # the interactive UI path, which stays project-less.
     project_slug: str | None = None
     project_title: str | None = None
+    overleaf_project_title: str | None = None
     project_namespace: str | None = None
     # Session origin / providence. 'overleaf' (with `origin_url` = the canonical
     # Overleaf document URL) marks a formalization spawned from the Overleaf
@@ -145,13 +149,18 @@ def _request_cursor(request: Request) -> int:
     Native EventSource reconnects send ``Last-Event-ID``; manual reattach may
     pass ``?since=N``. Otherwise replay the broker from its first event.
     """
+    def bounded(value):
+        return min(int(value), 2**63 - 1) if len(value) <= 19 else 2**63 - 1
+
     last = request.headers.get("last-event-id")
     if last and ":" in last:
         last = last.rsplit(":", 1)[-1]
-    if last and last.isdigit():
-        return int(last)
+    if last and last.isascii() and last.isdigit():
+        return bounded(last)
     since = request.query_params.get("since")
-    return int(since) if since and since.isdigit() else 0
+    if since and ":" in since:
+        since = since.rsplit(":", 1)[-1]
+    return bounded(since) if since and since.isascii() and since.isdigit() else 0
 
 
 def _done_payload(run: dict) -> dict:
@@ -173,36 +182,47 @@ def _done_payload(run: dict) -> dict:
     return payload
 
 
-async def _subscribe(broker: runbroker.RunBroker, cursor: int, attempt_id: str | None = None):
-    """Replay after ``cursor`` and follow a live broker through ``done``."""
+async def _subscribe_durable(run_id: str, cursor: int, attempt_id: str | None):
+    """Replay SQL after broker retirement/restart; observing never starts work."""
+    from starlette.concurrency import run_in_threadpool
+    from .. import observation
     while True:
-        pending = broker.events_after(cursor)
-        for event in pending:
-            cursor = event["seq"]
-            yield sse(event["type"], event["payload"], seq=event["seq"], attempt_id=attempt_id)
-            if event["type"] == "done":
-                return
-        if broker.closed and not broker.events_after(cursor):
-            return
-        await asyncio.sleep(0.08)
-
-
-async def _passive_done(run_id: str):
-    """Settle an observer when the broker was retired just before attachment."""
-    for _ in range(36000):  # ~3h at 0.3s/iter; the client may reconnect sooner
-        current = store.get_run(run_id)
-        if not current:
+        run = await run_in_threadpool(store.get_run, run_id)
+        if not run:
             yield sse("done", {"status": "failed"})
             return
-        if current["status"] not in {"pending", "running"}:
-            yield sse("done", _done_payload(current))
+        if run.get("attempt_id") != attempt_id:
+            attempt_id, cursor = run.get("attempt_id"), 0
+            yield sse("resync", {"run_id": run_id, "attempt_id": attempt_id,
+                "reason": "execution_attempt_changed", "reload": True}, seq=0, attempt_id=attempt_id)
+        try:
+            page = await run_in_threadpool(observation.run_events, run_id, attempt_id, cursor)
+        except observation.RunCursorReset as exc:
+            cursor = exc.floor
+            yield sse("resync", {"run_id": run_id, "session_id": run["session_id"],
+                "attempt_id": attempt_id, "reason": "events_expired", "reload": True,
+                "cursor": cursor}, seq=cursor, attempt_id=attempt_id)
+            continue
+        for event in page:
+            cursor = event["seq"]
+            if event['type']=='done' and event['payload'].get('status') in {'pending','running'}:
+                # Old scheduler replays could persist this invalid terminal.
+                # Keep the audit row, then observe the actual canonical outcome.
+                continue
+            yield sse(event["type"], event["payload"], seq=cursor, attempt_id=attempt_id)
+            if event["type"] == "done":
+                return
+        if page:
+            continue
+        if run["status"] not in {"pending", "running"}:
+            yield sse("done", _done_payload(run))
             return
-        await asyncio.sleep(0.3)
-    yield sse("done", {"status": "running"})
+        await asyncio.sleep(0.2)
 
 
 @router.post("/api/runs")
-@project_coordination.guarded(_admission_project, write=True, admission=True)
+@run_commands.admission_errors
+@project_coordination.guarded(_admission_project, write=True, admission=True, environment_write=False)
 def create_run(request: RunRequest) -> dict:
     message = request.message.strip()
     if not message:
@@ -219,15 +239,24 @@ def create_run(request: RunRequest) -> dict:
                     (request.session_id and request.session_id != prior["session"]["id"])):
                 raise HTTPException(status_code=409, detail="Idempotency key belongs to a different request")
             return _creation_response(prior)
+    if request.source_bundle and not request.source_context_ref and not request.dependency_id:
+        raise HTTPException(409,detail={'code':'published_source_required','message':'Publish immutable source from Overleaf before submitting this operation.'})
+    # Pin the explicit publication at admission, including queued retries.
     if request.source_context_ref:
-        if not request.focus_formalization_id or request.new_formalization or request.source_bundle:
-            raise HTTPException(422, detail="Prepared source requires one selected formalization.")
+        if not request.focus_formalization_id and not request.new_formalization:
+            raise HTTPException(422, detail="Published source requires one selected formalization or an explicit new target.")
         try:
             with connect() as conn:
                 source = overleaf_source.resolve(conn, request.source_context_ref, request.focus_formalization_id)
+                if request.new_formalization:
+                    from ..source_publications import _validate_binding
+                    row=conn.execute('select document_id from source_publications where id=?',(request.source_context_ref,)).fetchone()
+                    if not row:raise ValueError('New targets require an immutable publication')
+                    _validate_binding(conn,{'id':'','origin':'overleaf',**request.new_formalization.model_dump()},row[0],source)
+                if request.source_bundle and request.source_bundle!=source:raise ValueError('Source does not match the immutable publication')
         except ValueError as exc:
             raise HTTPException(409, detail=str(exc)) from exc
-        request = request.model_copy(update={"source_bundle": source, "purpose": "overleaf_continuation", "lea_status_version": 1})
+        request = request.model_copy(update={"source_bundle": source, "purpose": request.purpose if request.purpose!='general' else "overleaf_continuation", "lea_status_version": 1})
     if not runtime.accepting_work():
         raise HTTPException(status_code=503, detail={"error": "adapter_draining",
                                                      "message": "Adapter is waiting to restart."},
@@ -241,7 +270,14 @@ def create_run(request: RunRequest) -> dict:
     selected_model = config.model
     if request.model is not None:
         try:
-            selected_model = settings_service.validate_configured_model(request.model)
+            normalized=str(request.model).strip()
+            if not normalized:raise settings_service.SettingsValidationError('model must not be empty','model')
+            from .settings import model_requirements
+            requirements=model_requirements(normalized)
+            if not requirements['satisfied']:
+                required=requirements['required_keys'][0]
+                raise settings_service.SettingsValidationError(f"An API key ({required['label']}) is required before starting a run with this model.",f"api_keys.{required['env']}")
+            selected_model=normalized
         except settings_service.SettingsValidationError as exc:
             raise HTTPException(
                 status_code=422,
@@ -259,9 +295,10 @@ def create_run(request: RunRequest) -> dict:
         try:
             project = projects.ensure_project(
                 request.project_slug,
-                proofs_root,
+                None,
                 title=request.project_title,
                 namespace=request.project_namespace,
+                overleaf_project_title=request.overleaf_project_title,
             )
             project_id = project["id"]
         except ValueError as exc:
@@ -279,13 +316,31 @@ def create_run(request: RunRequest) -> dict:
             },
         )
 
+    from .. import reformalizations
+    if request.artifact_operation:
+        if request.artifact_operation != "reformalize" or not project_id:
+            raise HTTPException(422, "Unsupported artifact operation or missing project")
+        op = reformalizations.enqueue(request.model_dump(), project_id)
+        return reformalizations.response(reformalizations.get(op["id"]))
+    reformalizations.assert_writer(project_id)
+    existing_focus = request.focus_formalization_id
+    if not existing_focus and request.new_formalization and request.new_formalization.origin_key and project_id:
+        with connect() as conn:
+            found = conn.execute('select id from formalizations where project_id=? and origin=? and origin_key=?',
+                (project_id, request.new_formalization.origin, request.new_formalization.origin_key)).fetchone()
+        existing_focus = found['id'] if found else None
+    if not reformalizations.actor() and str(request.purpose or '').strip().lower() == 'overleaf_solver' and existing_focus:
+        if store.list_formalization_files(existing_focus):
+            raise HTTPException(409, detail={'error': 'reformalization_required',
+                'message': 'Update the companion to use the isolated reformalization operation for this existing work.'})
+
     autonomous = request.autonomous or (permission_tier() == "none")
     purpose = str(request.purpose or "general").strip().lower()
-    if purpose not in {"general", "overleaf_solver", "overleaf_continuation", "project_dependency"}:
+    if purpose not in {"general", "overleaf_solver", "overleaf_continuation", "overleaf_stub", "project_dependency"}:
         raise HTTPException(status_code=422, detail="Unsupported run purpose")
     if request.lea_status_version is not None and request.lea_status_version != 1:
         raise HTTPException(status_code=422, detail="Unsupported Lea Status contract")
-    if purpose in {"overleaf_solver", "overleaf_continuation"}:
+    if purpose in {"overleaf_solver", "overleaf_continuation", "overleaf_stub"}:
         from ..lea_status import admission_enabled
         if not admission_enabled():
             raise HTTPException(status_code=503, detail="Live Lea Status admissions are disabled")
@@ -295,13 +350,16 @@ def create_run(request: RunRequest) -> dict:
         raise HTTPException(status_code=422, detail="Source reporting requires an Overleaf run purpose")
     if request.allow_source_pause and purpose not in {"overleaf_solver", "overleaf_continuation"}:
         raise HTTPException(status_code=422, detail="Source pauses require an Overleaf run purpose")
+    if purpose == "overleaf_stub" and (not autonomous or not request.source_context_ref
+            or request.source_bundle.get("targetKind") != "theorem"):
+        raise HTTPException(422, "Stub generation requires an autonomous published theorem target")
     new_formalization = (
         request.new_formalization.model_dump()
         if request.new_formalization is not None else None
     )
     if purpose == "project_dependency":
         from .. import project_dependencies
-        dep = project_dependencies.get(request.dependency_id or "")
+        dep = project_dependencies.get(request.dependency_id or "",reconcile=False)
         if (not dep or dep["project_id"] != project_id or request.focus_formalization_id != dep["formalization_id"]
                 or not autonomous or request.new_formalization):
             raise HTTPException(422, "Dependency workers require their registered project, focus and identity.")
@@ -338,6 +396,8 @@ def create_run(request: RunRequest) -> dict:
             deadline_at=(datetime.now(timezone.utc) + timedelta(seconds=request.timeout_seconds)).isoformat()
             if request.timeout_seconds is not None else None,
         )
+    except commands.QueueError as exc:
+        raise HTTPException(exc.status,detail={'error':exc.code},headers={'Retry-After':'5'} if exc.status in {429,503} else None) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (ValueError, sqlite3.IntegrityError) as exc:
@@ -360,24 +420,51 @@ def create_run(request: RunRequest) -> dict:
             context={"project_slug": request.project_slug},
         ))
     raw_formalization = bundle.get("formalization")
-    if bundle.get("created", True) and raw_formalization is not None and project_id and config.lea_root:
-        project_for_adoption = store.get_project(project_id)
-        if project_for_adoption:
-            github_import_service.try_adopt_imported_declaration(
-                project_for_adoption,
-                raw_formalization,
-                config.lea_root / "workspace" / "proofs",
-            )
-    if bundle.get("created", True):
-        bridge.enqueue_run(run["id"])
     return _creation_response(bundle)
+
+
+@router.get("/api/reformalizations/{operation_id}")
+def get_reformalization(operation_id: str):
+    from .. import reformalizations
+    op = reformalizations.get(operation_id)
+    if not op:
+        raise HTTPException(404, "Reformalization not found")
+    return {**reformalizations.response(op), "drafts": reformalizations.drafts(operation_id)}
+
+
+@router.post("/api/reformalizations/{operation_id}/cancel")
+@run_commands.admission_errors
+def cancel_reformalization(operation_id: str):
+    return run_commands.operation_cancel(operation_id)
+
+
+@router.get('/api/reformalizations/{operation_id}/versions')
+def reformalization_versions(operation_id: str):
+    from ..reformalizations import versions
+    return {'versions': versions(operation_id)}
+
+
+@router.get('/api/reformalizations/{operation_id}/versions/{blob_id}')
+def reformalization_version(operation_id: str, blob_id: str, compare_to: str | None = None):
+    from ..reformalizations import versions
+    allowed = {item['blob_id'] for item in versions(operation_id)}
+    if blob_id not in allowed or (compare_to and compare_to not in allowed):
+        raise HTTPException(404, 'Version not found in this reformalization')
+    content = store.blob_content(blob_id) or ''
+    if compare_to:
+        import difflib
+        content = ''.join(difflib.unified_diff(content.splitlines(keepends=True),
+            (store.blob_content(compare_to) or '').splitlines(keepends=True),
+            fromfile='retained baseline', tofile='attempt draft'))
+    return PlainTextResponse(content)
 
 
 def _creation_response(bundle: dict) -> dict:
     session = bundle["session"]
     run = bundle["run"]
     raw_formalization = bundle.get("formalization")
-    formalization = (formalization_service.decorate([raw_formalization])[0]
+    from ..queries import proofs
+    formalization = (proofs.decorate([raw_formalization])[0]
                      if raw_formalization is not None else None)
     project_id = session.get("project_id")
     project = store.get_project(project_id) if project_id else None
@@ -385,6 +472,8 @@ def _creation_response(bundle: dict) -> dict:
         "session_id": session["id"],
         "run_id": run["id"],
         "model": run.get("model"),
+        "autonomous": bool(run.get("autonomous")),
+        "approval_mode": run["approval_mode"],
         "message": bundle.get("message"),
         "focus_formalization_id": run.get("focus_formalization_id"),
         "formalization": formalization,
@@ -394,6 +483,7 @@ def _creation_response(bundle: dict) -> dict:
         "queue_position": store.queue_position(run["id"]),
         "deadline_at": run.get("deadline_at"),
         "attempt_id": run.get("attempt_id"),
+        "command":run_commands.for_run(run['id']),
     }
 
 
@@ -403,12 +493,20 @@ def get_run_row(run_id: str) -> dict:
     row = store.get_run_status(run_id)
     if not row:
         raise HTTPException(status_code=404, detail="Run not found")
-    row["available_recovery_action"] = recovery.available_action(row)
+    from ..queries.core import recovery_action,run_detail
+    row=run_detail(row)
+    row['available_recovery_action']=recovery_action(row)
+    row['command']=run_commands.for_run(run_id)
+    with connect() as conn:
+        row['control_commands']=[commands.receipt(r) for r in conn.execute('''select * from commands
+            where producer_id=? and lane='control' and json_extract(payload_json,'$.run_id')=?
+            order by admission_id desc limit 20''',(run_commands.PRODUCER,run_id))]
     return row
 
 
 @router.post("/api/runs/{run_id}/resume")
-@project_coordination.guarded(_admission_project, write=True, admission=True)
+@run_commands.admission_errors
+@project_coordination.guarded(_admission_project, write=True, admission=True, environment_write=False)
 def resume_run(run_id: str, request: ResumeRequest) -> dict:
     if not request.acknowledge_uncertainty:
         raise HTTPException(status_code=409, detail="Acknowledge the possible prior model cost or tool effect before resuming")
@@ -424,12 +522,23 @@ def resume_run(run_id: str, request: ResumeRequest) -> dict:
     old = store.get_run(run_id)
     if not old:
         raise HTTPException(status_code=404, detail="Run not found")
+    from .. import reformalizations
+    staged = reformalizations.for_run(run_id)
+    if staged:
+        return reformalizations.queue_continuation(staged, old, request.model_dump(), recovery_review=True)
     if old["status"] != "cancelled" or old.get("recovery_state") != "review":
         raise HTTPException(status_code=409, detail="Run is not awaiting recovery review")
     if old.get("deadline_at") and datetime.fromisoformat(old["deadline_at"]) <= datetime.now(timezone.utc):
         raise HTTPException(status_code=409, detail="The original run deadline has expired")
     from .. import lea_status_store
     old_context = lea_status_store.context(run_id)
+    source_ref=None
+    if old_context:
+        try:
+            source_ref=old.get('source_context_ref')
+            with connect() as conn:
+                overleaf_source.resolve(conn,source_ref,old['focus_formalization_id'])
+        except ValueError as exc:raise HTTPException(409,str(exc)) from exc
     safe_conversation = recovery.load_safe_conversation(run_id)
     original_request = bridge._resolve_task(old) if safe_conversation is None else None
     message = ("Resume from the saved progress of interrupted run " + run_id +
@@ -455,30 +564,30 @@ def resume_run(run_id: str, request: ResumeRequest) -> dict:
         session_origin="ui", session_origin_url=None, model=old.get("model") or load_config().model,
         provider=old.get("provider"), max_turns=remaining, autonomous=bool(old.get("autonomous")),
         focus_formalization_id=old.get("focus_formalization_id"),
-        focus_source_hash=old.get("focus_source_hash"), purpose="project_dependency" if old.get("dependency_id") else "overleaf_continuation" if old_context else "general",
+        focus_source_hash=old.get("focus_source_hash"), purpose="overleaf_stub" if old.get("purpose") == "overleaf_stub" else "project_dependency" if old.get("dependency_id") else "overleaf_continuation" if old_context else "general",
         dependency_id=old.get("dependency_id"),
         automation_budget=worker_budget,
         source_bundle=old_context.get("source_bundle") if old_context else None,
+        source_context_ref=source_ref,
         allow_source_pause=bool(old.get("allow_source_pause")),
         client_request_id=request.idempotency_key, resumes_run_id=run_id,
         deadline_at=old.get("deadline_at"),
     )
-    if bundle.get("created", True):
-        bridge.enqueue_run(bundle["run"]["id"])
     return {"run_id": bundle["run"]["id"], "session_id": bundle["session"]["id"],
             "resumes_run_id": run_id, "queue_position": store.queue_position(bundle["run"]["id"])}
 
 
 @router.post("/api/runs/{run_id}/continue")
-@project_coordination.guarded(_admission_project, write=True, admission=True)
+@run_commands.admission_errors
+@project_coordination.guarded(_admission_project, write=True, admission=True, environment_write=False)
 def continue_run(run_id: str, request: ContinueRequest) -> dict:
     """Continue a clean Overleaf pause from its pinned execution checkpoint."""
-    from .. import lea_status, lea_status_store
+    from .. import lea_status, lea_status_store, reformalizations
     from ..source_context import validate_source
     timeout_seconds = request.timeout_seconds if request.timeout_seconds is not None else int(os.environ.get("LEA_JOB_TIMEOUT_SECONDS", "900"))
     if not request.idempotency_key.strip() or timeout_seconds < 1 or request.lea_status_version != 1:
         raise HTTPException(status_code=422, detail="A request identity, positive timeout and Lea Status v1 are required.")
-    request_hash = hashlib.sha256(json.dumps({"predecessor": run_id, **request.model_dump()}, sort_keys=True).encode()).hexdigest()
+    request_hash = reformalizations.continuation_hash(run_id, request.model_dump())
     prior = store.get_run_submission(request.idempotency_key)
     if prior:
         if prior["run"].get("resumes_run_id") != run_id or prior["run"].get("client_request_hash") != request_hash:
@@ -491,6 +600,10 @@ def continue_run(run_id: str, request: ContinueRequest) -> dict:
     old = store.get_run(run_id)
     if not old:
         raise HTTPException(status_code=404, detail="Run not found")
+    from .. import reformalizations
+    staged = reformalizations.for_run(run_id)
+    if staged:
+        return reformalizations.queue_continuation(staged, old, request.model_dump())
     if request.dependency_resume:
         return _continue_dependency(old, request, request_hash)
     if old.get("stop_reason") == "dependency_wait":
@@ -501,7 +614,7 @@ def continue_run(run_id: str, request: ContinueRequest) -> dict:
             with connect() as conn:
                 source = overleaf_source.resolve(conn, request.source_context_ref, old["focus_formalization_id"])
         elif request.source_bundle is not None and not request.source_context_ref:
-            source = validate_source(request.source_bundle)
+            raise ValueError('Publish an immutable source snapshot and supply its reference before continuing.')
         else:
             raise ValueError("Supply current source or one prepared source reference.")
     except ValueError as exc:
@@ -525,7 +638,9 @@ def continue_run(run_id: str, request: ContinueRequest) -> dict:
         state, _, checkpoint_id = recovery.continuation_checkpoint(run_id)
         if old.get("project_id") and store.project_has_active_import(old["project_id"]):
             raise ValueError("Wait for the active project import before continuing.")
-        bridge.validate_continuation_runtime(old, config, checkpoint_id, source, allow_source_pause)
+        # Executable tool/skill materialization and working-tree checks belong
+        # to dispatch. The driver repeats prepare_continuation before any model
+        # invocation; intake retains the frozen checkpoint/source in SQL only.
         saved_turn = int(state.get("turn", 0))
         mathematical_request = json.dumps(source, ensure_ascii=False)
         policy = (
@@ -550,10 +665,10 @@ def continue_run(run_id: str, request: ContinueRequest) -> dict:
             client_request_id=request.idempotency_key, client_request_hash=request_hash, resumes_run_id=run_id,
             resume_checkpoint_id=checkpoint_id, continuation_best_effort=request.best_effort,
             deadline_at=(datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)).isoformat())
+    except commands.QueueError:
+        raise
     except (ValueError, LookupError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if bundle.get("created", True):
-        bridge.enqueue_run(bundle["run"]["id"])
     return _continuation_response(bundle)
 
 
@@ -577,7 +692,10 @@ def _continue_dependency(old: dict, request: ContinueRequest, request_hash: str)
             or not old.get("autonomous") or request.best_effort):
         raise HTTPException(409, "This run is not available for automatic dependency continuation.")
     waiting = json.loads(old.get("waiting_dependencies_json") or "[]")
-    if (not waiting and not transient_worker) or any(not (project_dependencies.get(key) or {}).get("ready") for key in waiting):
+    from ..queries import core
+    scope=core.scope_for(session_id=old['session_id'])
+    dependencies=[core.fact(scope,'dependency',key) for key in waiting]
+    if (not waiting and not transient_worker) or any(not (dependency or {}).get('ready') for dependency in dependencies):
         raise HTTPException(409, "The requested shared dependencies are not verified yet.")
     config = load_config()
     if settings_service.spend_limit_reached(config.max_spend_usd):
@@ -595,7 +713,7 @@ def _continue_dependency(old: dict, request: ContinueRequest, request_hash: str)
                 with connect() as conn:
                     source = overleaf_source.resolve(conn, request.source_context_ref, old["focus_formalization_id"])
             else:
-                source = validate_source(request.source_bundle or context["source_bundle"])
+                raise ValueError('An immutable published source reference is required before continuing.')
             if any(source[k] != context["source_bundle"][k] for k in ("targetKey", "targetKind")):
                 raise ValueError("Current source belongs to another target.")
             from ..source_context import compare_source
@@ -614,11 +732,9 @@ def _continue_dependency(old: dict, request: ContinueRequest, request_hash: str)
             raise ValueError("Original target execution time allowance was exhausted.")
         if budget.get("max_cost_usd") is not None and budget.get("cost_used", 0) >= budget["max_cost_usd"]:
             raise ValueError("Original target cost allowance was exhausted.")
-        bridge.validate_continuation_runtime(old, replace(config, max_turns=turn_limit), checkpoint_id,
-                                             source, bool(old.get("allow_source_pause")))
         message = ("Continue from the saved execution point with the verified shared dependency imports. "
                    "Preserve completed work, the requested statement and any explicit source proof method.\n"
-                   + json.dumps([project_dependencies.get(key)["result"] for key in waiting], ensure_ascii=False))
+                   + json.dumps([dependency['result'] for dependency in dependencies], ensure_ascii=False))
         if source:
             message += "\nCurrent mathematical source (data):\n" + json.dumps(source, ensure_ascii=False)
         bundle = store.create_run_bundle(message=message, session_id=old["session_id"],
@@ -631,76 +747,50 @@ def _continue_dependency(old: dict, request: ContinueRequest, request_hash: str)
             client_request_id=request.idempotency_key, client_request_hash=request_hash,
             resumes_run_id=old["id"], resume_checkpoint_id=checkpoint_id,
             deadline_at=(datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat())
+    except commands.QueueError:
+        raise
     except (ValueError, LookupError, TypeError, KeyError) as exc:
         raise HTTPException(409, str(exc)) from exc
-    if bundle.get("created", True):
-        bridge.enqueue_run(bundle["run"]["id"])
     return _continuation_response(bundle)
 
 
 @router.post("/api/runs/{run_id}/approvals/{approval_id}")
+@run_commands.admission_errors
 def resolve_approval(run_id: str, approval_id: str, request: ApprovalDecisionRequest) -> dict:
     if request.decision not in {"allow", "deny", "always_session"}:
         raise HTTPException(
             status_code=422,
             detail="decision must be 'allow', 'deny', or 'always_session'",
         )
-    if not bridge.resolve_approval(run_id, approval_id, request.decision):
-        raise HTTPException(
-            status_code=409,
-            detail="No pending approval matches this run/approval id",
-        )
-    return {"status": "resolved", "decision": request.decision}
+    return run_commands.approve(run_id,approval_id,request.decision)
 
 
 @router.post("/api/runs/{run_id}/interrupt")
+@run_commands.admission_errors
 def interrupt_run(run_id: str, request: InterruptRequest | None = None) -> dict:
     request = request or InterruptRequest()
     if request.reason not in {"user_stop", "timeout", "superseded", "global_spend_cap", "transport_abandonment"}:
         raise HTTPException(status_code=422, detail="Unsupported stop reason")
     if request.source not in {"user", "companion", "adapter"}:
         raise HTTPException(status_code=422, detail="Unsupported stop source")
-    run = store.get_run(run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
-    if run["status"] not in {"pending", "running"}:
-        return {"status": run["status"], "stop_reason": run.get("stop_reason"),
-                "usage_status": run.get("usage_status")}
-    accepted = bridge.request_stop(run_id, reason=request.reason, source=request.source)
-    if accepted["status"] not in {"pending", "running"}:
-        return {"status": accepted["status"], "stop_reason": accepted.get("stop_reason"),
-                "usage_status": accepted.get("usage_status")}
-    reason = accepted.get("stop_requested_reason") or request.reason
-    # A queued run has no driver to read the stop flag, so the endpoint finalizes it
-    # itself — atomically (AUDIT-2026-07-24 C7). This used to read the status, ask the
-    # registry whether the run was active, and then write, which the dispatcher could
-    # interleave with: the run got marked failed and then started anyway, after the
-    # client had been told it was interrupted. `fail_pending_run` and
-    # `store.claim_pending_run` (in `run_lea`) are the same conditional UPDATE from
-    # opposite sides, so exactly one of them can win.
-    if store.fail_pending_run(run_id, "Time limit reached before the run started." if reason == "timeout"
-                              else "Interrupted before the run started."):
-        bridge.publish_terminal_from_row(run_id)
-        return {"status": "interrupted", "stop_reason": reason, "usage_status": "final"}
-    return {"status": "interrupting", "stop_reason": reason,
-            "usage_status": accepted.get("usage_status")}
+    return run_commands.stop(run_id,request.reason,request.source)
 
 
 @router.post("/api/sub-agents/{session_id}/interrupt")
+@run_commands.admission_errors
 def interrupt_subagent(session_id: str) -> dict:
     """Stop a single running child sub-agent (D2), addressed by its child SESSION id —
     without cancelling the coordinator run that spawned it. The child returns its partial
     findings at its next turn boundary and the coordinator carries on. A no-op (404) if
     the child is not currently running in-process (nothing to signal)."""
-    if request_subagent_stop(session_id):
-        return {"status": "interrupting"}
-    raise HTTPException(status_code=404, detail="No running sub-agent for that session")
+    return run_commands.child_stop(session_id)
 
 
 @router.get("/api/runs/{run_id}/events")
 async def run_events(run_id: str, request: Request) -> StreamingResponse:
     """Observe a queued, live, or terminal run without affecting admission."""
-    run = store.get_run(run_id)
+    from starlette.concurrency import run_in_threadpool
+    run = await run_in_threadpool(store.get_run, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -713,21 +803,14 @@ async def run_events(run_id: str, request: Request) -> StreamingResponse:
     )
     if stale_attempt:
         cursor = 0
-    broker = runbroker.get(run_id)
-    if broker is None:
-        # Terminal rows normally land here because run_lea retires the broker.
-        # The same fallback also closes the tiny running/drop race cleanly.
-        return StreamingResponse(_passive_done(run_id), media_type="text/event-stream")
-
-    queue_position = store.queue_position(run_id)
-
-    async def stream_events():
+    async def durable_frames():
         if stale_attempt:
             yield sse("resync", {"run_id": run_id, "attempt_id": attempt_id,
                                   "reason": "execution_attempt_changed", "reload": True})
-        if queue_position is not None and cursor == 0:
-            yield sse("queued", {"run_id": run_id, "position": queue_position})
-        async for frame in _subscribe(broker, cursor, attempt_id):
+        position = await run_in_threadpool(store.queue_position, run_id)
+        if position is not None and cursor == 0:
+            yield sse("queued", {"run_id": run_id, "position": position})
+        async for frame in _subscribe_durable(run_id, cursor, attempt_id):
             yield frame
-
-    return StreamingResponse(stream_events(), media_type="text/event-stream")
+    return StreamingResponse(durable_frames(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

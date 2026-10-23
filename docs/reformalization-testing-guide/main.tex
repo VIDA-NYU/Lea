@@ -1,0 +1,278 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\newtheorem{definition}{Definition}
+\newtheorem{lemma}{Lemma}
+\newtheorem{theorem}{Theorem}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+
+\title{A Relaxation Algorithm for Quadratic Energy\\
+\large A source-only Lea dependency and retry experiment}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+We study a scalar relaxation scheme for minimizing a shifted quadratic.
+The algebraic identities are exact; convergence requires a genuine
+restriction on the step size. The proofs deliberately use earlier results,
+so their dependencies are mathematical, not merely a list of related claims.
+
+There are nine Lea targets below: two definitions, six dependent results,
+and one independent control theorem. Ordinary LaTeX packages suffice.
+All baseline statements are true. Use only this document and Lea's
+Define, Formalize, and Re-formalize actions; no Lean editing is required.
+
+\section{The model}
+
+\begin{definition}[Quadratic energy]\label{def:descent-energy}
+% lea: define label=descent_energy
+% lea: context={Use explicit real arguments a and x. Define the computational real-valued function descent_energy a x = (1/2)*(x-a)^2; do not introduce it as an axiom.}
+For $a,x\in\R$, define the energy
+\[
+  E_a(x)=\frac12(x-a)^2.
+\]
+\end{definition}
+
+\begin{definition}[Relaxation step]\label{def:descent-step}
+% lea: define label=descent_step
+% lea: context={Use explicit real arguments a, eta, x, in that order. Define descent_step a eta x = x - eta*(x-a). No step-size assumption is part of the definition.}
+For $a,\eta,x\in\R$, define
+\[
+  T_{a,\eta}(x)=x-\eta(x-a).
+\]
+\end{definition}
+
+\begin{lemma}[Centered update]\label{lem:descent-error}
+% lea: formalize label=descent_error uses={descent_step}
+% lea: context={Use the existing descent_step definition. Follow the adjacent algebraic proof and retain the unrestricted real parameter eta.}
+For all $a,\eta,x\in\R$,
+\[
+  T_{a,\eta}(x)-a=(1-\eta)(x-a).
+\]
+\end{lemma}
+\begin{proof}
+Expand $T_{a,\eta}(x)-a=x-\eta(x-a)-a$.
+Collect the two occurrences of $x-a$ to obtain
+$(x-a)-\eta(x-a)=(1-\eta)(x-a)$.
+\end{proof}
+
+\section{Energy dissipation}
+
+\begin{theorem}[Exact one-step energy identity]\label{thm:descent-energy-step}
+% lea: formalize label=descent_energy_step uses={descent_energy,descent_error}
+% lea: context={Apply the checked descent_error lemma before simplifying the energy. Reuse the existing energy and step definitions. Preserve the associated proof's dependence on the centered-update lemma rather than independently expanding the whole target.}
+For all $a,\eta,x\in\R$,
+\[
+  E_a\bigl(T_{a,\eta}(x)\bigr)=(1-\eta)^2 E_a(x).
+\]
+\end{theorem}
+\begin{proof}
+By the centered-update lemma,
+\[
+  T_{a,\eta}(x)-a=(1-\eta)(x-a).
+\]
+Substitute this equality into the definition of $E_a$ and square:
+\[
+  \frac12\bigl((1-\eta)(x-a)\bigr)^2
+  =(1-\eta)^2\frac12(x-a)^2.
+\]
+\end{proof}
+
+\begin{theorem}[Strict energy decrease]\label{thm:descent-strict}
+% lea: formalize label=descent_strict uses={descent_energy,descent_energy_step}
+% lea: context={Apply the existing descent_energy_step theorem. Keep both step-size inequalities and x not equal to a. Prove positivity of the original energy and that the multiplicative factor is strictly below one.}
+For all $a,\eta,x\in\R$, if $0<\eta<2$ and $x\ne a$, then
+\[
+  E_a\bigl(T_{a,\eta}(x)\bigr)<E_a(x).
+\]
+\end{theorem}
+\begin{proof}
+The assumption $0<\eta<2$ gives $-1<1-\eta<1$, hence
+$(1-\eta)^2<1$. Since $x\ne a$, the energy $E_a(x)$ is
+strictly positive. Multiply $(1-\eta)^2<1$ by this positive
+energy and apply the exact one-step energy identity.
+\end{proof}
+
+\begin{theorem}[Exact geometric energy law]\label{thm:descent-geometric}
+% lea: formalize label=descent_geometric uses={descent_energy,descent_step,descent_energy_step}
+% lea: context={Use u : Nat -> Real and the recurrence as a hypothesis for every n. Induct on n and apply the checked descent_energy_step theorem at the successor step. The identity is valid for every real eta, including unstable step sizes.}
+Let $a,\eta\in\R$ and let $u:\N\to\R$ satisfy
+\[
+  u(n+1)=T_{a,\eta}\bigl(u(n)\bigr)
+  \qquad\text{for every }n\in\N.
+\]
+Then for every $n\in\N$,
+\[
+  E_a\bigl(u(n)\bigr)=\bigl((1-\eta)^2\bigr)^n E_a\bigl(u(0)\bigr).
+\]
+\end{theorem}
+\begin{proof}
+Induct on $n$. The case $n=0$ follows because a zeroth power is one.
+For the successor step, use the recurrence and the one-step energy identity:
+\[
+  E_a\bigl(u(n+1)\bigr)=(1-\eta)^2 E_a\bigl(u(n)\bigr).
+\]
+Insert the induction hypothesis and use the successor law for powers.
+\end{proof}
+
+\begin{theorem}[Convergence of the iterates]\label{thm:descent-converges}
+% lea: formalize label=descent_converges uses={descent_step,descent_error}
+% lea: context={Use u : Nat -> Real and the stated recurrence as a hypothesis. Follow the proof: first derive the centered-iterate formula by induction using the checked descent_error lemma, then use the standard real geometric-sequence limit for absolute ratio less than one. Express convergence with Tendsto atTop (nhds a).}
+Let $a,\eta\in\R$ satisfy $0<\eta<2$, and let $u:\N\to\R$
+satisfy
+\[
+  u(n+1)=T_{a,\eta}\bigl(u(n)\bigr)
+  \qquad\text{for every }n\in\N.
+\]
+Then $u(n)\to a$ as $n\to\infty$.
+\end{theorem}
+\begin{proof}
+Induction using the centered-update lemma gives the intermediate formula
+\[
+  u(n)-a=(1-\eta)^n\bigl(u(0)-a\bigr).
+\]
+The base case is immediate. In the successor case, substitute the recurrence,
+apply the centered-update lemma, and then use the induction hypothesis.
+Since $|1-\eta|<1$, the real geometric sequence $(1-\eta)^n$ tends
+to zero. Multiplication by the fixed real number $u(0)-a$ preserves
+that limit. Adding $a$ proves the claim.
+\end{proof}
+
+\begin{lemma}[Unit-displacement calibration]\label{lem:descent-calibration}
+% lea: formalize label=descent_calibration uses={descent_energy}
+% lea: context={Unfold the existing descent_energy definition and simplify at x=a+1. This is a check of the actual definition body, not an additional axiom.}
+For every $a\in\R$,
+\[
+  E_a(a+1)=\frac12.
+\]
+\end{lemma}
+\begin{proof}
+Substitute $x=a+1$ into $E_a(x)=\frac12(x-a)^2$.
+The difference $(a+1)-a$ is one, so the energy is $\frac12$.
+\end{proof}
+
+\section{Independent control}
+
+\begin{theorem}[Parallelogram identity]\label{thm:independent-square}
+% lea: formalize label=independent_square
+% lea: context={This is independent of the relaxation model. Prove it by polynomial algebra over Real without importing the project's energy or relaxation results.}
+For all $x,y\in\R$,
+\[
+  (x+y)^2+(x-y)^2=2x^2+2y^2.
+\]
+\end{theorem}
+\begin{proof}
+Expand both squares. The mixed terms cancel, leaving $2x^2+2y^2$.
+\end{proof}
+
+\section{Source-only experiments}
+
+The following are experiment instructions, not extra assumptions or
+replacement hypotheses for the baseline theorems.
+For each destructive source experiment, start from a fresh copy of the
+fully formalized baseline, or restore the source changes before the next
+experiment. Keep all Lea labels unchanged.
+
+\subsection*{1. Build the dependency chain}
+\begin{enumerate}[leftmargin=*]
+\item Define \texttt{descent\_energy} and \texttt{descent\_step}.
+\item Formalize \texttt{descent\_error}, then
+\texttt{descent\_energy\_step}.
+\item Formalize \texttt{descent\_strict},
+\texttt{descent\_geometric}, and \texttt{descent\_calibration}.
+\item Formalize \texttt{independent\_square}.
+\item Finally formalize \texttt{descent\_converges}; it adds the
+analysis-library and local induction-helper case.
+\end{enumerate}
+Inspect the generated proof summaries or read-only code to confirm that the
+named dependencies are actually used. The attached proofs and metadata request
+reuse, but a model can still choose another proof. A direct independent proof
+has not demonstrated the intended dependency edge.
+
+\subsection*{2. Retry an upstream result with completed consumers}
+After the chain is complete, invoke \textbf{Re-formalize} on
+\texttt{descent\_error}, then on \texttt{descent\_energy\_step},
+without changing their source. Use the explicit retry action rather than
+ordinary chat.
+
+Check that Lea admits the retry, retains the target's conversation, reuses
+existing definitions/helpers, and preserves downstream proof source.
+After actual rechecking, the unchanged mathematics should remain usable.
+Reload once during a retry and check that progress reattaches correctly.
+
+For a proof-only source revision, change the proof of the centered-update
+lemma to the equivalent argument:
+\begin{quote}
+Write $x=a+(x-a)$ in the definition of $T_{a,\eta}(x)$.
+Subtract $a$ and collect the coefficient of $x-a$.
+\end{quote}
+Then re-formalize that lemma again. Its mathematical interface is unchanged.
+
+\subsection*{3. Change a definition body and expose a real stale consumer}
+In the energy definition only, replace
+\[
+  E_a(x)=\frac12(x-a)^2
+  \quad\text{with}\quad
+  E_a(x)=(x-a)^2.
+\]
+Also change that definition's context comment so its stated body matches
+the new formula. Leave the other statements and proofs unchanged.
+Invoke \textbf{Regenerate definition} or \textbf{Re-formalize}, as offered.
+
+The one-step and geometric energy identities are still mathematically true:
+the common scaling cancels. The calibration lemma, however, is now false,
+because the new value at $a+1$ is $1$, not $\frac12$.
+It must not remain certified current against the changed definition.
+An old proof displayed in history is not a new passing check.
+
+Re-formalize the calibration lemma while its source still says $\frac12$.
+Expect an honest obstruction or verified disproof, not a silent change
+of its conclusion. Then change its statement and proof to value $1$,
+keep its Lea label, and re-formalize it to repair the source.
+The independent parallelogram theorem should retain its source and
+completion lineage; it has no dependency on this definition.
+
+\subsection*{4. Test a realistic missing stability restriction}
+On a fresh baseline copy, change only the strict-decrease theorem's
+hypothesis from $0<\eta<2$ to $0<\eta<3$.
+Leave its proof as written and invoke \textbf{Re-formalize}.
+
+The revised claim is false. At $a=0$, $x=1$, $\eta=5/2$,
+\[
+  T_{0,5/2}(1)=-\frac32,\qquad
+  E_0(1)=\frac12,\qquad E_0(-3/2)=\frac98.
+\]
+Lea should identify the faulty hypothesis or produce a verified
+counterexample. It must not silently restore $\eta<2$ and call the
+revised claim proved. Other valid results and their source must survive.
+
+Restore the original hypothesis and invoke the explicit retry action.
+Check that the corrected source can complete in the same target history.
+
+\subsection*{5. Observe interruption and queue behavior}
+During the convergence proof, use the available Stop or Pause action
+after useful progress appears. Reload and inspect retained progress.
+Continue explicitly using the offered action; do not edit generated Lean.
+
+If a second explicit retry can be submitted while the first is active,
+submit it for another target in this project. Check for queued activity
+and serial execution. If the UI prevents a second submission, record this
+queue case as untested. If the first proof finishes before interruption,
+record the interruption case as inconclusive.
+
+\paragraph{Coverage boundary.}
+This document naturally exercises dependency reuse, source-driven retries,
+definition-body freshness, consumer invalidation, retained progress, and
+honest failure on a false revision. It does not force a particular Lean file
+layout. If Lea places supporting declarations and a retry target in the
+same module, those retries also exercise shared-file preservation.
+If it generates separate modules, do not count the run as proof of
+same-file preservation. No manual Lean edits are needed in either case.
+
+\end{document}

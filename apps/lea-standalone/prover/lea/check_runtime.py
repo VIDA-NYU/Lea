@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import os
 import signal
 import subprocess
+import sys
 import time
 from uuid import uuid4
 
@@ -38,8 +39,12 @@ class CheckBudget:
         }
 
     def remaining(self, phase="lsp") -> float:
-        if self.should_stop and self.should_stop():
-            raise CheckFailure("cancelled", "Lean check cancelled", phase=phase, retryable=False)
+        if self.should_stop:
+            with self.measure('cancellation'):
+                stopped = self.should_stop()
+            self.execution['cancellation_polls'] = self.execution.get('cancellation_polls', 0) + 1
+            if stopped:
+                raise CheckFailure("cancelled", "Lean check cancelled", phase=phase, retryable=False)
         left = self.deadline - time.monotonic()
         if left <= 0:
             raise CheckFailure("queue_timeout" if phase == "queue" else "timeout",
@@ -53,7 +58,24 @@ class CheckBudget:
         try:
             yield
         finally:
-            self.execution["timings_ms"][phase] += (time.monotonic() - start) * 1000
+            timings = self.execution['timings_ms']
+            timings[phase] = timings.get(phase, 0.0) + (time.monotonic() - start) * 1000
+
+    @contextmanager
+    def context(self, phase, manager):
+        """Measure setup and teardown, excluding time spent inside the lease."""
+        with self.measure(phase):
+            value = manager.__enter__()
+        try:
+            yield value
+        except BaseException:
+            with self.measure('cleanup'):
+                suppressed = manager.__exit__(*sys.exc_info())
+            if not suppressed:
+                raise
+        else:
+            with self.measure('cleanup'):
+                manager.__exit__(None, None, None)
 
     @contextmanager
     def acquire(self, lock):
@@ -128,11 +150,16 @@ def stop_process(proc: subprocess.Popen, *, deadline: float | None = None) -> No
 def serialize_result(result):
     if isinstance(result, CheckText):
         return {"text": str(result), "execution": result.execution,
-                "captured_content": result.captured_content, "snapshot_path": result.snapshot_path}
+                "captured_content": result.captured_content, "snapshot_path": result.snapshot_path,
+                "selected_result": getattr(result, "selected_result", None),
+                "selection": getattr(result, "selection", None)}
     return str(result)
 
 
 def restore_result(value):
     if isinstance(value, dict) and "text" in value:
-        return CheckText(value["text"], value.get("execution"), value.get("captured_content"), value.get("snapshot_path"))
+        result = CheckText(value["text"], value.get("execution"), value.get("captured_content"), value.get("snapshot_path"))
+        result.selected_result = value.get("selected_result")
+        result.selection = value.get("selection")
+        return result
     return str(value)

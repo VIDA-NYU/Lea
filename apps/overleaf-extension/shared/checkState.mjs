@@ -1,15 +1,20 @@
-const LEAN_VALUES = new Set(["unformalized", "stubbed", "in-progress", "checked", "paused", "error"]);
+const LEAN_VALUES = new Set(["unformalized", "stubbed", "in-progress", "checked", "paused", "error", "synchronizing", "unconfirmed"]);
 const LEA_VALUES = new Set(["N/A", "in-progress", "paused", "warning", "error", "approved"]);
 
 export function projectLeanCheck({ paneStatus = "", statusInfo = {} } = {}) {
   const status = String(paneStatus || "").toLowerCase();
   let value = "unformalized";
-  if (status === "stub-generated") value = "stubbed";
+  if (statusInfo.projection && statusInfo.projection.state !== "observed" || status === "synchronizing") value = "synchronizing";
+  else if (["unknown", "unavailable", "needs-review"].includes(status)) {
+    value = statusInfo.leanCheck?.status === "error" ? "error"
+      : statusInfo.leanCheck?.status === "ok" || statusInfo.leanCheckPassed === true ? "checked"
+      : "unconfirmed";
+  }
+  else if (status === "stub-generated") value = "stubbed";
   else if (status === "in-progress") value = "in-progress";
   else if (["valid", "defined", "disproved", "stale"].includes(status)) value = "checked";
-  else if (status === "needs-review" && statusInfo?.leanCheckPassed === true) value = "checked";
   else if (status === "paused") value = "paused";
-  else if (["invalid", "error", "unknown"].includes(status)) value = "error";
+  else if (["invalid", "error"].includes(status)) value = "error";
   return {
     status: value,
     stopReason: statusInfo?.stopReason || null,

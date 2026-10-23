@@ -10,8 +10,20 @@ The default path is:
 Overleaf page -> Chrome extension -> companion (:31245) -> FastAPI adapter (:8001)
 ```
 
-The adapter then drives the vendored prover at `apps/lea-standalone/prover/`
-in-process. The companion does not start its own prover backend.
+The API admits durable SQL commands and a separate worker drives the vendored prover.
+The optional companion forwards database operations and observes SQL receipts;
+it needs no workspace access, provider keys or writable job storage. The adapter
+workspace worker owns a private Node business process (Node 22.13 or newer).
+
+The extension publishes immutable editor snapshots with a document/tab generation
+and sequence before requesting execution. Source callbacks and pending-source
+polling are retired. A competing tab or changed source receives an actionable
+conflict; accepted work never silently adopts a newer source snapshot.
+
+See the [Stage 6 cutover record](../../docs/STAGE6-database-ui-cutover.md) for the
+legacy-state import, limits, qualification and rollback procedure.
+The [Stage 8 runtime guide](../../docs/STAGE8-process-boundary.md) defines the final
+API/worker split and strict client capability negotiation.
 
 For the VIDA-hosted Docker installation and Chrome side-load steps, see
 [BETA_INSTALL.md](BETA_INSTALL.md). The image already runs both the adapter and
@@ -20,10 +32,53 @@ the companion; only the unpacked extension is loaded separately in Chrome.
 ## Pieces
 
 - `extension/`: Chrome MV3 extension injected into Overleaf.
-- `companion/`: local HTTP service that validates theorem payloads, starts Lea
-  runs, tracks jobs, and reads adapter-persisted usage.
+- `companion/server.mjs`: optional stateless HTTP compatibility transport.
+- `companion/worker.mjs`, `workerService.mjs`, `databaseState.mjs`: private adapter-owned
+  business worker; orchestration records and diagnostics are committed to SQL.
 - `shared/`: theorem parser and Lean path helpers used by the companion and tests.
 - `tests/`: Node test suite.
+
+Accepted workflows retain the same request identity while admission is busy or
+a response is lost. The SQL scheduler waits behind unfinished file publication;
+it does not turn that wait into a proof failure. Job execution phase, certified
+result and registry publication state are recorded independently. Registry,
+usage, dependency and batch reconciliation run independently, and unchanged
+inventory synchronization is acknowledged once per project/source revision.
+
+[test_workflow_hardening.py](../lea-standalone/adapter/tests/test_workflow_hardening.py) drives the real API, SQLite commands,
+Node orchestration, report facts and UI stores with a scripted prover. It covers
+publication overlap, busy admission, lost responses, process restart and an
+unrelated project progressing while publication is blocked. The live five-target
+Overleaf run separately exercises real Lean verification.
+
+SQLite contention is handled at transaction boundaries and initial SQL reads or
+independent writes. A waiting commit retains its existing transaction; no prover
+or tool call is replayed. Database-backed contention tests cover write admission,
+reader-blocked commits, single invocation and worker ownership loss.
+The private companion distinguishes an unavailable ownership read from a lost
+lease: contention pauses new work, while an expired lease stops execution.
+Workflow tests also hold an exclusive SQL lock between proof verification and
+job publication, including cancellation reads and restart recovery.
+Runtime heartbeat delays return retryable availability errors, distinct from
+invalid credentials or expired execution ownership. Heartbeat lifetimes start
+after acquiring the writer, and the registry outbox revalidates the exact checked
+run before recovering an older save blocked by a temporary credential observation.
+Completed batch facts also retain their report identity across restart; report
+publication retries without rerunning the prover or changing target outcomes.
+
+Project-wide Formalize all waits for the complete Overleaf archive and current
+inventory before freezing its target list. The worker checks that list against
+the accepted SQL archive, including targets in input files. Existing verified
+targets are recorded as already verified rather than attention-required skips.
+Structured Lean source blocks compare declaration headers consistently and
+request named compiler evidence on both Overleaf and conversational runs.
+The pane shows the file's Lean check alongside Lea Status and its assessment
+description. Correspondence findings do not create a separate Needs review
+status or require user approval. Checked selections publish automatically; stale
+or failing artifacts retain their technical check status.
+[test_overleaf_batch_completion.py](../lea-standalone/adapter/tests/test_overleaf_batch_completion.py)
+covers publication, compiler selection, job/report delivery and both UI SQL
+projections, including a ten-target archive and rejected incomplete batches.
 
 Generated Lean work happens under:
 
@@ -58,8 +113,8 @@ Initially supported environments are `theorem`, `lemma`, `proposition`, and
 Use `uses={...}` when a theorem should depend on earlier theorems from the same
 Overleaf project. Values may be existing Lea labels or unique LaTeX labels
 (such as `uses={thm:finite-tree-leaves}`); they are not Lean theorem names. Each
-referenced theorem must already be formalized, or at least have a saved sorry
-stub from an older build, before Lea starts the new run.
+referenced theorem must already be formalized, or at least have a saved checked
+sorry stub, before Lea starts the new run.
 
 ```tex
 \begin{lemma}
@@ -162,12 +217,22 @@ argument both renders as the statement and is what's sent to Lea:
 squares of the other two sides.}
 ```
 
-The two arguments don't need to be on the same line -- whitespace (including
-blank lines) between them is fine, matching ordinary TeX argument scanning.
+Metadata may span multiple lines, and whitespace or `%` comments may separate
+any of the arguments. For example:
+
+```tex
+\leatheorem{
+  context={Use the parity definition first.}
+}% The statement follows on the next line.
+{If $n$ is even, then $n^2$ is even.}
+```
+
+Commented-out tags and command definitions are ignored by the extension.
+The same multiline metadata rules apply to `\begin{leacode}{...}`.
 One caveat that follows directly from that: a tag with **no** intended body,
-placed with nothing but whitespace before an unrelated `{...}` group, will
+placed with only whitespace or comments before an unrelated `{...}` group, will
 have that group absorbed as its body. If you don't want a second argument,
-keep something other than blank lines between the tag and the next braced
+keep actual prose or another command between the tag and the next braced
 group (the normal case of actual prose in between is never a problem).
 
 If you load `lea-tags.sty` but the extension finds a tag command with nothing
@@ -294,15 +359,14 @@ apps/lea-standalone/prover/workspace/context/overleaf/<ProjectSlug>/
 Formalization prompts include only the manifest path. Lea can open the mirrored
 `.tex` file if it decides the additional context is useful.
 
-Temporary retry behavior: when a failed theorem is retried, the companion removes
-the prior generated proof file and matching project markdown theorem entry before
-asking Lea to run again. This prevents stale failed artifacts from interfering
-with artifact mapping.
+Retries retain prior proof bytes and canonical conversation history. Source
+changes invalidate current verification. Replacements follow the existing staged
+publication and human-review rules.
 
 ## Usage And Session Links
 
-Usage comes from the standalone adapter's persisted stats endpoint. The
-companion falls back to its local job index only when the adapter is unreachable.
+Usage, job history and sessions come from SQL projections. An unavailable adapter
+is an unavailable observation; it never enables a second JSON authority.
 
 The extension opens Lea sessions through:
 
@@ -318,13 +382,14 @@ The Lean pane header has two actions that operate on the document's Lea project
 (the same repo the Lea UI's Filesystem tab shows):
 
 - **Export** downloads the whole project as a zip (source + `.lea/` assets;
-  `.git`/`.lake` excluded), streamed from the adapter through the companion's
-  `GET /project-export`.
+  `.git`/`.lake` excluded). `POST /project-export` queues preparation; download
+  bytes are retained in SQL for 24 hours and can be read without workspace access.
 - **Share** opens a panel to save a GitHub remote (`https://github.com/you/repo`)
   and push the project's commits to its `main` branch. Pushing requires a GitHub
   token, set either in the extension's settings popover ("GitHub sharing") or in
   the Lea UI's Settings — it's the same token, stored only in the adapter's
-  `config/lea.local.toml` and never persisted by the companion or Chrome.
+  protected adapter infrastructure and represented by redacted SQL status. Raw
+  credentials never enter command payloads, companion records or Chrome storage.
 
 Both actions resolve the project by the document's slug and never create one: a
 document with no formalized theorems yet has nothing to export. If a push is

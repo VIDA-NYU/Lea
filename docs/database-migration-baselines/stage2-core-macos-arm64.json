@@ -1,0 +1,26 @@
+{
+  "fixture": "Synthetic compiler evidence; 201 code rows, one target; isolated temporary database",
+  "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "architecture": "arm64",
+  "sqlite": "3.53.1",
+  "capture_ms": 1913.431,
+  "capture_batches": 11,
+  "capture_limit": 20,
+  "queries": {
+    "session_detail": {
+      "samples": 30,
+      "p50_ms": 12.229,
+      "p95_ms": 12.96
+    },
+    "session_list": {
+      "samples": 30,
+      "p50_ms": 7.975,
+      "p95_ms": 8.643
+    },
+    "proof_snapshot": {
+      "samples": 30,
+      "p50_ms": 7.626,
+      "p95_ms": 8.181
+    }
+  }
+}

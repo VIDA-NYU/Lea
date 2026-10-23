@@ -3,6 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 import json
+import hashlib
+from published_source_fixtures import publish_for
 from queue import Queue
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -10,7 +12,7 @@ from tempfile import TemporaryDirectory
 import pytest
 from fastapi import HTTPException
 
-from app import db, store, recovery, lea_status, lea_status_store, bridge, projects
+from app import db, store, recovery, lea_status, lea_status_store, bridge, projects, commands, run_commands
 from app.config import LeaConfig
 from app.routes import runs
 from app.source_context import source_hash
@@ -22,7 +24,7 @@ from lea.providers import ToolCall, Done, Usage, TextDelta
 def source(statement="True.", proof=""):
     value = dict(version=2, targetKey="target", targetKind="theorem", statement=statement, proof=proof,
         proofAssociation=dict(status="associated" if proof else "missing", method="adjacent" if proof else "none",
-                              sourceFile="main.tex", proofHash=""),
+                              sourceFile="main.tex", proofHash=hashlib.sha256(proof.encode()).hexdigest() if proof else ""),
         statementLocation=dict(sourceFile="main.tex", sourceStartLine=1, sourceEndLine=4),
         uses=[], context="", relevantSource=[], mirror=None)
     value["bundleHash"] = source_hash(value)
@@ -46,6 +48,7 @@ def paused(tmp_path, monkeypatch):
         new_formalization=dict(origin="overleaf", origin_key="doc:theorem:target",
                               display_title="target", declaration_name="target"))
     old = bundle["run"]
+    cfg = bridge._result_selection_config(cfg, store.get_formalization(old['focus_formalization_id']))
     assert store.claim_pending_run(old["id"])
     attempt = recovery.start_attempt(old["id"])
     (tmp_path / "Target.lean").write_text("theorem target : True := by sorry\n")
@@ -69,11 +72,23 @@ def paused(tmp_path, monkeypatch):
     store.update_run(old["id"], "max_turns", recoverable=True, stop_reason="turn_cap",
                      input_tokens=100, output_tokens=40, cost_usd=0.25, usage_status="final")
     recovery.finish_attempt(old["id"], attempt, "max_turns")
+    run_commands.recover_at_startup()  # Settle the manually prepared predecessor command.
     return old, cfg, tmp_path, saved
 
 
+def claim_execution(run_id):
+    """Use the same admission and ownership fence as the durable worker."""
+    from uuid import uuid4
+    receipt = run_commands.ensure_run(run_id)
+    owner = 'continuation-' + uuid4().hex
+    epoch = commands.start_worker(owner)
+    token = commands.claim(owner, epoch, 'compute', kinds={'run.execute'})
+    assert token and token['id'] == receipt['id']
+    return token
+
+
 def request(**changes):
-    return runs.ContinueRequest(idempotency_key="continue-once", source_bundle=source(),
+    return runs.ContinueRequest(idempotency_key="continue-once", source_context_ref=publish_for(None,source()),
                                 timeout_seconds=90, **changes)
 
 
@@ -107,15 +122,14 @@ def test_prepared_source_continuation_replays_after_expiry_and_keeps_pause_polic
     assert detail["runs"][0]["available_recovery_action"] == "continue"
     with db.write() as conn:
         conn.execute("update runs set allow_source_pause = 1 where id = ?", (old["id"],))
-    ref = overleaf_source.new_request(old["focus_formalization_id"])
-    overleaf_source.respond(ref, source(), document_id="doc")
+    ref = publish_for(old["focus_formalization_id"],source())
     req = runs.ContinueRequest(idempotency_key="ui-continue-once", source_context_ref=ref)
     result = runs.continue_run(old["id"], req)
     new = store.get_run(result["run_id"])
     assert new["allow_source_pause"] and new["resume_checkpoint_id"] and new["autonomous"]
     assert new["source_context_ref"] == ref
     with db.write() as conn:
-        conn.execute("update overleaf_source_requests set expires_at = '2000' where id = ?", (ref,))
+        conn.execute("update source_publishers set lease_until=\'2000\' where document_id=\'doc\'")
     assert runs.continue_run(old["id"], req)["run_id"] == result["run_id"]
     assert recovery.available_action(store.get_run(old["id"])) is None
 
@@ -128,7 +142,8 @@ def dependency_pause(paused, monkeypatch, **budget_changes):
         conn.execute("""update runs set status='cancelled', stop_reason='dependency_wait',
             waiting_dependencies_json='["verified-child"]', automation_budget_json=? where id=?""",
             (json.dumps(budget), old["id"]))
-    monkeypatch.setattr(project_dependencies, "get", lambda *_: dict(ready=True, result=dict(module="Lea.Shared.Child")))
+    from app.queries import core
+    monkeypatch.setattr(core, "fact", lambda *_: dict(ready=True, result=dict(module="Lea.Shared.Child")))
     return store.get_run(old["id"]), cfg, repo, saved, budget
 
 
@@ -137,8 +152,7 @@ def test_dependency_continuation_checks_fresh_source_and_keeps_original_progress
     old, cfg, repo, saved, budget = dependency_pause(paused, monkeypatch)
     current = source()
     current["statementLocation"]["sourceStartLine"] = 4  # capture location only
-    ref = overleaf_source.new_request(old["focus_formalization_id"])
-    overleaf_source.respond(ref, current, document_id="doc")
+    ref = publish_for(old["focus_formalization_id"],current)
     req = runs.ContinueRequest(idempotency_key="dependency-once", source_context_ref=ref, dependency_resume=True)
     result = runs.continue_run(old["id"], req)
     child = store.get_run(result["run_id"])
@@ -152,7 +166,7 @@ def test_dependency_continuation_checks_fresh_source_and_keeps_original_progress
     assert restored["proof_state"] == saved["proof_state"]
     assert store.session_detail(old["session_id"])["runs"][-1]["client_request_id"] == "dependency-once"
     with db.write() as conn:
-        conn.execute("update overleaf_source_requests set expires_at='2000' where id=?", (ref,))
+        conn.execute("update source_publishers set lease_until=\'2000\' where document_id=\'doc\'")
     assert runs.continue_run(old["id"], req)["run_id"] == child["id"]
 
 
@@ -173,8 +187,7 @@ def test_dependency_continuation_never_grants_more_allowance_automatically(pause
 def test_dependency_continuation_blocks_actual_source_changes(paused, monkeypatch, current, reason):
     from app import overleaf_source
     old, *_ = dependency_pause(paused, monkeypatch)
-    ref = overleaf_source.new_request(old["focus_formalization_id"])
-    overleaf_source.respond(ref, current, document_id="doc")
+    ref = publish_for(old["focus_formalization_id"],current)
     req = runs.ContinueRequest(idempotency_key="changed-source", source_context_ref=ref, dependency_resume=True)
     with pytest.raises(HTTPException) as error:
         runs.continue_run(old["id"], req)
@@ -186,10 +199,12 @@ def test_dependency_continuation_blocks_actual_source_changes(paused, monkeypatc
 def test_dependency_continuation_requires_the_latest_attempt_and_verified_results(paused, monkeypatch):
     from app import project_dependencies
     old, *_ = dependency_pause(paused, monkeypatch)
-    monkeypatch.setattr(project_dependencies, "get", lambda *_: dict(ready=False))
+    from app.queries import core
+    monkeypatch.setattr(core,"fact",lambda *_:dict(ready=False))
     with pytest.raises(HTTPException, match="not verified"):
         runs.continue_run(old["id"], request(dependency_resume=True))
-    monkeypatch.setattr(project_dependencies, "get", lambda *_: dict(ready=True, result=dict(module="Lea.Shared.Child")))
+    from app.queries import core
+    monkeypatch.setattr(core, "fact", lambda *_: dict(ready=True, result=dict(module="Lea.Shared.Child")))
     store.create_run_bundle(message="A newer attempt", session_id=old["session_id"], project_id=None,
         session_origin="overleaf", session_origin_url=None, model="test", provider=None, max_turns=3,
         autonomous=True, purpose="overleaf_solver", source_bundle=source(),
@@ -222,7 +237,7 @@ def test_resume_next_turn_does_not_repeat_the_saved_write_or_prior_usage(paused,
 
 def test_changed_source_and_files_are_disclosed_and_invalidate_checks(paused):
     old, cfg, repo, _ = paused
-    changed = request().model_copy(update={"source_bundle": source("False.")})
+    changed = request().model_copy(update={"source_context_ref":publish_for(None,source("False."))})
     result = runs.continue_run(old["id"], changed)
     new = store.get_run(result["run_id"])
     (repo / "Target.lean").write_text("theorem target : False := by sorry\n")
@@ -244,7 +259,7 @@ def test_duplicate_and_concurrent_admission_create_one_successor(paused):
     assert len({item["run_id"] for item in results}) == 1
     with db.connect() as conn:
         assert conn.execute("select count(*) from runs where resumes_run_id = ?", (old["id"],)).fetchone()[0] == 1
-    changed = request().model_copy(update={"source_bundle": source("False.")})
+    changed = request().model_copy(update={"source_context_ref":publish_for(None,source("False."))})
     with pytest.raises(HTTPException) as error:
         runs.continue_run(old["id"], changed)
     assert error.value.status_code == 409
@@ -291,13 +306,11 @@ def test_runtime_change_rejects_restoration_before_paid_work(paused):
                                       lea_status.seed(new["id"]), "Continue")
 
 
-def test_incompatible_runtime_is_rejected_before_admission(paused, monkeypatch):
-    old, cfg, _, _ = paused
-    monkeypatch.setattr(runs, "load_config", lambda: replace(cfg, tools=["read_file"]))
-    with pytest.raises(HTTPException, match="incompatible") as error:
-        runs.continue_run(old["id"], request())
-    assert error.value.status_code == 409
-    assert store.get_run_submission("continue-once") is None
+def test_incompatible_runtime_is_rejected_by_worker_before_paid_work(paused, monkeypatch):
+    old,cfg,repo,_=paused
+    result=runs.continue_run(old['id'],request())
+    with pytest.raises(ValueError,match='incompatible'):
+        recovery.prepare_continuation(store.get_run(result['run_id']),replace(cfg,tools=['read_file']),repo,lea_status.seed(result['run_id']),'Continue')
 
 
 def test_expired_pause_receives_fresh_time_and_preserves_model(paused, monkeypatch):
@@ -323,20 +336,6 @@ def test_distinct_concurrent_requests_create_at_most_one_successor(paused):
     assert sum(result == 409 for result in results) == 3
 
 
-def test_compacted_history_classifier_uses_current_mathematical_source(paused, monkeypatch):
-    _, cfg, _, _ = paused
-    seen = []
-    def classifier(*args, **kwargs):
-        seen.append(args[2])
-        yield TextDelta("PROVED")
-        yield Done(Usage(), 0.0)
-    monkeypatch.setattr(agent, "stream", classifier)
-    result = agent._classify_final_result(model="test", messages=[{"role": "user", "content": "Compacted resume summary"}],
-        final_text="Done", theorem_signature="theorem target : True",
-        config=replace(cfg, status_context={"source_bundle": source("Current mathematical statement.")}))
-    assert result[0] == "proved"
-    assert "Current mathematical statement." in seen[0][0]["content"]
-    assert "Compacted resume summary" not in seen[0][0]["content"]
 
 
 def test_changed_dependency_source_requires_fresh_check(paused):
@@ -346,7 +345,7 @@ def test_changed_dependency_source_requires_fresh_check(paused):
                                  "endLine": 2, "content": "New definition", "truncated": False}]
     bundle["bundleHash"] = source_hash(bundle)
     assert bundle["sourceIdentityHash"] == source()["sourceIdentityHash"]
-    row = runs.continue_run(old["id"], request().model_copy(update={"source_bundle": bundle}))
+    row = runs.continue_run(old["id"], request().model_copy(update={"source_context_ref":publish_for(None,bundle)}))
     state, changed = recovery.prepare_continuation(store.get_run(row["run_id"]), cfg, repo,
                                                   lea_status.seed(row["run_id"]), "Continue")
     assert changed and state["proof_state"]["latest_check_passed"] is None
@@ -419,7 +418,7 @@ def test_bridge_executes_successive_continuations_with_separate_usage(paused, mo
         row = store.get_run(result["run_id"])
         queue = Queue()
         task = store.get_run_submission(f"segment-{index}")["message"]["content"]
-        bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=row["id"],
+        bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=row["id"], command_token=claim_execution(row["id"]),
             task=task, config=replace(cfg, max_turns=row["max_turns"]),
             events=queue, autonomous=True, purpose="overleaf_solver"))
         finished = store.get_run(row["id"])
@@ -442,11 +441,15 @@ def test_automatic_recovery_uses_the_continuations_own_checkpoint(paused, monkey
     state, _ = recovery.prepare_continuation(row, cfg, repo, lea_status.seed(row["id"]), "Continue")
     state.update(turn=3, input_tokens=11, output_tokens=4, cost_usd=0.02)
     state["messages"].append({"role": "assistant", "content": "Own continuation checkpoint"})
+    crashed_token = claim_execution(row["id"])
     assert store.claim_pending_run(row["id"])
     attempt = recovery.start_attempt(row["id"])
     recovery.Recorder(row["id"], attempt, recovery.manifest(run=row, config=cfg, repo=repo))("checkpoint", state)
     store.checkpoint_run_usage(row["id"], 11, 4, 0.02, 1)
     assert recovery.recover_running()["resumed"] == 1
+    run_commands.recover_at_startup()
+    with db.connect() as conn:
+        assert not run_commands.owns(conn, row['id'], crashed_token)
     monkeypatch.setattr(projects, "repo_for_session", lambda *_: repo)
     seen = []
     def provider(*args, **kwargs):
@@ -454,7 +457,7 @@ def test_automatic_recovery_uses_the_continuations_own_checkpoint(paused, monkey
         yield ToolCall("read_file", {"path": "Target.lean"}, "after-crash")
         yield Done(Usage(11, 4), 0.02)
     monkeypatch.setattr(agent, "_provider_stream", provider)
-    bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=row["id"], task="Continue",
+    bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=row["id"], command_token=claim_execution(row["id"]), task="Continue",
         config=cfg, events=Queue(), autonomous=True, purpose="overleaf_solver"))
     finished = store.get_run(row["id"])
     assert finished["status"] == "max_turns", finished.get("result_detail")
@@ -480,15 +483,19 @@ def test_completion_reuses_only_current_saved_verification(paused, monkeypatch, 
     current_source = source("True, with an added clarification.") if revision == "source" else source()
     if revision == "dependencies":
         (repo / "lean-toolchain").write_text("leanprover/lean4:v4.20.0\n")
-    result = runs.continue_run(old["id"], request().model_copy(update={"source_bundle": current_source}))
+    result = runs.continue_run(old["id"], request().model_copy(update={"source_context_ref":publish_for(None,current_source)}))
     row = store.get_run(result["run_id"])
     cfg = replace(cfg, max_turns=row["max_turns"])
     if revision == "restart":
         state, _ = recovery.prepare_continuation(row, cfg, repo, lea_status.seed(row["id"]), "Continue")
+        crashed_token = claim_execution(row["id"])
         assert store.claim_pending_run(row["id"])
         attempt = recovery.start_attempt(row["id"])
         recovery.Recorder(row["id"], attempt, recovery.manifest(run=row, config=cfg, repo=repo))("checkpoint", state)
         assert recovery.recover_running()["resumed"] == 1
+        run_commands.recover_at_startup()
+        with db.connect() as conn:
+            assert not run_commands.owns(conn, row['id'], crashed_token)
     calls = []
     checks = []
     def provider(*args, **kwargs):
@@ -496,17 +503,27 @@ def test_completion_reuses_only_current_saved_verification(paused, monkeypatch, 
         yield TextDelta("The proof is complete.")
         yield Done(Usage(9, 3), 0.01)
     monkeypatch.setattr(agent, "_provider_stream", provider)
-    monkeypatch.setattr(agent, "_classify_final_result", lambda **_: ("proved", None, Usage(), 0.0))
     monkeypatch.setitem(registry.REGISTRY, "lean_check", replace(registry.REGISTRY["lean_check"],
         handler=lambda args: checks.append(args) or CheckText("Lean check passed.", mock_execution(args["path"]), Path(args["path"]).read_text())))
     queue = Queue()
-    bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=row["id"], task="Continue",
+    bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=row["id"], command_token=claim_execution(row["id"]), task="Continue",
         config=cfg, events=queue, autonomous=True, purpose="overleaf_solver"))
     finished = store.get_run(row["id"])
     assert finished["status"] == "proved", finished.get("result_detail")
     assert len(calls) == 1
     assert len(checks) == 1  # Legacy checkpoints have no compiler-input evidence.
     assert finished["cost_usd"] == pytest.approx(0.01)
+
+
+@pytest.fixture
+def reviewed_runtime(monkeypatch):
+    """Exercise historical release pairs without certifying this new runtime."""
+    releases = json.loads(Path(recovery.__file__).with_name('checkpoint_compatibility.json').read_text())
+    destination = releases[0]['destination']
+    original = recovery.manifest
+    def historical_manifest(**kwargs):
+        return {**original(**kwargs), 'tool_code_digests': destination}
+    monkeypatch.setattr(recovery, 'manifest', historical_manifest)
 
 
 def install_supported_predecessor(old, cfg, repo, release_index=0):
@@ -522,8 +539,9 @@ def install_supported_predecessor(old, cfg, repo, release_index=0):
     return state, manifest, checkpoint_id
 
 
-@pytest.mark.parametrize("release_index", [1, 2, 3, 4])
-def test_reviewed_provider_change_requires_a_settled_exact_runtime(paused, release_index):
+@pytest.mark.parametrize("release_index", range(1, len(json.loads(
+    Path(recovery.__file__).with_name("checkpoint_compatibility.json").read_text()))))
+def test_reviewed_provider_change_requires_a_settled_exact_runtime(paused, reviewed_runtime, release_index):
     old, cfg, repo, _ = paused
     state, manifest, _ = install_supported_predecessor(old, cfg, repo, release_index)
     current = recovery.manifest(run=old, config=cfg, repo=repo)
@@ -535,7 +553,7 @@ def test_reviewed_provider_change_requires_a_settled_exact_runtime(paused, relea
     assert not recovery.compatible_runtime(manifest, changed, state)
 
 
-def test_known_settled_predecessor_migrates_without_replay_or_recount(paused, monkeypatch):
+def test_known_settled_predecessor_migrates_without_replay_or_recount(paused, reviewed_runtime, monkeypatch):
     old, cfg, repo, original = paused
     saved, manifest, _ = install_supported_predecessor(old, cfg, repo)
     result = runs.continue_run(old["id"], request())
@@ -565,7 +583,7 @@ def test_known_settled_predecessor_migrates_without_replay_or_recount(paused, mo
     monkeypatch.setattr(agent, "_provider_stream", provider)
     monkeypatch.setitem(registry.REGISTRY, "lean_check", replace(registry.REGISTRY["lean_check"],
         handler=lambda args: checks.append(args) or "Error: proof contains sorry."))
-    bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=new["id"],
+    bridge.run_lea(bridge.RunnerContext(session_id=old["session_id"], run_id=new["id"], command_token=claim_execution(new["id"]),
         task="Continue", config=replace(cfg, max_turns=5), events=Queue(),
         autonomous=True, purpose="overleaf_solver"))
     finished = store.get_run(new["id"])
@@ -577,7 +595,7 @@ def test_known_settled_predecessor_migrates_without_replay_or_recount(paused, mo
     assert (repo / "Target.lean").read_text() == "theorem target : True := by sorry\n"
 
 
-def test_compatible_crash_migration_preserves_stall_state_and_accounting(paused):
+def test_compatible_crash_migration_preserves_stall_state_and_accounting(paused, reviewed_runtime):
     old, cfg, repo, _ = paused
     state, old_manifest, _ = install_supported_predecessor(old, cfg, repo)
     current = recovery.manifest(run=old, config=cfg, repo=repo)
@@ -591,7 +609,7 @@ def test_compatible_crash_migration_preserves_stall_state_and_accounting(paused)
 
 
 @pytest.mark.parametrize("problem", ["unknown_predecessor", "different_tool", "uncertain", "corrupt_stall", "corrupt_usage"])
-def test_migration_rejects_unreviewed_or_uncertain_state(paused, problem):
+def test_migration_rejects_unreviewed_or_uncertain_state(paused, reviewed_runtime, problem):
     old, cfg, repo, _ = paused
     state, manifest, checkpoint_id = install_supported_predecessor(old, cfg, repo)
     if problem == "unknown_predecessor":
@@ -607,10 +625,15 @@ def test_migration_rejects_unreviewed_or_uncertain_state(paused, problem):
             conn.execute("insert into run_invocations(id,run_id,attempt_id,kind,name,turn,started_at) values ('uncertain',?,?,'model','stream',3,?)", (old["id"], "legacy-attempt", db.utc_now()))
     with db.write() as conn:
         conn.execute("update run_checkpoints set payload=?,manifest=? where id=?", (json.dumps(state), json.dumps(manifest), checkpoint_id))
-    with pytest.raises(HTTPException):
-        runs.continue_run(old["id"], request())
-    with db.connect() as conn:
-        assert conn.execute("select count(*) from runs where resumes_run_id=?", (old["id"],)).fetchone()[0] == 0
+    if problem in {'unknown_predecessor','different_tool'}:
+        result=runs.continue_run(old['id'],request())
+        with pytest.raises(ValueError,match='incompatible'):
+            recovery.prepare_continuation(store.get_run(result['run_id']),cfg,repo,lea_status.seed(result['run_id']),'Continue')
+    else:
+        with pytest.raises(HTTPException):runs.continue_run(old['id'],request())
+        with db.connect() as conn:
+            assert conn.execute('select count(*) from runs where resumes_run_id=?',(old['id'],)).fetchone()[0]==0
+
 
 
 # This module mocks compiler behavior; bind those mock verdicts to their inputs.

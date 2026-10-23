@@ -197,22 +197,33 @@ This addresses the original motivating question directly: an enclosing
 block was only ever needed because a single-argument tag carries no body
 text of its own. With a body argument, there's nothing left to enclose.
 
-The metadata and body arguments don't need to be on the same line (TeX's
-own argument scanning skips whitespace, including newlines, between
-arguments, and the parser mirrors that exactly rather than approximating
-it) -- but anything other than whitespace between them (prose, a comment,
-another command) means there's no body argument, and the tag falls back to
-needing an enclosing environment, with a clearer `missing_environment`
-message pointing at this option.
+Both metadata and body arguments may span multiple lines. TeX whitespace
+and `%` comments may separate the command, metadata, and optional body:
+
+```tex
+\leatheorem% Metadata follows.
+{
+  label=even_square,
+  context={Use the parity definition first.}
+}% The statement follows.
+{If $n$ is even, then $n^2$ is even.}
+```
+
+Comments inside metadata are removed with TeX semantics, including their
+line ending; escape a literal percent sign as `\%`. Prose or another command
+between the two arguments prevents a body argument, so the tag instead
+requires an enclosing environment. Commented-out tags, command definitions,
+and literal examples in verbatim environments are not targets. Opening a
+`.sty` or `.cls` file does not generate tag diagnostics.
 
 **Caveat, verified against real `pdflatex` output, not just reasoned about:**
 because TeX's argument scanning (and this parser, deliberately matching it)
-skips arbitrary whitespace looking for the next `{`, a single-argument tag
+skips whitespace and comments looking for the next `{`, a single-argument tag
 immediately followed by an unrelated standalone `{...}` group -- with
-nothing but blank lines between them -- *will* be absorbed as that tag's
+only whitespace or comments between them -- *will* be absorbed as that tag's
 body, both in real Overleaf compilation and in this parser's detection.
 Avoid leaving a tag with no intended body directly before an unrelated
-braced group with nothing in between.
+braced group with only whitespace or comments in between.
 
 A malformed standalone tag (e.g. an invalid `label=`) is correctly rejected
 by `targetParserCore.mjs` like any other diagnostic, but does **not**
@@ -299,10 +310,11 @@ reuses verbatim.
    regex-scan for `\lea`, `\leatheorem`, `\lealemma`, `\leaproposition`,
    `\leacorollary`, `\leadefinition` (word-boundary, not preceded by a
    letter, so it doesn't match a user's own `\leaniteration`-style macro),
-   then extract the single `{...}` argument with the existing
-   `parseBalancedSuffix` helper. Reject (with a diagnostic) a tag command
-   whose argument isn't a single balanced brace group immediately following
-   it.
+   using the shared executable-source view, which masks ordinary comments,
+   command definitions and verbatim contents without changing offsets.
+   Extract `{...}` arguments with the multiline, comment-aware reader.
+   Diagnose missing arguments separately from unterminated groups. The
+   existing same-line helper remains in use for environment titles/labels.
 2. The named wrappers map directly to a `kind` (`\leatheorem` /
    `\lealemma` / `\leaproposition` / `\leacorollary` → `theorem`,
    `\leadefinition` → `definition`); the generic `\lea{...}` reads `kind=`
@@ -315,10 +327,8 @@ reuses verbatim.
    argument of its own. The comment-marker path keeps using the allowlisted
    `findSupportedEnvironments` unchanged, so no existing document's behavior
    changes.
-4. After the metadata argument, check (skipping whitespace, including
-   newlines) for a second `{...}` argument, matched with a *newline-tolerant*
-   balanced-brace scan (the metadata argument's own matcher stays
-   single-line, matching every other same-line convention in this parser).
+4. After the metadata argument, skip whitespace and comments and check for
+   a second `{...}` argument using the same balanced, comment-aware reader.
    If present, this is the standalone form: a synthetic environment-shaped
    object is built directly from the body argument's span (`name` = the tag
    command name, `bodyFrom`/`bodyTo` = inside the body's braces) and fed into
@@ -440,8 +450,9 @@ explicitly rather than decided here:
 11. A tag with a body argument (the standalone form) needs no enclosing
     environment and produces a target whose `latexEnvironment` is the tag
     command name.
-12. The standalone form's body argument may span multiple lines/paragraphs;
-    the metadata argument stays single-line.
+12. Metadata and statement arguments may span multiple lines; whitespace
+    and comments may separate them. `leacode` metadata follows the same rules,
+    while its body remains verbatim.
 13. A standalone tag's body, once stripped, excludes any nested
     `\label{...}` the same way environment-enclosed targets do.
 

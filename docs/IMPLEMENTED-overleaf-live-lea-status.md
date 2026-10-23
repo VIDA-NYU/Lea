@@ -54,6 +54,42 @@ The UI action regression checks live confidence, stale-source labeling, retained
 
 ## Activation and rollout
 
+### 2026-10-22 semantic confidence and assessed scope
+
+New final assessments include a structured correspondence basis: the exact assessed
+portion, omitted source assertions, reconciled or incomplete document context, an
+explanation of the interpretation, and cited LaTeX passages. The solver must reconcile
+relevant later definitions and uses before claiming a domain convention is absent.
+The q-series regression distinguishes a complex totalized `tsum` encoding from a
+coefficient identity or convergence proof.
+
+The shared status contract rejects high confidence with unresolved semantic findings
+or incomplete context. Findings and their semantic impact survive omitted updates
+and Lean-side repairs. Clearing semantic uncertainty requires an explanation and
+refreshed correspondence; a source or scope change cannot reuse an old context basis.
+Omitted assertions or unfinished target obligations require partial scope. Complete
+definitions have their own `definition` scope and cannot claim a theorem proof.
+Meaning-preserving repairs can still carry high scoped confidence and an open source
+correction. No needs-review outcome, approval gate, or correspondence classifier is
+introduced.
+
+Status details show the assessed scope, omitted parts, and context evidence. Batch
+narratives receive bounded scope/context facts. Publication validation remains atomic;
+rejected updates retain the preceding assessment and run outcome. Exact retries of
+historical accepted invocations remain idempotent under the stricter contract.
+
+Validation passed: 25 prover status/outcome regressions, the prompt-policy module,
+176 adapter bridge/status/continuation/report/review regressions, 99 final focused
+status/continuation/handoff checks after binding correspondence to the complete
+source bundle, 257 companion/status/dependency/check-state tests, and the Chromium
+status-details regression. The existing checked-disproof integration also passed.
+Provider outcomes were scripted; no live model request was made. JavaScript syntax
+checks and `git diff --check` passed.
+
+Restart the worker and companion and reload the extension together to activate these
+changes. There is no database migration or rewrite of historical assessments. A new
+formalization or continuation supplies a fresh assessment under the revised contract.
+
 ### 2026-10-10 dependency waits and source freshness
 
 Dependency waits identify their supporting results and actual blockers in the collapsed formalization card, expanded status, and editor popup. **View supporting result** opens the shared mathematics details with the existing Inspect/Retry/Resume controls. **Stop waiting** persists a target-specific stop; **Continue when ready** explicitly re-arms it. An unavailable dependency registry or a blocked continuation offers **Refresh status**. Ordinary checkpoint pauses retain their Resume action. Incomplete reporting is a separate detail; a segment with no assessment does not claim that a published assessment was retained.

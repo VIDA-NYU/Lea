@@ -1,6 +1,7 @@
 """Durable live status: admission, ordering, replay, revisions and interruptions."""
 from concurrent.futures import ThreadPoolExecutor
 import json
+import hashlib
 from pathlib import Path
 import pytest
 from app import db, store, lea_status, lea_status_store
@@ -18,7 +19,7 @@ def test_version_2_source_hash_matches_browser_golden_fixture():
 
 def bundle(proof="By triviality."):
     value = dict(version=2, targetKey="target", targetKind="theorem", statement="True.", proof=proof,
-        proofAssociation=dict(status="associated", method="adjacent", sourceFile="main.tex", proofHash=""),
+        proofAssociation=dict(status="associated", method="adjacent", sourceFile="main.tex", proofHash=hashlib.sha256(proof.encode()).hexdigest() if proof else ""),
         statementLocation=dict(sourceFile="main.tex", sourceStartLine=1, sourceEndLine=4),
         uses=[], context="", relevantSource=[], mirror=None)
     value["bundleHash"] = source_hash(value)
@@ -35,6 +36,13 @@ def finding(**changes):
     return dict(key="gap", severity="warning", category="source_gap", title="Missing case",
         detail="The boundary case is omitted.", lean_resolution="planned", source_resolution="open",
         correction="Prove the boundary case explicitly.") | changes
+
+
+def correspondence(**changes):
+    return dict(scope_summary="The displayed defining sum.", omitted_source_parts=[],
+        context_status="reconciled", context_summary="The later domain convention applies to the target.",
+        context_evidence=[dict(side="latex", path="main.tex", start_line=12,
+                              excerpt="q = exp(2*pi*i*tau), tau in the upper half-plane")]) | changes
 
 
 def test_tool_contract_reserves_blocking_for_semantic_changes():
@@ -101,6 +109,141 @@ def test_source_only_publication_is_durable_and_idempotent(fresh):
     assert lea_status_store.context(run)["source_bundle"]["proof"] == "By triviality."
     db.init_db()
     assert lea_status_store.get(first["id"]) == first
+
+
+def test_semantic_confidence_rejection_is_atomic_and_does_not_change_run_outcome(fresh):
+    run, form, session = ids(fresh)
+    store.link_formalization_file(form, "Target.lean", "primary")
+    store.add_code_step(session, run, "Target.lean", content="def target : Nat := 0", formalization_id=form)
+    initial, _ = lea_status.publish(run, "initial", payload(scope="partial_artifact",
+        correspondence=correspondence(), finding_updates=[finding(
+            category="formalization_choice", semantic_impact="unresolved", lean_resolution="applied")]))
+    before = store.get_run(run)["status"]
+    with pytest.raises(ValueError, match="unresolved semantic ambiguity"):
+        lea_status.publish(run, "overconfident", payload(confidence="high", scope="partial_artifact"))
+    assert lea_status_store.latest(run)["id"] == initial["id"]
+    assert len(lea_status.history(form)["updates"]) == 1
+    assert store.get_run(run)["status"] == before
+    # The compiler outcome and ordinary source warnings do not manufacture a review state.
+    assert lea_status.current(form)["attention"] == "source_issue"
+
+
+def test_definition_publication_checks_scope_against_bound_source(fresh):
+    source = bundle("")
+    source["targetKind"] = "definition"
+    source["statement"] = "The defining sum."
+    source["bundleHash"] = source_hash(source)
+    source["sourceIdentityHash"] = source_hash(source, identity=True)
+    # The fresh fixture isolates storage; this run has its own definition binding.
+    data = store.create_run_bundle(message="Define target", session_id=None, project_id=None,
+        session_origin="overleaf", session_origin_url=None, model="test", provider=None,
+        max_turns=3, autonomous=True, purpose="overleaf_solver", source_bundle=source,
+        new_formalization=dict(origin="overleaf", origin_key="doc:definition:target",
+                               kind="definition", display_title="target", declaration_name="target"))
+    run, form, session = ids(data)
+    store.link_formalization_file(form, "Target.lean", "primary")
+    store.add_code_step(session, run, "Target.lean", content="def target : Nat := 0", formalization_id=form)
+    with pytest.raises(ValueError, match="do not claim a theorem proof"):
+        lea_status.publish(run, "overbroad", payload(scope="statement_and_proof", correspondence=correspondence()))
+    assert lea_status_store.latest(run) is None
+    accepted, _ = lea_status.publish(run, "definition", payload(scope="definition", correspondence=correspondence()))
+    assert accepted["assessment"]["scope"] == "definition"
+
+
+def test_exact_legacy_status_replays_survive_the_stricter_final_contract(fresh):
+    run, form, _ = ids(fresh)
+    first, _ = lea_status.publish(run, "legacy", payload())
+    legacy = payload(kind="final", confidence="high", matches=[], caveats=[],
+                     remaining_obligations=[], limitations=[], recommended_next_action=dict(kind="inspect_result", detail="Inspect."))
+    # Simulate a durable update accepted by the old version, before correspondence was required.
+    with db.write() as conn:
+        conn.execute("update lea_status_updates set kind='final', payload_json=?, assessment_json=? where id=?",
+                     (json.dumps(legacy), json.dumps(legacy), first["id"]))
+    store.update_run(run, "proved", result_kind="proved")
+    replay, _ = lea_status.publish(run, "legacy", legacy)
+    assert replay["id"] == first["id"]
+    assert lea_status_store.append(run, "legacy", legacy, {}, "unused")["id"] == first["id"]
+    with pytest.raises(ValueError, match="different content"):
+        lea_status.publish(run, "legacy", {**legacy, "confidence": "medium"})
+    with pytest.raises(ValueError, match="Final update must refresh"):
+        lea_status.publish(run, "new-invocation", legacy)
+
+
+def test_inventory_assessments_share_one_fresh_response_snapshot(fresh, monkeypatch):
+    from app import alignment_checks, formalizations
+    from app.read_projections import current_snapshot
+    from app.routes.lea_status import compare_assessments, AssessmentComparisons
+    run, form, _ = ids(fresh)
+    lea_status.publish(run, "initial", payload())
+    observations = []
+    captures = []
+    capture_original = formalizations.current_snapshot
+
+    def capture_current(*args, **kwargs):
+        captures.append(args[0])
+        return capture_original(*args, **kwargs)
+
+    monkeypatch.setattr(formalizations, "current_snapshot", capture_current)
+    for module in (lea_status, alignment_checks):
+        original = module._snapshot
+
+        def capture(*args, _original=original, **kwargs):
+            observations.append(current_snapshot())
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(module, "_snapshot", capture)
+    request = AssessmentComparisons(comparisons=[dict(formalization_id=form,
+        source_bundle=bundle(), coverage="complete", alignment_source_bundle_hash=bundle()["bundleHash"])])
+    result = compare_assessments.worker(request)["assessments"][form]
+    assert result["lea_status"]["freshness"] == "current"
+    assert result["lea_check"]["status"] == "N/A"
+    assert len(observations) == 2 and observations[0] is observations[1]
+    assert observations[0] is not None
+    assert captures == [form]
+    assert current_snapshot() is None
+    previous = observations[0]
+    observations.clear()
+    compare_assessments.worker(request)
+    assert observations[0] is not None and observations[0] is not previous
+    assert captures == [form, form]
+
+
+def test_inventory_assessments_do_not_hide_other_targets_on_invalid_input(fresh):
+    from app.routes.lea_status import compare_assessments, AssessmentComparisons
+    _, form, _ = ids(fresh)
+    request = AssessmentComparisons(comparisons=[
+        dict(formalization_id="missing", source_bundle=bundle()),
+        dict(formalization_id=form, source_bundle=bundle(), coverage="complete")])
+    result = compare_assessments.worker(request)["assessments"]
+    assert result["missing"]["error"] == "Formalization not found"
+    assert result[form]["lea_status"]["freshness"] == "current"
+
+
+def test_inventory_assessments_retry_when_inputs_change_during_the_response(fresh, monkeypatch, tmp_path):
+    from app import alignment_checks
+    from app.read_projections import current_snapshot
+    from app.routes.lea_status import compare_assessments, AssessmentComparisons
+    _, form, _ = ids(fresh)
+    path = tmp_path / "proof.lean"
+    path.write_text("old")
+    reads = []
+
+    def status(*args, **kwargs):
+        current_snapshot().observation(path)
+        reads.append(path.read_text())
+        return {"version": reads[-1]}
+
+    def legacy(*args, **kwargs):
+        # Some filesystems timestamp rapid rewrites at the same clock tick.
+        # A different size guarantees this injected mutation changes identity.
+        path.write_text("new content") if path.read_text() == "old" else None
+        return {"lea_check": {"status": "N/A"}}
+
+    monkeypatch.setattr(lea_status, "current", status)
+    monkeypatch.setattr(alignment_checks, "current", legacy)
+    request = AssessmentComparisons(comparisons=[dict(formalization_id=form, source_bundle=bundle())])
+    assert compare_assessments.worker(request)["assessments"][form]["lea_status"]["version"] == "new content"
+    assert reads == ["old", "new content"]
 
 
 def rehash_source(value):
@@ -181,16 +324,16 @@ def test_source_comparison_route_validates_hashes_and_target_binding(fresh):
     from fastapi import HTTPException
     from app.routes.lea_status import compare, SourceComparison
     _, form, _ = ids(fresh)
-    assert compare(form, SourceComparison(source_bundle=bundle(), coverage="complete"))["lea_status"]["freshness"] == "current"
+    assert compare.worker(form, SourceComparison(source_bundle=bundle(), coverage="complete"))["lea_status"]["freshness"] == "current"
     invalid = bundle()
     invalid["statement"] = "Changed without recomputing the hash"
     with pytest.raises(HTTPException) as error:
-        compare(form, SourceComparison(source_bundle=invalid))
+        compare.worker(form, SourceComparison(source_bundle=invalid))
     assert error.value.status_code == 422
     invalid = bundle()
     invalid["targetKey"] = "another_target"
     with pytest.raises(HTTPException) as error:
-        compare(form, SourceComparison(source_bundle=rehash_source(invalid)))
+        compare.worker(form, SourceComparison(source_bundle=rehash_source(invalid)))
     assert error.value.status_code == 422
 
 

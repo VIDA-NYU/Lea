@@ -1,37 +1,92 @@
-# Lea Interface — run both front ends' backends in one prebuilt container. The
-# only thing users install is Docker. This serves:
-#   - the standalone UI + adapter on http://localhost:8001
-#   - the Overleaf companion on   http://localhost:31245
-#
-#   docker compose pull       # fetch the current VIDA image
-#   docker compose up         # start it; open http://localhost:8001
-#   # then add your API key in the Settings pane (no key needed to boot)
-#
-# The published image supports linux/amd64 and linux/arm64, so Docker selects
-# the correct image for Intel and Apple-Silicon machines automatically.
-#
-# Developing locally? Build the same Dockerfile from source with:
-#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
-#
-# Session metadata, saved settings/key, proof repositories, project registry,
-# and Overleaf job logs persist on the host. The bundled Lake workspace stays
-# image-owned so upgrades cannot leave users on stale Lean/Mathlib metadata.
+# Existing host directories and named Mathlib volume are retained on upgrade.
+# The API has no workspace/config volume. Only the worker executes Lea.
+x-image: &image
+  image: ghcr.io/vida-nyu/leaui:main
+  init: true
+  restart: "no"
+x-workspace-volumes: &workspace-volumes
+  - ./data:/app/data
+  - ./config:/app/config
+  - ./proofs:/app/prover/workspace/proofs
+  - ./projects:/app/prover/workspace/projects
+  - ./overleaf-state:/app/apps/overleaf-extension/.overleaf-lean-stub
+  - lea-workspace-ownership:/app/prover/workspace/.lea-runtime
+  - lea-mathlib-build:/app/prover/workspace/.lake/packages/mathlib/.lake/build
 
 services:
+  migrate:
+    <<: *image
+    command: [migrate]
+    environment:
+      LEA_SHARED_DATA_DIR: /app/data
+      LEA_WORKSPACE_OWNERSHIP_DIR: /app/prover/workspace/.lea-runtime
+    # Privileged one-shot bootstrap can recover old Git-backed content. No
+    # HTTP/API process is started with these mounts.
+    volumes: *workspace-volumes
+    healthcheck:
+      disable: true
   lea:
-    image: ghcr.io/vida-nyu/leaui:main
+    <<: *image
+    image: ghcr.io/vida-nyu/leaui-api:main
+    command: [api]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     ports:
-      - "8001:8001"              # standalone UI + adapter
-      - "31245:31245"            # Overleaf companion
+      - "127.0.0.1:8001:8001"
+    environment:
+      LEA_SHARED_DATA_DIR: /app/data
+      LEA_ALLOWED_HOSTS: lea
     volumes:
-      - ./data:/app/data         # persisted SQLite DB + per-run event logs
-      - ./config:/app/config     # persisted settings + API key (written by the Settings pane)
-      - ./proofs:/app/prover/workspace/proofs       # proof/project git repositories
-      - ./projects:/app/prover/workspace/projects   # project registry metadata
-      - ./overleaf-state:/app/apps/overleaf-extension/.overleaf-lean-stub
-      - lea-mathlib-build:/app/prover/workspace/.lake/packages/mathlib/.lake/build
-    init: true                   # PID 1 signal handling / zombie reaping
-    restart: "no"
+      - ./data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, curl, -fsS, 'http://127.0.0.1:8001/api/health']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+  worker:
+    <<: *image
+    command: [worker]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      LEA_SHARED_DATA_DIR: /app/data
+      LEA_API_BASE_URL: http://lea:8001
+      LEA_WORKSPACE_OWNERSHIP_DIR: /app/prover/workspace/.lea-runtime
+    volumes: *workspace-volumes
+    healthcheck:
+      test: [CMD, /app/adapter/.venv/bin/python, /app/adapter/worker_health.py]
+      interval: 10s
+      timeout: 3s
+      start_period: 40s
+      retries: 3
+  companion:
+    <<: *image
+    image: ghcr.io/vida-nyu/leaui-companion:main
+    depends_on: [lea]
+    environment:
+      LEA_API_BASE_URL: http://lea:8001
+    ports:
+      - "127.0.0.1:31245:31245"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, node, -e, 'fetch("http://127.0.0.1:31245/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))']
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
 volumes:
   lea-mathlib-build:
+  lea-workspace-ownership:
+    # All deployments pointing at the same physical proofs/DB must use this
+    # same local volume. Independent workspaces must choose distinct names.
+    name: ${LEA_WORKSPACE_OWNERSHIP_VOLUME:-lea-workspace-ownership}

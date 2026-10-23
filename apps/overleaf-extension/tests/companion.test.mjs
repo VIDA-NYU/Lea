@@ -15,8 +15,12 @@ import {
   handleChatMessage,
   handleChatPoll,
   handleChatSession,
+  handleReview,
   handleFormalize,
   handleFormalizeAll,
+  handleBatchCancel,
+  handleFormalizeBatchReportSave,
+  handleLeanPaneRepairStatus,
   handleDependencyRetry,
   handleDependencyWaitControl,
   admitDependencyContinuation,
@@ -31,8 +35,10 @@ import {
   handleGithubImportStatus,
   handleGithubTokenUpdate,
   handleLeanPaneManifest,
+  handleSourceContextManifest,
   handleMirrorTex,
   handleProjectIdentity,
+  handleProjectDefaultName,
   handleProjectIdentityPreview,
   handleProjectIdentityUpdate,
   handleProjectExport,
@@ -45,9 +51,12 @@ import {
   handleUpdateLeaSettings,
   recoverFormalizedStatusFromTargetPath,
   recoverInterruptedJobs,
+  reconcileRecoveredBatches,
+  resolveTheoremUses,
+  setWorkerDatabase,
   resolveProofOutcome,
   validateLeaRepo
-} from "../companion/server.mjs";
+} from "../companion/workerService.mjs";
 import {
   buildLeaProjectMarkdownPath,
   buildLeaWorkspacePath,
@@ -63,6 +72,48 @@ test("companion listen host stays loopback-local unless a container overrides it
   assert.equal(companionListenHost({ LEA_COMPANION_HOST: "  " }), "127.0.0.1");
 });
 
+test("source acquisition parses current proof and dependencies without adapter/status calls", async () => {
+  const state = await makeState({ fetchImpl: async () => {
+    assert.fail("Source acquisition must not wait for the adapter's proof/status inventory");
+  } });
+  const files = [{ path: "main.tex", content: [
+    "\\input{definitions}",
+    "\\begin{lemma}\\label{lem:error}",
+    "% lea: formalize label=descent_error uses={descent_step}",
+    "The centered update identity.",
+    "\\end{lemma}",
+    "\\begin{proof}",
+    "Expand the existing step and collect terms.",
+    "\\end{proof}"
+  ].join("\n") }, { path: "definitions.tex", content: "Current definitions." }];
+  const request = { overleafProjectId: "project-1", files, sourceCoverage: "complete" };
+  const result = await handleSourceContextManifest(request, state);
+  const expected = buildLeanPaneManifest({ ...request });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.items.length, 1);
+  const item = result.body.items[0];
+  assert.equal(item.label, "descent_error");
+  assert.deepEqual(item.targetUses, ["descent_step"]);
+  assert.equal(item.sourceBundle.proof, "Expand the existing step and collect terms.");
+  assert.equal(item.sourceBundle.sourceIdentityHash, expected.items[0].sourceBundle.sourceIdentityHash);
+  assert.equal(item.sourceBundle.proofAssociation.status, "associated");
+  assert.equal(item.sourceBundle.mirror.verified, false);
+  files[0].content = files[0].content.replace("collect terms", "factor the centered error");
+  const changed = await handleSourceContextManifest(request, state);
+  assert.notEqual(changed.body.items[0].sourceBundle.sourceIdentityHash, item.sourceBundle.sourceIdentityHash);
+});
+
+test("source acquisition and the pane share stable generated target identities", async () => {
+  const state = await makeState({ fetchImpl: async () => assert.fail("No adapter request expected") });
+  const request = { overleafProjectId: "project-1", files: [{ path: "main.tex",
+    content: "\\begin{theorem}\\label{thm:sample}\n% lea: formalize\nA proposition.\n\\end{theorem}" }] };
+  const source = await handleSourceContextManifest(request, state);
+  const pane = await handleLeanPaneManifest(request, state);
+  assert.equal(source.body.items[0].labelSource, "generated");
+  assert.equal(source.body.items[0].label, pane.body.items[0].label);
+  assert.equal(source.body.items[0].sourceBundle.sourceIdentityHash, pane.body.items[0].sourceBundle.sourceIdentityHash);
+});
+
 test("buildOverleafDocumentUrl builds the canonical public-Overleaf URL", () => {
   assert.equal(
     buildOverleafDocumentUrl("abc123"),
@@ -72,6 +123,33 @@ test("buildOverleafDocumentUrl builds the canonical public-Overleaf URL", () => 
   assert.equal(buildOverleafDocumentUrl(""), null);
   assert.equal(buildOverleafDocumentUrl("unknown"), null);
   assert.equal(buildOverleafDocumentUrl(null), null);
+});
+
+test("statuses include project activity even with no visible targets", async () => {
+  const leaRepo = await makeLeaRepo();
+  const state = await makeState({ leaRepoPath: leaRepo });
+  state.jobs = {
+    hidden: { overleafProjectId: "project-1", status: "in_progress" },
+    paused: { overleafProjectId: "project-1", status: "paused" },
+    finished: { overleafProjectId: "project-1", status: "formalized" },
+    other: { overleafProjectId: "project-2", status: "in_progress" }
+  };
+  state.repairBatches = {
+    queued: { overleafProjectId: "project-1", done: false, pausedOn: null },
+    paused: { overleafProjectId: "project-1", done: false, pausedOn: { reason: "needs_review" } },
+    finished: { overleafProjectId: "project-1", done: true },
+    other: { overleafProjectId: "project-2", done: false }
+  };
+  const request = { overleafProjectId: "project-1", targets: [] };
+  const active = await handleGetStatuses(request, state);
+  assert.equal(active.statusCode, 200);
+  assert.deepEqual(active.body.statuses, {});
+  assert.deepEqual(active.body.projectActivity, { activeJobs: 1, activeBatches: 1 });
+
+  state.jobs.hidden.status = "failed";
+  state.repairBatches.queued.pausedOn = { reason: "needs_review" };
+  const settled = await handleGetStatuses(request, state);
+  assert.deepEqual(settled.body.projectActivity, { activeJobs: 0, activeBatches: 0 });
 });
 
 test("validates a Lea repo and derives its workspace", async () => {
@@ -208,6 +286,28 @@ test("project identity endpoints proxy adapter state without creating on missing
   assert.equal(calls.find((call) => call.options.method === "PUT").body.create_if_missing, true);
 });
 
+test("default-name initialization refreshes cached titles and remains existing-project-only", async () => {
+  const calls = [];
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    if (String(url).includes("/missing/")) return jsonResponse(404, { detail: { error: "project_missing" } });
+    return jsonResponse(200, { identity: { projectId: "p1", slug: "project-1", projectName: "Readable Title",
+      namespace: "Lea.P1", nameSource: "overleaf", exists: true } });
+  } });
+  state.jobs.old = { overleafProjectId: "project-1", projectSlug: "project-1", projectNamespace: "Lea.P1",
+    projectName: "project-1", requestPrompt: "Historical text", recordedProofPath: "proofs/Lea/P1/saved.lean" };
+  const named = await handleProjectDefaultName({ overleafProjectId: "project-1", overleafProjectTitle: "Readable Title" }, state);
+  assert.equal(named.body.identity.nameSource, "overleaf");
+  assert.equal(state.jobs.old.projectName, "Readable Title");
+  assert.equal(state.jobs.old.requestPrompt, "Historical text");
+  assert.equal(state.jobs.old.recordedProofPath, "proofs/Lea/P1/saved.lean");
+  assert.equal(state.projectIdentities["project-1"].projectName, "Readable Title");
+  const missing = await handleProjectDefaultName({ overleafProjectId: "missing", overleafProjectTitle: "Untouched" }, state);
+  assert.equal(missing.statusCode, 404);
+  assert.ok(calls.every(call => call.url.endsWith("/identity/default-name")));
+  assert.deepEqual(calls[0].body, { overleaf_project_title: "Readable Title" });
+});
+
 test("namespace migration rebases cached job artifact pointers without rewriting history", async () => {
   const leaRepo = await makeLeaRepo();
   const state = await makeState({
@@ -293,21 +393,7 @@ test("settings response includes model families and key status", async () => {
   const response = await buildSettingsResponse(state);
 
   assert.deepEqual(response.leaModelOptions, LEA_MODEL_OPTIONS);
-  assert.deepEqual(response.leaModelOptions.map((model) => model.value), [
-    "o4-mini",
-    "gpt-5.4-mini",
-    "gpt-5.4",
-    "gpt-5.5",
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
-    "gpt-4o",
-    "gemini/gemini-3.1-pro-preview",
-    "gemini/gemini-2.5-pro",
-    "gemini/gemini-2.5-flash",
-    "anthropic/claude-opus-4-8",
-    "anthropic/claude-sonnet-4-6"
-  ]);
+  assert.ok(response.leaModelOptions.some(model => model.value === "gpt-6.1-sol"));
   assert.equal(response.leaModelOptions.find((model) => model.value === "o4-mini").family, "openai");
   assert.equal(response.leaModelOptions.find((model) => model.value === "gemini/gemini-2.5-pro").family, "google");
   assert.equal(response.leaProviderKeys.openai.configured, true);
@@ -364,6 +450,23 @@ test("model catalog and requirements proxy the adapter's exhaustive source", asy
   assert.equal(requirements.body.required_keys[0].env, "MISTRAL_API_KEY");
   assert.ok(calls.some((call) => call.url.endsWith("/api/models")));
   assert.ok(calls.some((call) => call.url.includes("/api/models/requirements")));
+});
+
+test("model catalog proxy preserves warnings, freshness, compatibility and refresh method", async () => {
+  const calls = [];
+  const body = { models: [{ value: "gpt-future", provider: "openai", compatibility: "unverified" }],
+    featured: [{ value: "gpt-future" }], revision: "new-revision", updated_at: "2026-10-16T00:00:00Z",
+    degraded: true, sources: { openai: { stale: true } }, warnings: [{ message: "Saved data" }] };
+  const state = { settings: { leaApiBaseUrl: "http://127.0.0.1:8001", leaModel: "gpt-future" },
+    fetchImpl: async (url, options) => { calls.push({ url, options }); return new Response(JSON.stringify(body)); } };
+  const result = await handleGetModelCatalog(state, { refresh: true });
+  assert.equal(calls[0].options.method, "POST");
+  assert.ok(calls[0].url.endsWith("/api/models/refresh"));
+  assert.equal(result.body.revision, body.revision);
+  assert.deepEqual(result.body.warnings, body.warnings);
+  assert.deepEqual(result.body.sources, body.sources);
+  assert.equal(result.body.models[0].compatibility, "unverified");
+  assert.equal(result.body.degraded, true);
 });
 
 test("model catalog fallback preserves a configured custom model", async () => {
@@ -532,6 +635,7 @@ test("mirror-tex forwards the project's .tex set to the adapter by slug", async 
 
   const res = await handleMirrorTex({
     overleafProjectId: "Project-1",
+    overleafProjectTitle: "Source Title",
     files: [
       { path: "main.tex", content: "A" },
       { path: "", content: "dropped" },
@@ -544,6 +648,7 @@ test("mirror-tex forwards the project's .tex set to the adapter by slug", async 
   assert.equal(captured.length, 1);
   assert.match(captured[0].url, /\/api\/projects\/by-slug\/Project-1\/mirror$/);
   assert.equal(captured[0].body.source, "overleaf");
+  assert.equal(captured[0].body.overleaf_project_title, "Source Title");
   assert.deepEqual(captured[0].body.files.map((file) => file.path), ["main.tex", "sections/intro.tex"]);
   assert.equal(res.body.mirroredFiles["main.tex"], createHash("sha256").update("A").digest("hex"));
   assert.equal(state.texMirrorSnapshots["Project-1"].mirrorRevision, res.body.mirrorRevision);
@@ -725,8 +830,13 @@ By triviality.
   const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
     if (String(url).endsWith("/lea-status/compare")) {
       const body = JSON.parse(options.body);
-      comparisons.push(body);
+      const entries = body.comparisons || [body];
+      comparisons.push(...entries);
       assert.equal(options.method, "POST");
+      if (body.comparisons) return jsonResponse(200, { assessments: Object.fromEntries(entries.map(item => [item.formalization_id, {
+        lea_status: { freshness: item.coverage === "complete" ? "current" : "unknown" },
+        lea_check: { status: "N/A" }
+      }])) });
       return jsonResponse(200, { lea_status: { freshness: body.coverage === "complete" ? "current" : "unknown" } });
     }
     return fallback(url, options);
@@ -922,6 +1032,42 @@ test("lean pane manifest surfaces a disproof as a counterexample, not a failure"
   assert.equal(staleSource.body.items[0].resultKind, "disproved");
 });
 
+for (const available of [true, false]) {
+  test(`inventory batches assessments without hiding completed proofs when assessments are ${available ? "available" : "unavailable"}`, async () => {
+    let batchCalls = 0;
+    const fallback = makeAdapterApiFetch([]);
+    const names = ["alpha", "beta", "gamma"];
+    const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/lea-status/compare") {
+        batchCalls++;
+        const { comparisons } = JSON.parse(options.body);
+        assert.deepEqual(comparisons.map(item => item.formalization_id).sort(), names);
+        assert.ok(comparisons.every(item => item.coverage === "complete" && item.source_bundle.version === 2));
+        return available ? jsonResponse(200, { assessments: Object.fromEntries(comparisons.map(item => [item.formalization_id, {
+          lea_status: { formalization_id: item.formalization_id, freshness: "current", activity: { status: "proved" } },
+          lea_check: { status: "N/A", reason: "not_evaluated" }
+        }])) }) : jsonResponse(503, { detail: "Proof inputs are changing" });
+      }
+      if (pathname.includes("/lea-status/") || pathname.endsWith("/alignment-checks/current")) {
+        assert.fail("A batch response must not trigger individual assessment reads");
+      }
+      if (pathname.endsWith("/target-status")) return jsonResponse(200, { targets: names.map(name => ledgerEntry(name, {
+        formalization_id: name, session_id: `session-${name}`,
+        content: `theorem ${name} : True := by trivial\n`
+      })) });
+      return fallback(url, options);
+    } });
+    const result = await handleLeanPaneManifest({ overleafProjectId: "project-1", sourceCoverage: "complete",
+      files: [{ path: "main.tex", content: names.map(name =>
+        `\\begin{theorem}\n% lea: formalize label=${name}\nTrue.\n\\end{theorem}`).join("\n") }] }, state);
+    assert.equal(batchCalls, 1);
+    assert.equal(result.statusCode, 200);
+    assert.ok(result.body.items.every(item => item.status === "valid" && item.leanCheck.status === "checked" && !item.inProgress));
+    assert.ok(result.body.items.every(item => item.leaStatus.freshness === (available ? "current" : "unknown")));
+  });
+}
+
 test("manifest reads dependencies once and marks cached evidence when unavailable", async () => {
   let reads = 0, offline = false;
   const fallback = makeAdapterApiFetch([]);
@@ -991,8 +1137,87 @@ test("manifest preserves batch explanations and honors newer authoritative compl
   assert.equal(newerWork.lastBatchOutcome, undefined);
 });
 
-test("lean pane manifest surfaces needs_review as a visible review state", async () => {
-  // A partial run with no artifact-index row remains visible as Needs review.
+test("batch report acceptance and completed synthesis survive persisted state reload", async () => {
+  const bodies = [];
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options = {}) => {
+    if (options.method === 'POST') {
+      bodies.push(JSON.parse(options.body));
+      return jsonResponse(200, { batch_id: 'retained', state: 'synthesizing' });
+    }
+    return jsonResponse(200, { batch_id: 'retained', state: 'ready', narrative: 'Run interrupted.' });
+  } });
+  state.repairBatchesPath = path.join(path.dirname(state.jobsPath), 'batches.json');
+  state.repairBatches = { retained: { batchId: 'retained', operation: 'formalize', overleafProjectId: 'project-1',
+    done: true, createdAt: '2026-10-17T23:00:00Z', items: [{ targetKind: 'theorem', targetLabel: 'child',
+      state: 'incomplete', reason: 'command_fenced', detail: 'Worker ownership was lost.', recoverable: true }] } };
+  assert.equal((await handleFormalizeBatchReportSave({ overleafProjectId: 'project-1', batchId: 'retained' }, state)).statusCode, 200);
+  assert.equal(bodies[0].items[0].reason, 'command_fenced');
+  let saved = JSON.parse(await fs.readFile(state.repairBatchesPath, 'utf8'));
+  assert.equal(saved.retained.reportState, 'synthesizing');
+  assert.equal(saved.retained.reportId, 'retained');
+  assert.equal(saved.retained.reportSubmission, undefined);
+  // Rehydrate only durable values: no promise or former process can finish it.
+  state.repairBatches = saved;
+  const ready = await handleLeanPaneRepairStatus({ batchId: 'retained' }, state);
+  assert.equal(ready.body.reportState, 'ready');
+  saved = JSON.parse(await fs.readFile(state.repairBatchesPath, 'utf8'));
+  assert.equal(saved.retained.reportState, 'ready');
+  assert.equal(saved.retained.report.state, 'ready');
+});
+
+test("a failed background report state write is observed without an unhandled rejection", async (t) => {
+  const state = await makeState({ leaRepoPath: await makeLeaRepo() });
+  const directory = path.dirname(state.jobsPath);
+  const blocked = path.join(directory, 'blocked');
+  await fs.mkdir(blocked);
+  state.repairBatchesPath = path.join(directory, 'batches.json');
+  state.fetchImpl = async () => {
+    state.repairBatchesPath = blocked;
+    return jsonResponse(200, { batch_id: 'cancelled', state: 'ready' });
+  };
+  const errors = t.mock.method(console, 'error', () => {});
+  const batch = { batchId: 'cancelled', operation: 'formalize', overleafProjectId: 'project-1',
+    done: false, running: false, createdAt: '2026-10-17T23:00:00Z', items: [] };
+  state.repairBatches = { cancelled: batch };
+  assert.equal((await handleBatchCancel({ batchId: batch.batchId }, state)).statusCode, 200);
+  await assert.rejects(batch.reportSubmission);
+  await new Promise(setImmediate);
+  assert.equal(errors.mock.callCount(), 1);
+  assert.match(errors.mock.calls[0].arguments[0], /report bookkeeping failed/);
+});
+
+test('retired review endpoints reject decisions without contacting the adapter or changing jobs', async () => {
+  const calls = [];
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (...args) => { calls.push(args); } });
+  const before = structuredClone(state.jobs);
+  for (const decision of [false, true]) {
+    const result = await handleReview({}, state, { decision });
+    assert.equal(result.statusCode, 410);
+    assert.equal(result.body.error, 'formalization_review_retired');
+  }
+  assert.deepEqual(state.jobs, before);
+  assert.deepEqual(calls, []);
+});
+
+test('current run evidence supersedes a cached review without exposing approval', async () => {
+  const name = 'approved_claim';
+  const approval = { id: 'user-approval', outcome: 'proved', created_at: '2026-01-02' };
+  const entry = ledgerEntry(name, { review: { approval }, certification: { source: 'user_review', outcome: 'proved' } });
+  const { state } = await makeLedgerState({ [name]: entry });
+  state.jobs.review = { jobId: 'review', jobKey: `project-1:theorem:${name}`, targetLabel: name, targetKind: 'theorem',
+    formalizationId: entry.formalization_id, leaSessionId: 'session-1', status: 'needs_review', finishedAt: '2026-01-01' };
+  const payload = { overleafProjectId: 'project-1', files: [{ path: 'main.tex', content:
+    `\\begin{theorem}\n% lea: formalize label=${name}\nTrue.\n\\end{theorem}` }] };
+  const result = await handleLeanPaneManifest(payload, state);
+  assert.equal(result.body.items[0].status, 'valid');
+  assert.equal(result.body.items[0].review.approval, null);
+  assert.equal(state.jobs.review.status, 'needs_review');
+  Object.assign(entry, { validity_status: 'needs_review', review: { eligible: true, approval: null }, certification: null });
+  assert.equal((await handleLeanPaneManifest(payload, state)).body.items[0].status, 'unknown');
+});
+
+test("lean pane manifest does not reopen a historical review", async () => {
+  // A partial historical run never opens an approval flow.
   const leaRepo = await makeLeaRepo();
   const state = await makeState({ leaRepoPath: leaRepo });
   state.jobs.needsReview = {
@@ -1025,7 +1250,69 @@ test("lean pane manifest surfaces needs_review as a visible review state", async
   }, state);
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.items[0].status, "needs-review");
+  assert.ok(!["needs-review", "valid"].includes(res.body.items[0].status));
+});
+
+for (const check of ["ok", "error", "unchecked"]) {
+  test(`retired review metadata cannot override an independent ${check} file check`, async () => {
+    const name = "review_target";
+    const reason = "The checked artifact does not declare the requested review_target.";
+    const entry = ledgerEntry(name, { validity_status: "unchecked", validity_reason: reason,
+      declaration_present: false, check_status: check, check_current: check !== "unchecked",
+      check_detail: check === "error" ? "type mismatch" : null,
+      review: { requested: true, run_id: "review-run", eligible: false, allowed_outcomes: [],
+        revision_token: null, approval: null, reason } });
+    const { state } = await makeLedgerState({ [name]: entry });
+    const badge = await ledgerStatusFor(state, name);
+    assert.equal(badge.status, check === "error" ? "failed" : "unavailable");
+    assert.notEqual(badge.resultKind, "needs_review");
+    assert.equal(badge.review.eligible, false);
+    assert.equal(badge.message, check === "error" ? "type mismatch" : reason);
+    const response = await handleLeanPaneManifest({ overleafProjectId: "project-1", files: [
+      { path: "main.tex", content: `\\begin{theorem}\n% lea: formalize label=${name}\nTrue.\n\\end{theorem}` }
+    ] }, state);
+    const item = response.body.items[0];
+    assert.equal(item.status, check === "error" ? "invalid" : "unknown");
+    assert.equal(item.message, check === "error" ? "type mismatch" : reason);
+    assert.equal(item.review.eligible, false);
+    assert.equal(item.leanCheck.status, check === "ok" ? "checked" : check === "error" ? "error" : "unconfirmed");
+  });
+}
+
+test("generated target inventory and run admission use the same readable Lean name", async () => {
+  const calls = [], synced = [];
+  const fallback = makeAdapterApiFetch(calls, { doneStatus: "defined" });
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: async (url, options = {}) => {
+      if (String(url).endsWith("/identity")) return jsonResponse(200, {
+        project_id: "adapter-project-1", slug: "project-1", title: "Project1", namespace: "Lea.Project1"
+      });
+      if (String(url).endsWith("/formalizations/sync")) {
+        synced.push(...JSON.parse(options.body).targets);
+        return jsonResponse(200, { targets: [] });
+      }
+      return fallback(url, options);
+    } });
+  const files = [{ path: "main.tex", content: String.raw`\begin{definition}\label{def:Ua}
+% lea: define
+A generating series.
+\end{definition}` }];
+  const manifest = await handleLeanPaneManifest({ overleafProjectId: "project-1", files }, state);
+  const item = manifest.body.items[0];
+  assert.match(item.label, /^lea_auto_def_/);
+  assert.equal(synced[0].label, item.label);
+  assert.equal(synced[0].origin_key, `project-1:definition:${item.label}`);
+  assert.equal(synced[0].declaration_name, "Ua");
+  const response = await handleFormalize({ overleafProjectId: "project-1", targetKind: "definition",
+    targetLabel: item.label, labelSource: item.labelSource, latexLabel: item.latexLabel,
+    targetText: item.naturalLanguageLatex, sourceBundle: item.sourceBundle }, state);
+  assert.equal(response.statusCode, 200);
+  await waitFor(() => Boolean(state.jobs[response.body.jobId]?.finishedAt));
+  const admitted = calls.find(call => String(call.url).endsWith("/api/runs") && call.options.method === "POST");
+  assert.equal(admitted.body.new_formalization.declaration_name, "Ua");
+  assert.equal(admitted.body.new_formalization.origin_key, synced[0].origin_key);
+  assert.match(admitted.body.message, /preferred Lean declaration name is Ua/);
+  assert.equal(state.jobs[response.body.jobId].targetLabel, item.label);
 });
 
 // The terminal-outcome branches in getTheoremStatus used pairwise recency
@@ -1078,7 +1365,7 @@ test("lean pane manifest: a newer unconfirmed re-run beats an older formalized j
   }, state);
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.items[0].status, "needs-review");
+  assert.ok(!["needs-review", "valid"].includes(res.body.items[0].status));
 });
 
 test("lean pane manifest: a newer formalized re-run beats an older needs_review job", async () => {
@@ -2029,6 +2316,87 @@ test("lean pane manifest degrades when Lea lookup is unavailable", async () => {
   assert.equal(res.body.diagnostics.at(-1).code, "lea_unconfigured");
 });
 
+test("finished formalizations awaiting fresh SQL evidence remain synchronizing in the manifest", async () => {
+  const calls = [];
+  let fresh = false;
+  const fallback = makeAdapterApiFetch(calls);
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+    if (String(url).includes('/target-status?')) return jsonResponse(200, { targets: [ledgerEntry('pending_target', {
+      projection: { state: fresh ? 'observed' : 'inputs_changed' }
+    })] });
+    return fallback(url, options);
+  } });
+  const payload = { overleafProjectId: 'project-1', files: [{ path: 'main.tex', content:
+    '\\begin{theorem}\n% lea: formalize label=pending_target\nTrue.\n\\end{theorem}' }] };
+  const pending = await handleLeanPaneManifest(payload, state);
+  assert.equal(pending.statusCode, 200);
+  assert.equal(pending.body.items[0].status, 'synchronizing');
+  assert.equal(pending.body.items[0].leanCheck.status, 'synchronizing');
+  assert.equal(pending.body.items[0].projection.state, 'inputs_changed');
+  fresh = true;
+  const current = await handleLeanPaneManifest(payload, state);
+  assert.equal(current.body.items[0].status, 'valid');
+  assert.equal(current.body.items[0].leanCheck.status, 'checked');
+});
+
+test('Formalize all displays a completed target while an unrelated target and project projection are still running', async () => {
+  const calls = [], fallback = makeAdapterApiFetch(calls);
+  let completedIsCurrent = true;
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+    if (String(url).includes('/target-status?')) return jsonResponse(200, {
+      projection: { state: 'inputs_changed' },
+      targets: [ledgerEntry('completed', { projection: { state: completedIsCurrent ? 'observed' : 'inputs_changed' } }),
+        ledgerEntry('working', { check_current: false, validity_status: 'unchecked', projection: { state: 'capturing' } })]
+    });
+    return fallback(url, options);
+  } });
+  state.jobs.working = { jobId: 'working', jobKey: 'project-1:theorem:working', status: 'in_progress',
+    targetKind: 'theorem', targetLabel: 'working', declarationName: 'working',
+    overleafProjectId: 'project-1', batchId: 'still-active-batch',
+    startedAt: '2026-01-01T00:00:00.000Z', apiRunId: 'running-proof' };
+  const payload = { overleafProjectId: 'project-1', files: [{ path: 'main.tex', content:
+    ['completed', 'working'].map(name => `\\begin{theorem}\n% lea: formalize label=${name}\nTrue.\n\\end{theorem}`).join('\n') }] };
+  for (let edit = 0; edit < 3; edit++) {
+    const result = await handleLeanPaneManifest(payload, state);
+    const completed = result.body.items.find(item => item.label === 'completed');
+    const working = result.body.items.find(item => item.label === 'working');
+    assert.equal(completed.status, 'valid');
+    assert.equal(completed.leanCheck.status, 'checked');
+    assert.equal(working.status, 'in-progress');
+    assert.equal(state.jobs.working.status, 'in_progress');
+  }
+  completedIsCurrent = false;
+  const changed = await handleLeanPaneManifest(payload, state);
+  assert.equal(changed.body.items.find(item => item.label === 'completed').leanCheck.status, 'synchronizing');
+});
+
+for (const [status, code, deferred] of [[409, 'project_busy', true], [503, 'database_busy', true],
+  [503, 'retry_database_busy', true], [403, 'access_denied', false]]) {
+  test(`inventory sync ${code} preserves proof results and ${deferred ? 'retries as pending' : 'shows a real error'}`, async () => {
+    const calls = [], fallback = makeAdapterApiFetch(calls, { targetStatus: { main: ledgerEntry('main') } });
+    let busy = true;
+    const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+      if (String(url).endsWith('/identity')) return jsonResponse(200, { exists: true, projectId: 'p1',
+        namespace: 'Lea.Project1', namespaceRevision: 'r1', slug: 'project-1' });
+      if (String(url).endsWith('/formalizations/sync')) return busy
+        ? jsonResponse(status, { detail: { error: code } }) : jsonResponse(200, { targets: [] });
+      return fallback(url, options);
+    } });
+    const payload = { overleafProjectId: 'project-1', files: [{ path: 'main.tex', content:
+      '\\begin{theorem}\n% lea: formalize label=main\nTrue.\n\\end{theorem}' }] };
+    const delayed = await handleLeanPaneManifest(payload, state);
+    assert.equal(delayed.statusCode, 200);
+    assert.equal(delayed.body.items[0].status, 'valid');
+    assert.equal(delayed.body.inventorySync?.state === 'pending', deferred);
+    assert.equal(delayed.body.diagnostics.some(d => d.code === 'target_sync_failed'), !deferred);
+    busy = false;
+    const recovered = await handleLeanPaneManifest(payload, state);
+    assert.equal(recovered.body.inventorySync, null);
+    assert.equal(recovered.body.items[0].status, 'valid');
+    assert.equal(recovered.body.diagnostics.length, 0);
+  });
+}
+
 test("records targetSyntax on the job for telemetry, defaulting to comment", async () => {
   const leaRepo = await makeLeaRepo();
 
@@ -2896,6 +3264,9 @@ test("formalize maps an Overleaf label to the Lean artifact Lea records", async 
     assert.match(calls[0].body.task, /chapters\/parity notes\.tex, lines 4-4/);
     assert.match(calls[0].body.task, /\.lea\/files\/overleaf\/chapters\/parity-notes\.tex/);
     assert.match(calls[0].body.task, /read all mirrored LaTeX source files before planning/i);
+    assert.match(calls[0].body.task, /Reconcile relevant later definitions and uses/);
+    assert.match(calls[0].body.task, /correspondence\.context_evidence/);
+    assert.match(calls[0].body.task, /context_status=incomplete/);
     assert.match(calls[0].body.task, /Nearby prose defines the parity notation/);
     assert.match(calls[0].body.task, /no sorry\/admit in theorem even_square_of_even/);
     const job = state.jobs[result.body.jobId];
@@ -2972,6 +3343,7 @@ test("a verified run that never self-registered still records proof path, module
     const job = state.jobs[result.body.jobId];
     assert.equal(job.recordedProofPath, proofPath);
     assert.equal(job.moduleName, "Lea.Project1.compactness_criterion");
+    await waitFor(() => job.registryUpdate?.state === "saved");
     const markdown = await fs.readFile(path.join(leaRepo, "workspace", "projects", "project-1.md"), "utf8");
     assert.match(markdown, /lea:theorem name="compactness_criterion"/);
   } finally {
@@ -3021,6 +3393,7 @@ test("a verified unregistered run whose file name differs from the label is reco
     assert.equal(job.declarationName, "even_square_of_even");
     assert.equal(job.recordedProofPath, proofPath);
     assert.equal(job.moduleName, "Lea.Project1.even_square_of_even");
+    await waitFor(() => job.registryUpdate?.state === "saved");
     const markdown = await fs.readFile(path.join(leaRepo, "workspace", "projects", "project-1.md"), "utf8");
     assert.match(markdown, /lea:theorem name="even_square_of_even"/);
   } finally {
@@ -3244,6 +3617,8 @@ test("formalize allows theorem uses backed by sorry stubs", async () => {
       moduleName: "Lea.Project1.stub_support",
       status: "sorry_stub"
     }]);
+    // The certified outcome is persisted before optional import enrichment.
+    await waitFor(() => state.jobs[result.body.jobId].stubbedTheoremUses?.length === 1);
     assert.deepEqual(state.jobs[result.body.jobId].stubbedTheoremUses, [{ targetKind: "theorem", targetLabel: "stub_support",
       declarationName: "stub_support",
       moduleName: "Lea.Project1.stub_support",
@@ -3468,6 +3843,8 @@ test("formalize allows theorem uses backed by failed sorry stubs", async () => {
       moduleName: "Lea.Project1.failed_stub_support",
       status: "sorry_stub"
     }]);
+    // Verification is published before the optional import enrichment finishes.
+    await waitFor(() => state.jobs[result.body.jobId].stubbedTheoremUses?.length === 1);
     assert.deepEqual(state.jobs[result.body.jobId].stubbedTheoremUses, [{ targetKind: "theorem", targetLabel: "failed_stub_support",
       declarationName: "failed_stub_support",
       moduleName: "Lea.Project1.failed_stub_support",
@@ -3500,6 +3877,100 @@ test("formalize blocks unresolved theorem uses", async () => {
   assert.equal(result.body.error, "unresolved_uses");
   assert.match(result.body.message, /missing_support/);
   assert.equal(calls.length, 0);
+});
+
+test('dependency admission waits for a fresh SQL definition in a single snapshot per poll', async () => {
+  let reads=0, ready=false;
+  const waits=[], requests=[], fallback=makeAdapterApiFetch([]);
+  const state=await makeState({leaRepoPath:await makeLeaRepo(),fetchImpl:async (url,options={})=>{
+    requests.push({url:String(url),method:options.method});
+    if(String(url).includes('/target-status?')) {
+      reads++;
+      return jsonResponse(200,{project_namespace:'Lea.Project1',targets:[ledgerEntry('support',{
+        kind:'definition',validity_status:'defined',projection:{state:ready?'observed':'inputs_changed'}
+      })]});
+    }
+    return fallback(url,options);
+  }});
+  const result=await resolveTheoremUses({state,leaRepoPath:state.settings.leaRepoPath,overleafProjectId:'project-1',
+    projectNamespace:'Lea.Project1',targetUses:['support'],jobs:{},pollMs:1,
+    onWait(labels){waits.push(labels);if(labels)ready=true;}});
+  assert.equal(result.ok,true);
+  assert.equal(result.resolvedUses[0].targetKind,'definition');
+  assert.equal(reads,2);
+  assert.deepEqual(waits,[['support'],null]);
+  assert.ok(requests.every(r=>r.method==='GET'));
+});
+
+for(const mode of ['timeout','stale','cancel','offline','forbidden']) test(`dependency SQL wait handles ${mode} without admitting a solver`,async ()=>{
+  let reads=0,cancelled=false;
+  const state=await makeState({leaRepoPath:await makeLeaRepo(),fetchImpl:async (url,options={})=>{
+    assert.ok(String(url).includes('/target-status?'));assert.equal(options.method,'GET');reads++;
+    if(mode==='offline')return jsonResponse(503,{detail:'SQL temporarily unavailable'});
+    if(mode==='forbidden')return jsonResponse(403,{detail:'Owner rejected'});
+    return jsonResponse(200,{targets:[ledgerEntry('support',{
+      projection:{state:reads===1?'reconciling':'observed'},
+      ...(mode==='stale'&&reads>1?{validity_status:'stale',check_current:false}:{})
+    })]});
+  }});
+  const result=await resolveTheoremUses({state,leaRepoPath:state.settings.leaRepoPath,overleafProjectId:'project-1',
+    targetUses:['support'],jobs:{},pollMs:1,timeoutMs:['timeout','offline'].includes(mode)?0:1000,
+    onWait(labels){if(labels&&mode==='cancel')cancelled=true;},shouldCancel:()=>cancelled});
+  assert.equal(result.ok,false);
+  assert.equal(result.error,mode==='cancel'?'batch_cancelled':mode==='stale'?'unresolved_uses':mode==='forbidden'?'dependency_lookup_rejected':'dependency_projection_pending');
+  if(['timeout','offline'].includes(mode))assert.equal(result.status,503);
+  assert.equal(Object.keys(state.jobs).length,0);
+});
+
+test('a projection wait stops when its worker epoch is fenced',async t=>{
+  let fenced=false,reads=0;
+  const state=await makeState({leaRepoPath:await makeLeaRepo(),fetchImpl:async()=>{
+    reads++;return jsonResponse(200,{targets:[ledgerEntry('support',{projection:{state:'inputs_changed'}})]});
+  }});
+  setWorkerDatabase({fence(){if(fenced)throw new Error('worker epoch expired');}});
+  t.after(()=>setWorkerDatabase(null));
+  await assert.rejects(resolveTheoremUses({state,leaRepoPath:state.settings.leaRepoPath,overleafProjectId:'project-1',
+    targetUses:['support'],jobs:{},pollMs:1,onWait(){fenced=true;}}),/worker epoch expired/);
+  assert.equal(reads,1);
+});
+
+test('cancelling a persisted batch projection wait never launches its target',async ()=>{
+  const calls=[],fallback=makeAdapterApiFetch(calls);
+  const state=await makeState({leaRepoPath:await makeLeaRepo(),env:{OPENAI_API_KEY:'test-key'},fetchImpl:async(url,options)=>{
+    const requested=new URL(String(url)).searchParams.get('declarations');
+    if(String(url).includes('/target-status?')&&requested?.includes('support'))return jsonResponse(200,{
+      targets:[ledgerEntry('support',{projection:{state:'inputs_changed'}})]});
+    return fallback(url,options);
+  }});
+  state.repairBatchesPath=path.join(path.dirname(state.jobsPath),'batches.json');
+  const accepted=await handleFormalizeAll({overleafProjectId:'project-1',items:[{
+    targetKind:'theorem',targetLabel:'child',targetText:'True.',targetUses:['support']}]},state);
+  const batch=state.repairBatches[accepted.body.batchId];
+  await waitFor(()=>batch.items[0].waitingForProjection);
+  const saved=JSON.parse(await fs.readFile(state.repairBatchesPath,'utf8'));
+  assert.equal(saved[batch.batchId].items[0].waitingForProjection,true);
+  assert.equal((await handleLeanPaneRepairStatus({batchId:batch.batchId},state)).body.items[0].state,'waiting');
+  await handleBatchCancel({batchId:batch.batchId},state);
+  await waitFor(()=>batch.done);
+  assert.equal(batch.canceled,true);
+  assert.ok(!calls.some(c=>String(c.url).endsWith('/api/runs')));
+  await batch.reportSubmission;
+});
+
+test('a recovered pre-admission projection wait resumes from durable batch state',async ()=>{
+  const calls=[],fallback=makeAdapterApiFetch(calls,{targetStatus:{support:ledgerEntry('support')}});
+  const state=await makeState({leaRepoPath:await makeLeaRepo(),env:{OPENAI_API_KEY:'test-key'},fetchImpl:fallback});
+  const entry={state:'running',waitingForProjection:true,targetKind:'theorem',targetLabel:'child',runJobId:null,
+    payload:{overleafProjectId:'project-1',targetKind:'theorem',targetLabel:'child',targetText:'True.',targetUses:['support']}};
+  const batch={batchId:'retained-projection',operation:'formalize',overleafProjectId:'project-1',done:false,running:false,
+    createdAt:new Date().toISOString(),items:[entry],usesByLabel:new Map([['child',['support']]])};
+  state.repairBatches={[batch.batchId]:batch};
+  await reconcileRecoveredBatches(state);
+  await waitFor(()=>batch.done);
+  assert.equal(entry.state,'formalized');
+  assert.equal(entry.waitingForProjection,false);
+  assert.equal(calls.filter(c=>String(c.url).endsWith('/api/runs')).length,1);
+  await batch.reportSubmission;
 });
 
 test("formalize rejects invalid theorem uses labels", async () => {
@@ -3961,14 +4432,14 @@ test("formalize keeps the previous Lean artifact and registry entry while retryi
   }
 });
 
-test("formalize all rechecks completed proofs before starting a queued item", async () => {
+for (const recorded of [true, false]) test(`formalize all rechecks completed proofs before starting a queued item (recorded=${recorded})`, async () => {
   const leaRepo = await makeLeaRepo();
   const calls = [];
   const state = await makeState({
     leaRepoPath: leaRepo,
     env: { OPENAI_API_KEY: "test-key" },
     fetchImpl: makeAdapterApiFetch(calls, {
-      targetStatus: { already_proved: ledgerEntry("already_proved") }
+      targetStatus: { already_proved: ledgerEntry("already_proved", { recorded }) }
     })
   });
 
@@ -4143,6 +4614,18 @@ test("formalize all cannot bypass the shared-file guard", async () => {
   assert.equal(result.body.error, "shared_artifact");
   assert.equal(await fs.readFile(path.join(leaRepo, proofPath), "utf8"), original);
   assert.ok(!calls.some((call) => String(call.url).endsWith("/api/runs")));
+});
+
+test('formalize all can retry a historical review without waiting for approval', async () => {
+  const calls = [];
+  const { state } = await makeLedgerState({ awaiting: ledgerEntry('awaiting', { validity_status: 'needs_review', review: { eligible: true } }) }, {
+    fetchImpl: makeAdapterApiFetch(calls, { targetStatus: { awaiting: ledgerEntry('awaiting', { validity_status: 'needs_review' }) } })
+  });
+  const result = await handleFormalize({ overleafProjectId: 'project-1', targetKind: 'theorem', targetLabel: 'awaiting', targetText: 'True.' }, state, { batch: true });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.status, 'in_progress');
+  await waitFor(() => state.jobs[result.body.jobId]?.status !== 'in_progress');
+  assert.ok(calls.some(call => String(call.url).endsWith('/api/runs')));
 });
 
 test("formalize all refuses to complete a stub stored beside another proof", async () => {
@@ -4376,6 +4859,116 @@ test("startup recovery pauses legacy jobs lacking an adapter identity", async ()
   assert.equal(statuses.body.statuses["theorem:interrupted_status_test"].status, "paused");
 });
 
+for (const mode of ['single', 'batch']) test(`${mode} completion waits beyond its old timeout and saves only the current proof result`, async t => {
+  const calls = [], reports = [], fallback = makeAdapterApiFetch(calls);
+  let completed = false, ready = false, pendingReads = 0;
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), leaJobTimeoutSeconds: 1,
+    env: { OPENAI_API_KEY: 'test-key' }, fetchImpl: async (url, options = {}) => {
+      const u = String(url);
+      if (u.includes('/events')) completed = true;
+      if (u.includes('/target-status') && completed) {
+        if (!ready) pendingReads++;
+        return jsonResponse(200, { targets: [mockCompletedTarget('observed_late', 'proved')].map(entry => ({
+          ...entry, projection: { state: ready ? 'observed' : 'inputs_changed' },
+          validity_status: ready ? 'proved' : 'unchecked', check_current: ready,
+          validity_reason: ready ? null : 'Current proof observation is unavailable: inputs_changed'
+        })) });
+      }
+      if (u.endsWith('/formalize-batch-reports') && options.method === 'POST') {
+        reports.push(JSON.parse(options.body));
+        return jsonResponse(200, { batch_id: reports.at(-1).batchId, state: 'ready' });
+      }
+      return fallback(url, options);
+    } });
+  state.repairBatchesPath = path.join(path.dirname(state.jobsPath), 'batches.json');
+  const target = { targetKind: 'theorem', targetLabel: 'observed_late', targetText: 'True.' };
+  const result = mode === 'batch'
+    ? await handleFormalizeAll({ overleafProjectId: 'project-1', items: [target] }, state)
+    : await handleFormalize({ overleafProjectId: 'project-1', ...target }, state);
+  assert.equal(result.statusCode, 200);
+  await waitFor(() => pendingReads >= 2 && Object.values(state.jobs).some(job => job.waitingForObservation));
+  const job = Object.values(state.jobs)[0];
+  const saved = JSON.parse(await fs.readFile(state.jobsPath, 'utf8'))[job.jobId];
+  assert.equal(saved.status, 'in_progress');
+  assert.equal(saved.finishedAt, null);
+  assert.equal(saved.pendingProofOutcome.resultKind, 'proved');
+
+  // Advance beyond both the former finalizer timeout and the batch's solver
+  // timeout. The already completed solver must neither rerun nor need review.
+  const now = Date.now.bind(Date);
+  t.mock.method(Date, 'now', () => now() + 30 * 60 * 1000);
+  await waitFor(() => pendingReads >= 3);
+  assert.equal(job.status, 'in_progress');
+  assert.equal(job.finishedAt, null);
+  const batch = mode === 'batch' ? state.repairBatches[result.body.batchId] : null;
+  if (batch) {
+    assert.equal(batch.done, false);
+    assert.equal(batch.items[0].state, 'running');
+  }
+  assert.equal(reports.length, 0);
+  ready = true;
+  await waitFor(() => job.status !== 'in_progress');
+  assert.equal(job.status, 'formalized', job.resultDetail || job.error);
+  assert.equal(job.waitingForObservation, undefined);
+  assert.equal(job.pendingProofOutcome, undefined);
+  if (batch) {
+    await waitFor(() => batch.done);
+    await batch.reportSubmission;
+    assert.equal(batch.items[0].state, 'formalized');
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].items[0].state, 'formalized');
+    assert.equal(reports[0].items[0].reason, null);
+  }
+  // The in-memory result can settle before its asynchronous persistence ends.
+  await waitFor(async () => JSON.parse(await fs.readFile(state.jobsPath, 'utf8'))[job.jobId]?.status === 'formalized');
+  const persisted = JSON.parse(await fs.readFile(state.jobsPath, 'utf8'))[job.jobId];
+  assert.equal(persisted.status, 'formalized');
+  assert.equal(calls.filter(call => String(call.url).endsWith('/api/runs') && call.options.method === 'POST').length, 1);
+});
+
+test('restart recovery finishes a durable observation wait without replaying or creating a solver run', async () => {
+  const calls = [], fallback = makeAdapterApiFetch(calls);
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), fetchImpl: async (url, options) => {
+    if (String(url).includes('/events') || String(url).endsWith('/api/runs')) assert.fail('Only publication checking should resume');
+    if (String(url).includes('/target-status')) return jsonResponse(200, {
+      targets: [{ ...mockCompletedTarget('saved_observation', 'proved'), projection: { state: 'observed' } }] });
+    return fallback(url, options);
+  } });
+  state.jobs.saved = { jobId: 'saved', jobKey: 'project-1:theorem:saved_observation', status: 'in_progress',
+    mode: 'formalization', targetKind: 'theorem', targetLabel: 'saved_observation', declarationName: 'saved_observation',
+    overleafProjectId: 'project-1', projectSlug: 'project-1', apiRunId: 'api-run-1', leaSessionId: 'sess-api-1',
+    leaApiBaseUrl: 'http://127.0.0.1:8001', logPath: path.join(path.dirname(state.jobsPath), 'saved.log'),
+    startedAt: '2026-01-01', finishedAt: null, waitingForObservation: true,
+    pendingProofOutcome: { ok: true, resultKind: 'proved', doneStatus: 'proved', apiRunId: 'api-run-1' } };
+  await fs.writeFile(state.jobsPath, JSON.stringify(state.jobs));
+  state.jobs = JSON.parse(await fs.readFile(state.jobsPath, 'utf8'));
+  await recoverInterruptedJobs(state);
+  await waitFor(() => state.jobs.saved.status === 'formalized');
+  assert.equal(state.jobs.saved.waitingForObservation, undefined);
+  assert.equal(state.jobs.saved.apiRunId, 'api-run-1');
+});
+
+test('cancelling a batch during completion publication settles as stopped and never needs review', async () => {
+  let completed = false;
+  const fallback = makeAdapterApiFetch([]);
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), env: { OPENAI_API_KEY: 'test-key' },
+    fetchImpl: async (url, options) => {
+      if (String(url).includes('/events')) completed = true;
+      if (String(url).includes('/target-status') && completed) return jsonResponse(200, {
+        targets: [{ ...mockCompletedTarget('cancel_wait', 'proved'), projection: { state: 'inputs_changed' } }] });
+      return fallback(url, options);
+    } });
+  const result = await handleFormalizeAll({ overleafProjectId: 'project-1', items: [
+    { targetKind: 'theorem', targetLabel: 'cancel_wait', targetText: 'True.' }] }, state);
+  const batch = state.repairBatches[result.body.batchId];
+  await waitFor(() => Object.values(state.jobs).some(job => job.waitingForObservation));
+  await handleBatchCancel({ batchId: batch.batchId }, state);
+  await waitFor(() => batch.done);
+  assert.equal(batch.items[0].state, 'canceled');
+  assert.ok(Object.values(state.jobs).every(job => job.status !== 'needs_review' && !job.waitingForObservation));
+  await batch.reportSubmission;
+});
+
 test("startup recovery reattaches to the exact adapter run without creating another", async () => {
   const leaRepo = await makeLeaRepo();
   const calls = [];
@@ -4497,6 +5090,8 @@ async function makeState(overrides = {}) {
   if (!overrides.fetchImpl) {
     const providerFetch = state.fetchImpl;
     state.fetchImpl = async (url, requestOptions) => {
+      if(String(url).endsWith('/formalize-batch-reports')&&requestOptions?.method==='POST')return jsonResponse(200,{
+        batch_id:JSON.parse(requestOptions.body).batchId,state:'ready'});
       if (!String(url).includes("/target-status")) return providerFetch(url, requestOptions);
       const requested = (new URL(String(url)).searchParams.get("declarations") || "").split(",").filter(Boolean);
       const targets = await Promise.all(requested.map(async (name) => {
@@ -4568,6 +5163,8 @@ function makeLeaApiFetch(calls, options = {}) {
   let interrupted = false;
   const initialTargets = new Set(Object.keys(options.targetStatus || {}));
   return async (url, requestOptions = {}) => {
+    if(String(url).endsWith('/formalize-batch-reports')&&requestOptions.method==='POST')return jsonResponse(200,{
+      batch_id:JSON.parse(requestOptions.body).batchId,state:'ready'});
     if (String(url).endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, independent_checks: false, source_pause_policy: 1 } } });
     if (String(url).endsWith("/api/settings")) {
       return jsonResponse(404, { detail: "not found" });
@@ -4804,10 +5401,10 @@ function jsonResponse(status, body) {
   };
 }
 
-async function waitFor(predicate, { timeoutMs = 3000 } = {}) {
-  const started = Date.now();
-  while (!predicate()) {
-    if (Date.now() - started > timeoutMs) {
+async function waitFor(predicate, { timeoutMs = 10000 } = {}) {
+  const started = performance.now();
+  while (!(await predicate())) {
+    if (performance.now() - started > timeoutMs) {
       throw new Error("Timed out waiting for condition.");
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -4831,6 +5428,8 @@ function makeAdapterApiFetch(calls, options = {}) {
   let runFinished = false;
   const initialTargets = new Set(Object.keys(options.targetStatus || {}));
   return async (url, requestOptions = {}) => {
+    if(String(url).endsWith('/formalize-batch-reports')&&requestOptions.method==='POST')return jsonResponse(200,{
+      batch_id:JSON.parse(requestOptions.body).batchId,state:'ready'});
     if (String(url).endsWith("/api/health")) return jsonResponse(200, { capabilities: { lea_status: { version: 1, admission_enabled: true, independent_checks: false, source_pause_policy: 1 } } });
     const body = requestOptions.body ? JSON.parse(requestOptions.body) : null;
     calls.push({ url, options: requestOptions, body });
@@ -4921,8 +5520,9 @@ async function pausedContinuationFixture(fetchOverride) {
   return { state, calls, payload };
 }
 
-for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates L once, resumes A, and B reuses L`, async () => {
+for (const delayedProjection of [false,true]) for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates L once, resumes A, and B reuses L${delayedProjection?' after delayed SQL readiness':''}`, async () => {
   const calls = [], segments = [], admissions = [];
+  let pendingReads=0;
   const completed = new Map();
   let current = "A:0";
   const dep = { id: "L", ready: false, state: "pending", path: "Shared/L_123.lean",
@@ -4932,13 +5532,20 @@ for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates 
   const state = await makeState({ leaRepoPath: await makeLeaRepo(), env: { OPENAI_API_KEY: "test-key" },
     fetchImpl: async (url, options = {}) => {
       const u = String(url), body = options.body ? JSON.parse(options.body) : {};
-      if (u.endsWith("/overleaf-source/prepare")) return jsonResponse(200, { source_context_ref: "current-source" });
+      if (u.endsWith("/published-source")) return jsonResponse(200, { source_context_ref: "current-source" });
       if (u.endsWith("/dependencies/L/run")) {
         assert.equal(body.initiating_run_id, "A:0");
         admissions.push("L"); dep.state = "running"; dep.owner_run_id = "L:0";
         return jsonResponse(200, { run_id: "L:0", session_id: "shared-session" });
       }
-      if (u.endsWith("/dependencies/L")) return jsonResponse(200, dep);
+      if (u.endsWith("/dependencies/L")) {
+        if(delayedProjection&&segments.includes('L:0')&&!dep.ready){
+          pendingReads++;
+          if(pendingReads===1)return jsonResponse(503,{detail:'projection_unavailable'});
+          if(pendingReads>=3){dep.ready=true;dep.state='ready';delete dep.projection;}
+        }
+        return jsonResponse(200, dep);
+      }
       if (u.endsWith("/formalize-batch-reports") && options.method === "POST") {
         assert.equal(body.items.length, 2);
         assert.equal(body.dependencies.length, 1);
@@ -4961,7 +5568,10 @@ for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates 
         const id = decodeURIComponent(u.split("/runs/")[1].split("/")[0]);
         segments.push(id);
         if (["A:1", "B:0"].includes(id)) completed.set(id.split(":")[0], id);
-        if (id === "L:0") { dep.ready = true; dep.state = "ready"; dep.owner_run_id = null; }
+        if (id === "L:0") {
+          dep.ready = !delayedProjection; dep.state = delayedProjection?'stale':'ready'; dep.owner_run_id = null;
+          if(delayedProjection)dep.projection={state:'inputs_changed'};
+        }
         return adapterSseResponse(id === "A:0" ? [
           { type: "project_dependency", data: { outcome: "deferred", dependency: dep } },
           { type: "done", data: { status: "cancelled", stop_reason: "dependency_wait", recoverable: true, waiting_dependencies: ["L"] } }
@@ -5001,6 +5611,7 @@ for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates 
     assert.equal(state.jobs[result.body.jobId].status, "formalized", state.jobs[result.body.jobId].resultDetail || state.jobs[result.body.jobId].error);
   }
   assert.deepEqual(admissions, ["L"]);
+  if(delayedProjection)assert.equal(pendingReads,3);
   assert.deepEqual(segments, ["A:0", "L:0", "A:1", "B:0"]);
   const jobs = Object.values(state.jobs);
   assert.equal(jobs.length, 2);
@@ -5015,7 +5626,7 @@ async function dependencyRecoveryFixture() {
   const state = await makeState({ leaRepoPath: await makeLeaRepo(), env: {}, fetchImpl: async (url, options = {}) => {
     const u = String(url), body = options.body ? JSON.parse(options.body) : {};
     calls.push({ url: u, body, options });
-    if (u.endsWith("/overleaf-source/prepare")) return jsonResponse(200, { source_context_ref: "fresh-source" });
+    if (u.endsWith("/published-source")) return jsonResponse(200, { source_context_ref: "fresh-source" });
     const dependency = /\/dependencies\/([^/]+)(?:\/(retry|run))?$/.exec(u);
     if (dependency) {
       const dep = dependencies.get(dependency[1]);
@@ -5169,7 +5780,7 @@ test("lost admission response reuses the exact saved source request after restar
   assert.equal((await admitDependencyContinuation(state, restarted)).ok, true);
   const requests = calls.filter(call => call.url.endsWith("/continue"));
   assert.deepEqual(requests[0].body, requests[1].body);
-  assert.equal(calls.filter(call => call.url.endsWith("/overleaf-source/prepare")).length, 1);
+  assert.equal(calls.filter(call => call.url.endsWith("/published-source")).length, 1);
   assert.equal(requests[1].body.dependency_resume, true);
   assert.equal(requests[1].body.source_bundle, undefined);
 });
@@ -5348,6 +5959,45 @@ test("formalize on the /api backend posts to /api/runs and runs autonomously (no
   assert.ok(!calls.some((c) => String(c.url).includes("/v1/")));
 });
 
+for (const handler of [handleFormalize, handleStub]) {
+  test(`${handler.name} resolves an automatic namespace before prompting without mirroring`, async () => {
+    const calls = [];
+    const leaRepo = await makeLeaRepo();
+    const code = "namespace Lea.SourceTitle2\ntheorem t_api : True := by\n  sorry\nend Lea.SourceTitle2\n";
+    if (handler === handleStub) await writeLeaProjectProof(leaRepo,
+      "workspace/proofs/Lea/SourceTitle2/GeneratedStub.lean", code);
+    const fallback = makeAdapterApiFetch(calls, { projectNamespace: "Lea.SourceTitle2",
+      ...(handler === handleStub ? { doneStatus: "answered", sessionDetail: {
+        project_namespace: "Lea.SourceTitle2", runs: [{ id: "api-run-1" }],
+        code_steps: [{ id: "step-1", seq: 1, path: "GeneratedStub.lean", code, check_status: "ok" }]
+      } } : {}) });
+    const state = await makeState({ leaRepoPath: leaRepo, env: { OPENAI_API_KEY: "test-key" },
+      leaTexMirrorEnabled: false, fetchImpl: async (url, options = {}) => {
+        if (String(url).endsWith("/api/projects/by-slug/project-1/identity") && options.method === "PUT") {
+          calls.push({ url: String(url), options, body: JSON.parse(options.body) });
+          return jsonResponse(200, { identity: { projectId: "p1", slug: "project-1", projectName: "Source Title (2)",
+            nameSource: "overleaf", namespace: "Lea.SourceTitle2", exists: true } });
+        }
+        return fallback(url, options);
+      }
+    });
+    const result = await handler({ overleafProjectId: "project-1", targetKind: "theorem", targetLabel: "t_api",
+      targetText: "A theorem.", projectName: "Old generated title", projectNamespace: "Lea.OpaqueId",
+      overleafProjectTitle: "Source Title" }, state);
+    assert.equal(result.statusCode, 200);
+    await waitFor(() => calls.some(c => String(c.url).endsWith("/api/runs") && c.options.method === "POST"));
+    const run = calls.find(c => String(c.url).endsWith("/api/runs") && c.options.method === "POST");
+    assert.equal(run.body.overleaf_project_title, "Source Title");
+    assert.equal(run.body.project_title, "Source Title (2)");
+    assert.equal(run.body.project_namespace, "Lea.SourceTitle2");
+    assert.match(run.body.message, /Lean namespace: Lea\.SourceTitle2/);
+    assert.ok(!run.body.message.includes("Lea.OpaqueId"));
+    const identity = calls.find(c => c.options.method === "PUT");
+    assert.equal(identity.body.mode, "default-name");
+    assert.equal(identity.body.create_if_missing, true);
+  });
+}
+
 test("source pause setting is opt-in and persists without changing adapter settings", async () => {
   const leaRepo = await makeLeaRepo();
   const state = await makeState({ leaRepoPath: leaRepo, env: { OPENAI_API_KEY: "test-key" } });
@@ -5397,7 +6047,7 @@ test("formalize all overrides opt-in pauses, skips dependents, and continues ind
   assert.match(runs[0].body.message, /preferred Lean declaration name is base/);
 });
 
-test("formalize all keeps review terminal and skips only dependent targets", async () => {
+test("formalize all treats an old review outcome as incomplete and continues independent targets", async () => {
   const leaRepo = await makeLeaRepo();
   const state = await makeState({
     leaRepoPath: leaRepo,
@@ -5415,9 +6065,9 @@ test("formalize all keeps review terminal and skips only dependent targets", asy
   const batch = state.repairBatches[result.body.batchId];
   await waitFor(() => batch.done);
   assert.deepEqual(Object.fromEntries(batch.items.map((entry) => [entry.targetLabel, entry.state])), {
-    review_base: "needs_review", review_dependent: "skipped", independent: "needs_review"
+    review_base: "incomplete", review_dependent: "skipped", independent: "incomplete"
   });
-  assert.equal(batch.items[1].reason, "depends_on_review:review_base");
+  assert.equal(batch.items[1].reason, "depends_on_incomplete:review_base");
 });
 
 test("formalize all settles resumable pauses as incomplete and continues independent work", async () => {
@@ -5925,6 +6575,23 @@ for (const scenario of [
   assert.equal(run.body.purpose, "overleaf_solver");
 });
 
+test("recoverable interruptions retain recovery reasons without inventing a turn cap", async () => {
+  for (const [exit, reason] of [
+    [{ recoverable:true, resultKind:"interrupted", recoveryState:"review", recoveryReason:"Automatic recovery was already attempted for this run." }, "recovery_review"],
+    [{ recoverable:true, resultKind:"interrupted" }, "interrupted"],
+    [{ recoverable:true, resultKind:"interrupted", stopReason:"command_fenced" }, "command_fenced"],
+    [{ recoverable:true, resultKind:"max_turns" }, "turn_cap"],
+    [{ recoverable:true, resultKind:"max_spend" }, "global_spend_cap"],
+    [{ recoverable:true, timedOut:true }, "timeout"]
+  ]) {
+    const outcome = await resolveProofOutcome({ job:{}, localStatus:{status:"unformalized"}, exit });
+    assert.equal(outcome.jobStatus,"paused");
+    assert.equal(outcome.stopReason,reason);
+    assert.equal(outcome.resultDetail,exit.recoveryReason || null);
+    assert.equal(outcome.recoverable,true);
+  }
+});
+
 test("resolveProofOutcome does not certify a bare successful stream outcome", async () => {
   const job = { targetKind: "theorem", targetLabel: "t1", leaWorkspacePath: "/tmp/does-not-matter" };
   const outcome = await resolveProofOutcome({
@@ -5933,9 +6600,9 @@ test("resolveProofOutcome does not certify a bare successful stream outcome", as
     exit: { ok: true, resultKind: "proved" }
   });
 
-  assert.equal(outcome.jobStatus, "needs_review");
-  assert.equal(outcome.finalStatus, "needs_review");
-  assert.equal(outcome.effectiveStatus.status, "needs_review");
+  assert.equal(outcome.jobStatus, "failed");
+  assert.notEqual(outcome.finalStatus, "needs_review");
+  assert.notEqual(outcome.effectiveStatus.status, "needs_review");
   assert.equal(outcome.error, null);
   assert.equal(outcome.leanCheck, null);
 });
@@ -6005,7 +6672,7 @@ test("resolveProofOutcome marks a failed run as failed and surfaces the run erro
   assert.equal(outcome.error, "Lea run ended with status: failed");
 });
 
-test("resolveProofOutcome preserves needs_review even when the local file compiles", async () => {
+test("resolveProofOutcome treats an old review as incomplete even when the local file compiles", async () => {
   // A passing local compile remains a separate fact from the target verdict.
   const job = { targetKind: "theorem", targetLabel: "t5", leaWorkspacePath: "/tmp/x" };
   const leanCheck = { ok: true, exitCode: 0, stdout: "", stderr: "", message: "" };
@@ -6016,10 +6683,10 @@ test("resolveProofOutcome preserves needs_review even when the local file compil
     exit: { ok: false, doneStatus: "needs_review", resultKind: "needs_review", resultDetail: "NEEDS_REVIEW" }
   });
 
-  assert.equal(outcome.jobStatus, "needs_review");
-  assert.equal(outcome.finalStatus, "needs_review");
-  assert.equal(outcome.effectiveStatus.status, "needs_review");
-  assert.equal(outcome.resultKind, "needs_review");
+  assert.equal(outcome.jobStatus, "failed");
+  assert.notEqual(outcome.finalStatus, "needs_review");
+  assert.notEqual(outcome.effectiveStatus.status, "needs_review");
+  assert.equal(outcome.resultKind, "incomplete");
   assert.equal(outcome.error, null);
   // reuses the attached check -- it must not pay for a second compile
   assert.equal(outcome.leanCheck, leanCheck);
@@ -6037,10 +6704,10 @@ test("resolveProofOutcome fails unconfirmed needs_review when the fresh compile 
     exit: { ok: false, doneStatus: "needs_review", resultKind: "needs_review", resultDetail: "NEEDS_REVIEW" }
   });
 
-  assert.equal(outcome.jobStatus, "needs_review");
-  assert.equal(outcome.finalStatus, "needs_review");
-  assert.equal(outcome.effectiveStatus.status, "needs_review");
-  assert.equal(outcome.resultKind, "needs_review");
+  assert.equal(outcome.jobStatus, "failed");
+  assert.notEqual(outcome.finalStatus, "needs_review");
+  assert.notEqual(outcome.effectiveStatus.status, "needs_review");
+  assert.equal(outcome.resultKind, "incomplete");
   // the failing check is kept as the diagnostic explaining WHY
   assert.equal(outcome.leanCheck, failingCheck);
 });
@@ -6058,10 +6725,10 @@ test("resolveProofOutcome fails unconfirmed needs_review when no compile evidenc
     exit: { ok: false, doneStatus: "needs_review", resultKind: "needs_review", resultDetail: "NEEDS_REVIEW" }
   });
 
-  assert.equal(outcome.jobStatus, "needs_review");
-  assert.equal(outcome.finalStatus, "needs_review");
-  assert.equal(outcome.effectiveStatus.status, "needs_review");
-  assert.equal(outcome.resultKind, "needs_review");
+  assert.equal(outcome.jobStatus, "failed");
+  assert.notEqual(outcome.finalStatus, "needs_review");
+  assert.notEqual(outcome.effectiveStatus.status, "needs_review");
+  assert.equal(outcome.resultKind, "incomplete");
   assert.equal(outcome.leanCheck, null);
 });
 
@@ -6204,7 +6871,7 @@ test("recoverFormalizedStatusFromTargetPath returns null when the run has no ses
   assert.equal(recovered, null);
 });
 
-test("resolveProofOutcome keeps needs_review when no local file is found", async () => {
+test("resolveProofOutcome keeps an unconfirmed historical result incomplete without an artifact", async () => {
   // The review verdict survives even without a local file link.
   const job = { targetKind: "theorem", targetLabel: "t6", leaWorkspacePath: "/tmp/x" };
   const outcome = await resolveProofOutcome({
@@ -6213,10 +6880,10 @@ test("resolveProofOutcome keeps needs_review when no local file is found", async
     exit: { ok: false, doneStatus: "needs_review", resultKind: "needs_review", error: "Lea run ended with status: needs_review" }
   });
 
-  assert.equal(outcome.jobStatus, "needs_review");
-  assert.equal(outcome.finalStatus, "needs_review");
-  assert.equal(outcome.resultKind, "needs_review");
-  assert.equal(outcome.effectiveStatus.status, "needs_review");
+  assert.equal(outcome.jobStatus, "failed");
+  assert.notEqual(outcome.finalStatus, "needs_review");
+  assert.equal(outcome.resultKind, "incomplete");
+  assert.notEqual(outcome.effectiveStatus.status, "needs_review");
   assert.equal(outcome.error, null);
 });
 
@@ -6677,7 +7344,7 @@ test("project graph passes the by-slug nodes/edges through and treats 404 as an 
 
   const res = await handleProjectGraph({ overleafProjectId: "Doc 1" }, state);
   assert.equal(res.statusCode, 200);
-  assert.deepEqual(res.body, { ok: true, exists: true, nodes: graph.nodes, edges: graph.edges });
+  assert.deepEqual(res.body, { ok: true, exists: true, nodes: graph.nodes, edges: graph.edges, warnings: [] });
   assert.ok(calls.some((c) => c.url.includes(`/api/projects/by-slug/${slugProjectId("Doc 1")}/graph`)));
 
   // 404 (never-formalized document) → a calm empty graph, so the pane shows its empty state.
@@ -6708,8 +7375,9 @@ test("blueprint generate returns the added count + fresh graph, treating 404 as 
   const leaRepo = await makeLeaRepo();
   const calls = [];
   const adapterBody = {
-    added: 2, skipped: 1, warnings: [],
-    graph: { nodes: [{ key: "a", kind: "lemma", status: "proved", uses: [] }], edges: [] },
+    added: 2, skipped: 1, warnings: ['A generation warning.'],
+    graph: { nodes: [{ key: "a", kind: "lemma", status: "proved", uses: [] }], edges: [],
+      warnings: [{message:'A graph read warning.'}] },
   };
   const state = await makeState({
     leaRepoPath: leaRepo,
@@ -6721,6 +7389,7 @@ test("blueprint generate returns the added count + fresh graph, treating 404 as 
   assert.equal(res.body.added, 2);
   assert.equal(res.body.skipped, 1);
   assert.deepEqual(res.body.nodes, adapterBody.graph.nodes);
+  assert.deepEqual(res.body.warnings, [...adapterBody.warnings, ...adapterBody.graph.warnings]);
   assert.ok(calls.some((c) => c.method === "POST" && c.url.includes(`/api/projects/by-slug/${slugProjectId("Doc 1")}/blueprint/generate`)));
 
   // 404 → benign "no project yet", nothing generated.
@@ -7307,6 +7976,11 @@ test("formalize resolves the artifact from the adapter index, no agent markdown 
 
     // The registry markdown got a consistency entry (until 4.3 demotes it to a
     // view, markdown-dependent readers still need one).
+    // Certified completion is published before optional registry enrichment.
+    await waitFor(async () => {
+      try { return (await fs.readFile(buildLeaProjectMarkdownPath({ leaRepoPath: leaRepo, overleafProjectId: "project-1" }), "utf8")).includes('lea:theorem name="adapter_index_test"'); }
+      catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+    });
     const markdown = await fs.readFile(
       buildLeaProjectMarkdownPath({ leaRepoPath: leaRepo, overleafProjectId: "project-1" }),
       "utf8"
@@ -7388,6 +8062,32 @@ test("ledger engine: recorded + clean check reads formalized with the lean state
   assert.match(info.leanStatement || "", /theorem ledger_ok/);
 });
 
+test("ledger engine: SQL display history survives synchronization without current verification or approval", async () => {
+  const last = { validity_status: 'proved', source_hash: 'source-a', observed_at: '2026-10-18T15:12:00Z' };
+  const { state } = await makeLedgerState({ retained: ledgerEntry('retained', {
+    projection: { state: 'inputs_changed' }, last_observed_result: last, check_current: false
+  }) });
+  const info = await ledgerStatusFor(state, 'retained');
+  assert.equal(info.status, 'unknown');
+  assert.deepEqual(info.lastObservedResult, last);
+  assert.equal(info.projection.state, 'inputs_changed');
+  assert.equal(info.approvalEligible, false);
+  assert.notEqual(info.leanCheckPassed, true);
+});
+
+for(const validity of ['planned','draft'])test(`ledger engine: known ${validity} state survives SQL refresh without implying work started`,async()=>{
+  const last={validity_status:validity,source_hash:'source-a',observed_at:'2026-10-18T15:12:00Z'};
+  const {state}=await makeLedgerState({untouched:ledgerEntry('untouched',{
+    recorded:false,exists:null,check_current:false,validity_status:validity,
+    projection:{state:'observation_expired'},last_observed_result:last
+  })});
+  const info=await ledgerStatusFor(state,'untouched');
+  assert.equal(info.status,'unknown','proof freshness remains separate from the known domain state');
+  assert.deepEqual(info.lastObservedResult,last);
+  assert.equal(info.approvalEligible,false);
+  assert.notEqual(info.leanCheckPassed,true);
+});
+
 test("ledger engine: only a later successful target run supersedes a paused job", async () => {
   const name = "checked_after_pause";
   const evidence = ledgerEntry(name, {
@@ -7422,6 +8122,27 @@ test("ledger engine: a sorry in the recorded file reads sorry_stub", async () =>
   });
   const info = await ledgerStatusFor(state, "ledger_sorry");
   assert.equal(info.status, "sorry_stub");
+});
+
+test("ledger engine: a rejected current batch shows its failure without certifying the checked file", async () => {
+  const name = "rejected_result";
+  const evidence = ledgerEntry(name, { validity_status: "unchecked", completion_run_id: null,
+    last_batch_outcome: { runId: "rejected-run", state: "failed", detail: "Named compiler evidence is missing." } });
+  const { state, leaRepo } = await makeLedgerState({ [name]: evidence });
+  state.jobs.failed = { jobId: "failed", jobKey: `project-1:theorem:${name}`, status: "failed",
+    apiRunId: "rejected-run", targetKind: "theorem", targetLabel: name, declarationName: name,
+    overleafProjectId: "project-1", projectSlug: "project-1", leaRepoPath: leaRepo,
+    startedAt: "2026-01-02T00:00:00.000Z", finishedAt: "2026-01-02T00:01:00.000Z" };
+  const failed = await ledgerStatusFor(state, name);
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.effectiveStatus, "unformalized");
+  assert.equal(failed.leanCheck.status, "ok");
+  assert.equal(failed.message, "Named compiler evidence is missing.");
+  evidence.last_batch_outcome.runId = "different-run";
+  assert.equal((await ledgerStatusFor(state, name)).status, "unavailable");
+  evidence.last_batch_outcome.runId = "rejected-run";
+  evidence.validity_status = "stale";
+  assert.equal((await ledgerStatusFor(state, name)).status, "stale");
 });
 
 test("ledger engine: an error check verdict on the recorded file reads broken", async () => {
@@ -7479,7 +8200,65 @@ test("ledger engine: an unconfirmed historical formalized job remains unavailabl
   const preIndex = await ledgerStatusFor(state, "ledger_preindex");
   assert.equal(preIndex.status, "unavailable",
     "a historical job cannot certify the current target without adapter evidence");
+  const pane = await handleLeanPaneManifest({ overleafProjectId: 'project-1', files: [{ path: 'main.tex',
+    content: '\\begin{theorem}\n% lea: formalize label=ledger_preindex\nA theorem.\n\\end{theorem}' }] }, state);
+  assert.equal(pane.body.items[0].status, 'unknown', 'Unconfirmed history does not mean the proof is missing');
+  assert.equal(pane.body.items[0].leanCheck.status, 'unconfirmed');
 });
+
+for (const failure of ['sqlite-busy', 'worker-unavailable', 'network', 'malformed']) {
+  test(`status lookup ${failure} rejects the snapshot without erasing completed jobs`, async (t) => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const { openWorkerDatabase } = await import('../companion/databaseState.mjs');
+    const leaRepo = await makeLeaRepo();
+    const filename = path.join(leaRepo, 'ownership.sqlite3');
+    const blocker = new DatabaseSync(filename);
+    blocker.exec("create table command_workers(id text,epoch text,lease_until text); insert into command_workers values('lea-command-host','probe',datetime('now','+1 hour'))");
+    const ownership = openWorkerDatabase({ filename, owner: 'lea-command-host', epoch: 'probe', leaRoot: leaRepo });
+    t.after(() => { ownership.close(); blocker.close(); });
+    let unavailable = false;
+    const state = await makeState({ leaRepoPath: leaRepo, fetchImpl: async (url) => {
+      if (String(url).endsWith('/identity')) return jsonResponse(200, {
+        projectId: 'p1', slug: 'project-1', projectName: 'Notes', namespace: 'Lea.Project1', namespaceRevision: 1
+      });
+      if (String(url).includes('/target-status')) {
+        if (unavailable) {
+          if (failure === 'sqlite-busy') {
+            blocker.exec('begin exclusive');
+            try { ownership.fence(); } finally { blocker.exec('rollback'); }
+          }
+          if (failure === 'network') throw new TypeError('Connection unavailable');
+          if (failure === 'malformed') return jsonResponse(200, { targets: null });
+          return jsonResponse(503, { detail: { error: 'worker_unavailable', message: 'Waiting for runtime observation' } });
+        }
+        return jsonResponse(200, { targets: [ledgerEntry('saved')] });
+      }
+      return jsonResponse(200, {});
+    } });
+    state.jobs.saved = { jobId: 'saved', jobKey: 'project-1:theorem:saved', status: 'formalized',
+      targetKind: 'theorem', targetLabel: 'saved', declarationName: 'saved', formalizationId: 'fixture-saved',
+      leaSessionId: 'saved-session', overleafProjectId: 'project-1', projectSlug: 'project-1',
+      startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T00:01:00Z' };
+    const badges = { overleafProjectId: 'project-1', targets: [{ targetKind: 'theorem', targetLabel: 'saved', targetText: 'A theorem.' }] };
+    const pane = { overleafProjectId: 'project-1', files: [{ path: 'main.tex',
+      content: '\\begin{theorem}\n% lea: formalize label=saved\nA theorem.\n\\end{theorem}' }] };
+    assert.equal((await handleGetStatuses(badges, state)).body.statuses['theorem:saved'].status, 'formalized');
+    assert.equal((await handleLeanPaneManifest(pane, state)).body.items[0].status, 'valid');
+    const jobs = JSON.stringify(state.jobs);
+    unavailable = true;
+    for (const response of [await handleGetStatuses(badges, state), await handleLeanPaneManifest(pane, state)]) {
+      assert.equal(response.statusCode, failure === 'malformed' ? 502 : 503);
+      assert.equal(response.body.error, 'target_status_unavailable');
+      assert.equal(response.body.statuses, undefined);
+      assert.equal(response.body.items, undefined);
+      assert.match(response.body.message, /saved formalizations.*retained/i);
+    }
+    assert.equal(JSON.stringify(state.jobs), jobs, 'A failed read cannot rewrite job history');
+    unavailable = false;
+    assert.equal((await handleGetStatuses(badges, state)).body.statuses['theorem:saved'].status, 'formalized');
+    assert.equal((await handleLeanPaneManifest(pane, state)).body.items[0].status, 'valid');
+  });
+}
 
 test("rename snapshot: a busy target defers the whole status response instead of fabricating unformalized", async () => {
   const leaRepo = await makeLeaRepo();
@@ -7621,4 +8400,22 @@ test("settings reject a Portkey key the gateway turns away", async () => {
   assert.equal(result.body.error, "invalid_portkey_key");
   assert.equal(calls[0].url, "https://api.portkey.ai/v1/models"); // no override → hosted default
   assert.equal(state.env.PORTKEY_API_KEY, undefined);
+});
+
+test('initial job logging retries only its SQL mutation before any solver is admitted',async(t)=>{
+  const calls=[];
+  const state=await makeState({leaRepoPath:await makeLeaRepo(),env:{OPENAI_API_KEY:'test-key'},
+    fetchImpl:makeAdapterApiFetch(calls)});
+  const paths=[];const stopped=new Error('Stop at intent publication');
+  setWorkerDatabase({
+    fence(){},validateSource(){return {ok:true};},
+    appendLog(logPath,text){paths.push(logPath);assert.equal(text,'');if(paths.length===1)throw Object.assign(new Error('database is locked'),{errcode:5,code:'ERR_SQLITE_ERROR'});},
+    async persist(name){if(name==='jobs.json')throw stopped;},
+  });
+  t.after(()=>setWorkerDatabase(null));
+  await assert.rejects(handleFormalize({overleafProjectId:'project-1',targetKind:'theorem',targetLabel:'log_retry',
+    targetText:'True is true.'},state),error=>error===stopped);
+  assert.equal(paths.length,2);
+  assert.equal(paths[0],paths[1],'The existing job identity survives contention');
+  assert.equal(calls.some(call=>String(call.url).endsWith('/api/runs')&&call.options.method==='POST'),false);
 });

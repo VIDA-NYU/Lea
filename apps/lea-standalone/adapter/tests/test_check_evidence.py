@@ -64,6 +64,40 @@ def test_unchanged_warm_check_reuses_environment(workspace, monkeypatch):
     assert second.status == 'ok'
     assert second.execution['daemon_generation'] == first.execution['daemon_generation']
     assert not calls
+    target.write_text(target.read_text().replace(':= base', ':= by exact base'))
+    edited = interface.check(str(target))
+    assert edited.status == 'ok', edited.detail
+    assert edited.execution['daemon_generation'] == first.execution['daemon_generation']
+    assert not calls, 'A proof-body edit must not rediscover unchanged imports with compiler subprocesses'
+
+
+def test_reordered_imports_new_module_and_noop_rebuild_keep_real_daemon(workspace):
+    from lea.tools import rebuild_module, _lean_check_has_error
+    base = workspace / 'proofs/Fixture/Base.lean'
+    other = workspace / 'proofs/Fixture/Other.lean'
+    target = workspace / 'proofs/Fixture/Target.lean'
+    base.write_text('namespace Fixture\ntheorem base : True := trivial\nend Fixture\n')
+    other.write_text('namespace Fixture\ntheorem other : True := trivial\nend Fixture\n')
+    imports = ['import Fixture.Base\n', 'import Fixture.Other\n']
+    body = 'example : True := Fixture.base\n'
+    target.write_text(''.join(imports) + body)
+    first = interface.check(str(target))
+    assert first.status == 'ok', first.detail
+    target.write_text(''.join(reversed(imports)) + body)
+    reordered = interface.check(str(target))
+    assert reordered.status == 'ok', reordered.detail
+    assert reordered.execution['daemon_generation'] == first.execution['daemon_generation']
+    added = workspace / 'proofs/Fixture/Added.lean'
+    added.write_text('namespace Fixture\ntheorem added : True := trivial\nend Fixture\n')
+    target.write_text('import Fixture.Added\n' + ''.join(reversed(imports)) + body)
+    extended = interface.check(str(target))
+    assert extended.status == 'ok', extended.detail
+    assert extended.execution['daemon_generation'] == first.execution['daemon_generation']
+    rebuilt = rebuild_module(str(base))
+    assert not _lean_check_has_error(rebuilt), rebuilt
+    following = interface.check(str(target))
+    assert following.status == 'ok', following.detail
+    assert following.execution['daemon_generation'] == first.execution['daemon_generation']
 
 
 def test_checkpoint_preserves_structured_evidence():
@@ -192,32 +226,40 @@ def test_unicode_imports_are_traversed(workspace):
     assert freshness(checked.execution, target) == (False, 'dependency_changed')
 
 
-def test_changes_during_classification_prevent_terminal_success(workspace, monkeypatch):
+def test_changes_after_final_check_prevent_terminal_success(workspace, monkeypatch):
     from lea import agent
     from lea.config import LeaConfig
     from lea.events import Finished
     from lea.providers import TextDelta, ToolCall, Done, Usage
     proof = workspace / 'proofs/Fixture/Target.lean'
     turns = 0
+    changed = False
+    original_verified = agent.ProofVerificationState.latest_proof_verified
+    def change_after_check(state):
+        nonlocal changed
+        verified = original_verified(state)
+        if verified and not changed:
+            proof.write_text('theorem target : False := by trivial\n')
+            changed = True
+        return verified
     def stream(model, system, messages, schemas, model_kwargs=None, streaming=True):
         nonlocal turns
-        if 'classify the mathematical outcome' in system:
-            proof.write_text('theorem target : False := by trivial\n')
-            yield TextDelta('PROVED')
+        turns += 1
+        if turns == 1:
+            yield ToolCall('write_file', {'path': str(proof), 'content': 'theorem target : True := by trivial\n'})
+            yield ToolCall('lean_check', {'path': str(proof)})
         else:
-            turns += 1
-            if turns == 1:
-                yield ToolCall('write_file', {'path': str(proof), 'content': 'theorem target : True := by trivial\n'})
-                yield ToolCall('lean_check', {'path': str(proof)})
-            else:
-                yield TextDelta('The proof is complete.')
+            yield TextDelta('The proof is complete.')
         yield Done(Usage(), 0)
     monkeypatch.setattr(agent, 'stream', stream)
+    monkeypatch.setattr(agent.ProofVerificationState, 'latest_proof_verified', change_after_check)
     events = list(agent.run_events(LeaConfig(model='test', max_turns=3,
         tools=['write_file', 'lean_check']), [{'role': 'user', 'content': 'Prove target.'}],
         working_dir=str(proof.parent)))
     final = next(event for event in reversed(events) if isinstance(event, Finished))
-    assert final.result_kind == 'needs_review'
+    assert changed
+    assert final.reason == 'assistant'
+    assert final.result_kind == 'incomplete'
     assert 'changed' in final.result_detail
 
 
@@ -225,3 +267,25 @@ def test_import_all_resolves_the_module_instead_of_the_modifier():
     from lea.imports import direct_imports
     assert direct_imports("import all Init.Data.Array.Basic\npublic import Mathlib.Data.Nat.Prime.Basic\n") == [
         "Init.Data.Array.Basic", "Mathlib.Data.Nat.Prime.Basic"]
+
+
+def test_dependency_resolution_keys_include_header_and_configuration(tmp_path, monkeypatch):
+    from lea import check_evidence as evidence
+    calls = []
+    def command(args, root, budget, content):
+        calls.append(content)
+        return 0, str(tmp_path / ('Base.lean' if '--src-deps' in args else 'Base.olean')), ''
+    monkeypatch.setattr(evidence, '_command', command)
+    path = tmp_path / 'Target.lean'
+    first = 'module\nprelude\npublic import all Fixture.Base\nnamespace Fixture\ntheorem target : True := by trivial\n'
+    evidence._resolve(path, first, tmp_path, CheckBudget(), {})
+    evidence._resolve(path, first.replace('by trivial', 'True.intro'), tmp_path, CheckBudget(), {})
+    assert len(calls) == 2
+    assert all(text.startswith('module\nprelude\npublic import all Fixture.Base') for text in calls)
+    evidence._resolve(path, first.replace('Fixture.Base', 'Fixture.Other'), tmp_path, CheckBudget(), {})
+    assert len(calls) == 4
+    evidence._resolve(path, first, tmp_path, CheckBudget(), {'lean-toolchain':'new'})
+    assert len(calls) == 6
+    evidence._resolve(path, first.replace('prelude\n', ''), tmp_path, CheckBudget(), {})
+    assert len(calls) == 8
+    assert evidence._dependency_header('import\n  Fixture.Base\n') == 'import\n  Fixture.Base\n'

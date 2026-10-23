@@ -1,4 +1,6 @@
 (function () {
+  const nativeFetch=globalThis.fetch.bind(globalThis);
+  let commandClient;
   const DEFAULT_COMPANION_URL = "http://127.0.0.1:31245";
   const DEFAULT_LEA_UI_BASE_URL = "http://localhost:5173";
   // Placeholder only, used before the first successful companion fetch. The
@@ -8,12 +10,13 @@
   const DEFAULT_LEA_MAX_TURNS = 20;
   const DEFAULT_LEA_TEX_MIRROR_ENABLED = true;
   const REFORMALIZE_HELP_TEXT = "Try again using the previous attempt and current LaTeX, keeping existing Lean work.";
-  const LEA_UI_VIEW_STATUSES = new Set(["formalized", "defined", "disproved", "in_progress", "paused", "sorry_stub", "stale"]);
+  const LEA_UI_VIEW_STATUSES = new Set(["formalized", "defined", "disproved", "needs_review", "in_progress", "paused", "sorry_stub", "stale"]);
   const TEX_MIRROR_SYNC_DELAY_MS = 1500;
   const TEX_MIRROR_FULL_SYNC_INTERVAL_MS = 10 * 60 * 1000;
   const MAX_SPEND_ERROR_CODE = "max_spend_reached";
   const MAX_SPEND_PANE_MESSAGE = "Lea could not complete this formalization because the configured maximum spend has been reached. Increase or clear the cap in Lea settings, then try again.";
   const LEAN_PANE_REFRESH_DELAY_MS = 1500;
+  const LEAN_PANE_PENDING_NOTICE_DELAY_MS = 30000;
   const LEAN_PANE_POLL_DELAY_MS = 4000;
   const LEAN_PANE_WIDTH_STORAGE_KEY = "leanPaneWidthPx";
   const DEFAULT_LEAN_PANE_WIDTH_PX = 520;
@@ -28,10 +31,9 @@
   const SETTINGS_POPOVER_VIEWPORT_GUTTER_PX = 24;
   const SETTINGS_POPOVER_KEYBOARD_STEP_PX = 24;
   const SETTINGS_POPOVER_KEYBOARD_LARGE_STEP_PX = 80;
-  // Short debounce for an edit-triggered status refresh; a much longer cadence
-  // for the in-progress self-poll so an active run doesn't hammer /statuses
-  // (each hit does per-target FS scans + adapter fetches) four times a second
-  // (AUDIT M4).
+  // Debounce edits, then use a bounded cadence for active work and uncertain
+  // SQL observations. Each accepted read is coalesced per project; status reads
+  // never acquire the document publisher or inspect the workspace.
   const STATUS_REFRESH_DEBOUNCE_MS = 250;
   const STATUS_REFRESH_IN_PROGRESS_MS = 3000;
   // Push channel (PLAN-system-hardening 3.1): while the companion's /events
@@ -41,8 +43,7 @@
   const STATUS_REFRESH_RECONCILE_MS = 30000;
   const LEAN_PANE_POLL_RECONCILE_MS = 60000;
   const LEAN_PANE_CHAT_POLL_RECONCILE_MS = 30000;
-  const REPAIR_BATCH_POLL_MS = 2000;
-  const REPAIR_BATCH_POLL_RECONCILE_MS = 30000;
+  const ACTIVE_INVENTORY_POLL_MS = 5000;
   const GITHUB_IMPORT_POLL_MS = 1000;
   const LEAN_PANE_ARCHIVE_TIMEOUT_MS = 15000;
   const LEAN_PANE_COMPANION_TIMEOUT_MS = 10000;
@@ -78,16 +79,23 @@
   let texMirrorSyncedOnce = false;
   let texMirrorSyncTimer = null;
   let texMirrorSyncPromise = null;
+  let defaultNameLoadedProjectId = "";
   // When the last zip-download full sync ran (PLAN 3.2): ordinary edits ship
   // only the active buffer; the zip refresh happens on this cadence.
   let lastTexMirrorFullSyncAt = 0;
   let latestStatuses = {};
+  let latestProjectActivity = null;
+  let leaActivityStatus = null;
+  const pendingFormalizations = new Set();
+  // Browser intent until SQL admission; SQL receipts own all accepted work.
+  const pendingTargetBatches = new Map();
   // One project-scoped reconciliation loop. Request generations prevent an old
   // response from repainting statuses or code after a rename (or navigation).
   let displayProjectId = "";
   let displayGeneration = 0;
   let displayNamespaceRevision = "";
   const displayRequests = {};
+  const displayReads = new Map();
   let projectRenaming = false;
   let renameNotice = null;
   let renameRetryTimer = null;
@@ -104,15 +112,30 @@
     renameRetryTimer = null;
     clearTimeout(leanPanePollTimer);
     leanPanePollTimer = null;
+    clearTimeout(leanPaneBlueprintTimer);
+    leanPaneBlueprintTimer = null;
     clearLeanPaneRefreshFailure();
     if (hadProject) {
+      clearTimeout(leanPaneRepairBatchTimer);
+      leanPaneRepairBatchTimer = 0;
+      leanPaneRepairBatch = null;
+      leanPaneRepairBatchReadError = null;
       latestBaseStatuses = {};
       latestStatuses = {};
+      latestProjectActivity = null;
       lastProjectIdentity = null;
+      defaultNameLoadedProjectId = "";
       lastLeanPaneManifest = null;
+      deferredLeanPaneManifest = null;
       leanPaneBlueprintGraph = null;
+      closeLeanPaneChat();
+      // Overleaf can navigate between projects without reloading this script.
+      // A scoped stream must follow that navigation immediately.
+      eventsClient?.stop();
+      eventsClient?.start();
     }
     renderRenameNotice();
+    renderLeaActivity();
   }
 
   function displayRequest(surface) {
@@ -128,6 +151,64 @@
       && request.projectId === displayProjectId
       && request.generation === displayGeneration
       && request.sequence === displayRequests[request.surface];
+  }
+
+  function pendingInventoryRefresh() {
+    const entry = displayReads.get(`${extractOverleafProjectId()}\0manifest`);
+    return Boolean(entry?.queued && entry.generation === displayGeneration);
+  }
+
+  function coalesceDisplayRead(surface, options, run) {
+    const projectId = extractOverleafProjectId();
+    selectDisplayProject(projectId);
+    const key = `${projectId}\0${surface}`;
+    const source = `${latestActiveTexPath}\0${latestActiveTex}`;
+    const view = surface === "manifest" ? leanPaneMainView : "";
+    const previous = displayReads.get(key);
+    if (previous && previous.generation === displayGeneration && previous.view === view) {
+      previous.again = { ...options, forceFetch: Boolean(previous.again?.forceFetch || options.forceFetch) };
+      if (!previous.invalidated && previous.source !== source) {
+        previous.invalidated = true;
+        displayRequests[surface] = (displayRequests[surface] || 0) + 1;
+      }
+      if (surface === "manifest" && options.forceFetch && !previous.forceFetch) {
+        return previous.promise.then(() => {
+          if (projectId !== extractOverleafProjectId() || previous.generation !== displayGeneration || !leanPane || leanPaneMainView !== "items") return false;
+          return refreshLeanPaneNow(options);
+        });
+      }
+      return previous.promise;
+    }
+    const entry = { projectId, generation: displayGeneration, view, source, forceFetch: Boolean(options.forceFetch), queued: false, again: null };
+    displayReads.set(key, entry);
+    entry.promise = Promise.resolve().then(() => run(entry)).finally(() => {
+      clearTimeout(entry.noticeTimer);
+      if (displayReads.get(key) !== entry) return;
+      displayReads.delete(key);
+      if (projectId !== extractOverleafProjectId() || entry.generation !== displayGeneration) return;
+      if (surface === "manifest") renderLeanPaneRefreshWarning();
+      if (!entry.again || document.hidden || projectRenaming) return;
+      if (surface === "statuses") scheduleStatusRefresh();
+      else if (leanPane && leanPaneMainView === "items" && !leanPaneRefreshFailure) {
+        clearTimeout(leanPaneRefreshTimer);
+        leanPaneRefreshTimer = setTimeout(() => refreshLeanPaneNow(entry.again).catch(renderLeanPaneError), LEAN_PANE_REFRESH_DELAY_MS);
+      }
+    });
+    return entry.promise;
+  }
+
+  async function queuedCompanionQuery(baseUrl, path, payload, onQueued = () => {}) {
+    const initial = await targetBatchJson(baseUrl + path, {
+      method: "POST", headers: { "Content-Type": "application/json", Prefer: "respond-async" }, body: JSON.stringify(payload)
+    });
+    commandClient ||= import(chrome.runtime.getURL("commandClient.mjs"));
+    const { observeCommand } = await commandClient;
+    const result = await observeCommand(initial, id => targetBatchJson(`${baseUrl}/commands/${encodeURIComponent(id)}`), {
+      onQueued, wait: ms => new Promise(resolve => setTimeout(resolve, ms))
+    });
+    if (initial?.workspace_command !== true) return result;
+    if (result.statusCode >= 400) throw companionRequestError({ status: result.statusCode }, result.body);
+    return result.body;
   }
 
   function acceptDisplayResponse(request, revision) {
@@ -249,6 +330,7 @@
   let leanPaneExpandedItemIds = new Set();
   let leanPaneHighlightTimer = null;
   let lastLeanPaneManifest = null;
+  let deferredLeanPaneManifest = null;
   let lastLeanPaneManifestProjectId = "";
   let lastProjectIdentity = null;
   let lastLeanPaneFiles = null;
@@ -261,6 +343,7 @@
   let leanPaneSharePanel = null;
   let leanPaneShareState = null;
   let leanPaneShareBusy = false;
+  let leaTagsSetupControls = null;
   // GitHub pushes use a Lea-owned confirmation surface. Browser-native confirm
   // dialogs cannot inherit the extension's typography, spacing, or theme.
   let githubPushDialogState = null;
@@ -297,10 +380,14 @@
   let leanPaneBlueprintGraph = null; // last fetched { nodes, edges, exists }
   let leanPaneBlueprintSelectedKey = null;
   let leanPaneBlueprintGenerateBtn = null; // the "Generate…" button, for the in-flight disable
+  let leanPaneBlueprintTimer = null;
+  let leanPaneBlueprintFailures = 0;
+  let leanPaneBlueprintGeneration = null;
   // Consecutive transient poll failures (AUDIT M2): a thrown fetch used to stop
   // polling entirely, freezing the panel on "Lea is working…". We now retry
   // with backoff up to this cap before giving up and surfacing the error.
   let leanPaneChatPollFailures = 0;
+  let leanPaneChatPollInFlight = null;
   const LEAN_PANE_CHAT_POLL_MAX_FAILURES = 5;
   // Manual edit (docs/FEATURE-overleaf-lean-pane-manual-edit.md): at most one
   // item's edit view is open at a time, tracked by item id the same way
@@ -316,11 +403,15 @@
   // this holds only the latest /lean-pane/repair/status snapshot.
   let leanPaneRepairBatch = null;
   let leanPaneRepairBatchTimer = 0;
+  let leanPaneRepairBatchRead = null;
+  let leanPaneRepairBatchReadError = null;
   // Batch queue disclosure survives the pane's replaceChildren re-render, but
   // is scoped to one batch id so a new run always starts compact.
   let leanPaneExpandedBatchQueueId = "";
   let leanPaneExpandedBatchAttentionId = "";
   let leanPaneExpandedBatchCompletedId = "";
+  const leanPaneBatchNavigationBusy = new Set();
+  let leanPaneBatchNavigationStatus = null;
   let leanPaneBatchReports = [];
   let leanPaneBatchReportsProjectId = "";
   let leanPaneBatchReportsOpen = false;
@@ -356,7 +447,7 @@
   // Push channel (PLAN 3.1): one EventSource on the companion's /events.
   // pushConnected is consulted by every poll scheduler when picking a delay.
   let eventsClient = null;
-  let sourceRefreshHandler = null;
+  let sourcePublisher = null; // Shared initialization promise, not one client per target.
   let pushConnected = false;
 
   window.addEventListener("message", (event) => {
@@ -400,11 +491,14 @@
       const nextProjectId = extractOverleafProjectId();
       selectDisplayProject(nextProjectId);
       const activeTexChanged = nextActiveTex !== latestActiveTex || nextProjectId !== latestActiveTexProjectId;
+      const activePathChanged = normalizeDocPath(event.data.activePath ?? latestActiveTexPath) !== normalizeDocPath(latestActiveTexPath);
+      const previousTargetKeys = JSON.stringify(latestTargets.map(targetKey).sort());
       latestTargets = event.data.targets || [];
       latestDiagnostics = event.data.diagnostics || [];
       latestActiveTex = nextActiveTex;
       latestActiveTexPath = typeof event.data.activePath === "string" ? event.data.activePath : latestActiveTexPath;
       latestActiveTexProjectId = nextProjectId;
+      initializeOverleafNameOnOpen(nextProjectId, nextActiveTex).catch(() => {});
       const revision = `${nextProjectId}\0${normalizeDocPath(latestActiveTexPath)}\0${nextActiveTex}`;
       if (resolvedTargetsRevision === revision) {
         for (const target of latestTargets) {
@@ -414,6 +508,11 @@
             target.targetUses = resolved.targetUses;
           }
         }
+      }
+      if (activeTexChanged || activePathChanged || previousTargetKeys !== JSON.stringify(latestTargets.map(targetKey).sort())) {
+        // Invalidate immediately, before the refresh debounce. A response for
+        // an earlier viewport must stay obsolete even if we scroll back to it.
+        displayRequests.statuses = (displayRequests.statuses || 0) + 1;
       }
       renderStatusBadges();
       if (activeTexChanged) {
@@ -431,6 +530,7 @@
   requestTargetsSoon();
   renderSettingsButton();
   renderLeanPaneButton();
+  scheduleStatusRefresh();
   refreshApiKeyNudge();
   hydrateLeanPaneWidthFromStorage();
   hydrateSettingsPopoverWidthFromStorage();
@@ -559,7 +659,7 @@
     try {
       const stored = await getSettings();
       const baseUrl = String(stored.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
-      const response = await fetch(`${baseUrl}/settings`);
+      const response = await companionFetch(`${baseUrl}/settings`);
       if (!response.ok) return;
       const payload = await response.json().catch(() => ({}));
       updateApiKeyNudge({ leaModelRequirements: payload.leaModelRequirements });
@@ -581,6 +681,15 @@
     mark.setAttribute("aria-hidden", "true");
     mark.textContent = "L";
     leanPaneButton.appendChild(mark);
+    const spinner = document.createElement("span");
+    spinner.className = "ol-lean-activity-spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    leanPaneButton.appendChild(spinner);
+    const label = document.createElement("span");
+    label.className = "ol-lean-activity-label";
+    label.setAttribute("aria-hidden", "true");
+    label.textContent = "Lea is working…";
+    leanPaneButton.appendChild(label);
     leanPaneButton.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -591,6 +700,40 @@
       }
     });
     (document.body || document.documentElement).appendChild(leanPaneButton);
+    leaActivityStatus = document.createElement("span");
+    leaActivityStatus.className = "ol-lean-sr-only";
+    leaActivityStatus.setAttribute("role", "status");
+    leaActivityStatus.setAttribute("aria-live", "polite");
+    (document.body || document.documentElement).appendChild(leaActivityStatus);
+    renderLeaActivity();
+  }
+
+  function renderLeaActivity() {
+    if (!leanPaneButton) return;
+    const working = [...pendingFormalizations].some((pending) => pending.projectId === extractOverleafProjectId())
+      || (latestProjectActivity
+        ? latestProjectActivity.activeJobs > 0 || latestProjectActivity.activeBatches > 0
+        : Object.values(latestStatuses).some((status) => status.status === "in_progress" && !status.githubImportPending));
+    const wasWorking = leanPaneButton.classList.contains("is-working");
+    leanPaneButton.classList.toggle("is-working", working);
+    leanPaneButton.dataset.pageHidden = String(Boolean(document.hidden));
+    leanPaneButton.setAttribute("aria-expanded", String(Boolean(leanPane)));
+    const action = leanPane ? "Close Lean project pane" : "Open Lean project pane";
+    leanPaneButton.setAttribute("aria-label", working ? `${action} — Lea is working` : action);
+    leanPaneButton.title = working ? "Lea is working on formalization" : "Lean project pane";
+    if (leaActivityStatus && wasWorking !== working) {
+      leaActivityStatus.textContent = working ? "Lea is working on formalization." : "Lea is idle.";
+    }
+  }
+
+  function rememberStartedWork(projectId, field) {
+    if (projectId !== extractOverleafProjectId()) return;
+    // A status fetch started before admission must not erase the new run.
+    displayRequests.statuses = (displayRequests.statuses || 0) + 1;
+    latestProjectActivity = {
+      ...latestProjectActivity,
+      [field]: Math.max(1, latestProjectActivity?.[field] || 0)
+    };
   }
 
   function showLeanPane({ deferRefresh = false, preservePopover = false } = {}) {
@@ -697,6 +840,25 @@
     header.appendChild(controls);
 
     const viewTabs = buildLeanPaneViewTabs();
+    const tagsSetupSlot = document.createElement("div");
+    const ownerPane = leanPane;
+    import(chrome.runtime.getURL("leaTagsSetupUI.mjs"))
+      .then(({ mountLeaTagsSetup }) => {
+        if (leanPane !== ownerPane) return;
+        leaTagsSetupControls = mountLeaTagsSetup({
+          slot: tagsSetupSlot, window, document, chrome,
+          getProjectId: extractOverleafProjectId,
+          onChanged: () => {
+            lastLeanPaneFiles = null;
+            lastMirrorFiles = null;
+            leanPaneArchiveLoad = null;
+            texMirrorDirty = true;
+            requestTargets();
+            refreshLeanPaneNow({ forceFetch: true }).catch(renderLeanPaneError);
+          }
+        });
+      })
+      .catch(() => { tagsSetupSlot.textContent = "Reload the extension to enable Lea tag setup."; });
 
     leanPaneStatus = document.createElement("p");
     leanPaneStatus.className = "ol-lean-project-pane-status";
@@ -706,9 +868,11 @@
     leanPane.appendChild(resizer);
     leanPane.appendChild(header);
     leanPane.appendChild(viewTabs);
+    leanPane.appendChild(tagsSetupSlot);
     leanPane.appendChild(leanPaneStatus);
     leanPane.appendChild(leanPaneBody);
     document.body.appendChild(leanPane);
+    renderLeaActivity();
     renderRenameNotice();
     leanPane.focus({ preventScroll: true });
     if (!deferRefresh) {
@@ -730,6 +894,9 @@
   }
 
   function closeLeanPane() {
+    deferredLeanPaneManifest = null;
+    leaTagsSetupControls?.dispose();
+    leaTagsSetupControls = null;
     closeGithubPushConfirmation({ restoreFocus: false });
     if (projectIdentityEditorState?.source === "lean-pane") {
       closeProjectIdentityEditor({ restoreFocus: false });
@@ -738,6 +905,8 @@
     leanPaneRefreshTimer = null;
     clearTimeout(leanPanePollTimer);
     leanPanePollTimer = null;
+    clearTimeout(leanPaneBlueprintTimer);
+    leanPaneBlueprintTimer = null;
     displayRequests.manifest = (displayRequests.manifest || 0) + 1;
     clearLeanPaneRefreshFailure();
     clearTimeout(leanPaneStartupWatchdogTimer);
@@ -755,6 +924,7 @@
     if (!leanPane) return;
     leanPane.remove();
     leanPane = null;
+    renderLeaActivity();
     renderRenameNotice();
     leanPaneBody = null;
     leanPaneStatus = null;
@@ -1049,8 +1219,8 @@
     if (button) button.disabled = true;
     if (leanPaneStatus) leanPaneStatus.textContent = "Preparing the project zip...";
     try {
-      const response = await fetch(
-        `${baseUrl}/project-export?overleafProjectId=${encodeURIComponent(projectId)}`
+      const response = await companionFetch(
+        `${baseUrl}/project-export`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({overleafProjectId:projectId})}
       );
       if (!response.ok) {
         let message = `Export failed (HTTP ${response.status}).`;
@@ -1135,7 +1305,7 @@
   async function loadShareStatus() {
     const projectId = extractOverleafProjectId();
     const baseUrl = await chatCompanionBaseUrl();
-    const response = await fetch(
+    const response = await companionFetch(
       `${baseUrl}/share/github?overleafProjectId=${encodeURIComponent(projectId)}`
     );
     const body = await response.json().catch(() => ({}));
@@ -1207,7 +1377,7 @@
     renderShareControls();
     setShareStatus("Saving remote...");
     try {
-      const response = await fetch(`${baseUrl}/share/github/remote`, {
+      const response = await companionFetch(`${baseUrl}/share/github/remote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overleafProjectId: projectId, remoteUrl })
@@ -1383,7 +1553,7 @@
     renderShareControls();
     setShareStatus("Pushing to GitHub...");
     try {
-      const response = await fetch(`${baseUrl}/share/github/push`, {
+      const response = await companionFetch(`${baseUrl}/share/github/push`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overleafProjectId: projectId })
@@ -1668,7 +1838,7 @@
   async function pollGithubImport(tracker) {
     if (activeGithubImport !== tracker) return;
     try {
-      const response = await fetch(
+      const response = await companionFetch(
         `${tracker.baseUrl}/project/github-import/status?overleafProjectId=${encodeURIComponent(tracker.projectId)}&importId=${encodeURIComponent(tracker.id)}`
       );
       const progress = await response.json().catch(() => ({}));
@@ -1811,7 +1981,7 @@
       analyzeButton.disabled = true;
       setStatus("Analyzing repository...");
       try {
-        const response = await fetch(`${baseUrl}/project/github-import/preview`, {
+        const response = await companionFetch(`${baseUrl}/project/github-import/preview`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ overleafProjectId: projectId, repositoryUrl, targets })
@@ -1834,7 +2004,7 @@
       confirmButton.disabled = true;
       setStatus("Adding files and handing checks to the background...");
       try {
-        const response = await fetch(`${baseUrl}/project/github-import/confirm`, {
+        const response = await companionFetch(`${baseUrl}/project/github-import/confirm`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ overleafProjectId: projectId, previewId: preview.preview_id })
@@ -1853,10 +2023,12 @@
   }
 
   function companionRequestError(response, payload = {}) {
-    const error = new Error(payload?.message || `Companion returned HTTP ${response?.status}.`);
+    const error = new Error(payload?.message || payload?.detail?.message
+      || (typeof payload?.detail === "string" ? payload.detail : "") || `Companion returned HTTP ${response?.status}.`);
     error.name = "CompanionRequestError";
     error.code = String(payload?.error || "");
     error.status = Number(response?.status) || 0;
+    error.detail = payload?.detail;
     return error;
   }
 
@@ -1915,11 +2087,14 @@
   async function setLeanPaneMainView(view) {
     if (view === leanPaneMainView || !leanPane) return;
     leanPaneMainView = view;
+    clearTimeout(leanPaneBlueprintTimer);
+    leanPaneBlueprintTimer = null;
     updateLeanPaneViewTabs();
     renderLeanPaneRefreshWarning();
     if (view === "blueprint") {
       closeLeanPaneChat();
       closeActiveOverflowMenu();
+      startRepairBatchPolling();
       await renderLeanPaneBlueprint({});
       return;
     }
@@ -1934,9 +2109,24 @@
 
   // Fetch the project's blueprint graph from the companion and render it (or the
   // appropriate empty/error state). Guards against a view switch mid-fetch.
+  function scheduleBlueprintRefresh(delay = 2000) {
+    clearTimeout(leanPaneBlueprintTimer);
+    leanPaneBlueprintTimer = null;
+    if (!leanPane || document.hidden || leanPaneMainView !== "blueprint") return;
+    const projectId = extractOverleafProjectId();
+    leanPaneBlueprintTimer = setTimeout(() => {
+      leanPaneBlueprintTimer = null;
+      if (projectId !== extractOverleafProjectId() || document.hidden || leanPaneMainView !== "blueprint") return;
+      renderLeanPaneBlueprint({ background: true }).catch(renderLeanPaneError);
+    }, delay);
+  }
+
   async function renderLeanPaneBlueprint({ background = false } = {}) {
     if (!leanPane || !leanPaneBody || !leanPaneStatus) return;
     if (leanPaneMainView !== "blueprint") return;
+    if (leanPaneBlueprintGeneration?.projectId === extractOverleafProjectId()) return;
+    clearTimeout(leanPaneBlueprintTimer);
+    leanPaneBlueprintTimer = null;
     const request = displayRequest("blueprint");
     await ensureBlueprintPaneView();
     if (!background && !leanPaneBlueprintGraph) {
@@ -1959,7 +2149,7 @@
 
     let payload;
     try {
-      const response = await fetch(
+      const response = await companionFetch(
         `${baseUrl}/project/graph?overleafProjectId=${encodeURIComponent(projectId)}`,
       );
       payload = await response.json().catch(() => ({}));
@@ -1970,14 +2160,32 @@
       if (!currentDisplayRequest(request)) return false;
       if (error?.code === "project_renaming") { markProjectRenaming(); return false; }
       if (leanPaneMainView !== "blueprint" || !leanPaneBody) return;
-      leanPaneStatus.textContent = "Blueprint unavailable.";
-      leanPaneBody.replaceChildren(buildBlueprintToolbar(), buildBlueprintMessage(errorText(error), "error"));
+      leanPaneBlueprintFailures += 1;
+      if (leanPaneBlueprintGraph) renderBlueprintBody(leanPaneBlueprintGraph);
+      else leanPaneBody.replaceChildren(buildBlueprintToolbar(), buildBlueprintMessage(errorText(error), "error"));
+      leanPaneStatus.textContent = "Waiting for the current blueprint · retrying.";
+      scheduleBlueprintRefresh(Math.min(10000, 1000 * 2 ** Math.min(leanPaneBlueprintFailures, 3)));
       return;
     }
 
     if (leanPaneMainView !== "blueprint" || !acceptDisplayResponse(request, payload.namespaceRevision)) return false;
+    // Generation returns a newer worker snapshot before its SQL view refreshes.
+    // Do not replace that result with an older observation during catch-up.
+    if (leanPaneBlueprintGraph?.generatedAt && payload.projection
+        && Date.parse(payload.projection.observed_at) < leanPaneBlueprintGraph.generatedAt) {
+      payload = { ...leanPaneBlueprintGraph, projection: { ...payload.projection, state: "inputs_changed" },
+        warnings: payload.warnings || [] };
+    }
+    payload = { ...payload, generationWarnings: leanPaneBlueprintGraph?.generationWarnings || [] };
     leanPaneBlueprintGraph = payload;
+    leanPaneBlueprintFailures = 0;
     renderBlueprintBody(payload);
+    const stale = payload.projection && payload.projection.state !== "observed";
+    if (stale) scheduleBlueprintRefresh();
+    else if (payload.projection?.expires_at) {
+      const expiresAt = Date.parse(payload.projection.expires_at);
+      scheduleBlueprintRefresh(Number.isFinite(expiresAt) ? Math.max(2000, expiresAt - Date.now() - 5000) : 5000);
+    }
     return true;
   }
 
@@ -1990,6 +2198,18 @@
     const edges = Array.isArray(payload?.edges) ? payload.edges : [];
     const prevScrollTop = leanPaneBody.scrollTop;
     leanPaneBody.replaceChildren(buildBlueprintToolbar());
+    const warnings = [...new Map([
+      ...(Array.isArray(payload?.warnings) ? payload.warnings : []),
+      ...(Array.isArray(payload?.generationWarnings) ? payload.generationWarnings : [])
+    ].map(warning => [JSON.stringify(warning), warning])).values()];
+    const degraded = warnings.some(warning => warning && typeof warning === "object");
+    if (degraded && leanPaneBlueprintGenerateBtn) leanPaneBlueprintGenerateBtn.disabled = true;
+    for (const warning of warnings) {
+      const message = typeof warning === "string" ? warning : warning?.message;
+      if (message) leanPaneBody.appendChild(buildBlueprintMessage(message, "warning"));
+    }
+    const stale = payload?.projection && payload.projection.state !== "observed";
+    if (stale) leanPaneBody.appendChild(buildBlueprintMessage("Showing the last observed blueprint. Waiting for the current graph…", "pending"));
 
     if (payload && payload.exists === false) {
       leanPaneStatus.textContent = "No Lea project yet.";
@@ -2002,7 +2222,9 @@
       return;
     }
     if (nodes.length === 0) {
-      leanPaneStatus.textContent = "Blueprint is empty.";
+      leanPaneStatus.textContent = degraded ? "Blueprint could not be read completely."
+        : stale ? "Waiting for the current blueprint…" : "Blueprint is empty.";
+      if (degraded || stale) return;
       leanPaneBody.appendChild(
         buildBlueprintMessage(
           "No blueprint nodes yet. Click “Generate from formalized theorems” above to build a starter graph from what you've formalized — or add nodes in the Lea UI.",
@@ -2012,7 +2234,8 @@
       return;
     }
 
-    leanPaneStatus.textContent = `${nodes.length} blueprint node${nodes.length === 1 ? "" : "s"}.`;
+    leanPaneStatus.textContent = stale ? "Waiting for the current blueprint…"
+      : `${nodes.length} blueprint node${nodes.length === 1 ? "" : "s"}.`;
     const element = leanPaneBlueprintView.renderBlueprintView(
       { nodes, edges },
       {
@@ -2060,6 +2283,22 @@
 
   // POST the generate request, then render the returned graph and report what changed.
   async function generateBlueprint() {
+    if (leanPaneBlueprintGeneration?.projectId === extractOverleafProjectId()) return;
+    const generation = { projectId: extractOverleafProjectId() };
+    leanPaneBlueprintGeneration = generation;
+    clearTimeout(leanPaneBlueprintTimer);
+    leanPaneBlueprintTimer = null;
+    try {
+      await generateBlueprintNow();
+    } finally {
+      if (leanPaneBlueprintGeneration === generation) {
+        leanPaneBlueprintGeneration = null;
+        scheduleBlueprintRefresh();
+      }
+    }
+  }
+
+  async function generateBlueprintNow() {
     if (!leanPane || !leanPaneBody || !leanPaneStatus || leanPaneMainView !== "blueprint") return;
     const request = displayRequest("blueprint");
     if (leanPaneBlueprintGenerateBtn) {
@@ -2073,7 +2312,7 @@
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
     let payload;
     try {
-      const response = await fetch(`${baseUrl}/project/blueprint/generate`, {
+      const response = await companionFetch(`${baseUrl}/project/blueprint/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overleafProjectId: projectId }),
@@ -2096,12 +2335,15 @@
     }
 
     if (leanPaneMainView !== "blueprint" || !acceptDisplayResponse(request, payload.namespaceRevision)) return;
+    payload = { ...payload, generatedAt: Date.now(), generationWarnings: payload.warnings || [] };
     leanPaneBlueprintGraph = payload;
     leanPaneBlueprintSelectedKey = null;
     renderBlueprintBody(payload); // rebuilds the toolbar (button re-enabled) + graph
 
     // Overlay a result message over the node count renderBlueprintBody just set.
-    if (payload.exists === false) {
+    if (Array.isArray(payload.warnings) && payload.warnings.length) {
+      leanPaneStatus.textContent = "Blueprint generation needs attention. See the diagnostics below.";
+    } else if (payload.exists === false) {
       leanPaneStatus.textContent = "No Lea project for this document yet.";
     } else if (payload.added > 0) {
       leanPaneStatus.textContent = `Added ${payload.added} node${payload.added === 1 ? "" : "s"} from formalized theorems.`;
@@ -2132,17 +2374,24 @@
   // live buffer overlaid — a cheap, no-blink background refresh (no project download).
   function scheduleLeanPaneRefresh() {
     if (projectRenaming) { scheduleRenameReconciliation(); return; }
-    clearTimeout(leanPaneRefreshTimer);
+    // Bound the wait from the first notification. Continuous run events must
+    // not keep postponing the graph/inventory refresh indefinitely.
+    if (leanPaneRefreshTimer !== null) return;
     leanPaneRefreshTimer = setTimeout(() => {
+      leanPaneRefreshTimer = null;
       refreshLeanPaneNow({ background: true }).catch(renderLeanPaneError);
     }, LEAN_PANE_REFRESH_DELAY_MS);
   }
 
   // `forceFetch` re-downloads the project archive; `background` skips the blanking
   // "Loading…" state and preserves scroll, for edit-driven and poll refreshes.
-  async function refreshLeanPaneNow(options = {}) {
+  function refreshLeanPaneNow(options = {}) {
+    return coalesceDisplayRead("manifest", options, entry => performLeanPaneRefresh(options, entry));
+  }
+
+  async function performLeanPaneRefresh(options, entry) {
     const request = { ...displayRequest("manifest"), view: leanPaneMainView };
-    try { return await refreshLeanPaneSnapshot({ ...options, request }); }
+    try { return await refreshLeanPaneSnapshot({ ...options, request, entry }); }
     catch (error) {
       if (!currentDisplayRequest(request) || request.view !== leanPaneMainView) return false;
       if (error?.code === "project_renaming") {
@@ -2160,19 +2409,15 @@
     }
   }
 
-  async function refreshLeanPaneSnapshot({ forceFetch = false, background = false, request } = {}) {
+  async function refreshLeanPaneSnapshot({ forceFetch = false, background = false, request, entry } = {}) {
     if (!leanPane || !leanPaneBody || !leanPaneStatus || (background && document.hidden)) return;
     clearTimeout(leanPaneRefreshTimer);
     leanPaneRefreshTimer = null;
     clearTimeout(leanPanePollTimer);
     leanPanePollTimer = null;
-    // Blueprint view has its own (Items-independent) fetch + render — no file
-    // archive, manifest, or in-progress poll. The blueprint is derived from
-    // .lea/blueprint.md + Lean state, NOT the .tex buffer, so edit-/poll-driven
-    // background refreshes can't change it — skip them. Explicit refreshes (the
-    // header ↻ and initial open, both non-background) still re-fetch.
+    // Database notifications can change graph status even without a TeX edit.
     if (leanPaneMainView === "blueprint") {
-      if (!background) await renderLeanPaneBlueprint({});
+      await renderLeanPaneBlueprint({ background });
       return;
     }
     await ensureLeanPaneView();
@@ -2204,22 +2449,38 @@
       // the complete inventory hydrates and re-renders in the background.
       deferArchiveFetch: !background
     });
-    const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/lean-pane/manifest`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    const [payload] = await Promise.all([queuedCompanionQuery(baseUrl, "/lean-pane/manifest", {
         overleafProjectId: projectId,
         activePath: latestActiveTexPath || "",
         sourceCoverage: leanPaneSourceCoverage,
         files
-      })
-    }, {
-      timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
-      timeoutMessage: "The Lea companion timed out while loading the project inventory."
-    });
+    }, () => {
+      entry.queued = true;
+      if (currentDisplayRequest(request)) {
+        renderLeanPaneRefreshWarning();
+        entry.noticeTimer = setTimeout(() => {
+          entry.delayed = true;
+          if (currentDisplayRequest(request)) renderLeanPaneRefreshWarning();
+        }, LEAN_PANE_PENDING_NOTICE_DELAY_MS);
+      }
+    }), refreshRepairBatchSnapshot({ baseUrl, projectId })]);
     if (!currentDisplayRequest(request) || request.view !== leanPaneMainView) return false;
-    if (!response.ok) throw companionRequestError(response, payload);
     if (!acceptDisplayResponse(request, payload.namespaceRevision)) return false;
+    // Runtime health changes independently of an inventory command. Read its
+    // current SQL projection rather than replaying the command's older status.
+    const runtimeSession = (payload.items || []).find(item => item.leaSessionId)?.leaSessionId;
+    if (runtimeSession) {
+      let observed;
+      try { observed = await targetBatchJson(`${baseUrl}/lean-pane/check-runtime/${encodeURIComponent(runtimeSession)}`); }
+      catch (error) { observed = { runtime: { state: "unavailable", observation: { state: "unavailable", message: normalizeErrorMessage(error) } },
+        message: "Lean runtime status unavailable · retrying", polling: true }; }
+      if (!currentDisplayRequest(request) || request.view !== leanPaneMainView) return false;
+      if (observed.runtime) {
+        payload.leanCheckRuntime = observed.runtime;
+        payload.leanCheckRuntimeMessage = observed.message || "";
+        payload.leanCheckRuntimePolling = observed.polling === true;
+      }
+    }
     // The pane may load more files than the live editor resolver knew about.
     // If that inventory disambiguates a generated ID, update the badge's key
     // before its next status request so both UI surfaces keep one identity.
@@ -2265,6 +2526,8 @@
         renderLeanPaneManifest(lastLeanPaneManifest);
       }
     }).catch(() => {});
+    entry.queued = false;
+    clearTimeout(entry.noticeTimer);
     clearLeanPaneRefreshFailure();
     renderLeanPaneManifest(payload);
     scheduleLeanPanePollIfNeeded(payload);
@@ -2273,16 +2536,21 @@
 
   // Keep refreshing while any item is still being formalized; stop once it settles.
   document.addEventListener("visibilitychange", () => {
+    renderLeaActivity();
     clearTimeout(renameRetryTimer);
     renameRetryTimer = null;
     if (!document.hidden && projectRenaming) { scheduleRenameReconciliation(0); return; }
     clearTimeout(leanPanePollTimer);
     clearTimeout(leanPaneChatPollTimer);
+    clearTimeout(leanPaneRepairBatchTimer);
+    clearTimeout(leanPaneBlueprintTimer);
+    leanPaneBlueprintTimer = null;
     if (!document.hidden) {
       scheduleStatusRefresh();
       if (leanPaneMainView === "blueprint" && leanPane) renderLeanPaneBlueprint({ background: true }).catch(() => {});
       else if (leanPane) refreshLeanPaneNow({ background: true }).catch(() => {});
       if (leanPaneChatPanel) pollChatSession().catch(() => {});
+      if (!leanPane || leanPaneMainView !== "items") startRepairBatchPolling({ immediate: true });
     }
   });
 
@@ -2290,10 +2558,12 @@
     clearTimeout(leanPanePollTimer);
     leanPanePollTimer = null;
     if (leanPaneRefreshFailure) { scheduleLeanPaneRefreshRetry(); return; }
-    if (!leanPane || document.hidden || (!manifest?.leanCheckRuntimePolling && !leanPaneView?.hasInProgressItems(manifest?.items))) return;
+    if (!leanPane || document.hidden || (!manifest?.leanCheckRuntimePolling && !leanPaneView?.hasInProgressItems(manifest?.items)
+      && !leanPaneView?.hasPendingPaneObservations(manifest?.items) && manifest?.inventorySync?.state !== "pending"
+      && !batchNeedsPolling())) return;
     leanPanePollTimer = setTimeout(() => {
       refreshLeanPaneNow({ background: true }).catch(renderLeanPaneError);
-    }, 5000);
+    }, ACTIVE_INVENTORY_POLL_MS);
   }
 
   function clearLeanPaneRefreshFailure() {
@@ -2317,7 +2587,23 @@
   }
 
   function renderLeanPaneRefreshWarning() {
-    if (!leanPane || !leanPaneStatus || !leanPaneRefreshFailure) return;
+    if (!leanPane || !leanPaneStatus) return;
+    const pending = pendingInventoryRefresh();
+    const loaded = lastLeanPaneManifest && lastLeanPaneManifestProjectId === extractOverleafProjectId();
+    const delayed = displayReads.get(`${extractOverleafProjectId()}\0manifest`)?.delayed;
+    // Background polling is ordinary operation. Only insert a notice for the
+    // initial load, an overdue receipt, or a failed read; avoid layout flashing.
+    const showPending = pending && (!loaded || delayed);
+    if (leanPaneRefreshFailure || pending) {
+      for (const button of leanPaneBody?.querySelectorAll(".ol-lean-human-approval-pane") || []) {
+        button.disabled = true;
+        button.title = "Refresh the inventory before changing personal approval.";
+      }
+    }
+    if (!leanPaneRefreshFailure && !showPending) {
+      leanPane.querySelector(".ol-lean-project-pane-refresh-warning")?.remove();
+      return;
+    }
     let notice = leanPane.querySelector(".ol-lean-project-pane-refresh-warning");
     if (!notice) {
       notice = document.createElement("p");
@@ -2327,19 +2613,16 @@
       leanPane.insertBefore(notice, leanPaneStatus);
     }
     notice.hidden = leanPaneMainView !== "items";
+    notice.classList.toggle("is-pending", showPending && !leanPaneRefreshFailure);
     if (notice.hidden) return;
-    const loaded = lastLeanPaneManifest && lastLeanPaneManifestProjectId === extractOverleafProjectId();
-    notice.textContent = loaded
+    notice.textContent = !leanPaneRefreshFailure && showPending
+      ? loaded ? "Inventory refresh is taking longer than usual. Showing the last loaded statuses while the queued refresh completes."
+        : "Inventory refresh queued. Waiting for the updated project inventory…"
+      : loaded
       ? `Refresh delayed. Showing the last loaded inventory; statuses may be out of date. Retrying in ${leanPaneRefreshRetryDelay() / 1000} seconds.`
       : `${leanPaneRefreshFailure} Retrying in ${leanPaneRefreshRetryDelay() / 1000} seconds.`;
-    notice.title = leanPaneRefreshFailure;
-    if (!loaded) leanPaneStatus.textContent = "Project inventory is temporarily unavailable.";
-    // Cached eligibility cannot authorize a new personal approval while the
-    // pane cannot confirm current evidence. The next snapshot recreates these.
-    for (const button of leanPaneBody?.querySelectorAll(".ol-lean-human-approval-pane") || []) {
-      button.disabled = true;
-      button.title = "Refresh the inventory before changing personal approval.";
-    }
+    notice.title = pending ? "An inventory refresh is already queued. The last loaded statuses remain visible until it finishes." : leanPaneRefreshFailure;
+    if (!loaded) leanPaneStatus.textContent = pending ? "Waiting for project inventory…" : "Project inventory is temporarily unavailable.";
   }
 
   function renderLeanPaneRefreshError(error) {
@@ -2448,16 +2731,37 @@
     return files;
   }
 
+  document.addEventListener("selectionchange", () => {
+    renderTargetBatchAdmission();
+    const pending = deferredLeanPaneManifest;
+    if (!pending) return;
+    deferredLeanPaneManifest = null;
+    if (leanPaneMainView === "items" && pending.projectId === extractOverleafProjectId()
+      && pending.generation === displayGeneration && pending.namespace === displayNamespaceRevision) {
+      renderLeanPaneManifest(pending.manifest);
+    }
+  });
+
   function renderLeanPaneManifest(manifest) {
-    if (!leanPaneBody || !leanPaneStatus) return;
+    if (!leanPaneBody || !leanPaneStatus || leanPaneMainView !== "items") return;
+    renderTargetBatchAdmission();
     manifest = githubImportPaneOverlay(manifest);
     const prevScrollTop = leanPaneBody.scrollTop;
     const statusFocus = document.activeElement?.closest?.(".ol-lean-live-status") ? document.activeElement : null;
+    const navigationFocusKey = document.activeElement?.closest?.(".ol-lean-batch-queue-action")?.dataset.batchNavigationKey;
+    const itemHeaderFocusId = document.activeElement?.closest?.(".ol-lean-project-item-header")
+      ?.closest?.(".ol-lean-project-item")?.dataset.itemId;
     const selection = document.getSelection?.();
-    // Defer this refresh while the author is selecting status text. The next
-    // normal poll applies it after selection clears without destroying the range.
-    const selectedElement = selection?.anchorNode?.parentElement;
-    if (!selection?.isCollapsed && selectedElement?.closest?.(".ol-lean-live-status")) return;
+    // Retain the newest refresh without destroying a selected range. Apply it
+    // when the selection clears, even if the final job no longer needs polling.
+    if (selection && !selection.isCollapsed && (
+      leanPaneBody.contains(selection.anchorNode) || leanPaneBody.contains(selection.focusNode)
+    )) {
+      deferredLeanPaneManifest = { manifest, projectId: extractOverleafProjectId(),
+        generation: displayGeneration, namespace: displayNamespaceRevision };
+      return;
+    }
+    deferredLeanPaneManifest = null;
     const items = Array.isArray(manifest?.items) ? manifest.items : [];
     const renderedProjectId = extractOverleafProjectId();
     if (leanPaneBatchReportsProjectId && leanPaneBatchReportsProjectId !== renderedProjectId) {
@@ -2483,14 +2787,28 @@
     leanPaneStatus.textContent = leanPaneInventoryWarning
       ? `${inventorySummary} ${leanPaneInventoryWarning}`
       : inventorySummary;
+    if (leanPaneBatchNavigationStatus?.projectId === renderedProjectId
+      && leanPaneBatchNavigationStatus.batchId === leanPaneRepairBatch?.batchId) {
+      leanPaneStatus.textContent = leanPaneBatchNavigationStatus.message;
+    }
 
     if (manifest?.leanCheckRuntimeMessage) {
       const runtime = document.createElement("div");
-      runtime.className = "ol-lean-project-pane-diagnostics";
+      runtime.className = manifest.leanCheckRuntime?.observation || !["unavailable", "degraded"].includes(manifest.leanCheckRuntime?.state)
+        ? "ol-lean-project-pane-runtime" : "ol-lean-project-pane-diagnostics";
       runtime.setAttribute("role", "status");
       runtime.textContent = manifest.leanCheckRuntimeMessage;
-      runtime.title = manifest.leanCheckRuntime?.last_failure?.message || "";
+      runtime.title = manifest.leanCheckRuntime?.observation?.message || manifest.leanCheckRuntime?.last_failure?.message || "";
       leanPaneBody.appendChild(runtime);
+    }
+    if (manifest?.inventorySync?.state === "pending" || leanPaneView.hasPendingPaneObservations(items)) {
+      const notice = document.createElement("p");
+      notice.className = "ol-lean-project-pane-runtime ol-lean-project-pane-synchronizing";
+      notice.setAttribute("role", "status");
+      notice.setAttribute("aria-live", "polite");
+      notice.textContent = manifest?.inventorySync?.message
+        || "Updating proof statuses. Saved results are retained while current evidence is synchronized.";
+      leanPaneBody.appendChild(notice);
     }
     if (Array.isArray(manifest?.diagnostics) && manifest.diagnostics.length > 0) {
       const visibleDiagnostics = manifest.diagnostics.slice(0, 4);
@@ -2513,7 +2831,7 @@
       }
     }
 
-    const repairBatchPanel = renderLeanPaneRepairBatchPanel();
+    const repairBatchPanel = renderLeanPaneRepairBatchPanel({ navigationFocusKey });
     if (repairBatchPanel) leanPaneBody.appendChild(repairBatchPanel);
 
     const reportsPanel = renderFormalizeBatchReportHistory();
@@ -2521,6 +2839,7 @@
 
     const batchActions = renderLeanPaneBatchActions(items);
     if (batchActions) leanPaneBody.appendChild(batchActions);
+    renderTargetBatchAdmission();
 
     if (items.length > 0) {
       const treeElement = document.createElement("div");
@@ -2532,6 +2851,8 @@
     }
 
     if (statusFocus?.isConnected) statusFocus.focus({ preventScroll: true });
+    if (navigationFocusKey) batchQueueNavigationButton(navigationFocusKey)?.focus({ preventScroll: true });
+    if (itemHeaderFocusId) leanPaneItemHeader(itemHeaderFocusId)?.focus({ preventScroll: true });
     leanPaneBody.scrollTop = prevScrollTop;
     renderLeanPaneRefreshWarning();
     const projectId = extractOverleafProjectId();
@@ -2551,7 +2872,7 @@
       const baseUrl = await chatCompanionBaseUrl();
       const cursor = append && leanPaneBatchReportsNextCursor
         ? `&before=${encodeURIComponent(leanPaneBatchReportsNextCursor)}` : "";
-      const response = await fetch(`${baseUrl}/formalize/all/reports?overleafProjectId=${encodeURIComponent(projectId)}${cursor}`);
+      const response = await companionFetch(`${baseUrl}/formalize/all/reports?overleafProjectId=${encodeURIComponent(projectId)}${cursor}`);
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.message || "Could not load Formalize all reports.");
       if (projectId !== extractOverleafProjectId()) return;
@@ -2573,7 +2894,7 @@
     try {
       const baseUrl = await chatCompanionBaseUrl();
       const projectId = extractOverleafProjectId();
-      const response = await fetch(`${baseUrl}/formalize/all/reports/${encodeURIComponent(batchId)}?overleafProjectId=${encodeURIComponent(projectId)}`);
+      const response = await companionFetch(`${baseUrl}/formalize/all/reports/${encodeURIComponent(batchId)}?overleafProjectId=${encodeURIComponent(projectId)}`);
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.message || "Could not load this report.");
       if (projectId !== extractOverleafProjectId()) return;
@@ -2595,7 +2916,7 @@
   async function retryFormalizeBatchReport(batchId) {
     try {
       const baseUrl = await chatCompanionBaseUrl();
-      const response = await fetch(`${baseUrl}/formalize/all/reports/${encodeURIComponent(batchId)}/retry`, {
+      const response = await companionFetch(`${baseUrl}/formalize/all/reports/${encodeURIComponent(batchId)}/retry`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overleafProjectId: extractOverleafProjectId() })
       });
@@ -2681,13 +3002,37 @@
   function renderLeanPaneProjectIdentity(identity) {
     if (!leanPaneProjectTitle || !leanPaneProjectNamespace) return;
     const fallback = guessProjectName(lastLeanPaneFiles || []);
-    leanPaneProjectTitle.textContent = identity?.projectName || fallback;
+    leanPaneProjectTitle.textContent = identity?.exists === false ? fallback : identity?.projectName || fallback;
     leanPaneProjectNamespace.textContent = identity?.namespace || "Namespace not created yet";
+  }
+
+  async function initializeOverleafNameOnOpen(projectId, activeTex) {
+    if (!projectId || projectId === "unknown" || defaultNameLoadedProjectId === projectId) return;
+    const overleafProjectTitle = readOverleafProjectTitle([{ content: activeTex }]);
+    if (!overleafProjectTitle) return;
+    defaultNameLoadedProjectId = projectId;
+    try {
+      const settings = await getSettings();
+      const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
+      const generation = displayGeneration;
+      const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/project/identity/default-name`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ overleafProjectId: projectId, overleafProjectTitle })
+      }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+        timeoutMessage: "The Lea companion timed out while initializing the project name." });
+      if (!response.ok && response.status !== 404) throw companionRequestError(response, payload);
+      if (projectId === extractOverleafProjectId() && generation === displayGeneration && response.ok && payload.identity) {
+        lastProjectIdentity = payload.identity;
+        renderLeanPaneProjectIdentity(lastProjectIdentity);
+      }
+    } catch {
+      if (defaultNameLoadedProjectId === projectId) defaultNameLoadedProjectId = "";
+    }
   }
 
   async function loadProjectIdentity({ baseUrl, projectId }) {
     const request = displayRequest("identity");
-    const { response, payload } = await fetchJsonWithTimeout(
+    let { response, payload } = await fetchJsonWithTimeout(
       `${baseUrl}/project/identity?overleafProjectId=${encodeURIComponent(projectId)}`,
       {},
       {
@@ -2697,6 +3042,23 @@
     );
     if (!currentDisplayRequest(request)) throw Object.assign(new Error("A newer project request superseded this response."), { code: "superseded" });
     if (!response.ok) throw companionRequestError(response, payload);
+    const overleafProjectTitle = readOverleafProjectTitle(lastLeanPaneFiles || []);
+    if (payload.identity?.exists && payload.identity.nameSource === "generated" && overleafProjectTitle) {
+      try {
+        const initialized = await fetchJsonWithTimeout(`${baseUrl}/project/identity/default-name`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ overleafProjectId: projectId, overleafProjectTitle })
+        }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS,
+          timeoutMessage: "The Lea companion timed out while initializing the project name." });
+        if (!currentDisplayRequest(request)) throw Object.assign(new Error("A newer project request superseded this response."), { code: "superseded" });
+        if (initialized.response.ok && initialized.payload.identity) payload = initialized.payload;
+        else if (initialized.response.status === 409) throw companionRequestError(initialized.response, initialized.payload);
+      } catch (error) {
+        if (error?.code === "superseded" || error?.code === "project_renaming") throw error;
+        // Naming is best-effort on tab open; the next identity load retries.
+      }
+    }
     if (!acceptDisplayResponse(request, payload.identity?.namespaceRevision)) {
       throw Object.assign(new Error("A newer project request superseded this response."), { code: "superseded" });
     }
@@ -2710,7 +3072,7 @@
       ? setTimeout(() => controller.abort(), timeoutMs)
       : null;
     try {
-      const response = await fetch(url, controller ? { ...options, signal: controller.signal } : options);
+      const response = await companionFetch(url, controller ? { ...options, signal: controller.signal } : options);
       const payload = await response.json().catch(() => ({}));
       return { response, payload };
     } catch (error) {
@@ -2722,7 +3084,7 @@
   }
 
   async function previewProjectIdentity({ baseUrl, projectId, projectName, namespace = "", excludeProjectId = "" }) {
-    const response = await fetch(`${baseUrl}/project/identity/preview`, {
+    const response = await companionFetch(`${baseUrl}/project/identity/preview`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ overleafProjectId: projectId, projectName, namespace, excludeProjectId })
@@ -2733,7 +3095,7 @@
   }
 
   async function saveProjectIdentity({ baseUrl, projectId, projectName, mode, namespace = "", expectedNamespace = "", createIfMissing = false }) {
-    const response = await fetch(`${baseUrl}/project/identity`, {
+    const response = await companionFetch(`${baseUrl}/project/identity`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ overleafProjectId: projectId, projectName, mode, namespace, expectedNamespace, createIfMissing })
@@ -2743,13 +3105,18 @@
     return payload;
   }
 
-  function guessProjectName(files = []) {
-    for (const file of files || []) {
+  function readOverleafProjectTitle(files = []) {
+    const title = String(document.title || "").replace(/\s*[-–—]\s*Overleaf\s*$/i, "").trim();
+    if (title && !/^Overleaf$/i.test(title)) return title;
+    for (const file of [{ content: latestActiveTex }, ...(files || [])]) {
       const match = String(file?.content || "").match(/\\title\s*\{([^}]*)\}/);
       if (match?.[1]?.trim()) return match[1].trim();
     }
-    const title = String(document.title || "").replace(/\s*-\s*Overleaf\s*$/i, "").trim();
-    return title || "Overleaf Project";
+    return "";
+  }
+
+  function guessProjectName(files = []) {
+    return readOverleafProjectTitle(files) || "Overleaf Project";
   }
 
   function renderProjectIdentityFeedback({ source = "lean-pane", popover = null, message = "", kind = "info" } = {}) {
@@ -2784,7 +3151,7 @@
   function buildProjectIdentityEditor({ source, popover, trigger, baseUrl, projectId, identity }) {
     closeProjectIdentityEditor({ restoreFocus: false });
 
-    const currentName = String(identity?.projectName || guessProjectName(lastLeanPaneFiles || [])).trim();
+    const currentName = String((identity?.exists !== false && identity?.projectName) || guessProjectName(lastLeanPaneFiles || [])).trim();
     const currentNamespace = String(identity?.namespace || "").trim();
     const shell = createProjectIdentityElement("div", "ol-lean-project-identity-backdrop");
     const dialog = createProjectIdentityElement("section", "ol-lean-project-identity-dialog");
@@ -3223,19 +3590,10 @@
     if (node.type === "file") {
       row.appendChild(renderLeanPaneFileProgress(node));
       const progress = node.progress || leanPaneView.summarizePaneProgress(node.items || []);
-      if (progress.disproved > 0) {
-        const outcomes = document.createElement("span");
-        outcomes.className = "ol-lean-project-progress-outcomes";
-        const verified = document.createElement("span");
-        verified.className = "ol-lean-project-progress-outcome-verified";
-        verified.textContent = `${progress.success} verified`;
-        verified.title = "Verified proofs and definitions";
-        const disproved = document.createElement("span");
-        disproved.className = "ol-lean-project-progress-outcome-disproved";
-        disproved.textContent = `${progress.disproved} disproved`;
-        outcomes.append(verified, " · ", disproved);
-        row.appendChild(outcomes);
-      }
+      const outcomes = document.createElement("span");
+      outcomes.className = "ol-lean-project-progress-summary";
+      outcomes.textContent = leanPaneView.formatPaneProgressSummary(progress);
+      row.appendChild(outcomes);
     } else {
       const chip = document.createElement("span");
       chip.className = `ol-lean-project-status ol-lean-project-tree-status ol-lean-project-status-${node.status || "unknown"}`;
@@ -3265,7 +3623,7 @@
   function renderLeanPaneFileProgress(node) {
     const summary = node.progress || leanPaneView.summarizePaneProgress(node.items || []);
     const progress = document.createElement("span");
-    progress.className = `ol-lean-project-progress${summary.inProgress > 0 ? " ol-lean-project-progress-in-progress" : ""}`;
+    progress.className = "ol-lean-project-progress";
     progress.setAttribute("role", "img");
     progress.setAttribute("aria-label", leanPaneView.formatPaneProgressLabel(node.path || node.name, summary));
 
@@ -3367,6 +3725,9 @@
     }
     summaryActions.appendChild(formalizeButton);
     summaryActions.appendChild(renderPaneItemIconAction(item, { id: "go-to-source", label: "Go to source" }));
+    if (leanPaneView.canChatPaneItem(item)) {
+      summaryActions.appendChild(renderPaneItemIconAction(item, { id: "view-in-lea", label: "Open in LeaChat" }));
+    }
     summary.appendChild(summaryActions);
     card.appendChild(summary);
     if (waiting && !expanded) {
@@ -3390,7 +3751,7 @@
         const baseUrl = await chatCompanionBaseUrl();
         const query = new URLSearchParams({ formalizationId: target.formalizationId });
         if (after) query.set("after", after);
-        const response = await fetch(`${baseUrl}/lean-pane/lea-status/updates?${query}`);
+        const response = await companionFetch(`${baseUrl}/lean-pane/lea-status/updates?${query}`);
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.message || payload.error || "Could not load Lea Status history.");
         return payload;
@@ -3401,7 +3762,7 @@
           return;
         }
         const baseUrl = await chatCompanionBaseUrl();
-        const response = await fetch(`${baseUrl}/lean-pane/chat/interrupt`, {
+        const response = await companionFetch(`${baseUrl}/lean-pane/chat/interrupt`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ runId: target.leaStatus.run_id, sessionId: target.leaSessionId })
         });
@@ -3416,7 +3777,7 @@
     return leanPaneView.renderSharedDependencies(dependencies, { document, key,
       retry: async (dep, { resume = false } = {}) => {
         const baseUrl = await chatCompanionBaseUrl();
-        const response = await fetch(`${baseUrl}/lean-pane/dependencies/retry`, {
+        const response = await companionFetch(`${baseUrl}/lean-pane/dependencies/retry`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(), dependencyId: dep.id, resume })
         });
@@ -3568,7 +3929,6 @@
   function renderLeanPaneItemDetail(item, useRelationships) {
     const detail = document.createElement("div");
     detail.className = "ol-lean-project-detail";
-
     const source = renderLeanPaneDetailSection("Source statement");
     const natural = document.createElement("p");
     natural.className = "ol-lean-project-natural";
@@ -3641,6 +4001,7 @@
       progress.appendChild(review);
     }
     if (item.leaCheck?.report) progress.appendChild(renderLeaCheckReport(item));
+
     detail.appendChild(progress);
 
     const editing = leanPaneEditingItemId === item.id;
@@ -3648,12 +4009,12 @@
     const otherActions = renderLeanPaneDetailSection("Other actions");
     const actions = document.createElement("div");
     actions.className = "ol-lean-project-detail-actions";
-    // Formalize and Go to source live in the compact summary at all times.
+    // Formalize, Go to source and Open in LeaChat live in the compact summary.
     // Repair and best-effort continuation remain here when they apply.
-    if (primary && primary.id !== "formalize") actions.appendChild(renderPaneItemPrimaryAction(item, primary));
+    if (primary && primary.id !== 'formalize') actions.appendChild(renderPaneItemPrimaryAction(item, primary));
     const railElement = document.createElement("div");
     railElement.className = "ol-lean-icon-rail";
-    for (const action of rail.filter((entry) => entry.id !== "go-to-source")) {
+    for (const action of rail.filter((entry) => !["go-to-source", "view-in-lea"].includes(entry.id))) {
       railElement.appendChild(renderPaneItemIconAction(item, action));
     }
     const remainingOverflow = overflow.filter((entry) => entry.id !== "formalize");
@@ -4047,7 +4408,7 @@
     try {
       const baseUrl = await chatCompanionBaseUrl();
       if (items.length === 1) {
-        const response = await fetch(`${baseUrl}/lean-pane/repair/start`, {
+        const response = await companionFetch(`${baseUrl}/lean-pane/repair/start`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ overleafProjectId, ...items[0] })
@@ -4055,7 +4416,7 @@
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload?.message || `Companion returned HTTP ${response.status}.`);
       } else {
-        const response = await fetch(`${baseUrl}/lean-pane/repair/all`, {
+        const response = await companionFetch(`${baseUrl}/lean-pane/repair/all`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ overleafProjectId, items })
@@ -4075,42 +4436,65 @@
     scheduleLeanPaneRefresh();
   }
 
+  function batchNeedsPolling() {
+    const batch = leanPaneRepairBatch;
+    return Boolean(batch?.batchId && batch.overleafProjectId === extractOverleafProjectId() && ((!batch.done && !batch.pausedOn)
+      || ["saving", "synthesizing"].includes(batch.reportState)));
+  }
+
+  function refreshRepairBatchSnapshot({ baseUrl, projectId = extractOverleafProjectId() } = {}) {
+    const batchId = leanPaneRepairBatch?.batchId;
+    if (!batchId || leanPaneRepairBatch.overleafProjectId !== projectId) return Promise.resolve(false);
+    const generation = displayGeneration;
+    const key = JSON.stringify([projectId, batchId, generation]);
+    if (leanPaneRepairBatchRead?.key === key) return leanPaneRepairBatchRead.promise;
+    const current = () => projectId === extractOverleafProjectId() && generation === displayGeneration
+      && leanPaneRepairBatch?.batchId === batchId && leanPaneRepairBatch.overleafProjectId === projectId;
+    const entry = { key, promise: null };
+    entry.promise = (async () => {
+      try {
+        const base = baseUrl || await chatCompanionBaseUrl();
+        const payload = await queuedCompanionQuery(base, "/lean-pane/repair/status", { batchId });
+        if (!current()) return false;
+        if (payload?.batchId !== batchId) throw new Error("The batch status did not match the selected batch.");
+        const previousReportState = leanPaneRepairBatch.reportState;
+        leanPaneRepairBatch = { ...payload, overleafProjectId: projectId };
+        leanPaneRepairBatchReadError = null;
+        if (payload.operation === "formalize" && payload.report && payload.report.state !== "synthesizing"
+          && previousReportState !== payload.report.state) {
+          loadFormalizeBatchReportHistory().catch(() => {});
+        }
+        return true;
+      } catch (error) {
+        if (current()) leanPaneRepairBatchReadError = { key, message: normalizeErrorMessage(error) };
+        return false;
+      }
+    })().finally(() => {
+      if (leanPaneRepairBatchRead === entry) leanPaneRepairBatchRead = null;
+    });
+    leanPaneRepairBatchRead = entry;
+    return entry.promise;
+  }
+
   function startRepairBatchPolling({ immediate = false } = {}) {
-    if (leanPaneRepairBatchTimer) clearTimeout(leanPaneRepairBatchTimer);
-    const delayMs = immediate
-      ? 0
-      : (pushConnected ? REPAIR_BATCH_POLL_RECONCILE_MS : REPAIR_BATCH_POLL_MS);
+    clearTimeout(leanPaneRepairBatchTimer);
+    leanPaneRepairBatchTimer = 0;
+    if (!batchNeedsPolling() || document.hidden || !leanPane) return;
+    if (leanPane && leanPaneMainView === "items") {
+      // One visible refresh cycle observes both inventory and batch SQL results.
+      // SSE connection state must not slow an active batch to 30-second reads.
+      if (immediate) {
+        clearTimeout(leanPanePollTimer);
+        leanPanePollTimer = setTimeout(() => refreshLeanPaneNow({ background: true }).catch(renderLeanPaneError), 0);
+      } else scheduleLeanPanePollIfNeeded(lastLeanPaneManifest);
+      return;
+    }
     leanPaneRepairBatchTimer = setTimeout(async () => {
       leanPaneRepairBatchTimer = 0;
-      const batchId = leanPaneRepairBatch?.batchId;
-      if (!batchId) return;
-      // (delay above: instant when a push event announced a change, slow
-      // reconciliation while the stream is up, fast poll when it's down)
-      try {
-        const baseUrl = await chatCompanionBaseUrl();
-        const response = await fetch(`${baseUrl}/lean-pane/repair/status`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ batchId })
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (response.ok) {
-          leanPaneRepairBatch = payload;
-          if (payload.operation === "formalize" && payload.report
-            && payload.report.state !== "synthesizing") {
-            loadFormalizeBatchReportHistory().catch(() => {});
-          }
-        }
-      } catch {
-        // transient; keep the last snapshot and try again
-      }
-      renderLeanPaneManifest(lastLeanPaneManifest);
-      scheduleLeanPaneRefresh();
-      if (leanPaneRepairBatch && ((!leanPaneRepairBatch.done && !leanPaneRepairBatch.pausedOn)
-        || ["saving", "synthesizing"].includes(leanPaneRepairBatch.reportState))) {
-        startRepairBatchPolling();
-      }
-    }, delayMs);
+      await refreshRepairBatchSnapshot();
+      renderLeaActivity();
+      startRepairBatchPolling();
+    }, immediate ? 0 : ACTIVE_INVENTORY_POLL_MS);
   }
 
   async function continueRepairBatch() {
@@ -4118,13 +4502,13 @@
     if (!batchId) return;
     try {
       const baseUrl = await chatCompanionBaseUrl();
-      const response = await fetch(`${baseUrl}/lean-pane/repair/all/continue`, {
+      const response = await companionFetch(`${baseUrl}/lean-pane/repair/all/continue`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ batchId })
       });
       const payload = await response.json().catch(() => ({}));
-      if (response.ok) leanPaneRepairBatch = payload;
+      if (response.ok) leanPaneRepairBatch = { ...payload, overleafProjectId: leanPaneRepairBatch?.overleafProjectId };
       startRepairBatchPolling({ immediate: true });
     } catch (error) {
       leanPaneRepairError = { itemKey: "batch", message: normalizeErrorMessage(error) };
@@ -4140,13 +4524,13 @@
     if (!batchId) return;
     try {
       const baseUrl = await chatCompanionBaseUrl();
-      const response = await fetch(`${baseUrl}/lean-pane/repair/all/cancel`, {
+      const response = await companionFetch(`${baseUrl}/lean-pane/repair/all/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ batchId })
       });
       const payload = await response.json().catch(() => ({}));
-      if (response.ok) leanPaneRepairBatch = payload;
+      if (response.ok) leanPaneRepairBatch = { ...payload, overleafProjectId: leanPaneRepairBatch?.overleafProjectId };
       startRepairBatchPolling({ immediate: true });
     } catch (error) {
       leanPaneRepairError = { itemKey: "batch", message: normalizeErrorMessage(error) };
@@ -4160,7 +4544,8 @@
   // second batch can't clobber the first. Each button is present only when it
   // has eligible work (un-stubbed theorems / not-yet-proven items).
   function renderLeanPaneBatchActions(items) {
-    if (leanPaneRepairBatch) return null;
+    if (leanPaneRepairBatch || pendingTargetBatches.has(extractOverleafProjectId())) return null;
+    const projectId = extractOverleafProjectId();
     const stubbable = leanPaneView.stubbableItems(items);
     const formalizable = leanPaneView.formalizableItems(items);
     if (stubbable.length === 0 && formalizable.length === 0) return null;
@@ -4172,7 +4557,7 @@
       stubAll.className = "ol-lean-secondary-button ol-lean-stub-all-button";
       stubAll.textContent = `Stub all (${stubbable.length})`;
       stubAll.title = "Generate a Lean sorry-stub for every un-stubbed theorem in the project.";
-      stubAll.addEventListener("click", () => { stubAllTheorems(); });
+      stubAll.addEventListener("click", () => { stubAllTheorems(stubbable, projectId); });
       row.appendChild(stubAll);
     }
     if (formalizable.length > 0) {
@@ -4181,7 +4566,7 @@
       formalizeAll.className = "ol-lean-primary-button ol-lean-formalize-all-button";
       formalizeAll.textContent = `Formalize all (${formalizable.length})`;
       formalizeAll.title = "Run Lea to formalize every theorem and definition that has no verified proof yet.";
-      formalizeAll.addEventListener("click", () => { formalizeAllItems(); });
+      formalizeAll.addEventListener("click", () => { formalizeAllItems(formalizable, projectId); });
       row.appendChild(formalizeAll);
     }
     return row;
@@ -4190,7 +4575,7 @@
   // Live batch progress at the top of the pane. The companion already returns
   // dependency-ordered entries, so the client can render a real queue (active
   // ordinal, next items, exact outcomes) without duplicating orchestration.
-  function renderLeanPaneRepairBatchPanel() {
+  function renderLeanPaneRepairBatchPanel({ navigationFocusKey } = {}) {
     const batch = leanPaneRepairBatch;
     if (!batch || !Array.isArray(batch.items) || batch.items.length === 0) return null;
     const operation = batch.operation || "repair";
@@ -4207,8 +4592,9 @@
         ? ["formalized", "disproved"]
         : ["repaired"]);
     const attentionStates = new Set(["failed", "incomplete", "skipped", "canceled", "needs_review", "disproved"]);
-    const completedEntries = batch.items.filter((entry) => completedStates.has(entry.state));
-    const attentionEntries = batch.items.filter((entry) => attentionStates.has(entry.state));
+    const reusedEntry = entry => operation === "formalize" && entry.state === "skipped" && entry.reason === "existing_proof";
+    const completedEntries = batch.items.filter((entry) => completedStates.has(entry.state) || reusedEntry(entry));
+    const attentionEntries = batch.items.filter((entry) => attentionStates.has(entry.state) && !reusedEntry(entry));
     const reportedActiveEntry = batch.items.find((entry) => ["running", "waiting"].includes(entry.state)) || null;
     // The launch response can land after the batch loop is marked running but
     // just before its first entry flips pending → running. Show that first
@@ -4219,16 +4605,28 @@
         : null
     );
     const queuedEntries = batch.items.filter((entry) => entry.state === "pending" && entry !== activeEntry);
+    // A focused row can move into a collapsed outcome group while polling.
+    // Reveal that group so restoring focus still has a visible destination.
+    if (navigationFocusKey && operation === "formalize") {
+      const focusedEntry = batch.items.find((entry) => ["lean-pane", "lea-chat"].some((action) => (
+        navigationFocusKey === JSON.stringify([batch.overleafProjectId || lastLeanPaneManifestProjectId,
+          batch.batchId, entry.targetKind || "theorem", entry.targetLabel || "", action])
+      )));
+      if (focusedEntry && completedEntries.includes(focusedEntry)) leanPaneExpandedBatchCompletedId = batch.batchId;
+      if (focusedEntry && queuedEntries.indexOf(focusedEntry) >= 3) leanPaneExpandedBatchQueueId = batch.batchId;
+      if (focusedEntry && attentionEntries.indexOf(focusedEntry) >= 5) leanPaneExpandedBatchAttentionId = batch.batchId;
+    }
     const activeIndex = activeEntry ? batch.items.indexOf(activeEntry) : -1;
     const total = batch.items.length;
-    const completedCount = batch.items.filter((entry) => successfulStates.has(entry.state)).length;
+    const completedCount = batch.items.filter((entry) => successfulStates.has(entry.state) || reusedEntry(entry)).length;
     const processedCount = batch.items.filter((entry) => !["pending", "running", "waiting"].includes(entry.state)).length;
     const verifiedCount = batch.items.filter((entry) => entry.state === "formalized").length;
     const disprovedCount = batch.items.filter((entry) => entry.state === "disproved").length;
     const incompleteCount = batch.items.filter((entry) => entry.state === "incomplete").length;
     const reviewCount = batch.items.filter((entry) => entry.state === "needs_review").length;
     const failedCount = batch.items.filter((entry) => entry.state === "failed").length;
-    const skippedCount = batch.items.filter((entry) => entry.state === "skipped").length;
+    const alreadyVerifiedCount = batch.items.filter(reusedEntry).length;
+    const skippedCount = batch.items.filter((entry) => entry.state === "skipped" && !reusedEntry(entry)).length;
     const canceledCount = batch.items.filter((entry) => entry.state === "canceled").length;
 
     const panel = document.createElement("div");
@@ -4273,7 +4671,7 @@
       canceledCount,
       total
     });
-    if (operation === "formalize") count.textContent = `${verifiedCount} verified · ${disprovedCount} disproved · ${incompleteCount} incomplete · ${failedCount} failed · ${skippedCount} skipped${reviewCount ? ` · ${reviewCount} need review` : ""}${canceledCount ? ` · ${canceledCount} stopped` : ""}`;
+    if (operation === "formalize") count.textContent = `${verifiedCount} verified · ${disprovedCount} disproved · ${incompleteCount} incomplete · ${failedCount} failed · ${skippedCount} skipped${alreadyVerifiedCount ? ` · ${alreadyVerifiedCount} already verified` : ""}${reviewCount ? ` · ${reviewCount} need review` : ""}${canceledCount ? ` · ${canceledCount} stopped` : ""}`;
     header.appendChild(count);
     panel.appendChild(header);
 
@@ -4296,6 +4694,7 @@
       const segment = document.createElement("span");
       const stateClass = entry === activeEntry
         ? "active"
+        : reusedEntry(entry) ? "success"
         : entry.state === "failed"
           ? "failed"
           : entry.state === "skipped"
@@ -4313,6 +4712,19 @@
       progress.appendChild(segment);
     }
     panel.appendChild(progress);
+    const processed = document.createElement("p");
+    processed.className = "ol-lean-batch-queue-processed";
+    processed.textContent = `${processedCount} of ${total} processed${activeEntry ? " · 1 running" : ""}`;
+    panel.appendChild(processed);
+    const readKey = JSON.stringify([batch.overleafProjectId, batch.batchId, displayGeneration]);
+    if (leanPaneRepairBatchReadError?.key === readKey) {
+      const delayed = document.createElement("p");
+      delayed.className = "ol-lean-batch-queue-status-delayed";
+      delayed.setAttribute("role", "status");
+      delayed.textContent = "Batch status delayed. Showing the last loaded queue; retrying automatically.";
+      delayed.title = leanPaneRepairBatchReadError.message;
+      panel.appendChild(delayed);
+    }
     const shared = renderSharedMathematics(batch.dependencies, `batch:${batch.batchId}`);
     if (shared) panel.appendChild(shared);
 
@@ -4496,13 +4908,13 @@
           retry.addEventListener("click", async () => {
             try {
               const baseUrl = await chatCompanionBaseUrl();
-              const response = await fetch(`${baseUrl}/formalize/all/reports/save`, {
+              const response = await companionFetch(`${baseUrl}/formalize/all/reports/save`, {
                 method: "POST", headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(), batchId: batch.batchId })
               });
               const payload = await response.json().catch(() => ({}));
               if (!response.ok) throw new Error(payload.message || "Could not save the report.");
-              leanPaneRepairBatch = payload;
+              leanPaneRepairBatch = { ...payload, overleafProjectId: batch.overleafProjectId };
               startRepairBatchPolling();
             } catch (error) {
               leanPaneRepairError = { itemKey: "batch", message: normalizeErrorMessage(error) };
@@ -4637,7 +5049,7 @@
         }
         const incomplete = item.reportingIncomplete ? " · no final Lea Status assessment" : "";
         const confidence = item.leaStatus?.confidence
-          ? ` · Lea confidence: ${item.leaStatus.confidence} (self-reported)${item.leaStatus.scope ? ` · ${{ source_only: "Source assessment", partial_artifact: "Partial artifact", statement_and_proof: "Statement and proof" }[item.leaStatus.scope] || item.leaStatus.scope}` : ""}` : "";
+          ? ` · Lea confidence: ${item.leaStatus.confidence} (self-reported)${item.leaStatus.scope ? ` · ${{ source_only: "Source assessment", statement_only: "Statement only", definition: "Definition", partial_artifact: "Partial artifact", statement_and_proof: "Statement and proof" }[item.leaStatus.scope] || item.leaStatus.scope}` : ""}` : "";
         const detail = document.createElement("span");
         detail.textContent = ` (${item.targetKind || "item"}): ${item.state}${item.reason ? ` · ${item.reason === "dependency_wait" ? "waiting for a supporting result" : item.reason.replaceAll("_", " ")}` : ""}${confidence}${incomplete}`;
         row.appendChild(detail);
@@ -4667,8 +5079,115 @@
     description.className = "ol-lean-batch-queue-item-detail";
     description.textContent = detail;
     copy.appendChild(description);
+    if (leanPaneRepairBatch?.operation === "formalize") {
+      copy.appendChild(renderBatchQueueNavigation(entry));
+    }
     row.appendChild(copy);
     return row;
+  }
+
+  function findBatchQueuePaneItem(identity) {
+    if (identity.projectId !== extractOverleafProjectId()
+      || identity.projectId !== lastLeanPaneManifestProjectId) return null;
+    const matches = (lastLeanPaneManifest?.items || []).filter((item) => (
+      (!item.overleafProjectId || item.overleafProjectId === identity.projectId)
+      && item.label === identity.targetLabel
+      && (item.targetKind || (item.leanKind === "def" ? "definition" : "theorem")) === identity.targetKind
+    ));
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function batchQueueNavigationButton(key) {
+    return [...(leanPaneBody?.querySelectorAll(".ol-lean-batch-queue-action") || [])]
+      .find((button) => button.dataset.batchNavigationKey === key);
+  }
+
+  function leanPaneItemHeader(itemId) {
+    return [...(leanPaneBody?.querySelectorAll(".ol-lean-project-item") || [])]
+      .find((card) => card.dataset.itemId === itemId)?.querySelector(".ol-lean-project-item-header");
+  }
+
+  function updateBatchQueueNavigationButton(button, identity, action, key) {
+    if (!button) return;
+    const item = findBatchQueuePaneItem(identity);
+    const unavailable = !item ? "This item is unavailable or ambiguous in the Lean pane."
+      : action === "lea-chat" && !(item.leaSessionId || item.leaSessionUrl)
+        ? "No LeaChat session is available yet." : "";
+    const busy = leanPaneBatchNavigationBusy.has(key);
+    button.disabled = Boolean(unavailable);
+    // Keep an opening action focusable through polling redraws. The handler
+    // guards the busy key, so aria-disabled also prevents duplicate opens.
+    button.setAttribute("aria-disabled", String(button.disabled || busy));
+    button.setAttribute("aria-busy", String(busy));
+    button.title = unavailable || (busy ? "Opening…" : button.getAttribute("aria-label"));
+  }
+
+  function setBatchQueueNavigationStatus(identity, message) {
+    if (identity.projectId !== extractOverleafProjectId()
+      || identity.batchId !== leanPaneRepairBatch?.batchId) return;
+    leanPaneBatchNavigationStatus = { ...identity, message };
+    if (leanPaneStatus) {
+      leanPaneStatus.setAttribute("role", "status");
+      leanPaneStatus.setAttribute("aria-live", "polite");
+      leanPaneStatus.textContent = message;
+    }
+  }
+
+  function renderBatchQueueNavigation(entry) {
+    const identity = {
+      projectId: leanPaneRepairBatch.overleafProjectId || lastLeanPaneManifestProjectId,
+      batchId: leanPaneRepairBatch.batchId,
+      targetKind: entry.targetKind || "theorem",
+      targetLabel: entry.targetLabel || ""
+    };
+    const actions = document.createElement("span");
+    actions.className = "ol-lean-batch-queue-actions";
+    for (const [action, label, accessibleLabel] of [
+      ["lean-pane", "Show in Lean pane", `Show ${identity.targetLabel} in Lean pane`],
+      ["lea-chat", "Open in LeaChat", `Open ${identity.targetLabel} in LeaChat`]
+    ]) {
+      const key = JSON.stringify([identity.projectId, identity.batchId, identity.targetKind, identity.targetLabel, action]);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ol-lean-secondary-button ol-lean-batch-queue-action";
+      button.dataset.batchNavigationKey = key;
+      button.dataset.batchNavigationAction = action;
+      button.setAttribute("aria-label", accessibleLabel);
+      button.textContent = label;
+      updateBatchQueueNavigationButton(button, identity, action, key);
+      button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (button.disabled || leanPaneBatchNavigationBusy.has(key)
+          || identity.batchId !== leanPaneRepairBatch?.batchId) return;
+        const item = findBatchQueuePaneItem(identity);
+        if (!item) {
+          setBatchQueueNavigationStatus(identity, `Could not find ${identity.targetLabel} uniquely in the Lean pane.`);
+          updateBatchQueueNavigationButton(button, identity, action, key);
+          return;
+        }
+        leanPaneBatchNavigationBusy.add(key);
+        updateBatchQueueNavigationButton(button, identity, action, key);
+        try {
+          if (action === "lean-pane") {
+            revealLeanPaneItem(item);
+            leanPaneItemHeader(item.id)?.focus({ preventScroll: true });
+            setBatchQueueNavigationStatus(identity, `Opened ${identity.targetLabel} in the Lean pane.`);
+          } else {
+            setBatchQueueNavigationStatus(identity, "Opening Lea session…");
+            await openLeaUiForPaneItem(item);
+            setBatchQueueNavigationStatus(identity, `Opened ${identity.targetLabel} in LeaChat.`);
+          }
+        } catch (error) {
+          setBatchQueueNavigationStatus(identity, normalizeErrorMessage(error));
+        } finally {
+          leanPaneBatchNavigationBusy.delete(key);
+          updateBatchQueueNavigationButton(batchQueueNavigationButton(key), identity, action, key);
+        }
+      });
+      actions.appendChild(button);
+    }
+    return actions;
   }
 
   function formatBatchQueueActiveDetail(entry, runningVerb) {
@@ -4729,7 +5248,7 @@
       const projectId = itemsProjectId(lastLeanPaneManifest?.items || []);
       const target = leanPaneView.paneItemToEditTarget(item, projectId);
       const baseUrl = await chatCompanionBaseUrl();
-      const response = await fetch(`${baseUrl}/lean-pane/edit/start`, {
+      const response = await companionFetch(`${baseUrl}/lean-pane/edit/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(target)
@@ -4755,10 +5274,10 @@
       request = new AbortController();
       try {
         const baseUrl = await chatCompanionBaseUrl();
-        const response = await fetch(`${baseUrl}/lean-pane/check-runtime/${encodeURIComponent(sessionId)}`, { signal: request.signal });
+        const response = await companionFetch(`${baseUrl}/lean-pane/check-runtime/${encodeURIComponent(sessionId)}`, { signal: request.signal });
         const payload = await response.json();
-        if (!stopped) line.textContent = payload.message || "Checking with Lean…";
-      } catch { if (!stopped) line.textContent = "Lean check runtime unavailable"; }
+        if (!stopped) line.textContent = response.ok ? payload.message || "Checking with Lean…" : "Lean runtime status unavailable · retrying";
+      } catch { if (!stopped) line.textContent = "Lean runtime status unavailable · retrying"; }
       if (!stopped && !document.hidden) timer = setTimeout(poll, 5000);
     }
     const visibility = () => { clearTimeout(timer); request?.abort(); if (!document.hidden) poll(); };
@@ -4876,7 +5395,7 @@
         const projectId = itemsProjectId(lastLeanPaneManifest?.items || []);
         const target = leanPaneView.paneItemToEditTarget(item, projectId);
         const baseUrl = await chatCompanionBaseUrl();
-        const response = await fetch(`${baseUrl}/lean-pane/edit/save`, {
+        const response = await companionFetch(`${baseUrl}/lean-pane/edit/save`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ...target, content })
@@ -5228,7 +5747,7 @@
       return;
     }
     const baseUrl = await chatCompanionBaseUrl();
-    const response = await fetch(`${baseUrl}/lean-pane/dependencies/wait`, {
+    const response = await companionFetch(`${baseUrl}/lean-pane/dependencies/wait`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(),
         runId: item.apiRunId || item.leaStatus?.run_id,
@@ -5247,7 +5766,10 @@
     button.title = action.label;
     button.setAttribute("aria-label", action.label);
     button.innerHTML = PANE_ICON_SVG[action.id] || "";
+    button.disabled = action.id === "chat";
     if (action.id === "view-in-lea") {
+      button.disabled = !leanPaneView.canViewPaneItemInLeaUi(item);
+      if (button.disabled) button.title = "No LeaChat session is available yet.";
       const label = document.createElement("span");
       label.textContent = action.label;
       button.appendChild(label);
@@ -5264,17 +5786,16 @@
         return;
       }
       if (action.id === "view-in-lea") {
+        if (button.disabled) return;
         button.disabled = true;
         if (leanPaneStatus) leanPaneStatus.textContent = "Opening Lea session...";
         try {
-          const { sessionOpened } = await openLeaUiForPaneItem(item);
-          if (leanPaneStatus) {
-            leanPaneStatus.textContent = sessionOpened ? "Opened Lea session." : "Opened Lea UI.";
-          }
+          await openLeaUiForPaneItem(item);
+          if (leanPaneStatus) leanPaneStatus.textContent = "Opened Lea session.";
         } catch (error) {
           if (leanPaneStatus) leanPaneStatus.textContent = normalizeErrorMessage(error);
         } finally {
-          button.disabled = false;
+          button.disabled = !leanPaneView.canViewPaneItemInLeaUi(item);
         }
       }
     });
@@ -5302,6 +5823,7 @@
       entry.className = "ol-lean-overflow-item";
       entry.setAttribute("role", "menuitem");
       entry.textContent = action.label;
+      entry.disabled = action.id === "edit";
       if (action.label === "Re-formalize") {
         entry.title = REFORMALIZE_HELP_TEXT;
         entry.setAttribute("aria-description", REFORMALIZE_HELP_TEXT);
@@ -5408,35 +5930,31 @@
     return button;
   }
 
-  // Open this item's Lea session in the standalone UI, mirroring the popover's
-  // "View in Lea UI" action. The session is resolved through the companion's
-  // chat-session lookup (read-only: it never creates a session); when no
-  // session has been recorded yet, fall back to the Lea UI itself, matching
-  // the popover's base-link fallback.
+  // Resolve an existing session without creating one. Missing associations and
+  // failed lookups must stay visible instead of navigating to an unrelated chat.
   async function openLeaUiForPaneItem(item) {
     if (item.leaSessionUrl || item.leaSessionId) {
       const settings = await getSettings();
       const link = getLeaSessionLink({ ...item, leaUiBaseUrl: settings.leaUiBaseUrl });
       await openLeaSession(link);
-      return { sessionOpened: true };
+      return;
     }
     const baseUrl = await chatCompanionBaseUrl();
     const target = leanPaneView.paneItemToChatTarget(item, itemsProjectId(lastLeanPaneManifest?.items || []));
-    const response = await fetch(`${baseUrl}/lean-pane/chat/session`, {
+    const response = await companionFetch(`${baseUrl}/lean-pane/chat/session`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ target })
     });
     const payload = await response.json().catch(() => ({}));
-    const sessionUrl = String(payload?.leaSessionUrl || "").trim();
-    if (sessionUrl) {
-      await openLeaSession({ url: sessionUrl, baseUrl: sessionUrl });
-      return { sessionOpened: true };
+    if (!response.ok || payload?.ok === false) {
+      throw companionRequestError(response, payload);
+    }
+    if (!payload?.leaSessionUrl && !payload?.leaSessionId) {
+      throw new Error(payload?.message || "No LeaChat session is available yet.");
     }
     const settings = await getSettings();
-    const uiBaseUrl = String(settings.leaUiBaseUrl || DEFAULT_LEA_UI_BASE_URL).replace(/\/+$/, "");
-    await openLeaSession({ url: uiBaseUrl, baseUrl: uiBaseUrl });
-    return { sessionOpened: false };
+    await openLeaSession(getLeaSessionLink({ ...payload, leaUiBaseUrl: settings.leaUiBaseUrl }));
   }
 
   function isChatResponseActive(payload) {
@@ -5502,7 +6020,7 @@
     if (input) input.focus();
     try {
       const baseUrl = await chatCompanionBaseUrl();
-      const response = await fetch(`${baseUrl}/lean-pane/chat/session`, {
+      const response = await companionFetch(`${baseUrl}/lean-pane/chat/session`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target: leanPaneChatTarget })
@@ -5542,13 +6060,14 @@
       const mirrorResult = await syncTexMirrorNow({ force: true });
       leanPaneChatTarget = {
         ...leanPaneChatTarget,
+        overleafProjectTitle: readOverleafProjectTitle(lastLeanPaneFiles || []),
         ...(await buildFormalizationSourceContext(leanPaneChatTarget, {
           verifyMirror: mirrorResult?.disabled !== true,
           mirrorSnapshot: mirrorResult
         }))
       };
       const baseUrl = await chatCompanionBaseUrl();
-      const response = await fetch(`${baseUrl}/lean-pane/chat/message`, {
+      const response = await companionFetch(`${baseUrl}/lean-pane/chat/message`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target: leanPaneChatTarget, message: text })
@@ -5583,14 +6102,34 @@
     }, delayMs);
   }
 
-  async function pollChatSession() {
+  function pollChatSession() {
+    if (!leanPaneChatSessionId || !leanPaneChatPanel || document.hidden) return Promise.resolve();
+    if (leanPaneChatPollInFlight?.token === leanPaneChatToken) {
+      leanPaneChatPollInFlight.dirty = true;
+      return leanPaneChatPollInFlight.promise;
+    }
+    const entry = { token: leanPaneChatToken, promise: null, dirty: false };
+    entry.promise = (async () => {
+      do {
+        entry.dirty = false;
+        await performChatSessionPoll();
+      } while (entry.dirty && entry.token === leanPaneChatToken && leanPaneChatPanel && !document.hidden);
+    })().finally(() => {
+      if (leanPaneChatPollInFlight === entry) leanPaneChatPollInFlight = null;
+    });
+    leanPaneChatPollInFlight = entry;
+    return entry.promise;
+  }
+
+  async function performChatSessionPoll() {
     if (!leanPaneChatSessionId || !leanPaneChatPanel || document.hidden) return;
     const token = leanPaneChatToken;
     let payload = null;
     try {
       const baseUrl = await chatCompanionBaseUrl();
-      const response = await fetch(`${baseUrl}/lean-pane/chat/session/${encodeURIComponent(leanPaneChatSessionId)}`);
+      const response = await companionFetch(`${baseUrl}/lean-pane/chat/session/${encodeURIComponent(leanPaneChatSessionId)}`);
       payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw companionRequestError(response, payload);
     } catch {
       // Transient failure (companion restarting, network blip). AUDIT M2: do
       // NOT stop polling and strand the panel on "Lea is working…" — retry
@@ -5635,7 +6174,7 @@
     const token = leanPaneChatToken;
     try {
       const baseUrl = await chatCompanionBaseUrl();
-      await fetch(`${baseUrl}/lean-pane/chat/interrupt`, {
+      await companionFetch(`${baseUrl}/lean-pane/chat/interrupt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ runId: leanPaneChatRunId, sessionId: leanPaneChatSessionId })
@@ -6057,6 +6596,7 @@
         button.dataset.primary = "true";
       }
       button.disabled = disabled;
+      if (spec.disabled) button.disabled = true;
       button.addEventListener("click", async () => {
         for (const actionButton of actions.querySelectorAll("button")) {
           actionButton.disabled = true;
@@ -6085,7 +6625,6 @@
     // unformalized/unknown theorems appear viewable.
     const showLeaUiButton = canViewInLeaUi(actionStatus);
     if (showLeaUiButton) {
-      const leaUiLink = leaSession || getLeaUiBaseLink(statusInfo);
       const sessionButton = document.createElement("button");
       sessionButton.type = "button";
       sessionButton.textContent = statusInfo?.recoveryState === "review"
@@ -6095,10 +6634,10 @@
       sessionButton.addEventListener("click", async (event) => {
         event.preventDefault();
         event.stopPropagation();
-        status.textContent = leaUiLink.sessionId ? "Opening Lea session..." : "Opening Lea UI...";
+        status.textContent = "Opening Lea session...";
         try {
-          await openLeaSession(leaUiLink);
-          status.textContent = leaUiLink.sessionId ? "Opened Lea session." : "Opened Lea UI.";
+          await openLeaSession(leaSession);
+          status.textContent = "Opened Lea session.";
         } catch (error) {
           status.textContent = error instanceof Error ? error.message : String(error);
         }
@@ -6748,7 +7287,7 @@
     const currentStatus = getDisplayStatus(statusInfo);
     const actionStatus = getActionStatus(statusInfo);
     const chip = popover.querySelector(".ol-lean-status-chip");
-    const detail = popover.querySelector(".ol-lean-popover-detail");
+    const detail = popover.querySelector(".ol-lean-popover-detail") || popover.querySelector('.ol-lean-popover-status');
     const actions = popover.querySelector("[data-role='theorem-actions']");
     const leanStatement = popover.querySelector(".ol-lean-popover-lean");
     const stubbedWarning = popover.querySelector(".ol-lean-popover-warning");
@@ -6767,6 +7306,7 @@
     if (detail) {
       if (isExtensionContextInvalidated()) {
         detail.textContent = "Extension was reloaded. Refresh this Overleaf tab.";
+
       } else if (statusInfo.message) {
         detail.textContent = statusInfo.message;
       } else if (statusInfo.relativePath) {
@@ -6781,14 +7321,18 @@
     renderTargetWarning(stubbedWarning, target, statusInfo);
   }
 
-  async function buildFormalizationSourceContext(target, { verifyMirror = true, mirrorSnapshot = null } = {}) {
+  async function buildFormalizationSourceContext(target, { verifyMirror = true, mirrorSnapshot = null, publish = true, forcePublish = false } = {}) {
+    const capturedDocument=extractOverleafProjectId();
+    const capturedBuffer=latestActiveTex;
+    const capturedActivePath=latestActiveTexPath;
     const manifestTarget = (lastLeanPaneManifest?.items || []).find((item) => (
       item.label === target?.targetLabel
       && (!target?.sourceFile || normalizeDocPath(item.sourceFile) === normalizeDocPath(target.sourceFile))
     ));
     const enrichedTarget = manifestTarget ? { ...manifestTarget, ...target } : target;
     const sourceFile = normalizeDocPath(enrichedTarget?.sourceFile || latestActiveTexPath);
-    const candidates = [
+    const candidates = leanPaneSourceCoverage === "complete" && lastLeanPaneProjectId === capturedDocument
+      ? (lastLeanPaneFiles || []) : [
       ...(Array.isArray(lastMirrorFiles) ? lastMirrorFiles : []),
       ...(Array.isArray(lastLeanPaneFiles) ? lastLeanPaneFiles : [])
     ];
@@ -6825,16 +7369,19 @@
     const proofAssociation = currentTarget?.proofAssociation || { status: "missing", method: "none" };
     const sourceProof = String(currentTarget?.sourceProof || "").replace(/\r\n?/g, "\n");
     const proofHash = sourceProof ? await sha256(sourceProof) : "";
+    const immutableFiles = Object.fromEntries(uniqueFiles);
+    const complete = leanPaneSourceCoverage === "complete" || Boolean(mirrorSnapshot?.mirrorRevision);
+    let publicationMirror = null;
+    if (complete) {
+      const hashes = await Promise.all([...uniqueFiles].sort(([a],[b]) => {const left=Array.from(a,c=>c.codePointAt(0)),right=Array.from(b,c=>c.codePointAt(0));for(let i=0;i<Math.min(left.length,right.length);i++)if(left[i]!==right[i])return left[i]-right[i];return left.length-right.length;}).map(async ([p,c]) => [p,await sha256(c)]));
+      publicationMirror = { revision:await sha256(hashes.map(([p,h]) => `${p}\0${h}`).join("\0")), mirroredFileCount:hashes.length, verified:true };
+    }
     const { buildSourceBundleCore, sourceHashInputs } = await import(chrome.runtime.getURL("sourceIdentityCore.mjs"));
     const sourceBundleCore = buildSourceBundleCore({ ...currentTarget, ...enrichedTarget,
       sourceFile, sourceStartLine, sourceEndLine, sourceProof, proofAssociation }, {
       proofHash,
       files: [...uniqueFiles].map(([path, fileContent]) => ({ path, content: fileContent })),
-      mirror: verifyMirror && mirrorSnapshot?.mirrorRevision ? {
-        revision: String(mirrorSnapshot.mirrorRevision),
-        mirroredFileCount: Object.keys(mirrorSnapshot.mirroredFiles || {}).length,
-        verified: true
-      } : null
+      mirror: publicationMirror
     });
     const excerpt = sourceBundleCore.relevantSource[0];
     const sourceExcerpt = excerpt?.content || "";
@@ -6846,7 +7393,23 @@
       bundleHash: await sha256(JSON.stringify(evidence)),
       sourceIdentityHash: await sha256(JSON.stringify(identity))
     };
+    let publication = {};
+    if (publish) {
+      if (!sourcePublisher) {
+        // Store the promise before yielding: every concurrently captured target
+        // must share the same client identity, lease and publication sequence.
+        sourcePublisher = import(chrome.runtime.getURL("sourcePublisher.mjs")).then(({createSourcePublisher}) =>
+          createSourcePublisher({ documentId:extractOverleafProjectId, request:async (route,value) => {
+            const baseUrl=await chatCompanionBaseUrl();
+            return targetBatchJson(baseUrl+route,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
+          }})).catch(error => { sourcePublisher = null; throw error; });
+      }
+      const publishSource = await sourcePublisher;
+      if(capturedDocument!==extractOverleafProjectId() || capturedBuffer!==latestActiveTex || capturedActivePath!==latestActiveTexPath)throw new Error('The editor changed during source capture. Publish its current revision again.');
+      publication=await publishSource({document_id:capturedDocument,source_bundle:sourceBundle,files:immutableFiles,coverage:complete?"complete":"partial"}, { force: forcePublish });
+    }
     return {
+      ...publication,
       sourceFile,
       sourceStartLine,
       sourceEndLine,
@@ -6873,27 +7436,45 @@
       || candidate.targetUses.some((use) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(use)))) {
       const settings = await getSettings();
       const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
-      const response = await fetch(`${baseUrl}/targets/resolve`, {
+      const response = await companionFetch(`${baseUrl}/targets/resolve`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(), sourceFile: path,
           source: content, files: lastLeanPaneFiles || [] })
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw companionRequestError(response, payload);
-      parsed = payload.targets || [];
+      parsed = parsed.map(candidate => ({ ...candidate,
+        ...(payload.targets || []).find(resolved => resolved.from === candidate.from && resolved.to === candidate.to) }));
     }
     const matches = parsed.filter((candidate) =>
       candidate.targetKind === target.targetKind && (candidate.targetLabel === target.targetLabel
         || (target.labelSource === "generated" && candidate.labelSource === "generated"
           && target.latexLabel && candidate.latexLabel === target.latexLabel)));
-    if (matches.length !== 1) throw new Error("The paused target cannot be identified in the current source. Refresh the pane before resuming.");
+    if (matches.length !== 1) throw new Error("This target cannot be identified in the current source. Refresh the Lean pane and try again.");
     const current = matches[0];
-    return { ...target, ...current, targetLabel: target.targetLabel, sourceFile: path,
+    return { ...target, ...current, targetLabel: target.targetLabel, naturalLanguageLatex: current.targetText, sourceFile: path,
       sourceStartLine: String(content).slice(0, current.from).split("\n").length,
       sourceEndLine: String(content).slice(0, current.to).split("\n").length };
   }
 
   async function formalize(target) {
+    const pending = { projectId: extractOverleafProjectId() };
+    pendingFormalizations.add(pending);
+    renderLeaActivity();
+    try {
+      const payload = await dispatchFormalization(target);
+      if (payload.status === "in_progress") {
+        rememberStartedWork(pending.projectId, "activeJobs");
+      }
+      return payload;
+    } finally {
+      pendingFormalizations.delete(pending);
+      renderLeaActivity();
+      scheduleStatusRefresh();
+    }
+  }
+
+  async function dispatchFormalization(target) {
     // A run must never begin against a mirror that failed to accept the live buffer.
     const mirrorResult = await syncTexMirrorNow({ force: true });
     if (target.resume === true) target = await currentResumeTarget(target);
@@ -6903,7 +7484,7 @@
     });
     const settings = await getSettings();
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
-    const response = await fetch(`${baseUrl}/formalize`, {
+    const response = await companionFetch(`${baseUrl}/formalize`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -6917,6 +7498,7 @@
         targetContext: target.targetContext || "",
         syntax: target.syntax || "comment",
         projectName: lastProjectIdentity?.projectName || guessProjectName(lastLeanPaneFiles || []),
+        overleafProjectTitle: readOverleafProjectTitle(lastLeanPaneFiles || []),
         projectNamespace: lastProjectIdentity?.namespace || "",
         sourceHash: await sha256(normalizeTargetText(target.targetText)),
         resume: target.resume === true,
@@ -6943,7 +7525,7 @@
     });
     const settings = await getSettings();
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
-    const response = await fetch(`${baseUrl}/stub`, {
+    const response = await companionFetch(`${baseUrl}/stub`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -6957,6 +7539,7 @@
         targetContext: target.targetContext || "",
         syntax: target.syntax || "comment",
         projectName: lastProjectIdentity?.projectName || guessProjectName(lastLeanPaneFiles || []),
+        overleafProjectTitle: readOverleafProjectTitle(lastLeanPaneFiles || []),
         projectNamespace: lastProjectIdentity?.namespace || "",
         sourceHash: await sha256(normalizeTargetText(target.targetText)),
         ...sourceContext
@@ -6992,54 +7575,246 @@
         syntax: target.syntax || "comment",
         projectName,
         projectNamespace,
+        overleafProjectTitle: readOverleafProjectTitle(lastLeanPaneFiles || []),
         sourceHash: await sha256(normalizeTargetText(target.targetText)),
         ...sourceContext
       };
     }));
   }
 
-  // "Stub all" / "Formalize all": the batch versions of the per-item buttons.
-  // They gather the eligible items from the live manifest, flush the .tex
-  // mirror (statement translation reads local notation), POST the full target
-  // set to the companion, then drive the SAME batch panel + polling the repair
-  // batch uses -- one shared progress surface, distinguished by `operation`.
-  async function runTargetBatch({ endpoint, items, errorKey }) {
-    leanPaneRepairError = null;
-    if (items.length === 0) return;
+  // Update only this admission surface while source/code selection defers a
+  // manifest repaint. Capturing a click must not move the user's selection.
+  function renderTargetBatchAdmission() {
+    if (!leanPaneBody || leanPaneMainView !== "items") return;
+    const pending = pendingTargetBatches.get(extractOverleafProjectId());
+    let panel = leanPaneBody.querySelector(".ol-lean-batch-admission");
+    const selection = document.getSelection?.();
+    if (panel && selection && !selection.isCollapsed
+      && (panel.contains(selection.anchorNode) || panel.contains(selection.focusNode))) return;
+    for (const row of leanPaneBody.querySelectorAll(".ol-lean-project-batch-actions")) {
+      for (const button of row.querySelectorAll("button")) button.disabled = Boolean(pending);
+    }
+    if (!pending) { panel?.remove(); return; }
+    const signature = JSON.stringify([pending.key, pending.phase, pending.message, pending.retrying, pending.admissionRejected]);
+    if (panel?.dataset.signature === signature) return;
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.className = "ol-lean-project-repair-batch ol-lean-batch-admission";
+      leanPaneBody.insertBefore(panel, leanPaneBody.firstChild);
+    }
+    panel.dataset.signature = signature;
+    panel.replaceChildren();
+    const heading = document.createElement("strong");
+    heading.textContent = `${pending.endpoint === "/stub/all" ? "Stub" : "Formalize"} all (${pending.items.length})`;
+    panel.appendChild(heading);
+    const status = document.createElement("p");
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    status.setAttribute("aria-atomic", "true");
+    status.textContent = pending.message;
+    panel.appendChild(status);
+    const controls = document.createElement("div");
+    controls.className = "ol-lean-project-detail-actions";
+    if (pending.retrying) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "ol-lean-secondary-button";
+      retry.textContent = "Retry connection now";
+      retry.addEventListener("click", () => attemptTargetBatch(pending));
+      controls.appendChild(retry);
+    }
+    // Once a POST might have committed, dropping the observer cannot cancel it.
+    const canDiscard = () => !pending.body || pending.admissionRejected || pending.phase === "failed";
+    if (canDiscard()) {
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "ol-lean-secondary-button";
+      cancel.textContent = pending.phase === "failed" ? "Dismiss request" : "Cancel request";
+      cancel.addEventListener("click", () => {
+        if (pendingTargetBatches.get(pending.projectId) !== pending || !canDiscard()) return;
+        clearTimeout(pending.timer);
+        pendingTargetBatches.delete(pending.projectId);
+        pendingFormalizations.delete(pending);
+        renderLeaActivity();
+        renderLeanPaneManifest(lastLeanPaneManifest);
+      });
+      controls.appendChild(cancel);
+    }
+    panel.appendChild(controls);
+  }
+
+  async function targetBatchJson(url, options = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
     try {
-      const mirrorResult = await syncTexMirrorNow({ force: true });
-      const baseUrl = await chatCompanionBaseUrl();
-      const payloads = await buildBatchTargetPayloads(items, {
-        verifyMirror: mirrorResult?.disabled !== true,
-        mirrorSnapshot: mirrorResult
-      });
-      const response = await fetch(`${baseUrl}${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ overleafProjectId: extractOverleafProjectId(), items: payloads })
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload?.message || `Companion returned HTTP ${response.status}.`);
-      leanPaneRepairBatch = payload;
+      const response = await companionFetch(url, { ...options, signal: controller.signal });
+      const payload = await response.json();
+      if (!response.ok) throw companionRequestError(response, payload);
+      return payload;
+    } catch (error) {
+      if (controller.signal.aborted) throw Object.assign(new Error("The connection timed out."), { status: 408 });
+      throw error;
+    } finally { clearTimeout(timer); }
+  }
+
+  function assertTargetBatchSource(pending) {
+    if (pendingTargetBatches.get(pending.projectId) !== pending) throw new Error("Request canceled.");
+    if (pending.projectId !== extractOverleafProjectId()
+      || pending.buffer !== latestActiveTex || pending.activePath !== latestActiveTexPath) {
+      throw Object.assign(new Error("The document changed before this request was queued. Refresh the pane and start again."), { status: 409 });
+    }
+  }
+
+  async function attemptTargetBatch(pending) {
+    if (pending.busy || pendingTargetBatches.get(pending.projectId) !== pending) return;
+    clearTimeout(pending.timer);
+    pending.busy = true;
+    pending.retrying = false;
+    try {
+      if (!pending.body) {
+        assertTargetBatchSource(pending);
+        pending.baseUrl = await chatCompanionBaseUrl();
+        assertTargetBatchSource(pending);
+        // The initial pane may show only the active file while the archive is
+        // loading. Freeze the project-wide inventory after acquiring all files,
+        // never the partial set captured by the displayed button's closure.
+        const mirrorResult = await syncTexMirrorNow({ force: true, freshArchive: true });
+        assertTargetBatchSource(pending);
+        const files = await getLeanPaneProjectFiles({ projectId: pending.projectId,
+          forceFetch: false, deferArchiveFetch: false });
+        assertTargetBatchSource(pending);
+        if (leanPaneSourceCoverage !== "complete") {
+          throw Object.assign(new Error("Waiting for the complete project archive before queuing every target."), { status: 503 });
+        }
+        const inventory = await queuedCompanionQuery(pending.baseUrl, "/lean-pane/manifest", {
+          overleafProjectId: pending.projectId, activePath: pending.activePath,
+          sourceCoverage: "complete", files
+        });
+        assertTargetBatchSource(pending);
+        if (inventory.inventorySync?.state === "pending" || leanPaneView.hasPendingPaneObservations(inventory.items)) {
+          throw Object.assign(new Error("Waiting for current project statuses before preparing the complete batch."), { status: 503 });
+        }
+        pending.items = (inventory.items || []).filter(item => item.formalizable
+          && !item.inProgress && item.status !== "in-progress"
+          && (pending.endpoint !== "/stub/all" || leanPaneView.canStubPaneItem(item)));
+        if (!pending.items.length) throw new Error("The complete project inventory has no targets available for this batch.");
+        const payloads = await buildBatchTargetPayloads(pending.items, {
+          verifyMirror: mirrorResult?.disabled !== true, mirrorSnapshot: mirrorResult
+        });
+        assertTargetBatchSource(pending);
+        // Freeze bytes and destination once. Every ambiguous retry uses these
+        // exact bytes and the original key; it cannot create a second batch.
+        pending.body = JSON.stringify({ overleafProjectId: pending.projectId,
+          scope: pending.endpoint === "/formalize/all" ? "project" : "selection", items: payloads });
+      }
+      let payload;
+      if (pending.command) {
+        payload = await targetBatchJson(`${pending.baseUrl}/commands/${encodeURIComponent(pending.command.id)}`);
+      } else {
+        pending.admissionRejected = false;
+        pending.message = "Submitting request… Keep this tab open until acceptance is confirmed.";
+        renderTargetBatchAdmission();
+        payload = await targetBatchJson(`${pending.baseUrl}${pending.endpoint}`, {
+          method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": pending.key, Prefer: "respond-async" },
+          body: pending.body
+        });
+      }
+      if (pendingTargetBatches.get(pending.projectId) !== pending) return;
+      if (payload.workspace_command === true) {
+        const command = payload.command;
+        if (!command?.id || !command.state) throw new Error("The command receipt was incomplete.");
+        pending.command = command;
+        pending.failures = 0;
+        if (["failed", "cancelled", "suspended", "expired"].includes(command.state)) {
+          const detail = command.result?.detail;
+          throw Object.assign(new Error(typeof detail === "string" ? detail : detail?.message || command.error || "The queued request could not start. Refresh the pane and try again."),
+            { status: command.error_status || 409, terminal: true });
+        }
+        if (command.state !== "succeeded") {
+          pending.phase = "queued";
+          pending.message = command.state === "queued"
+            ? "Queued in the database. Waiting for Lea to start the batch."
+            : "Accepted by the database. Lea is preparing the batch.";
+          pending.timer = setTimeout(() => attemptTargetBatch(pending), 1000);
+          return;
+        }
+        if (!command.result?.statusCode) throw new Error("The completed command has no result yet.");
+        if (command.result.statusCode >= 400) throw Object.assign(
+          companionRequestError({ status: command.result.statusCode }, command.result.body), { terminal: true });
+        payload = command.result.body;
+      }
+      if (!payload?.batchId) throw new Error("The batch acknowledgement was incomplete.");
+      pendingTargetBatches.delete(pending.projectId);
+      pendingFormalizations.delete(pending);
+      if (!payload.done && !payload.pausedOn) rememberStartedWork(pending.projectId, "activeBatches");
+      if (pending.projectId !== extractOverleafProjectId()) return;
+      leanPaneRepairBatch = { ...payload, overleafProjectId: pending.projectId };
+      leanPaneBatchNavigationStatus = null;
       leanPaneExpandedBatchQueueId = "";
       leanPaneExpandedBatchAttentionId = "";
       leanPaneExpandedBatchCompletedId = "";
       startRepairBatchPolling({ immediate: true });
+      scheduleStatusRefresh();
+      scheduleLeanPaneRefresh();
     } catch (error) {
-      leanPaneRepairError = { itemKey: errorKey, message: normalizeErrorMessage(error) };
+      if (pendingTargetBatches.get(pending.projectId) !== pending) return;
+      const leaseWaiting = error.status === 409 && error.code === "publisher_conflict";
+      const transient = !error.terminal && (leaseWaiting || !error.status || [408, 429, 502, 503, 504].includes(error.status));
+      // A capacity rejection did not admit this command. It can still be
+      // withdrawn locally, unlike an ambiguous transport failure after POST.
+      pending.admissionRejected = !pending.command && error.status === 429;
+      pending.retrying = transient && !isExtensionContextInvalidated();
+      pending.phase = pending.retrying ? "waiting" : "failed";
+      pending.message = pending.retrying
+        ? pending.command
+          ? "The request is accepted. Reconnecting to its database receipt…"
+          : leaseWaiting
+            ? "Waiting for the source publication lease. Your request is pending and will retry automatically. Close other Overleaf tabs for this document if this keeps waiting."
+          : error.status === 429
+            ? "Lea is busy. Your request is pending in this tab and will retry automatically."
+          : pending.body
+            ? "Acceptance is unconfirmed. Retrying this same request… Keep this tab open."
+            : "Waiting for a connection. Your request is pending in this tab and will retry automatically."
+        : normalizeErrorMessage(error);
+      if (pending.retrying) {
+        pending.failures = (pending.failures || 0) + 1;
+        const delay = leaseWaiting ? Math.max(1000, Math.min(error.retryAfterMs || 1000, 90000))
+          : Math.min(1000 * 2 ** Math.min(pending.failures - 1, 5), 30000);
+        pending.timer = setTimeout(() => attemptTargetBatch(pending), delay);
+      } else pendingFormalizations.delete(pending);
+    } finally {
+      pending.busy = false;
+      renderLeaActivity();
+      if (pending.projectId === extractOverleafProjectId()) {
+        if (pendingTargetBatches.has(pending.projectId)) renderTargetBatchAdmission();
+        else renderLeanPaneManifest(lastLeanPaneManifest);
+      }
     }
+  }
+
+  function runTargetBatch({ endpoint, items, projectId = extractOverleafProjectId() }) {
+    if (projectId !== extractOverleafProjectId() || pendingTargetBatches.has(projectId) || leanPaneRepairBatch) return;
+    const pending = { projectId, endpoint, items: JSON.parse(JSON.stringify(items)),
+      key: crypto.randomUUID(), body: null, command: null, phase: "preparing", retrying: false,
+      buffer: latestActiveTex, activePath: latestActiveTexPath,
+      message: "Preparing source for your request… It will be queued when the connection is ready." };
+    if (!items.length) {
+      pending.phase = "failed";
+      pending.message = "No eligible targets are available. Refresh the pane and try again.";
+    } else pendingFormalizations.add(pending);
+    pendingTargetBatches.set(projectId, pending);
+    leanPaneRepairError = null;
+    renderLeaActivity();
     renderLeanPaneManifest(lastLeanPaneManifest);
-    scheduleLeanPaneRefresh();
+    if (items.length) return attemptTargetBatch(pending);
   }
 
-  function stubAllTheorems() {
-    const items = leanPaneView.stubbableItems(lastLeanPaneManifest?.items || []);
-    return runTargetBatch({ endpoint: "/stub/all", items, errorKey: "batch" });
+  function stubAllTheorems(items = leanPaneView.stubbableItems(lastLeanPaneManifest?.items || []), projectId) {
+    return runTargetBatch({ endpoint: "/stub/all", items, projectId });
   }
 
-  function formalizeAllItems() {
-    const items = leanPaneView.formalizableItems(lastLeanPaneManifest?.items || []);
-    return runTargetBatch({ endpoint: "/formalize/all", items, errorKey: "batch" });
+  function formalizeAllItems(items = leanPaneView.formalizableItems(lastLeanPaneManifest?.items || []), projectId) {
+    return runTargetBatch({ endpoint: "/formalize/all", items, projectId });
   }
 
   async function refreshSingleStatus(target) {
@@ -7056,32 +7831,37 @@
     statusRefreshTimer = setTimeout(() => {
       refreshStatusesNow().catch((error) => {
         postStatusError(error);
+        scheduleStatusRefresh(Math.max(STATUS_REFRESH_IN_PROGRESS_MS, error.retryAfterMs || 5000));
       });
     }, delayMs);
   }
 
-  async function refreshStatusesNow() {
+  function refreshStatusesNow() {
+    return coalesceDisplayRead("statuses", {}, () => performStatusesRefresh());
+  }
+
+  async function performStatusesRefresh() {
     if (document.hidden) return false;
     const request = displayRequest("statuses");
     try { return await refreshStatusesSnapshot(request); }
     catch (error) {
       if (!currentDisplayRequest(request)) return false;
+      if (error.code === "project_renaming") { markProjectRenaming(); return false; }
       throw error;
     }
   }
 
   async function refreshStatusesSnapshot(request) {
-    if (latestTargets.length === 0) {
-      postStatuses({});
-      return true;
-    }
-
     await resolveVisibleTargets();
+    if (!currentDisplayRequest(request)) return false;
+    const requestedTargets = [...latestTargets];
 
     const settings = await getSettings();
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
-    const targets = await Promise.all(latestTargets.map(async (target) => {
-      const sourceContext = await buildFormalizationSourceContext(target, { verifyMirror: false });
+    const targets = await Promise.all(requestedTargets.map(async (target) => {
+      // A status read needs the live source identity, not publication authority.
+      // Another tab may own the publisher while this tab reads saved SQL facts.
+      const sourceContext = await buildFormalizationSourceContext(target, { verifyMirror: false, publish: false });
       return {
         targetKind: target.targetKind,
         targetLabel: target.targetLabel,
@@ -7091,36 +7871,31 @@
         sourceIdentityHash: sourceContext.sourceBundle?.sourceIdentityHash || ""
       };
     }));
-    const response = await fetch(`${baseUrl}/statuses`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        overleafProjectId: extractOverleafProjectId(),
-        targets
-      })
-    });
-
-    const payload = await response.json().catch(() => ({}));
     if (!currentDisplayRequest(request)) return false;
-    if (!response.ok) {
-      const error = companionRequestError(response, payload);
-      if (error.code === "project_renaming") { markProjectRenaming(); return false; }
-      throw error;
-    }
+    const payload = await queuedCompanionQuery(baseUrl, "/statuses", {
+        overleafProjectId: request.projectId,
+        targets
+    });
+    if (!currentDisplayRequest(request)) return false;
     if (!acceptDisplayResponse(request, payload.namespaceRevision)) return false;
-    const statuses = withFallbackStatuses(payload.statuses || {});
-    await reconcileHumanApprovals(latestTargets.map((target) => ({
+    const statuses = withFallbackStatuses(payload.statuses || {}, requestedTargets);
+    await reconcileHumanApprovals(requestedTargets.map((target) => ({
       target,
       statusInfo: statuses[targetKey(target)]
     })));
-    // Storage reconciliation can also outlive a rename.
-    if (request.generation !== displayGeneration || request.projectId !== extractOverleafProjectId()) return false;
+    // Storage reconciliation can outlive a rename or a newly admitted run.
+    if (!currentDisplayRequest(request)) return false;
+    latestProjectActivity = payload.projectActivity || null;
     postStatuses(statuses);
     if (activePopover?.dataset.targetKey) {
       const target = latestTargets.find((item) => targetKey(item) === activePopover.dataset.targetKey);
       if (target) updatePopoverStatus(activePopover, target);
     }
-    if (Object.values(latestStatuses).some((status) => (
+    // Offscreen cache entries do not determine the cadence of the current read.
+    const awaitingStatuses = Object.values(statuses).some(status => status.projection && status.projection.state !== "observed");
+    if (awaitingStatuses) {
+      scheduleStatusRefresh(STATUS_REFRESH_IN_PROGRESS_MS);
+    } else if (latestProjectActivity?.activeJobs > 0 || latestProjectActivity?.activeBatches > 0 || Object.values(statuses).some((status) => (
       status.status === "in_progress" && !status.githubImportPending
     ))) {
       scheduleStatusRefresh(pushConnected ? STATUS_REFRESH_RECONCILE_MS : STATUS_REFRESH_IN_PROGRESS_MS);
@@ -7152,7 +7927,7 @@
         await ensureLeanPaneView();
         files = await getLeanPaneProjectFiles({ projectId, forceFetch: false });
       }
-      const response = await fetch(`${baseUrl}/targets/resolve`, {
+      const response = await companionFetch(`${baseUrl}/targets/resolve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overleafProjectId: projectId, sourceFile, source, files })
@@ -7236,7 +8011,7 @@
       return null;
     }
 
-    const settings = await loadCompanionSettings();
+    const settings = await loadCompanionSettings({ requireLive: force, includeCatalog: !force });
     if (settings.leaTexMirrorEnabled === false) {
       if (freshArchive) {
         lastLeanPaneFiles = await collectProjectTexFiles(projectId);
@@ -7266,18 +8041,23 @@
         Date.now() - lastTexMirrorFullSyncAt > TEX_MIRROR_FULL_SYNC_INTERVAL_MS;
 
       if (!force && !fullSyncDue && activeRel && typeof latestActiveTex === "string") {
-        const response = await fetch(`${baseUrl}/mirror-tex`, {
+        const response = await companionFetch(`${baseUrl}/mirror-tex`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             overleafProjectId: projectId,
             mode: "upsert",
+            overleafProjectTitle: readOverleafProjectTitle(lastMirrorFiles || []),
             files: [{ path: activeRel, content: latestActiveTex }]
           })
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+        }
+        if (projectId === extractOverleafProjectId() && payload.identity) {
+          lastProjectIdentity = payload.identity;
+          renderLeanPaneProjectIdentity(lastProjectIdentity);
         }
         lastMirrorFiles = lastMirrorFiles.map((file) =>
           file.path === activeRel ? { ...file, content: latestActiveTex } : file
@@ -7302,17 +8082,20 @@
         const active = files.find((file) => file.path === activeRel);
         if (active) active.content = latestActiveTex;
       }
-      const response = await fetch(`${baseUrl}/mirror-tex`, {
+      const payload = await targetBatchJson(`${baseUrl}/mirror-tex`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ overleafProjectId: projectId, files })
+        body: JSON.stringify({ overleafProjectId: projectId, files, overleafProjectTitle: readOverleafProjectTitle(files) })
       });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+      if (projectId === extractOverleafProjectId() && payload.identity) {
+        lastProjectIdentity = payload.identity;
+        renderLeanPaneProjectIdentity(lastProjectIdentity);
       }
       lastMirrorFiles = files;
       lastMirrorProjectId = projectId;
+      lastLeanPaneFiles = files.map(file => ({ ...file }));
+      lastLeanPaneProjectId = projectId;
+      leanPaneSourceCoverage = "complete";
       texMirrorSyncedOnce = true;
       texMirrorDirty = false;
       if (needFetch) lastTexMirrorFullSyncAt = Date.now();
@@ -7335,7 +8118,7 @@
       : null;
     let buffer;
     try {
-      const response = await fetch(`/project/${encodeURIComponent(projectId)}/download/zip`, {
+      const response = await companionFetch(`/project/${encodeURIComponent(projectId)}/download/zip`, {
         credentials: "same-origin",
         ...(controller ? { signal: controller.signal } : {})
       });
@@ -7370,8 +8153,20 @@
     const message = normalizeErrorMessage(error);
     const statuses = {};
     for (const target of latestTargets) {
-      statuses[targetKey(target)] = {
-        status: "offline",
+      const key=targetKey(target);
+      const previous=latestBaseStatuses[key];
+      const known=previous && !["unknown","unavailable","offline"].includes(getDisplayStatus(previous));
+      statuses[key] = known ? {
+        ...previous,
+        statusReadError:message,
+        projection:{...previous.projection,state:"read_unavailable"},
+        leanCheckPassed:false,
+        certification:null,
+        review:previous.review ? {...previous.review,eligible:false} : undefined,
+        approvalEligible:false,
+        approvalIneligibleReason:"Wait for the status connection to recover before approving this result."
+      } : {
+        status: error?.status ? "unavailable" : "offline",
         message
       };
     }
@@ -7499,7 +8294,7 @@
       approved ? "ol-lean-human-approval-approved" : ""
     ].filter(Boolean).join(" ");
     button.textContent = "✓";
-    button.disabled = (pane && Boolean(leanPaneRefreshFailure)) || busy || !approved && !statusInfo?.approvalEligible;
+    button.disabled = (pane && Boolean(leanPaneRefreshFailure || pendingInventoryRefresh())) || busy || !approved && !statusInfo?.approvalEligible;
     button.setAttribute("aria-pressed", String(approved));
     button.setAttribute(
       "aria-label",
@@ -7517,21 +8312,35 @@
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (pane && leanPaneRefreshFailure) return;
+      if (pane && (leanPaneRefreshFailure || pendingInventoryRefresh())) return;
       toggleHumanApproval(target, statusInfo).catch(() => {});
     });
     return button;
   }
 
   function postStatuses(statuses) {
-    latestBaseStatuses = statuses || {};
+    // A viewport response is partial: keep the other project tags cached so
+    // scrolling them back into view can render their last known status.
+    const next={...latestBaseStatuses};
+    for(const [key,info] of Object.entries(statuses || {})) {
+      const previous=latestBaseStatuses[key];
+      let known=previous && getDisplayStatus(previous);
+      if(known==='formalized' && previous.resultKind==='defined')known='defined';
+      const refreshing=info.status==='unknown' && info.projection && info.projection.state!=='observed';
+      // Retain presentation only. The new SQL response still owns evidence,
+      // activity, review eligibility and all business-action preconditions.
+      next[key]=refreshing && known && !['unknown','unavailable','offline','in_progress'].includes(known)
+        ? {...info,retainedDisplayState:known} : info;
+    }
+    latestBaseStatuses = next;
     latestStatuses = githubImportStatusOverlay(latestBaseStatuses);
+    renderLeaActivity();
     renderStatusBadges();
   }
 
-  function withFallbackStatuses(statuses) {
+  function withFallbackStatuses(statuses, requestedTargets) {
     const completeStatuses = { ...statuses };
-    for (const target of latestTargets) {
+    for (const target of requestedTargets) {
       const key = targetKey(target);
       if (!completeStatuses[key]) {
         completeStatuses[key] = {
@@ -7576,6 +8385,7 @@
       const status = getDisplayStatus(statusInfo);
       const badge = document.createElement("button");
       badge.className = `ol-lean-status ol-lean-status-${status}`;
+      badge.dataset.targetKey = targetKey(target);
       badge.type = "button";
       badge.appendChild(document.createTextNode(formatStatus(status, statusInfo)));
       if (hasStubbedTheoremUses(statusInfo)) {
@@ -7593,17 +8403,12 @@
       }
       const stubbedUsesLabel = hasStubbedTheoremUses(statusInfo) ? " warning: proof uses sorry-stubbed support" : "";
       const statusLabel = `${formatStatus(status, statusInfo)}${turnProgress.label ? ` ${turnProgress.label}` : ""}${stubbedUsesLabel}`;
-      badge.title = status === "needs_review"
-        ? statusInfo.message || `The requested ${targetDisplayName(target)} needs review.`
-        : statusInfo.sourceFreshness === "stale"
+      badge.title = statusInfo.sourceFreshness === "stale"
         ? statusInfo.sourceFreshnessMessage
           || "The LaTeX source changed after this Lean artifact was generated. Re-formalize to synchronize it."
         : statusInfo.message || `Lean status for ${targetDisplayName(target)}: ${statusLabel}`;
-      if (status === "needs_review" && statusInfo.leanCheckPassed === true) {
-        badge.title += " Lean check passed for the current file.";
-      }
+      if (statusInfo.statusReadError) badge.title = `Status refresh delayed: ${statusInfo.statusReadError} Last known state: ${statusLabel}. Retrying automatically.`;
       badge.setAttribute("aria-label", `Open Lea popover for ${targetDisplayName(target)}. Status: ${statusLabel}.`);
-      badge.style.left = `${Math.min(coords.left + 8, window.innerWidth - 140)}px`;
       badge.style.top = `${coords.top}px`;
       badge.addEventListener("click", (event) => {
         event.preventDefault();
@@ -7611,10 +8416,13 @@
         showTargetPopover(event.clientX, event.clientY, target);
       });
       badgeLayer.appendChild(badge);
-      if (
+      const hasApproval = (
         Object.prototype.hasOwnProperty.call(statusInfo, "approvalEligible")
         || Boolean(statusInfo.approvalRevision)
-      ) {
+      );
+      const badgeWidth = Number(badge.getBoundingClientRect().width) || 140;
+      badge.style.left = `${Math.max(8, Math.min(coords.left + 8, window.innerWidth - badgeWidth - (hasApproval ? 32 : 8)))}px`;
+      if (hasApproval) {
         const approval = createHumanApprovalButton(target, statusInfo);
         const badgeRect = badge.getBoundingClientRect();
         approval.style.left = `${Math.min(badgeRect.right + 4, window.innerWidth - 24)}px`;
@@ -7625,6 +8433,7 @@
   }
 
   function formatStatus(status, statusInfo = null) {
+    if (status === "unknown") status = recordedDisplayStatus(statusInfo) || status;
     if ((status === "formalized" || status === "defined") && statusInfo?.resultKind === "defined") {
       return "defined";
     }
@@ -7646,7 +8455,7 @@
       case "disproved":
         return "Counterexample found";
       case "needs_review":
-        return "Needs review";
+        return "unchecked";
       case "sorry_stub":
         return "sorry stub";
       case "failed":
@@ -7656,7 +8465,7 @@
       case "unavailable":
         return "unavailable";
       default:
-        return "checking";
+        return "awaiting status";
     }
   }
 
@@ -7764,7 +8573,7 @@
       case "unknown":
         return "Check status";
       case "needs_review":
-        return definition ? "Review definition" : "Review proof";
+        return definition ? 'Regenerate definition' : 'Re-formalize';
       case "sorry_stub":
       case "unformalized":
       default:
@@ -7773,7 +8582,7 @@
   }
 
   function getActionStatus(statusInfo) {
-    if (statusInfo?.status === "needs_review") return "needs_review";
+    if (statusInfo?.status === "needs_review") return "unavailable";
     if (statusInfo?.status === "paused") return "paused";
     if (statusInfo?.sourceFreshness === "stale") {
       return "stale";
@@ -7784,11 +8593,17 @@
     return statusInfo?.status || "unknown";
   }
 
+  function recordedDisplayStatus(statusInfo) {
+    if (!statusInfo?.projection || statusInfo.projection.state === "observed") return null;
+    return ({proved:"formalized",defined:"defined",disproved:"disproved",planned:"unformalized",draft:"unformalized"})[
+      statusInfo.lastObservedResult?.validity_status] || statusInfo.retainedDisplayState || null;
+  }
+
   function getDisplayStatus(statusInfo) {
-    if (statusInfo?.status === "needs_review") return "needs_review";
-    return statusInfo?.sourceFreshness === "stale"
-      ? "stale"
-      : statusInfo?.status || "unknown";
+    if (statusInfo?.status === "needs_review") return "unavailable";
+    if (statusInfo?.sourceFreshness === "stale") return "stale";
+    const status=statusInfo?.status || "unknown";
+    return status === "unknown" ? recordedDisplayStatus(statusInfo) || status : status;
   }
 
   function canViewInLeaUi(status) {
@@ -7807,11 +8622,6 @@
     };
   }
 
-  function getLeaUiBaseLink(statusInfo) {
-    const baseUrl = String(statusInfo?.leaUiBaseUrl || DEFAULT_LEA_UI_BASE_URL).replace(/\/+$/, "");
-    return { sessionId: "", baseUrl, url: baseUrl };
-  }
-
   function buildLeaSessionUrl(baseUrl, sessionId) {
     // A malformed stored leaUiBaseUrl (a user typo in options) must not throw
     // out of popover render (AUDIT L4) — fall back to the default origin.
@@ -7828,6 +8638,14 @@
   function openLeaSession(sessionLink) {
     if (!sessionLink?.url) {
       return Promise.reject(new Error("Lea session link is not available yet."));
+    }
+    try {
+      const url = new URL(sessionLink.url);
+      if (!url.searchParams.get("session")?.trim() && !url.searchParams.get("formalization")?.trim()) {
+        return Promise.reject(new Error("No LeaChat session is available in this link."));
+      }
+    } catch {
+      return Promise.reject(new Error("The LeaChat session link is invalid."));
     }
     return new Promise((resolve, reject) => {
       const fallback = () => {
@@ -7857,20 +8675,20 @@
     });
   }
 
+  async function companionFetch(url,options={}) {
+    if(!['POST','PUT','PATCH','DELETE'].includes(options.method||'GET'))return nativeFetch(url,options);
+    commandClient ||= import(chrome.runtime.getURL("commandClient.mjs"));
+    return (await commandClient).commandFetch(nativeFetch,url,options);
+  }
+
   function getSettings() {
     if (isExtensionContextInvalidated()) {
       return Promise.reject(new Error("Extension was reloaded. Refresh this Overleaf tab."));
     }
     return chrome.storage.sync.get({
       companionUrl: DEFAULT_COMPANION_URL,
-      leaRepoPath: "",
       leaApiBaseUrl: "http://127.0.0.1:8001",
-      leaUiBaseUrl: DEFAULT_LEA_UI_BASE_URL,
-      leaModel: DEFAULT_LEA_MODEL,
-      leaMaxTurns: DEFAULT_LEA_MAX_TURNS,
-      leaMaxSpendUsd: null,
-      leaTexMirrorEnabled: DEFAULT_LEA_TEX_MIRROR_ENABLED,
-      leaPauseOnSourceIssue: false
+      leaUiBaseUrl: DEFAULT_LEA_UI_BASE_URL
     });
   }
 
@@ -7883,7 +8701,7 @@
         timeoutMessage: "The companion settings request timed out."
       });
       if (!response.ok) {
-        throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
+        throw companionRequestError(response, payload);
       }
       let catalogPayload = {};
       if (includeCatalog) {
@@ -7899,7 +8717,6 @@
       }
       const settings = {
         companionUrl: baseUrl,
-        leaRepoPath: payload.leaRepoPath || stored.leaRepoPath || "",
         leaApiBaseUrl: payload.leaApiBaseUrl || stored.leaApiBaseUrl || "http://127.0.0.1:8001",
         leaUiBaseUrl: payload.leaUiBaseUrl || stored.leaUiBaseUrl || DEFAULT_LEA_UI_BASE_URL,
         leaModel: payload.leaModel || stored.leaModel || DEFAULT_LEA_MODEL,
@@ -7919,17 +8736,8 @@
         githubTokenConfigured: Boolean(payload.githubTokenConfigured)
       };
       updateApiKeyNudge(settings);
-      await chrome.storage.sync.set({
-        companionUrl: settings.companionUrl,
-        leaRepoPath: settings.leaRepoPath,
-        leaApiBaseUrl: settings.leaApiBaseUrl,
-        leaUiBaseUrl: settings.leaUiBaseUrl,
-        leaModel: settings.leaModel,
-        leaMaxTurns: settings.leaMaxTurns,
-        leaMaxSpendUsd: settings.leaMaxSpendUsd,
-        leaTexMirrorEnabled: settings.leaTexMirrorEnabled,
-        leaPauseOnSourceIssue: settings.leaPauseOnSourceIssue
-      });
+      await chrome.storage.sync.set({companionUrl:settings.companionUrl,leaApiBaseUrl:settings.leaApiBaseUrl,leaUiBaseUrl:settings.leaUiBaseUrl});
+      await chrome.storage.sync.remove?.(['leaRepoPath','leaModel','leaMaxTurns','leaMaxSpendUsd','leaTexMirrorEnabled','leaPauseOnSourceIssue','leaTheoremTranslationMaxRetries']);
       return settings;
     } catch (error) {
       if (requireLive) throw error;
@@ -8019,10 +8827,8 @@
       if (!popover.isConnected) return;
       popover.leaModelCatalog = payload.models;
       const modelSelect = popover.querySelector("[data-role='model']");
-      renderModelOptions(modelSelect, payload.models, settings.leaModelOptions || DEFAULT_MODEL_OPTIONS, modelSelect.value);
-      if (status) status.textContent = payload.degraded
-        ? "Adapter catalog unavailable — using the offline fallback."
-        : `${payload.models.length.toLocaleString()} models available; search by ID or provider.`;
+      renderModelOptions(modelSelect, payload.models, payload.featured || settings.leaModelOptions || DEFAULT_MODEL_OPTIONS, modelSelect.value);
+      if (status) status.textContent = globalThis.LeaModelPicker.catalogStatus(payload);
       if (popover.dataset.settingsState !== "ready") setSettingsControlsDisabled(popover, true);
     } catch {
       if (status) status.textContent = "Adapter catalog unavailable — using the offline fallback.";
@@ -8035,7 +8841,7 @@
     const namespace = popover.querySelector("[data-role='project-namespace']");
     const binding = popover.querySelector("[data-role='project-binding']");
     const fallback = guessProjectName(lastLeanPaneFiles || []);
-    if (projectName) projectName.textContent = identity?.projectName || fallback;
+    if (projectName) projectName.textContent = identity?.exists === false ? fallback : identity?.projectName || fallback;
     if (exists) exists.textContent = identity?.exists ? "Created" : "Not created";
     if (namespace) namespace.textContent = `Lean namespace: ${identity?.namespace || "--"}`;
     if (binding) binding.textContent = `Overleaf binding: ${identity?.slug || extractOverleafProjectId() || "--"}`;
@@ -8065,7 +8871,7 @@
   // token itself.
   async function updateGithubToken(payload) {
     const baseUrl = await chatCompanionBaseUrl();
-    const response = await fetch(`${baseUrl}/settings/github-token`, {
+    const response = await companionFetch(`${baseUrl}/settings/github-token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
@@ -8082,7 +8888,17 @@
       root: select,
       value: selectedModel,
       catalog,
-      featured
+      featured,
+      loadCatalog: async (refresh) => {
+        const baseUrl = await chatCompanionBaseUrl();
+        const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/settings/models${refresh ? "/refresh" : ""}`, {
+          method: refresh ? "POST" : "GET"
+        }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS, timeoutMessage: "The model catalog request timed out." });
+        if (!response.ok) throw new Error("Catalog unavailable");
+        const status = select.closest(".ol-lean-settings-popover")?.querySelector("[data-role='model-catalog-status']");
+        if (status) status.textContent = globalThis.LeaModelPicker.catalogStatus(payload);
+        return payload;
+      }
     });
   }
 
@@ -8104,7 +8920,7 @@
     const settings = await getSettings();
     const baseUrl = String(settings.companionUrl || DEFAULT_COMPANION_URL).replace(/\/+$/, "");
     try {
-      const response = await fetch(
+      const response = await companionFetch(
         `${baseUrl}/settings/models/requirements?model=${encodeURIComponent(model)}`
       );
       const payload = await response.json().catch(() => ({}));
@@ -8265,7 +9081,6 @@
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        leaRepoPath: current.leaRepoPath,
         leaApiBaseUrl: current.leaApiBaseUrl,
         leaModel,
         leaMaxTurns,
@@ -8280,18 +9095,7 @@
     if (!response.ok) {
       throw new Error(payload.message || `Companion returned HTTP ${response.status}.`);
     }
-    await chrome.storage.sync.set({
-      companionUrl: baseUrl,
-      leaRepoPath: payload.leaRepoPath,
-      leaApiBaseUrl: payload.leaApiBaseUrl,
-      leaUiBaseUrl: payload.leaUiBaseUrl || current.leaUiBaseUrl || DEFAULT_LEA_UI_BASE_URL,
-      leaModel: payload.leaModel,
-      leaMaxTurns: payload.leaMaxTurns,
-      leaMaxSpendUsd: payload.leaMaxSpendUsd,
-      leaTheoremTranslationMaxRetries: payload.leaTheoremTranslationMaxRetries,
-      leaTexMirrorEnabled: payload.leaTexMirrorEnabled,
-      leaPauseOnSourceIssue: payload.leaPauseOnSourceIssue
-    });
+    await chrome.storage.sync.set({companionUrl:baseUrl,leaApiBaseUrl:payload.leaApiBaseUrl||current.leaApiBaseUrl,leaUiBaseUrl:payload.leaUiBaseUrl||current.leaUiBaseUrl||DEFAULT_LEA_UI_BASE_URL});
     return payload;
   }
 
@@ -8346,7 +9150,7 @@
       : !usage || usage.accountingUnavailable
       ? "Usage unavailable"
       : usage?.incompleteUsageRuns
-      ? cost > 0 ? `${formatCost(cost)} recorded so far` : "Awaiting usage"
+      ? cost > 0 ? formatCost(cost) : "Awaiting usage"
       : usage?.unconfirmedUsageRuns
         ? cost > 0 ? formatCost(cost) : "Usage unavailable"
         : formatCost(cost);
@@ -8468,48 +9272,6 @@
   async function startEventsClient() {
     try {
       const module = await import(chrome.runtime.getURL("eventsClient.mjs"));
-      const sourceModule = await import(chrome.runtime.getURL("sourceRefreshClient.mjs"));
-      const sourceClientId = crypto.randomUUID();
-      const refreshSource = sourceModule.createSourceRefreshResponder({
-        documentId: extractOverleafProjectId,
-        readSource: async (request) => {
-          await ensureLeanPaneView();
-          const buffer = latestActiveTex;
-          const activePath = latestActiveTexPath;
-          const mirror = await syncTexMirrorNow({ force: true, freshArchive: true });
-          const files = mirror?.disabled === true ? lastLeanPaneFiles : lastMirrorFiles;
-          if (!Array.isArray(files) || !files.length) throw new Error("The current Overleaf source archive is unavailable.");
-          lastLeanPaneFiles = files.map((file) => ({ ...file }));
-          lastLeanPaneProjectId = request.overleafProjectId;
-          const baseUrl = await chatCompanionBaseUrl();
-          const { response, payload } = await fetchJsonWithTimeout(`${baseUrl}/lean-pane/manifest`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ overleafProjectId: request.overleafProjectId, activePath: latestActiveTexPath, files, sourceCoverage: "complete" })
-          }, { timeoutMs: LEAN_PANE_COMPANION_TIMEOUT_MS });
-          if (!response.ok) throw new Error(payload.message || "The current document could not be parsed.");
-          const item = sourceModule.selectSourceTarget(payload.items, request);
-          const target = { ...item, ...leanPaneView.paneItemToChatTarget(item, request.overleafProjectId),
-            targetText: item.naturalLanguageLatex, targetContext: item.targetContext || "",
-            sourceFile: item.sourceFile, sourceStartLine: item.sourceStartLine,
-            sourceEndLine: item.sourceEndLine, sourceStartOffset: item.sourceStartOffset, sourceEndOffset: item.sourceEndOffset };
-          const context = await buildFormalizationSourceContext(target, {
-            verifyMirror: mirror?.disabled !== true, mirrorSnapshot: mirror
-          });
-          if (latestActiveTex !== buffer || latestActiveTexPath !== activePath || extractOverleafProjectId() !== request.overleafProjectId) {
-            throw new Error("The editor changed during source refresh. Send again to use the latest revision.");
-          }
-          return { ...context, mirroredFiles: mirror?.mirroredFiles || null };
-        },
-        respond: async (payload) => {
-          const baseUrl = await chatCompanionBaseUrl();
-          const response = await fetch(`${baseUrl}/source-context/respond`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...payload, clientId: sourceClientId })
-          });
-          if (!response.ok) throw new Error("Source refresh response was not accepted.");
-        }
-      });
-      sourceRefreshHandler = refreshSource;
       // The companion URL comes from settings (async); cache it for the
       // client's synchronous url() and refresh the cache on every reconnect
       // attempt so a settings change is picked up without a page reload.
@@ -8526,9 +9288,7 @@
         url: () => {
           refreshUrlCache();
           const projectId = extractOverleafProjectId();
-          const query = projectId && projectId !== "unknown"
-            ? `?projectId=${encodeURIComponent(projectId)}&clientId=${encodeURIComponent(sourceClientId)}`
-            : "";
+          const query = `?projectId=${encodeURIComponent(projectId || "unknown")}`;
           return `${companionUrlCache}/events${query}`;
         },
         onEvent: handlePushEvent,
@@ -8536,15 +9296,10 @@
           pushConnected = connected;
           if (connected) {
             if (projectRenaming) scheduleRenameReconciliation(0);
-            // Reconcile pending refreshes too: the event bus has no replay.
-            chatCompanionBaseUrl().then(async (baseUrl) => {
-              const response = await fetch(`${baseUrl}/source-context/pending?projectId=${encodeURIComponent(extractOverleafProjectId())}`);
-              const payload = await response.json();
-              await Promise.all((payload.requests || []).map(refreshSource));
-            }).catch(() => {});
             // Reconcile once on (re)connect: anything that changed while the
             // stream was down is picked up now instead of on the slow poll.
             scheduleStatusRefresh();
+            if (leanPaneChatPanel) pollChatSession().catch(() => {});
             if (leanPaneMainView === "blueprint" && leanPane) renderLeanPaneBlueprint({ background: true }).catch(renderLeanPaneError);
             else if (leanPane) scheduleLeanPaneRefresh();
           }
@@ -8565,6 +9320,14 @@
   }
 
   function handlePushEvent(type, data) {
+    if (data?.overleafProjectId && data.overleafProjectId !== extractOverleafProjectId()) return;
+    if (type === "resync") {
+      scheduleStatusRefresh();
+      if (leanPane) scheduleLeanPaneRefresh();
+      if (leanPaneChatPanel) pollChatSession().catch(() => {});
+      if (batchNeedsPolling()) startRepairBatchPolling({ immediate: true });
+      return;
+    }
     if (type === "project-identity-changed") {
       if (data?.overleafProjectId !== extractOverleafProjectId()) return;
       if (data.phase === "started") markProjectRenaming(data.overleafProjectId, true);
@@ -8581,13 +9344,11 @@
       return;
     }
 
-    if (type === "source-refresh-requested") {
-      sourceRefreshHandler?.(data).catch(() => {});
-      return;
-    }
     if (type === "jobs-changed") {
       scheduleStatusRefresh();
       if (leanPane) scheduleLeanPaneRefresh();
+      if (leanPaneChatPanel) pollChatSession().catch(() => {});
+      if (batchNeedsPolling()) startRepairBatchPolling({ immediate: true });
       return;
     }
     if (type === "chat-updated") {
@@ -8600,6 +9361,7 @@
       return;
     }
     if (type === "repair-batch-updated") {
+      scheduleStatusRefresh();
       if (!leanPaneRepairBatch?.batchId) return;
       if (data && data.batchId && data.batchId !== leanPaneRepairBatch.batchId) return;
       startRepairBatchPolling({ immediate: true });

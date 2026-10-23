@@ -1,0 +1,63 @@
+{
+  "baseline": {
+    "api": {
+      "image": "lea-stage8-baseline-api:amd64",
+      "id": "sha256:6e7720ca9e7497c9ca7619b041a9f89582398f955f895e195ca03d8752348e25",
+      "architecture": "amd64",
+      "size_bytes": 403744271,
+      "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b"
+    },
+    "worker": {
+      "image": "lea-stage8-baseline-worker:amd64",
+      "id": "sha256:2ac9f772bd27c54793a26b1e24eeeb58de879cc49e07fb4f09a22934565210b5",
+      "architecture": "amd64",
+      "size_bytes": 11246897991,
+      "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b"
+    },
+    "companion": {
+      "image": "lea-stage8-baseline-companion:amd64",
+      "id": "sha256:5e613b543f0ffb3f68155439c58e296ab13324c20fb0d40716255730574c4640",
+      "architecture": "amd64",
+      "size_bytes": 229734004,
+      "source": "6780f3d4f262a9b4ca7a70dbcabf35dd2818da6b"
+    }
+  },
+  "candidate": {
+    "api": {
+      "image": "lea-stage8-candidate-api:amd64",
+      "id": "sha256:d47a76ad12ea73814834f5fde2e368b7885cd4683fb8a9a1a0aa033aa5ea4f16",
+      "architecture": "amd64",
+      "size_bytes": 403744742,
+      "source": "c8dc8f62efa1ddc6ca5e333e29317ef30ea433af"
+    },
+    "worker": {
+      "image": "lea-stage8-candidate-worker:amd64",
+      "id": "sha256:7369e4f6250c05dbf69cfb85dfb1983a364be493d3f9cbae446c599a6347dc7e",
+      "architecture": "amd64",
+      "size_bytes": 11246898462,
+      "source": "c8dc8f62efa1ddc6ca5e333e29317ef30ea433af"
+    },
+    "companion": {
+      "image": "lea-stage8-candidate-companion:amd64",
+      "id": "sha256:8441c16ac7fc93a9ccb920ebe3fc73c88c057a0b8cef13612b7eae913968d168",
+      "architecture": "amd64",
+      "size_bytes": 229734004,
+      "source": "c8dc8f62efa1ddc6ca5e333e29317ef30ea433af"
+    }
+  },
+  "rehearsal": {
+    "distinct_strict_binaries": true,
+    "same_database_and_workspace_volumes": true,
+    "schema_downgrade": false,
+    "backup_restore": false,
+    "volume_recreation": false,
+    "candidate_history_and_receipt_preserved": true,
+    "prepared_publication_recovered": true,
+    "uncertain_claim_suspended": true,
+    "old_claim_fenced": true,
+    "baseline_build_identity_restored": true
+  },
+  "version": 1,
+  "captured_at": "2026-10-18T00:19:34.560000+00:00",
+  "passed": true
+}

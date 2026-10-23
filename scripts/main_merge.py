@@ -139,12 +139,14 @@ def preview(repository, manifest_path, main_ref='vida/main', record=False):
     head = repository.commit('HEAD')
     with repository.temporary_index() as env:
         repository.git('read-tree', head, env=env)
-        paths = repository.git('ls-files', '-z', '--cached', '--others', '--exclude-standard',
+        # Update tracked paths separately: a file may become ignored after it
+        # was committed, and explicit `git add path` rejects it in a fresh index.
+        repository.git('add', '--update', env=env)
+        paths = repository.git('ls-files', '-z', '--others', '--exclude-standard',
                                env=env).stdout.split(b'\0')
         paths = [os.fsdecode(path) for path in paths if path]
         for offset in range(0, len(paths), 100):
             repository.git('add', '--', *paths[offset:offset + 100], env=env)
-        repository.git('add', '--update', env=env)
         source_tree = repository.text('write-tree', env=env)
         feature = repository.text('-c', 'commit.gpgsign=false', 'commit-tree', source_tree, '-p', head,
                                   input=b'preview only\n', env=env)

@@ -130,7 +130,7 @@ def test_happy_path_commits_steps_and_persists_run(tmp_path, monkeypatch):
     assert types[-1] == "done"
 
 
-def test_definition_artifact_preserves_explicit_review_result_kind(tmp_path, monkeypatch):
+def test_legacy_review_definition_finishes_incomplete_without_approval(tmp_path, monkeypatch):
     ctx, queue = _context(tmp_path, monkeypatch, task="Define a subadditive predicate")
 
     def script(proof_path):
@@ -161,17 +161,17 @@ def test_definition_artifact_preserves_explicit_review_result_kind(tmp_path, mon
     bridge.run_lea(ctx)
 
     run = store.get_run(ctx.run_id)
-    assert run["status"] == "needs_review"
-    assert run["result_kind"] == "needs_review"
+    assert run["status"] == "answered"
+    assert run["result_kind"] == "incomplete"
     assert run["result_detail"] == "NEEDS_REVIEW"
 
     done = _drain(queue)[-1]
     assert done["type"] == "done"
-    assert done["payload"]["status"] == "needs_review"
-    assert done["payload"]["result_kind"] == "needs_review"
+    assert done["payload"]["status"] == "answered"
+    assert done["payload"]["result_kind"] == "incomplete"
 
 
-def test_needs_review_proof_artifact_keeps_review_session_status(tmp_path, monkeypatch):
+def test_legacy_review_proof_does_not_create_a_review_session(tmp_path, monkeypatch):
     ctx, queue = _context(tmp_path, monkeypatch, task="Prove True")
 
     def script(proof_path):
@@ -198,17 +198,51 @@ def test_needs_review_proof_artifact_keeps_review_session_status(tmp_path, monke
     bridge.run_lea(ctx)
 
     detail = store.session_detail(ctx.session_id)
-    assert detail["status"] == "needs_review"
+    assert detail["status"] == "proved"
     assert detail["code_steps"][0]["artifact_kind"] == "proof"
 
     run = store.get_run(ctx.run_id)
-    assert run["status"] == "needs_review"
-    assert run["result_kind"] == "needs_review"
+    assert run["status"] == "answered"
+    assert run["result_kind"] == "incomplete"
 
     done = _drain(queue)[-1]
     assert done["type"] == "done"
-    assert done["payload"]["status"] == "needs_review"
-    assert done["payload"]["result_kind"] == "needs_review"
+    assert done["payload"]["status"] == "answered"
+    assert done["payload"]["result_kind"] == "incomplete"
+
+
+@pytest.mark.parametrize("kind,counterexample,outcome", [
+    ("theorem", False, "proved"), ("definition", False, "defined"),
+    ("theorem", True, "disproved"),
+])
+def test_focused_legacy_review_keeps_candidate_without_an_approval_gate(tmp_path, monkeypatch, kind, counterexample, outcome):
+    ctx, _ = _context(tmp_path, monkeypatch)
+    target = store.create_formalization(project_id=None, loose_session_id=ctx.session_id,
+        display_title="t", declaration_name="t", kind=kind)
+    with db.write() as conn:
+        conn.execute("update runs set focus_formalization_id=? where id=?", (target["id"], ctx.run_id))
+
+    def script(proof_path):
+        if counterexample:
+            Path(proof_path).write_text("theorem counterexample : ¬False := by simp\n")
+        elif kind == "definition":
+            Path(proof_path).write_text("def t : Nat := 1\n")
+        yield TurnStarted(1)
+        yield FileChanged(proof_path)
+        yield CheckResult(proof_path, "ok", None)
+        yield Finished("completed", "Please review.", 1, ctx.session_id, "gemini/test",
+            Usage(input_tokens=1, output_tokens=1), 0.0, {}, result_kind="needs_review",
+            result_detail="NEEDS_REVIEW", candidate_path=proof_path if counterexample else None)
+
+    monkeypatch.setattr(bridge, "run_events", _fake_run_events(script))
+    bridge.run_lea(ctx)
+    from app import formalizations
+    current = formalizations.get(target["id"])
+    assert not current["review"]["eligible"]
+    assert current["review"]["approval"] is None
+    assert current["validity_status"] not in {"needs_review", outcome}
+    assert any(f["role"] == "primary" for f in current["files"])
+    assert store.get_run(ctx.run_id)["result_kind"] == "incomplete"
 
 
 def test_focused_run_cannot_certify_a_compiling_helper_instead_of_target(tmp_path, monkeypatch):
@@ -234,13 +268,14 @@ def test_focused_run_cannot_certify_a_compiling_helper_instead_of_target(tmp_pat
     bridge.run_lea(ctx)
 
     run = store.get_run(ctx.run_id)
-    assert run["status"] == run["result_kind"] == "needs_review"
+    assert run["status"] == "answered"
+    assert run["result_kind"] == "incomplete"
     assert "thmB" in run["result_detail"]
-    assert store.session_detail(ctx.session_id)["status"] == "needs_review"
-    assert formalizations.get(target["id"])["validity_status"] == "needs_review"
+    assert store.session_detail(ctx.session_id)["status"] == "unchecked"
+    assert formalizations.get(target["id"])["validity_status"] == "unchecked"
     assert not any(item["declaration_name"] == "thmB" for item in store.list_artifacts_for_scope(ctx.session_id))
     assert any(item["role"] == "support" for item in formalizations.get(target["id"])["files"])
-    assert _drain(queue)[-1]["payload"]["result_kind"] == "needs_review"
+    assert _drain(queue)[-1]["payload"]["result_kind"] == "incomplete"
 
 
 @pytest.mark.parametrize("recheck", [True, False])
@@ -282,16 +317,16 @@ def test_retry_of_unchanged_proof_requires_a_check_in_the_new_run(tmp_path, monk
 
     monkeypatch.setattr(bridge, "run_events", retry)
     bridge.run_lea(replace(ctx, run_id=second["id"], task="Try again", events=retry_queue))
-    expected = "proved" if recheck else "needs_review"
+    expected = "proved" if recheck else "answered"
     assert store.get_run(second["id"])["status"] == expected
-    assert formalizations.get(target["id"])["validity_status"] == expected
+    assert formalizations.get(target["id"])["validity_status"] == "proved"
     steps = store.session_detail(ctx.session_id)["code_steps"]
     current = [step for step in steps if step["run_id"] == second["id"]]
     assert len(current) == (1 if recheck else 0)
     if recheck:
         assert current[0]["check_status"] == "ok"
         assert current[0]["code"] == previous_step["code"]
-    assert _drain(retry_queue)[-1]["payload"]["result_kind"] == expected
+    assert _drain(retry_queue)[-1]["payload"]["result_kind"] == ("proved" if recheck else "incomplete")
 
 
 def test_disproof_result_persists_and_streams_distinct_outcome(tmp_path, monkeypatch):
@@ -735,7 +770,7 @@ def test_approval_relay_allow(tmp_path, monkeypatch):
     _run_in_thread_and_resolve(ctx, "allow")
 
     assert received["decision"] == "allow"  # the decision reached the generator
-    assert store.get_run(ctx.run_id)["status"] == "needs_review"
+    assert store.get_run(ctx.run_id)["status"] == "answered"
     types = [i["type"] for i in _drain(queue)]
     assert "approval_requested" in types and "approval_resolved" in types
 
@@ -1074,10 +1109,10 @@ def test_enqueued_runs_execute_fifo(tmp_path, monkeypatch):
 
     assert _wait_for(lambda: all(
         store.get_run(rid)["status"] not in {"pending", "running"} for rid in run_ids
-    )), "all queued runs reach a terminal status"
+    ), timeout=30), "all queued runs reach a terminal status"
     assert executed == ["first", "second", "third"], "FIFO order preserved"
     for run_id in run_ids:
-        assert store.get_run(run_id)["status"] == "needs_review"
+        assert store.get_run(run_id)["status"] == "answered"
 
 
 def test_queued_run_executes_its_snapshotted_model(tmp_path, monkeypatch):
@@ -1147,7 +1182,7 @@ def test_finished_broker_buffer_ends_in_done(tmp_path, monkeypatch):
     types = [item["type"] for item in replay]
     assert "assistant_delta" in types
     assert types[-1] == "done"
-    assert replay[-1]["payload"]["status"] == "needs_review"
+    assert replay[-1]["payload"]["status"] == "answered"
 
 
 def test_interrupted_queued_run_is_skipped_and_broker_sealed(tmp_path, monkeypatch):
@@ -1731,6 +1766,35 @@ def test_each_bookkeeping_step_is_independent(tmp_path, monkeypatch):
     # The transcript, which runs after the failing step, still landed.
     assert store.latest_transcript_for_session(ctx.session_id) is not None
     assert store.get_run(ctx.run_id)["status"] == "proved"
+
+
+@pytest.mark.parametrize('publication_fails', [False, True])
+def test_target_publication_follows_artifact_registration_and_precedes_done(tmp_path, monkeypatch, publication_fails):
+    from app import target_observations
+    ctx, queue = _finishing_run(tmp_path, monkeypatch)
+    registered, published = [], []
+    record = bridge._record_run_artifacts
+    emit = bridge.emit
+    def record_artifacts(*args, **kwargs):
+        result = record(*args, **kwargs)
+        registered.append(True)
+        return result
+    def publish(run_id):
+        assert run_id == ctx.run_id and registered
+        assert store.get_run(run_id)['status'] == 'proved'
+        published.append(True)
+        if publication_fails:
+            raise RuntimeError('Observation publication temporarily unavailable')
+    def emit_after_publication(events, kind, payload):
+        if kind == 'done':
+            assert published
+        return emit(events, kind, payload)
+    monkeypatch.setattr(bridge, '_record_run_artifacts', record_artifacts)
+    monkeypatch.setattr(target_observations, 'publish_run', publish)
+    monkeypatch.setattr(bridge, 'emit', emit_after_publication)
+    bridge.run_lea(ctx)
+    assert store.get_run(ctx.run_id)['status'] == 'proved'
+    assert _drain(queue)[-1]['payload']['status'] == 'proved'
 
 
 # --- AUDIT-2026-07-24 C10: a turn that left no transcript must not vanish ------

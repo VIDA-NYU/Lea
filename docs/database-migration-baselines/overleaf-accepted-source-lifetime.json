@@ -1,0 +1,223 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T15:11:28.000400+00:00",
+  "scope": "Read-only diagnosis of the completed batch, with regression qualification in isolated migrated databases. No live control commands, solver replay, provider calls, or historical result edits.",
+  "batch": {
+    "id": "formalize-batch-1792335593284-1",
+    "accepted_command_id": "b9f5770234114c27903f6b1a49e30437",
+    "created_at": "2026-10-18T14:59:53.284Z",
+    "finished_at": "2026-10-18T15:02:10.734Z",
+    "items": [
+      {
+        "targetKind": "definition",
+        "targetLabel": "descent_energy",
+        "state": "formalized",
+        "reason": null,
+        "runJobId": "definition-descent_energy-2026-10-18T14-59-54-567Z"
+      },
+      {
+        "targetKind": "definition",
+        "targetLabel": "descent_step",
+        "state": "failed",
+        "reason": "publisher_conflict",
+        "runJobId": null
+      },
+      {
+        "targetKind": "theorem",
+        "targetLabel": "descent_error",
+        "state": "skipped",
+        "reason": "depends_on_failed:descent_step",
+        "runJobId": null
+      },
+      {
+        "targetKind": "theorem",
+        "targetLabel": "descent_energy_step",
+        "state": "skipped",
+        "reason": "depends_on_failed:descent_step",
+        "runJobId": null
+      },
+      {
+        "targetKind": "theorem",
+        "targetLabel": "descent_strict",
+        "state": "skipped",
+        "reason": "depends_on_failed:descent_step",
+        "runJobId": null
+      },
+      {
+        "targetKind": "theorem",
+        "targetLabel": "descent_geometric",
+        "state": "skipped",
+        "reason": "depends_on_failed:descent_step",
+        "runJobId": null
+      },
+      {
+        "targetKind": "theorem",
+        "targetLabel": "descent_converges",
+        "state": "skipped",
+        "reason": "depends_on_failed:descent_step",
+        "runJobId": null
+      },
+      {
+        "targetKind": "theorem",
+        "targetLabel": "descent_calibration",
+        "state": "failed",
+        "reason": "publisher_conflict",
+        "runJobId": null
+      },
+      {
+        "targetKind": "theorem",
+        "targetLabel": "independent_square",
+        "state": "failed",
+        "reason": "publisher_conflict",
+        "runJobId": null
+      }
+    ],
+    "report_state": "ready",
+    "report_error": null
+  },
+  "publisher_evidence": {
+    "lease_seconds": 90,
+    "frozen_publications": [
+      {
+        "generation": 1,
+        "sequence": 4,
+        "created_at": "2026-10-18T14:59:50.697373+00:00",
+        "target": "descent_energy",
+        "bundle_hash": "156b0edac3cfb8e22d6170a6e47609689725222ad476fbaa54603b6c54a4db04"
+      },
+      {
+        "generation": 1,
+        "sequence": 5,
+        "created_at": "2026-10-18T14:59:50.726997+00:00",
+        "target": "descent_step",
+        "bundle_hash": "475da9760be6be4aa54609b280ebb3e7eb4da004187c743a655f95ef20e2f801"
+      },
+      {
+        "generation": 1,
+        "sequence": 6,
+        "created_at": "2026-10-18T14:59:50.759706+00:00",
+        "target": "descent_error",
+        "bundle_hash": "803925967b79ad439798a2eb6aee89867efce6a6210f1e5160fcef67b01f680e"
+      },
+      {
+        "generation": 1,
+        "sequence": 7,
+        "created_at": "2026-10-18T14:59:52.748068+00:00",
+        "target": "descent_energy_step",
+        "bundle_hash": "deda09cc72e718a276040713d982d688c0428e327198c7bd891f7af2d2a8558f"
+      },
+      {
+        "generation": 1,
+        "sequence": 8,
+        "created_at": "2026-10-18T14:59:52.776653+00:00",
+        "target": "descent_strict",
+        "bundle_hash": "c5ede5661632612f025665b8d490e172dc464290b5c6e985b71f84906d304378"
+      },
+      {
+        "generation": 1,
+        "sequence": 9,
+        "created_at": "2026-10-18T14:59:52.807837+00:00",
+        "target": "descent_geometric",
+        "bundle_hash": "ca89f845ffa34ebf855e8aba9e27be360844504062d06084d194126e95e7fba4"
+      },
+      {
+        "generation": 1,
+        "sequence": 10,
+        "created_at": "2026-10-18T14:59:52.835410+00:00",
+        "target": "descent_converges",
+        "bundle_hash": "5ee023ef24bd1cadcafed9b2284ddb79594a1a893fdef7e3c6c3bc41d9d33472"
+      },
+      {
+        "generation": 1,
+        "sequence": 11,
+        "created_at": "2026-10-18T14:59:52.864309+00:00",
+        "target": "descent_calibration",
+        "bundle_hash": "69d2cd54cc0cedea13d69e55ee99f4d729f8ee4131ae88af8b162240e9db841e"
+      },
+      {
+        "generation": 1,
+        "sequence": 12,
+        "created_at": "2026-10-18T14:59:52.892059+00:00",
+        "target": "independent_square",
+        "bundle_hash": "5d9e461639f7e4b1283e882cdbfa88f862f2672f61e424f890c948c4c90bee65"
+      }
+    ],
+    "same_browser_generation_2_publications": [
+      {
+        "generation": 2,
+        "sequence": 1,
+        "created_at": "2026-10-18T15:01:48.966416+00:00",
+        "target": "descent_energy",
+        "bundle_hash": "156b0edac3cfb8e22d6170a6e47609689725222ad476fbaa54603b6c54a4db04"
+      },
+      {
+        "generation": 2,
+        "sequence": 2,
+        "created_at": "2026-10-18T15:01:49.182751+00:00",
+        "target": "descent_step",
+        "bundle_hash": "475da9760be6be4aa54609b280ebb3e7eb4da004187c743a655f95ef20e2f801"
+      },
+      {
+        "generation": 2,
+        "sequence": 3,
+        "created_at": "2026-10-18T15:01:49.764444+00:00",
+        "target": "descent_error",
+        "bundle_hash": "803925967b79ad439798a2eb6aee89867efce6a6210f1e5160fcef67b01f680e"
+      }
+    ],
+    "identical_hashes": true,
+    "root_cause": "Both worker validation and API source resolution rejected a generation-1 frozen publication after its browser renewed as generation 2, although source bytes were unchanged. Only descent_energy reached the solver; three later dispatches failed and five dependents were skipped."
+  },
+  "change": {
+    "accepted_input": "A claimed or acknowledged companion.dispatch binding outlives the browser publisher lease and generation. Target content, coverage, complete document archive, binding, formalization identity and worker fencing remain checked.",
+    "new_input": "Public admission and source publication still require the current publisher generation and live lease. Idempotent receipt recovery retains the original accepted operation.",
+    "document_archive": "Check the newest document publication across publisher generations, including changes published through another target.",
+    "boundary": "SQL-only API validation and worker database reads; no editor callback, UI selection, workspace or transport bypass added.",
+    "activation": "Restart the development stack to load the API source resolver and worker validator. No extension reload is required for this backend-only change."
+  },
+  "validation": {
+    "accepted_source_lifetime_tests": 18,
+    "existing_stage6_tests": 35,
+    "api_import_and_route_contract_tests": 2,
+    "overleaf_tests": 858,
+    "failed": 0,
+    "paired_tiers": "The Python tests execute the actual Node SQLite validator against the same temporary migrated database and reject any HTTP access.",
+    "cases": [
+      "claimed and acknowledged batch parents",
+      "same-tab renewal and another-tab handoff",
+      "identical republishing and no republishing",
+      "lease expiry alone",
+      "changed target content and coverage",
+      "changed target archive and another target archive across generations",
+      "unbound publication rejection",
+      "cancelled, expired and failed parents",
+      "worker epoch fencing",
+      "new admission and old publisher rejection",
+      "idempotent original receipt recovery"
+    ],
+    "boundary_audit": {
+      "adapter_routes": 179,
+      "companion_dispatch_branches": 27,
+      "result": "pass"
+    },
+    "whitespace_check": "pass",
+    "release_scope": "Development source regression qualification; no new production image or native platform release qualification claimed."
+  },
+  "runtime_after_validation": {
+    "runtime_id": "8e72aa986077432dbb4b4b1a50f1e833",
+    "generation": 1,
+    "pid": 1563,
+    "lifecycle_state": "ready",
+    "heartbeat_at": "2026-10-18T15:11:27.847395+00:00"
+  },
+  "runtime_unchanged_from_before": {
+    "runtime_id": "8e72aa986077432dbb4b4b1a50f1e833",
+    "generation": 1,
+    "pid": 1563
+  },
+  "source_sha256": {
+    "apps/lea-standalone/adapter/app/queries/sources.py": "cfc495c9c8ab5f409cda311b51f97414e415a5878f879d710de757f3bfdc9eaa",
+    "apps/overleaf-extension/companion/databaseState.mjs": "76efcd0079e44e394a2376f59e623b9875ff9b745f7e1fcb26b10b8130246320",
+    "apps/lea-standalone/adapter/tests/test_accepted_source_lifetime.py": "4ba41020fe4adeb8594ed5470b2962d6c7cb2c0837053e23d857c85898ca3a10"
+  }
+}

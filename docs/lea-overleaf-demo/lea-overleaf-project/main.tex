@@ -1,0 +1,133 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{lea-tags}
+
+\definecolor{leagreen}{HTML}{155E50}
+\newtheorem{definition}{Definition}[section]
+\newtheorem{lemma}[definition]{Lemma}
+\newtheorem{theorem}[definition]{Theorem}
+\newtheorem{corollary}[definition]{Corollary}
+\newtheorem{claim}[definition]{Claim}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\D}{D}
+\newcommand{\Q}{Q}
+\newcommand{\demotitle}[2]{%
+  \noindent{\small\color{leagreen}\sffamily\bfseries #1}\par
+  \vspace{0.3em}
+  {\LARGE\sffamily\bfseries #2}\par
+  \vspace{0.8em}}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+\hypersetup{pdftitle={From a mathematical claim to checked Lean},
+  pdfauthor={Lea demo}}
+\begin{document}
+
+% Upload this whole project ZIP to Overleaf. Keep main.tex as the main document.
+% The presenter script and copy/paste snippets live OUTSIDE this project.
+% Do not upload them as extra .tex files: Lea inventories the whole project.
+% The source deliberately contains one false claim, visibly identified in the PDF.
+% Initial inventory: 9 marked items. Adding the live marker makes 10.
+
+\demotitle{LEA DEMO / 01}{A tiny mathematical project}
+\section{Doubling natural numbers}
+
+We start with a definition, prove a structural fact, and use it in a
+corollary. The mathematics is deliberately small so we can focus on the
+formalization workflow.
+
+\begin{definition}[Doubling]\label{def:demo-double}
+\leadefinition{
+  label=demo_double,
+  context={Use a computational definition named demo_double with explicit argument (n : Nat), result Nat, and body n + n. The notation D in the source denotes this definition.}
+}
+For a natural number $n\in\mathbb{N}$, define $D(n)=n+n$.
+\end{definition}
+
+\begin{lemma}[Doubling zero]\label{lem:demo-double-zero}
+% DEMO LIVE INSERT: add the marker from the presenter script below this line.
+% This lemma is intentionally UNMARKED in the starting project.
+The double of zero is zero: $D(0)=0$.
+\end{lemma}
+\begin{proof}
+By the definition of $D$, we have $D(0)=0+0=0$.
+\end{proof}
+
+% A custom environment is intentional: its inline tag supplies the target kind.
+\begin{claim}[Doubling a sum]\label{clm:demo-double-add}
+\leatheorem{
+  label=demo_double_add,
+  uses={demo_double},
+  context={Use the existing demo_double definition. Name the theorem demo_double_add and keep both arguments explicit in the order (m n : Nat). Follow the author's rearrangement proof.}
+}
+For every $m,n\in\mathbb{N}$,
+\[
+  D(m+n)=D(m)+D(n).
+\]
+\end{claim}
+\begin{proof}
+% lea: proof-for=demo_double_add
+Expand the definition and rearrange addition:
+\[
+  (m+n)+(m+n)=(m+m)+(n+n).
+\]
+\end{proof}
+
+\begin{corollary}[Adding two before doubling]\label{cor:demo-double-two}
+\leacorollary{
+  label=demo_double_two,
+  uses={demo_double,demo_double_add},
+  context={Use the existing definition and apply demo_double_add n 2 with explicit arguments. Name this theorem demo_double_two with explicit argument (n : Nat). Retain that lemma application in the proof instead of proving the whole result independently.}
+}
+For every $n\in\mathbb{N}$,
+\[
+  D(n+2)=D(n)+4.
+\]
+\end{corollary}
+\begin{proof}
+% lea: proof-for=demo_double_two
+Apply the preceding claim with $m=n$ and with its second argument equal
+to $2$. Then use $D(2)=2+2=4$.
+\end{proof}
+
+\vfill
+{\small\color{leagreen}Definition $\longrightarrow$ structural fact
+$\longrightarrow$ corollary. The source document remains ordinary LaTeX.}
+\clearpage
+\input{sections/02-source-review}
+\clearpage
+\input{sections/03-shared-results}
+\clearpage
+\demotitle{LEA DEMO / 04}{Two optional input forms}
+\section{Standalone prose and existing Lean}
+
+The main demo uses comments and tags inside environments. These two
+small extras show that an enclosing theorem environment is optional and
+that existing Lean can also be supplied as the source material.
+
+\subsection{A standalone proposition tag}
+\leaproposition{
+  label=demo_double_one,
+  uses={demo_double},
+  context={Use the existing demo_double definition to show its value at one is two.}
+}{The double of one is two: $D(1)=2$.}
+
+\subsection{A Lean code block}
+The following is a statement with a complete proof. The code is the input
+to Lea; its presence in the PDF alone is not evidence of a checked Lea run.
+
+\begin{leacode}{label=demo_nat_zero, context={Preserve this Nat statement and its proof.}}
+theorem demo_nat_zero (n : Nat) : n + 0 = n := by
+  rfl
+\end{leacode}
+
+\vfill
+{\small\color{leagreen}These examples are optional in a 15-minute
+recording. They can also supply small independent items for batch work.}
+
+\end{document}

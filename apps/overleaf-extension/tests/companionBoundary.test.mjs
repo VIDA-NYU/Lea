@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { createServer } from '../companion/server.mjs';
+import { createServer } from '../companion/workerService.mjs';
 import { isAllowedHost } from '../companion/netguard.mjs';
 
 test('Host parsing accepts local identities and exact configured exceptions', () => {

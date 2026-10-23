@@ -17,7 +17,6 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const OVERLEAF_ROOT = path.join(MONOREPO_ROOT, "apps", "overleaf-extension");
 const STANDALONE_ROOT = path.join(MONOREPO_ROOT, "apps", "lea-standalone");
 const ENV_EXAMPLE_PATH = path.join(MONOREPO_ROOT, ".env.example");
-const OVERLEAF_SETTINGS_PATH = path.join(OVERLEAF_ROOT, ".overleaf-lean-stub", "settings.json");
 const ROOT_ENV = readDotEnv(ROOT_ENV_PATH);
 const LEA_ROOT = resolveMonorepoPath(process.env.LEA_ROOT || ROOT_ENV.LEA_ROOT || "apps/lea-standalone/prover");
 const LEA_WORKSPACE = path.join(LEA_ROOT, "workspace");
@@ -109,23 +108,9 @@ async function writeRootEnv() {
 }
 
 async function writeOverleafSettings() {
-  const env = readDotEnv(ROOT_ENV_PATH);
-  const settings = await readJson(OVERLEAF_SETTINGS_PATH, {});
-  const next = {
-    ...settings,
-    leaRepoPath: LEA_ROOT,
-    leaWorkspacePath: LEA_WORKSPACE,
-    leaApiBaseUrl: settings.leaApiBaseUrl || env.LEA_API_BASE_URL || DEFAULT_ENV.LEA_API_BASE_URL,
-    leaProvider: settings.leaProvider || env.LEA_PROVIDER || DEFAULT_ENV.LEA_PROVIDER,
-    leaModel: settings.leaModel || env.LEA_MODEL || DEFAULT_ENV.LEA_MODEL,
-    leaMaxTurns: settings.leaMaxTurns || Number(env.LEA_MAX_TURNS || DEFAULT_ENV.LEA_MAX_TURNS),
-    leaLatexContextMode: settings.leaLatexContextMode || DEFAULT_OVERLEAF_LATEX_CONTEXT_MODE,
-    leaJobTimeoutSeconds: settings.leaJobTimeoutSeconds || Number(env.LEA_JOB_TIMEOUT_SECONDS || DEFAULT_ENV.LEA_JOB_TIMEOUT_SECONDS),
-  };
-
-  await fs.mkdir(path.dirname(OVERLEAF_SETTINGS_PATH), { recursive: true });
-  await fs.writeFile(OVERLEAF_SETTINGS_PATH, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-  console.log("Wrote Overleaf companion settings.");
+  // Connection bootstrap is infrastructure. Application policy and operational
+  // state are owned by the adapter database after its one-time import.
+  console.log("Overleaf uses the adapter database; no companion ledger is written.");
 }
 
 function parseArgs(args) {

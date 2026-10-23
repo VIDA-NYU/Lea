@@ -2,7 +2,73 @@
 
 from __future__ import annotations
 
-from .artifacts import LeanDeclaration, declaration_contains_sorry, scan_lean_declarations
+import re
+
+from .artifacts import (LeanDeclaration, declaration_contains_sorry, scan_lean_declarations,
+                        declaration_signature, declaration_type, contains_sorry_marker, scrub_lean_source)
+
+
+def checked_stub(formalization: dict, steps: list[dict]) -> tuple[dict | None, str]:
+    """A fresh compiling theorem with its own placeholder, never proof success."""
+    name = formalization.get('declaration_name')
+    if formalization.get('kind') != 'theorem' or not name:
+        return None, 'Stub generation requires a named theorem.'
+    candidates = [(step, declaration) for step in steps
+                  if (declaration := target_declaration(step.get('code'), name, 'theorem'))]
+    if len(candidates) != 1:
+        return None, 'The requested stub is missing or ambiguous across artifacts.'
+    step, declaration = candidates[0]
+    if step.get('check_status') != 'ok' or not step.get('check_current'):
+        return None, 'The requested stub has no current passing Lean check.'
+    header = declaration_signature(declaration)
+    # A later command such as `#check (sorry : True)` is outside this theorem.
+    span = declaration.span
+    indent = len(span.splitlines()[0]) - len(span.splitlines()[0].lstrip())
+    offset = 0
+    for index, line in enumerate(scrub_lean_source(span).splitlines(keepends=True)):
+        if index and len(line) - len(line.lstrip()) <= indent and re.match(
+                r'\s*(?:#|(?:namespace|section|end|open|variable|universe|attribute|set_option|example|axiom)\b)', line):
+            span = span[:offset]
+            break
+        offset += len(line)
+    if not header or header not in span or not contains_sorry_marker(span[span.index(header) + len(header):]):
+        return None, 'The requested theorem must retain its own sorry or admit body.'
+    confirmed = declaration_type(formalization.get('statement') or '')
+    if confirmed and confirmed != declaration_type(header):
+        return None, 'The checked stub differs from the confirmed Lean statement.'
+    return step, ''
+
+
+def compiler_result(step, name, kind=None):
+    """None denotes legacy evidence; False denotes a scoped failed selection."""
+    import json
+    import hashlib
+    from .db import connect
+    from lea.result_selection import ALLOWED_AXIOMS
+    execution = step.get('execution') or (step.get('evidence') or {}).get('execution')
+    if execution is None and step.get('check_evidence_id'):
+        with connect() as conn:
+            row = conn.execute('select evidence_json from proof_check_evidence where id=?', (step['check_evidence_id'],)).fetchone()
+        execution = json.loads(row[0]) if row else {}
+    execution = execution or {}
+    if 'selected_results' not in execution and 'selected_result' not in execution:
+        return None
+    code = step.get('code') or step.get('blob_content') or ''
+    if execution.get('content_sha256') != hashlib.sha256(code.encode()).hexdigest():
+        return False
+    results = execution.get('selected_results', [execution.get('selected_result')])
+    matches = [d for d in results if d and (d['user_name'] == name or d['full_name'] == name or
+               ('.' not in name and d['user_name'].rsplit('.', 1)[-1] == name))]
+    if len(matches) != 1:
+        return False
+    selected = matches[0]
+    if set(selected.get('axioms', [])) - ALLOWED_AXIOMS:
+        return False
+    if kind == 'definition' and selected['kind'] == 'theorem':
+        return False
+    if kind and kind != 'definition' and selected['kind'] != 'theorem':
+        return False
+    return selected
 
 
 def target_declaration(code: str | None, name: str | None, kind: str) -> LeanDeclaration | None:
@@ -39,9 +105,16 @@ def checked_target(formalization: dict, steps: list[dict], *, require_current=Tr
         return None, f"The requested declaration {name} is ambiguous across artifacts."
     if candidates:
         step, code, declaration = candidates[0]
+        confirmed = declaration_type(formalization.get('statement') or '')
+        actual = declaration_type(declaration_signature(declaration) or '')
+        if confirmed and confirmed != actual:
+            return None, 'The checked declaration differs from the confirmed Lean statement.'
         if step.get("check_status") != "ok" or (require_current and not step.get("check_current")):
             return None, "The requested declaration has no passing Lean check."
-        if declaration_contains_sorry(code, declaration.full_name):
+        compiler = compiler_result(step, name, formalization.get('kind') or 'theorem')
+        if compiler is False or (confirmed and compiler is None):
+            return None, 'The requested declaration has no passing compiler trust evidence.'
+        if compiler is None and declaration_contains_sorry(code, declaration.full_name):
             return None, "The requested declaration still uses sorry or admit."
         return step, ""
     return None, f"The checked artifact does not declare the requested {name}."

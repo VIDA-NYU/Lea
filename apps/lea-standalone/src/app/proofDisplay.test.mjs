@@ -77,19 +77,11 @@ test('run disproved is displayed as disproof, not proof', () => {
   assert.equal(deriveRunCompletionStatus('disproved', [step()]), 'disproved');
 });
 
-test('reviewed theorem artifacts retain the review verdict', () => {
-  assert.equal(deriveRunCompletionStatus('needs_review', [step({ artifact_kind: 'proof' })]), 'needs_review');
-});
-
-test('reviewed definition artifacts retain the review verdict', () => {
-  assert.equal(
-    deriveRunCompletionStatus('needs_review', [step({ code: 'def d : Nat := 0\n', artifact_kind: 'definition' })]),
-    'needs_review',
-  );
-});
-
-test('reviewed unknown artifacts retain the review verdict', () => {
-  assert.equal(deriveRunCompletionStatus('needs_review', [step({ artifact_kind: 'unknown' })]), 'needs_review');
+test('historical review outcomes finish without requesting approval', () => {
+  for (const artifact_kind of ['proof', 'definition', 'unknown']) {
+    assert.equal(deriveRunCompletionStatus('needs_review', [step({ artifact_kind })]), 'answered');
+    assert.equal(deriveRunCompletionStatus('answered', [step({ artifact_kind })], 'needs_review'), 'answered');
+  }
 });
 
 test('Lean comments mentioning sorry do not make the code a stub', () => {
@@ -102,4 +94,11 @@ test('current badges require evidence while history retains recorded checks', ()
   assert.equal(deriveCodeStepProofStatus(step({check_current: false})), 'unchecked');
   assert.equal(deriveCodeStepProofStatus(step({check_current: undefined})), 'unchecked');
   assert.equal(deriveCodeStepProofStatus(step({check_current: false}), {historical: true}), 'proved');
+});
+
+test('compiler-selected target can pass beside an unfinished sibling', () => {
+  const shared = step({ code: 'theorem b : True := by trivial\ntheorem c : True := by sorry',
+    selected_result: { declaration: 'b', kind: 'theorem', axioms: [] } });
+  assert.equal(deriveCodeStepProofStatus(shared), 'proved');
+  assert.equal(deriveCodeStepProofStatus({ ...shared, selected_result: { ...shared.selected_result, axioms: ['sorryAx'] } }), 'stubbed');
 });

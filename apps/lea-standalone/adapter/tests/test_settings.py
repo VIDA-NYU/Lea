@@ -29,9 +29,9 @@ def test_settings_payload_masks_api_keys(tmp_path, monkeypatch):
     assert payload["max_spend_usd"] == 20.0
     assert payload["api_keys"]["OPENAI_API_KEY"] == {"configured": True, "last4": "1234", "label": "OpenAI"}
     assert payload["api_keys"]["ANTHROPIC_API_KEY"] == {"configured": False, "last4": None, "label": "Anthropic"}
-    assert {option["value"] for option in payload["model_options"]} >= {
-        "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
-    }
+    from app.catalog_service import service
+    assert payload["model_options"] == service().payload("gpt-4o")["featured"]
+    assert payload["model_options"][0]["value"] == "gpt-4o"
 
 
 def test_update_settings_preserves_unrelated_config_and_updates_keys(tmp_path, monkeypatch):

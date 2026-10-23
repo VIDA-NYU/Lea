@@ -25,7 +25,7 @@ def test_delete_busy_run_preserves_database_and_repository(project, status):
     run = store.create_run(session["id"], "test", None, 3, project_id=value["id"])
     store.update_run(run["id"], status)
     with pytest.raises(HTTPException) as error:
-        routes.delete_project(value["id"])
+        routes.delete_project.worker(value["id"])
     assert error.value.status_code == 409
     assert error.value.detail["error"] == "project_busy"
     assert store.get_run(run["id"])
@@ -36,7 +36,7 @@ def test_delete_rejects_inflight_operation(project):
     value, _, _ = project
     with coordination.mutation(value["id"]):
         with pytest.raises(HTTPException) as error:
-            routes.delete_project(value["id"])
+            routes.delete_project.worker(value["id"])
         assert error.value.status_code == 409
     assert store.get_project(value["id"])
 
@@ -49,11 +49,11 @@ def test_terminal_worker_lease_blocks_delete_until_cleanup(project):
     store.update_run(run["id"], "proved")
     try:
         with pytest.raises(HTTPException) as error:
-            routes.delete_project(value["id"])
+            routes.delete_project.worker(value["id"])
         assert error.value.status_code == 409
     finally:
         registry.release(run["id"])
-    assert routes.delete_project(value["id"])["deleted"]
+    assert routes.delete_project.worker(value["id"])["deleted"]
 
 
 def test_delete_excludes_late_mutation_and_keeps_deleted_identity_closed(project, monkeypatch):
@@ -66,7 +66,7 @@ def test_delete_excludes_late_mutation_and_keeps_deleted_identity_closed(project
         return rmtree(*args, **kwargs)
     monkeypatch.setattr(projects.shutil, "rmtree", paused)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(routes.delete_project, value["id"])
+        future = pool.submit(routes.delete_project.worker, value["id"])
         try:
             assert entered.wait(5)
             with pytest.raises(HTTPException):

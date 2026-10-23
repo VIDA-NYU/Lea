@@ -24,14 +24,14 @@ def _unsupported(_):
 
 register(Tool(TOOL_NAMES[0], {
     "name": TOOL_NAMES[0],
-    "description": "Search this project's mathematics before proving a supporting result. Returns full Lean types, imports, visibility and current verification evidence. A Claim definition or theorem assuming a claim does not prove that claim. Use existing search_mathlib afterward.",
+    "description": "Search this project's mathematics before proving a supporting result. Discovery does not build candidate modules. Returns Lean types, imports, visibility and existing verification evidence; reusable=false is unverified, never proof. Explicit dependency requests validate a selected result. A Claim definition or theorem assuming a claim does not prove that claim. Use existing search_mathlib afterward.",
     "input_schema": {"type": "object", "properties": {
         "query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100},
         "offset": {"type": "integer", "minimum": 0}}, "required": ["query"], "additionalProperties": False},
 }, _unsupported, opt_in=True))
 register(Tool(TOOL_NAMES[1], {
     "name": TOOL_NAMES[1],
-    "description": "Reuse or reserve supporting mathematics under a canonical identity. Use inline for a short helper, deferred for substantial/cited results. The host assigns the path/name/skeleton. Preserve its signature and defining body. Deferred work pauses at a saved checkpoint. Existing/blocked results must not be independently reproved. A citation key is metadata, never a proof.",
+    "description": "Reuse or reserve supporting mathematics distinct from the current formalization target. The requested target is already tracked: write it directly in its ordinary target file without reserving it again. Use inline for a short helper, deferred for substantial/cited results. Write reserved helpers at the exact host-assigned path and declaration name using its skeleton; preserve the signature and defining body. Deferred work pauses at a saved checkpoint. Existing/blocked results must not be independently reproved. A citation key is metadata, never a proof.",
     "input_schema": {"type": "object", "properties": {
         "mode": {"type": "string", "enum": ["inline", "deferred"]},
         "specification": {"type": "object", "properties": {

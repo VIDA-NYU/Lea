@@ -3,11 +3,9 @@ import path from 'path'
 import { createRequire } from 'node:module'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
-// v2.2 live editor (lean4monaco) build requirements — see
-// design/v2.2-live-editor-architecture.md (D68). These mirror lean4web's client
-// vite config: the monaco-vscode services need node built-ins polyfilled + an
-// esbuild shim for `import.meta.url`, and the Lean InfoView webview assets must be
-// copied into the served tree.
+// Monaco uses the existing monaco-vscode dependency runtime and worker shims.
+// Stage 7 registers only typed queue providers; no browser LSP client is started.
+// Historical static infoview assets remain available for old asset URLs.
 import importMetaUrlPlugin from '@codingame/esbuild-import-meta-url-plugin'
 import { nodePolyfills } from 'vite-plugin-node-polyfills'
 import { leanAssets } from './scripts/lean-assets.mjs'
@@ -79,9 +77,8 @@ export default defineConfig({
       allow: [path.resolve(__dirname, '../..')],
     },
     proxy: {
-      // `ws: true` upgrades the live-editor LSP WebSocket (/api/sessions/:id/lsp,
-      // v2.2 · D60) to the adapter; plain /api HTTP + SSE proxy unchanged.
-      '/api': { target: 'http://localhost:8001', ws: true },
+      // Editor requests/results use ordinary HTTP and the SQL change feed.
+      '/api': { target: 'http://localhost:8001' },
     },
     // The vendored prover holds huge Lean build trees (workspace + SafeVerify
     // .lake/ oleans, the ~189MB safe_verify binary). The frontend never imports

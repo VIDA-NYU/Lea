@@ -581,7 +581,7 @@ test("page bridge uses current Overleaf editor tabs when the private IDE API is 
   }
 });
 
-test("page bridge opens a nested file through the current Overleaf file tree", async () => {
+test("page bridge expands the current Overleaf folder button and opens its nested file", async () => {
   const otherSource = "Other file contents.";
   const targetSource = [
     "\\begin{lemma}\\label{lem:nested}",
@@ -596,6 +596,9 @@ test("page bridge opens a nested file through the current Overleaf file tree", a
   let activePath = "other.tex";
   let activeSource = otherSource;
   let fileClicks = 0;
+  let expanded = false;
+  let folderClicks = 0;
+  let wrapperClicks = 0;
 
   const selectedTab = {
     getAttribute(name) { return name === "aria-selected" ? "true" : null; },
@@ -609,10 +612,12 @@ test("page bridge opens a nested file through the current Overleaf file tree", a
     getAttribute(name) {
       if (name === "role") return "treeitem";
       if (name === "aria-label") return "sections";
-      if (name === "aria-expanded") return "true";
+      if (name === "aria-expanded") return String(expanded);
       return null;
     },
     querySelector(selector) {
+      if (selector === ".file-tree-entity-button") return { click() { expanded = true; folderClicks += 1; } };
+      if (selector === ".entity-name") return { click() { wrapperClicks += 1; } };
       return selector === '[data-file-type="folder"]' ? {} : null;
     }
   };
@@ -644,7 +649,7 @@ test("page bridge opens a nested file through the current Overleaf file tree", a
       querySelectorAll(selector) {
         if (selector.includes('aria-selected="true"')) return [selectedTab];
         if (selector.includes(".editor-file-tab")) return [selectedTab];
-        if (selector.includes("file-tree-list-root")) return [folder, file];
+        if (selector.includes("file-tree-list-root")) return expanded ? [folder, file] : [folder];
         return [];
       }
     },
@@ -697,6 +702,8 @@ test("page bridge opens a nested file through the current Overleaf file tree", a
     });
 
     assert.equal(fileClicks, 1);
+    assert.equal(folderClicks, 1);
+    assert.equal(wrapperClicks, 0);
     assert.equal(activePath, "sections/result.tex");
     assert.deepEqual(dispatched.at(-1)?.selection, { anchor: markerIndex, head: markerIndex });
   } finally {

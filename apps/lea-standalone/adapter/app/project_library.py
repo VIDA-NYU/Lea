@@ -11,6 +11,7 @@ import json
 import os
 import re
 import subprocess
+from lea import execution
 import tempfile
 from pathlib import Path
 from threading import RLock
@@ -75,6 +76,8 @@ def environment_hash(project: dict, repo: Path, path: Path) -> str:
     try:
         environment = fingerprint(manifest(path, path.read_text(), lake_root(repo)))
     except (OSError, UnicodeError, CheckFailure) as exc:
+        if isinstance(exc, CheckFailure) and exc.kind in {'cancelled', 'timeout', 'queue_timeout'}:
+            raise
         environment = digest({'unavailable': str(exc), 'source': digest(path.read_bytes()) if path.exists() else None})
     from lea import safeverify
     binary = safeverify.safe_verify_binary()
@@ -100,12 +103,13 @@ def inspect_source(repo: Path, prefix: str, command: str):
     root = lake_root(repo)
     if not root:
         raise ValueError("No enclosing Lake project is available for statement inspection.")
-    scratch = repo / ".lea/tmp"
+    policy = execution.current() or {}
+    scratch = Path(policy['temporary_root']) / 'library' if policy.get('temporary_root') else repo / ".lea/tmp"
     scratch.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="library-", dir=scratch) as temp:
         path = Path(temp) / "Inspect.lean"
         path.write_text("import Lean\n" + prefix + "\n" + INSPECTOR.read_text().removeprefix("import Lean\n") + "\n" + command + "\n")
-        result = subprocess.run(["lake", "env", "lean", str(path)], cwd=root,
+        result = execution.run(["lake", "env", "lean", str(path)], cwd=root,
                                 capture_output=True, text=True, timeout=120)
         output = result.stdout + "\n" + result.stderr
         if result.returncode:
@@ -244,7 +248,9 @@ def validate_module(project: dict, relative: str, *, repo: Path | None = None) -
     repo = repo or project_repo(project)
     from lea.check_evidence import mutation
     with mutation(repo), lock(project["id"]):
-        refresh(project, repo=repo)
+        # Inventory discovery is cheap. Resolve only this requested module's
+        # environment, rather than rebuilding every catalog fingerprint here.
+        refresh(project, repo=repo, resolve_environment=False)
         with connect() as conn:
             row = conn.execute("select * from project_library_modules where project_id=? and path=?",
                                (project["id"], relative)).fetchone()
@@ -252,8 +258,10 @@ def validate_module(project: dict, relative: str, *, repo: Path | None = None) -
             raise ValueError("This file is not a canonical project module.")
         path = repo / relative
         from lea.check_evidence import freshness
-        if row["build_status"] != "unchecked" and freshness(
-                json.loads(row['check_evidence_json'] or '{}'), path)[0]:
+        env_hash = environment_hash(project, repo, path)
+        if (row["build_status"] != "unchecked" and row['environment_hash'] == env_hash
+                and (row['build_status'] != 'ok' or freshness(
+                    json.loads(row['check_evidence_json'] or '{}'), path)[0])):
             return entries(project, repo=repo, path=relative)
         status, audit_status, detail = "error", None, None
         execution = None
@@ -279,7 +287,7 @@ def validate_module(project: dict, relative: str, *, repo: Path | None = None) -
         # A check never certifies bytes edited while the checker was running.
         if (not path.exists() or digest(path.read_bytes()) != row["source_hash"]
                 or (execution and not freshness(execution, path)[0])):
-            return refresh(project, repo=repo)
+            return refresh(project, repo=repo, resolve_environment=False)
         with write() as conn:
             conn.execute("""update project_library_modules set declarations_json=?,build_status=?,
                 verify_status=?,detail=?,updated_at=?,check_evidence_json=?,environment_hash=? where project_id=? and path=?
@@ -297,10 +305,10 @@ def entries(project: dict, *, repo: Path | None = None, path: str | None = None)
         rows = conn.execute("select * from project_library_modules where project_id=? and (? is null or path=?) order by path",
                             (project["id"], path, path)).fetchall()
         owners = {r["path"]: dict(r) for r in conn.execute(
-            "select * from project_dependencies where project_id=?", (project["id"],))}
+            "select * from project_dependencies where project_id=? and (? is null or path=?)", (project["id"], path, path))}
         historical = {r["path"]: dict(r) for r in conn.execute("""select ff.path,f.id,f.origin,
             f.origin_key,f.statement from formalization_files ff join formalizations f
-            on f.id=ff.formalization_id where f.project_id=?""", (project["id"],))}
+            on f.id=ff.formalization_id where f.project_id=? and (? is null or ff.path=?)""", (project["id"], path, path))}
     result = []
     for row in rows:
         from lea.check_evidence import freshness
@@ -312,7 +320,7 @@ def entries(project: dict, *, repo: Path | None = None, path: str | None = None)
         for declaration in json.loads(row["declarations_json"]):
             decl = dict(declaration)
             axioms = decl.get("axioms")
-            reusable = (current and row["build_status"] == "ok" and row["verify_status"] == "ok"
+            reusable = (current and row["build_status"] == "ok" and (row["verify_status"] == "ok" or decl.get('audit_status') == 'ok')
                 and decl.get("visibility") == "public" and axioms is not None
                 and not (set(axioms) - ALLOWED_AXIOMS) and decl["kind"] not in {"axiom", "recursor"})
             owner = owners.get(row["path"])
@@ -320,7 +328,7 @@ def entries(project: dict, *, repo: Path | None = None, path: str | None = None)
             decl.update(path=row["path"], module=module_name(project, row["path"]),
                 import_statement="import " + module_name(project, row["path"]),
                 source_hash=row["source_hash"], environment_hash=row["environment_hash"],
-                build_status=row["build_status"], verify_status=row["verify_status"],
+                build_status=row["build_status"], verify_status=decl.get('audit_status') or row["verify_status"],
                 verification_detail=row["detail"], certified=reusable, reusable=reusable,
                 dependency_id=owner["id"] if owner else None,
                 formalization_id=owner["formalization_id"] if owner else prior["id"] if prior else None,
@@ -344,8 +352,14 @@ def entries(project: dict, *, repo: Path | None = None, path: str | None = None)
     return result
 
 
-def search(project: dict, query: str = "", *, limit: int = 20, offset: int = 0, validate: bool = True) -> dict:
-    records = refresh(project)
+def search(project: dict, query: str = "", *, limit: int = 20, offset: int = 0, validate: bool = False) -> dict:
+    """Discovery never compiles candidates unless explicitly requested.
+
+    Existing evidence is still checked for freshness by entries(). Uncertified
+    declarations remain discoverable with reusable=false; explicit dependency
+    reservation/validation and the consumer's compiler own certification.
+    """
+    records = refresh(project, resolve_environment=False)
     tokens = [s.casefold() for s in re.findall(r"[\w']+", query)]
     def score(d):
         text = dumps({k: d.get(k) for k in ("user_name", "type", "path", "citation", "source")}).casefold()
@@ -355,7 +369,9 @@ def search(project: dict, query: str = "", *, limit: int = 20, offset: int = 0, 
     page = selected[offset:offset + max(1, min(limit, 100))]
     if validate:
         # Build only returned modules; do not compile the entire library at admission.
-        for relative in dict.fromkeys(d["path"] for d in page if d["build_status"] == "unchecked"):
+        # Recheck returned modules' environment/auditor identity even when their
+        # bytes are current; validate_module reuses their valid check/audit.
+        for relative in dict.fromkeys(d["path"] for d in page):
             validate_module(project, relative)
         return search(project, query, limit=limit, offset=offset, validate=False)
     return {"declarations": page, "total": len(selected),
@@ -363,13 +379,16 @@ def search(project: dict, query: str = "", *, limit: int = 20, offset: int = 0, 
 
 
 def context(project: dict, repo: Path | None = None) -> str:
-    records = refresh(project, repo=repo)
+    records = refresh(project, repo=repo, resolve_environment=False)
     ready = sum(d["reusable"] for d in records)
     return (f"\n## Project mathematics library\n{len(records)} declarations indexed; {ready} currently verified and importable. "
         "Use search_project_library to retrieve complete types and imports; temporary probes are excluded. "
         "Search this library, then Mathlib, before proving supporting mathematics. Reuse definitions as well as lemmas. "
         "A proposition definition or a theorem assuming an external claim is not a proof of that claim. "
-        "Reserve new reusable results with request_project_dependency before writing them. The host supplies the path, "
-        "module and namespace. Use inline for a short local argument and deferred for substantial mathematics. "
+        "The current requested theorem or definition is already tracked: write it directly in its ordinary target file, "
+        "keeping its established declaration name and associated path. Do not reserve the current target as its own dependency. "
+        "Reserve distinct reusable supporting results with request_project_dependency before writing them. "
+        "The host supplies their exact path, declaration name, module and namespace; use those identities when writing. "
+        "Use inline for a short local argument and deferred for substantial mathematics. "
         "Target-specific tactical glue may remain private. Do not change an existing result's statement or move its file. "
         "Use available project sources; a citation alone never establishes a theorem.\n")

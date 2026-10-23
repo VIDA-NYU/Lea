@@ -23,7 +23,7 @@ export function leaStatusLabel(value) {
 }
 
 export function assessmentScopeLabel(scope) {
-  const label = { source_only: "Source assessment", partial_artifact: "Partial artifact",
+  const label = { source_only: "Source assessment", statement_only: "Statement only", definition: "Definition", partial_artifact: "Partial artifact",
     statement_and_proof: "Statement and proof" }[scope];
   return label ? ` · ${label}` : "";
 }

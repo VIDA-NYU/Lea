@@ -2,7 +2,7 @@ import { hashTargetText, normalizeTargetText } from "./theoremParser.mjs";
 import {
   findEnvironments,
   isLineBreak,
-  maskOpaqueSpans,
+  scanLatexSource,
   parseBalancedSuffix,
   parseTargets,
   skipInlineWhitespace,
@@ -138,19 +138,9 @@ export function parseLeanPaneItemsFromFile(file, initialOrder = 0) {
   const targets = parseTargets(content, { sourcePath: sourceFile });
   const targetsByOffset = new Map(targets.map((target) => [target.from, target]));
   const coveredOffsets = new Set();
-  // Masked once, reused for every environment's marker check below. A real,
-  // legitimately-matched environment (e.g. \begin{enumerate} in a
-  // documentation file) can still *contain* a nested verbatim-like block --
-  // findEnvironments already keeps that nested block from becoming its own
-  // target, but extracted.rawLatex below is a plain substring of the
-  // ORIGINAL content, and would still literally contain whatever marker text
-  // sits inside that nested block. Searching the masked slice instead is
-  // what stops a real false positive: a recipe list containing a "% lea:
-  // ..." example inside a \begin{verbatim} block had the whole enclosing
-  // \begin{enumerate} promoted to its own phantom pane item, using the
-  // example's label. rawLatex itself (used for display) stays on the
-  // original content -- only the marker *search* uses the masked version.
-  const maskedContent = maskOpaqueSpans(content);
+  // The loose fallback must obey the same inactive-source rules as the
+  // strict parser, while still recognizing intentional "% lea:" markers.
+  const scan = scanLatexSource(content);
   // Collect candidates from both sources before sorting -- pushing straight
   // from two separate loops would order all environment-based items before
   // all standalone-tag items regardless of where they actually sit in the
@@ -160,9 +150,11 @@ export function parseLeanPaneItemsFromFile(file, initialOrder = 0) {
 
   for (const environment of environments) {
     const extracted = extractEnvironmentContent(content, environment);
-    const maskedRawLatex = maskedContent.slice(environment.bodyFrom, environment.bodyTo);
     const target = targetsByOffset.get(environment.from);
-    const leanName = target?.targetLabel || extractLeaMarkerLabel(maskedRawLatex);
+    const leanName = target?.targetLabel || extractLeaMarkerLabel(
+      scan.markerSource.slice(environment.bodyFrom, environment.bodyTo),
+      scan.activeSource.slice(environment.bodyFrom, environment.bodyTo)
+    );
     if (!leanName) continue;
     coveredOffsets.add(environment.from);
     candidates.push({
@@ -208,7 +200,7 @@ export function parseLeanPaneItemsFromFile(file, initialOrder = 0) {
 
   const items = [];
   for (const { kind, target, leanName, from, to, rawLatex, title, latexLabel } of candidates.sort((a, b) => a.from - b.from)) {
-    const naturalLanguageLatex = stripLeaTargetText(rawLatex);
+    const naturalLanguageLatex = target?.targetText ?? stripLeaTargetText(rawLatex);
     const sourceStart = offsetToLineColumn(content, from);
     const sourceEnd = offsetToLineColumn(content, to);
     items.push({
@@ -301,13 +293,13 @@ function renderLightLatex(source) {
 // mismatched marker still surfaces as a pane item (just not formalizable),
 // rather than silently disappearing from the inventory. Tries the comment
 // marker syntax first, then the tag syntax.
-function extractLeaMarkerLabel(source) {
-  const text = String(source || "");
+function extractLeaMarkerLabel(markerSource, activeSource) {
+  const text = String(markerSource || "");
   const commentMatch = text.match(/^[ \t]*%\s*lea:\s*(?:formalize|define)?[\s\S]*?\blabel\s*=\s*(?:\{([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/im);
   const commentValue = (commentMatch?.[1] || commentMatch?.[2] || "").trim();
   if (isValidLeanIdentifier(commentValue)) return commentValue;
 
-  const tagMatch = text.match(/\\(?:lea|leatheorem|lealemma|leaproposition|leacorollary|leadefinition)\b[\s\S]*?\blabel\s*=\s*(?:\{([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/);
+  const tagMatch = activeSource.match(/\\(?:lea|leatheorem|lealemma|leaproposition|leacorollary|leadefinition)\b[\s\S]*?\blabel\s*=\s*(?:\{([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/);
   const tagValue = (tagMatch?.[1] || tagMatch?.[2] || "").trim();
   return isValidLeanIdentifier(tagValue) ? tagValue : "";
 }

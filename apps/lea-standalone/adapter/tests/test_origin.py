@@ -88,7 +88,8 @@ def test_usage_stats_origin_rollup(tmp_path, monkeypatch):
     assert abs(by_origin["overleaf"]["cost_usd"] - 0.50) < 1e-9
 
     # Rollup totals reconcile with the global all-time totals.
-    assert by_origin["ui"]["cost_usd"] + by_origin["overleaf"]["cost_usd"] == stats["global"]["cost_usd"]
+    assert abs(by_origin["ui"]["cost_usd"] + by_origin["overleaf"]["cost_usd"]
+               - stats["global"]["cost_usd"]) < 1e-9
 
 
 def test_origin_rollup_emits_both_rows_when_empty(tmp_path, monkeypatch):

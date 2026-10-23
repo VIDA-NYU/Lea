@@ -61,11 +61,11 @@ def test_completed_check_never_attaches_to_a_new_revision(proof, monkeypatch, au
         return result
     monkeypatch.setattr(sr, "interface_check", delayed)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        result = pool.submit(sr.lean_check_session, session["id"],
+        result = pool.submit(sr.lean_check_session.worker, session["id"],
                              sr.PathRequest(path="Target.lean", formalization_id=target["id"], author=author))
         try:
             assert entered.wait(5)
-            sr.write_file_session(session["id"], sr.FileWriteRequest(
+            sr.write_file_session.worker(session["id"], sr.FileWriteRequest(
                 path="Target.lean", content=BAD, formalization_id=target["id"]))
         finally:
             release.set()
@@ -80,7 +80,7 @@ def test_completed_check_never_attaches_to_a_new_revision(proof, monkeypatch, au
 
 def test_filesystem_edit_updates_shared_snapshot_and_invalidates_proof(proof):
     project, session, target, path, _ = proof
-    result = pr.write_project_file(project["id"], pr.FilePut(path="Target.lean", content=BAD))
+    result = pr.write_project_file.worker(project["id"], pr.FilePut(path="Target.lean", content=BAD))
     assert result["check"]["status"] == "error"
     current = formalizations.current_snapshot(target["id"])
     assert current["files"][0]["code"] == BAD == path.read_text()
@@ -91,7 +91,7 @@ def test_filesystem_edit_updates_shared_snapshot_and_invalidates_proof(proof):
 def test_save_repairs_drift_instead_of_reporting_unchanged(proof):
     _, session, target, path, _ = proof
     path.write_text(BAD)
-    result = sr.write_file_session(session["id"], sr.FileWriteRequest(
+    result = sr.write_file_session.worker(session["id"], sr.FileWriteRequest(
         path="Target.lean", content=GOOD, formalization_id=target["id"]))
     assert result["unchanged"] is False
     assert path.read_text() == GOOD
@@ -103,7 +103,7 @@ def test_edit_does_not_coalesce_a_verified_user_row(proof):
     step = store.upsert_user_code_step(session["id"], "Target.lean", content=GOOD, formalization_id=target["id"])
     store.record_verification_event(session_id=session["id"], formalization_id=target["id"],
         path="Target.lean", status="ok", detail=None, code_step_id=step["id"])
-    updated = sr.write_file_session(session["id"], sr.FileWriteRequest(
+    updated = sr.write_file_session.worker(session["id"], sr.FileWriteRequest(
         path="Target.lean", content=BAD, formalization_id=target["id"]))
     assert updated["code_step"]["id"] != step["id"]
     assert formalizations.get(target["id"])["safe_verify"]["current"] is False
@@ -114,7 +114,7 @@ def test_filesystem_edit_blocks_a_run_in_another_project_session(proof):
     other = store.create_session("Other", project_id=project["id"])
     store.create_run(other["id"], "test", None, 3, project_id=project["id"])
     with pytest.raises(HTTPException) as error:
-        pr.write_project_file(project["id"], pr.FilePut(path="Target.lean", content=BAD))
+        pr.write_project_file.worker(project["id"], pr.FilePut(path="Target.lean", content=BAD))
     assert error.value.status_code == 409
     assert path.read_text() == GOOD
 
@@ -131,10 +131,10 @@ def test_check_from_another_session_pins_the_shared_head(proof, monkeypatch):
         return result
     monkeypatch.setattr(sr, 'interface_check', delayed)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        pending = pool.submit(sr.lean_check_session, session['id'], sr.PathRequest(path='Target.lean'))
+        pending = pool.submit(sr.lean_check_session.worker, session['id'], sr.PathRequest(path='Target.lean'))
         try:
             assert entered.wait(5)
-            sr.write_file_session(other['id'], sr.FileWriteRequest(path='Target.lean', content=BAD, formalization_id=target['id']))
+            sr.write_file_session.worker(other['id'], sr.FileWriteRequest(path='Target.lean', content=BAD, formalization_id=target['id']))
         finally:
             release.set()
         with pytest.raises(HTTPException):
@@ -145,7 +145,7 @@ def test_check_from_another_session_pins_the_shared_head(proof, monkeypatch):
 @pytest.mark.parametrize('author', [None, 'cascade'])
 def test_unchanged_check_persists_only_the_pinned_bytes(proof, author):
     _, session, _, _, step = proof
-    result = sr.lean_check_session(session['id'], sr.PathRequest(path='Target.lean', author=author))
+    result = sr.lean_check_session.worker(session['id'], sr.PathRequest(path='Target.lean', author=author))
     current = store.current_proof_step(session['id'], 'Target.lean')
     assert result['status'] == current['check_status'] == 'ok'
     assert current['code'] == GOOD
@@ -155,10 +155,10 @@ def test_unchanged_check_persists_only_the_pinned_bytes(proof, author):
 @pytest.mark.parametrize('execution', [{}, {'content_sha256': 'wrong'}])
 def test_missing_or_mismatched_compiler_evidence_is_conservative(proof, monkeypatch, execution):
     _, session, _, _, _ = proof
-    sr.write_file_session(session['id'], sr.FileWriteRequest(path='Target.lean', content=BAD))
+    sr.write_file_session.worker(session['id'], sr.FileWriteRequest(path='Target.lean', content=BAD))
     monkeypatch.setattr(sr, 'interface_check', lambda file: CheckResult(file, 'ok', execution=execution))
     with pytest.raises(HTTPException) as error:
-        sr.lean_check_session(session['id'], sr.PathRequest(path='Target.lean'))
+        sr.lean_check_session.worker(session['id'], sr.PathRequest(path='Target.lean'))
     assert error.value.status_code == 409
     assert store.current_proof_step(session['id'], 'Target.lean')['check_status'] is None
 
@@ -172,7 +172,7 @@ def test_shared_path_updates_both_formalizations_and_preserves_verification(proo
     for fid in [target['id'], second['id']]:
         store.record_verification_event(session_id=session['id'], formalization_id=fid,
             path='Target.lean', status='ok', detail=None, code_step_id=step['id'])
-    pr.write_project_file(project['id'], pr.FilePut(path='Target.lean', content=BAD))
+    pr.write_project_file.worker(project['id'], pr.FilePut(path='Target.lean', content=BAD))
     for fid in [target['id'], second['id']]:
         current = formalizations.current_snapshot(fid)
         assert current['files'][0]['code'] == BAD
@@ -193,13 +193,13 @@ def test_materialization_failure_keeps_unchecked_history_and_can_retry(proof, mo
         raise OSError('simulated write failure')
     monkeypatch.setattr(proof_files, '_materialize', fail)
     with pytest.raises(HTTPException) as error:
-        sr.write_file_session(session['id'], sr.FileWriteRequest(path='Target.lean', content=BAD))
+        sr.write_file_session.worker(session['id'], sr.FileWriteRequest(path='Target.lean', content=BAD))
     assert error.value.detail['code'] == 'content_saved_materialization_failed'
     assert path.read_text() == GOOD
     assert store.current_proof_step(session['id'], 'Target.lean')['code'] == BAD
     assert store.current_proof_step(session['id'], 'Target.lean')['check_status'] is None
     monkeypatch.setattr(proof_files, '_materialize', materialize)
-    assert sr.write_file_session(session['id'], sr.FileWriteRequest(path='Target.lean', content=BAD))['unchanged'] is False
+    assert sr.write_file_session.worker(session['id'], sr.FileWriteRequest(path='Target.lean', content=BAD))['unchanged'] is False
     assert path.read_text() == BAD
 
 
@@ -210,7 +210,7 @@ def test_git_failure_keeps_saved_revision_unchecked(proof, monkeypatch):
         raise GitStoreError('simulated Git failure')
     monkeypatch.setattr(GitStore, 'commit_all', fail)
     with pytest.raises(HTTPException) as error:
-        pr.write_project_file(project['id'], pr.FilePut(path='Target.lean', content=BAD))
+        pr.write_project_file.worker(project['id'], pr.FilePut(path='Target.lean', content=BAD))
     assert error.value.detail['code'] == 'content_saved_commit_failed'
     current = store.current_proof_step(session['id'], 'Target.lean')
     assert current['code'] == path.read_text() == BAD
@@ -220,20 +220,20 @@ def test_git_failure_keeps_saved_revision_unchecked(proof, monkeypatch):
 def test_noop_requires_disk_and_ledger_agreement(proof):
     _, session, _, path, step = proof
     request = sr.FileWriteRequest(path='Target.lean', content=GOOD)
-    assert sr.write_file_session(session['id'], request)['unchanged'] is True
+    assert sr.write_file_session.worker(session['id'], request)['unchanged'] is True
     assert store.current_proof_step(session['id'], 'Target.lean')['id'] == step['id']
     path.unlink()
-    assert sr.write_file_session(session['id'], request)['unchanged'] is False
+    assert sr.write_file_session.worker(session['id'], request)['unchanged'] is False
     assert path.read_text() == GOOD
 
 
 def test_checked_user_edit_is_history_but_unchecked_autosaves_coalesce(proof):
     _, session, _, _, _ = proof
-    first = sr.write_file_session(session['id'], sr.FileWriteRequest(path='Target.lean', content=BAD))['code_step']
-    next_step = sr.write_file_session(session['id'], sr.FileWriteRequest(path='Target.lean', content=BAD+'-- changed\n'))['code_step']
+    first = sr.write_file_session.worker(session['id'], sr.FileWriteRequest(path='Target.lean', content=BAD))['code_step']
+    next_step = sr.write_file_session.worker(session['id'], sr.FileWriteRequest(path='Target.lean', content=BAD+'-- changed\n'))['code_step']
     assert first['id'] == next_step['id']
-    sr.lean_check_session(session['id'], sr.PathRequest(path='Target.lean'))
-    last = sr.write_file_session(session['id'], sr.FileWriteRequest(path='Target.lean', content=GOOD))['code_step']
+    sr.lean_check_session.worker(session['id'], sr.PathRequest(path='Target.lean'))
+    last = sr.write_file_session.worker(session['id'], sr.FileWriteRequest(path='Target.lean', content=GOOD))['code_step']
     assert last['id'] != first['id']
 
 
@@ -248,10 +248,10 @@ def test_safe_verify_cannot_certify_a_coalesced_replacement(proof, monkeypatch):
         return VerifyResult('ok', None)
     monkeypatch.setattr(sr, 'interface_verify', delayed)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        pending = pool.submit(sr.verify_session, session['id'], sr.PathRequest(path='Target.lean'))
+        pending = pool.submit(sr.verify_session.worker, session['id'], sr.PathRequest(path='Target.lean'))
         try:
             assert entered.wait(5)
-            sr.write_file_session(session['id'], sr.FileWriteRequest(path='Target.lean', content=BAD, formalization_id=target['id']))
+            sr.write_file_session.worker(session['id'], sr.FileWriteRequest(path='Target.lean', content=BAD, formalization_id=target['id']))
         finally:
             release.set()
         with pytest.raises(HTTPException) as error:

@@ -1,10 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # =============================================================================
-# Lea Interface — self-contained image serving BOTH front ends' backends:
-#   - the React frontend + FastAPI adapter (prover driven in-process, D1)
-#   - the Overleaf companion (:31245) — same container, same prover workspace
-# plus Lean 4 + Mathlib. Arch-independent: all base images and the elan/Lean
+# Lea Interface — separate api, worker and companion targets. Only the worker
+# contains the workspace, Lean and Mathlib. The API publishes the React UI and
+# accesses SQLite; the companion is a stateless transport. Base images and Lean
 # toolchain resolve per-arch, so it builds natively on amd64 and arm64 alike.
 #
 # The build context is the MONOREPO ROOT (not apps/lea-standalone) — the
@@ -14,8 +13,7 @@
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 # Users don't build this at all — docker compose pulls the published image.
 #
-# CI publishes the multi-arch image to the VIDA organization on main, release
-# tags (v*), and manual dispatch: .github/workflows/publish-image.yml.
+# Publication is an explicit workflow dispatch: .github/workflows/publish-image.yml.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -42,6 +40,7 @@ COPY apps/lea-standalone/index.html apps/lea-standalone/vite.config.ts apps/lea-
 COPY apps/lea-standalone/src ./src
 COPY apps/lea-standalone/scripts/lean-assets.mjs ./scripts/lean-assets.mjs
 COPY packages/lea-blueprint /web/packages/lea-blueprint
+COPY packages/lea-workspace-client /web/packages/lea-workspace-client
 RUN npm run build   # -> /web/apps/lea-standalone/dist
 
 # -----------------------------------------------------------------------------
@@ -109,20 +108,22 @@ RUN cd workspace \
 
 # --- UI adapter (FastAPI) ---------------------------------------------------
 # `uv sync` builds the vendored prover (lea-prover) as an editable path dep and
-# installs its deps into /app/adapter/.venv — the single venv the app runs from.
-# The prover is driven in-process (D1); there is no separate Lea API venv.
+# installs dependencies into /app/adapter/.venv. API and worker are separate
+# processes; only the private worker imports the prover library.
 WORKDIR /app/adapter
 COPY apps/lea-standalone/adapter ./
 RUN uv sync --frozen --no-dev
+ARG LEA_BUILD_SOURCE=development
+RUN LEA_BUILD_SOURCE="$LEA_BUILD_SOURCE" .venv/bin/python -c 'import json,os; from pathlib import Path; Path("app/_release.json").write_text(json.dumps({"source":os.environ["LEA_BUILD_SOURCE"]}))'
+LABEL org.opencontainers.image.revision=$LEA_BUILD_SOURCE
 
 # --- Overleaf companion (:31245) -------------------------------------------
 # The companion has ZERO third-party npm deps (pure Node built-ins + local
 # .mjs), so it needs only the target-platform `node` binary — lifted from the
 # companion-node stage, same Node 22 and Debian bookworm base as this runtime. Its source is
 # laid out at the monorepo-relative paths its imports expect (../../../scripts,
-# ../../../packages, ../shared); the prover it targets stays at /app/prover via
-# LEA_ROOT below, so /app/prover/../adapter (what the companion's doctor derives)
-# still resolves to /app/adapter.
+# ../../../packages, ../shared). The adapter-owned private worker targets
+# /app/prover via LEA_ROOT; the public transport needs only the adapter URL.
 #
 # The `extension/` dir is included because it is NOT a clean layering boundary:
 # shared/{theoremParser,leanPaneManifest}.mjs import ../extension/targetParserCore.mjs
@@ -135,8 +136,9 @@ COPY apps/overleaf-extension/extension  /app/apps/overleaf-extension/extension
 COPY apps/lea-standalone/src/app/lib/leanCheckRuntime.mjs /app/apps/lea-standalone/src/app/lib/leanCheckRuntime.mjs
 COPY scripts                            /app/scripts
 COPY packages/lea-model-catalog         /app/packages/lea-model-catalog
-# Companion runtime state dir (job logs + settings.json); a compose volume
-# mounts here to persist it, but create it so the image also works volumeless.
+COPY packages/lea-workspace-client      /app/packages/lea-workspace-client
+# Retain the existing volume as a legacy import source. Operational jobs,
+# preferences and bounded diagnostics now belong to SQLite in the data volume.
 RUN mkdir -p /app/apps/overleaf-extension/.overleaf-lean-stub
 
 # --- Built frontend + entrypoint -------------------------------------------
@@ -162,9 +164,47 @@ ENV PYTHONUNBUFFERED=1 \
     NODE_ENV=production
 
 EXPOSE 8001 31245
-# Healthy only when BOTH backends answer — the launcher's "ready" then means the
-# UI and the Overleaf companion both work.
+# Intermediate runtime default; each deployable role overrides this healthcheck.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8001/api/ready && curl -fsS http://127.0.0.1:31245/health || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]
+
+# Copy only Python dependencies, API sources and static assets into a clean
+# base. Workspace/compiler/config bytes are absent from every API image layer.
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS api
+ARG LEA_BUILD_SOURCE=development
+LABEL org.opencontainers.image.revision=$LEA_BUILD_SOURCE
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=runtime /app/adapter /app/adapter
+COPY --from=web /web/apps/lea-standalone/dist /app/dist
+COPY apps/lea-standalone/docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+WORKDIR /app/adapter
+ENV LEA_PROCESS_ROLE=api LEA_WEB_DIST=/app/dist PYTHONUNBUFFERED=1
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8001/api/health || exit 1
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["api"]
+
+FROM companion-node AS companion
+ARG LEA_BUILD_SOURCE=development
+LABEL org.opencontainers.image.revision=$LEA_BUILD_SOURCE
+WORKDIR /app
+COPY --from=runtime /app/apps /app/apps
+COPY --from=runtime /app/packages/lea-workspace-client /app/packages/lea-workspace-client
+RUN rm -f /app/apps/overleaf-extension/companion/worker.mjs \
+    /app/apps/overleaf-extension/companion/workerService.mjs \
+    /app/apps/overleaf-extension/companion/databaseState.mjs
+ENV LEA_COMPANION_HOST=0.0.0.0 NODE_ENV=production
+EXPOSE 31245
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
+  CMD node -e 'fetch("http://127.0.0.1:31245/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))'
+ENTRYPOINT ["node", "/app/apps/overleaf-extension/companion/server.mjs"]
+
+FROM runtime AS worker
+ENV LEA_PROCESS_ROLE=worker LEA_REQUIRE_SHARED_OWNERSHIP=1
+HEALTHCHECK --interval=10s --timeout=3s --start-period=40s --retries=3 \
+  CMD /app/adapter/.venv/bin/python /app/adapter/worker_health.py || exit 1
+CMD ["worker"]

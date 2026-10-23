@@ -12,7 +12,7 @@ import {
   handleLeanPaneRepairAllContinue,
   handleLeanPaneRepairStart,
   handleLeanPaneRepairStatus
-} from "../companion/server.mjs";
+} from "../companion/workerService.mjs";
 import { parseLeanImports, topologicalRepairOrder } from "../companion/leanDependencyGraph.mjs";
 
 const NAMESPACE = "Lea.Project1";

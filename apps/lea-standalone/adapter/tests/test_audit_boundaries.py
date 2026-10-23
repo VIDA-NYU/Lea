@@ -71,18 +71,6 @@ def test_http_redirect_never_sends_a_second_request(monkeypatch, destination):
     assert "dummy-credential" not in result
 
 
-def test_classifier_provider_error_does_not_return_credentials(monkeypatch):
-    def failed(*args, **kwargs):
-        raise RuntimeError("Your api key: sk-dummy-audit-secret is invalid")
-        yield
-    monkeypatch.setattr(agent, "stream", failed)
-    kind, detail, _, _ = agent._classify_final_result(
-        model="test", messages=[], final_text="Done", theorem_signature="theorem t : True",
-        config=LeaConfig(model="test", max_turns=3),
-    )
-    assert kind == "needs_review"
-    assert "RuntimeError" in detail
-    assert "sk-dummy-audit-secret" not in detail
 
 
 def test_finished_detail_is_redacted_in_storage_live_and_replay(tmp_path, monkeypatch):

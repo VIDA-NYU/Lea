@@ -1,4 +1,5 @@
 import { parseTargetDocument } from "./targetParserCore.mjs";
+import { installLeaTagsEditorBridge } from "./leaTagsEditorBridge.mjs";
 
 (function () {
   let activeView = null;
@@ -93,6 +94,8 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
       return;
     }
   });
+
+  installLeaTagsEditorBridge({ window, getView: () => activeView, openDocByPath, getActiveDocPath });
 
   // Item 11: jump the editor to a source block. Same-file navigation may fall back
   // to byte offsets, but cross-file navigation only trusts marker/label anchors
@@ -337,7 +340,10 @@ import { parseTargetDocument } from "./targetParserCore.mjs";
 
   function treeItemClickTarget(item) {
     if (typeof item?.querySelector !== "function") return item;
-    return item.querySelector(".entity-name") || item.querySelector(".entity") || item;
+    // Current Overleaf folders expand on their actual button. Clicking the
+    // surrounding name wrapper only selects the folder and never mounts files.
+    return item.querySelector(".file-tree-entity-button")
+      || item.querySelector(".entity-name") || item.querySelector(".entity") || item;
   }
 
   function isDocumentTreeItem(item) {

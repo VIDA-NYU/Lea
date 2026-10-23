@@ -4,11 +4,22 @@ import {
   hashFormalizationInput,
   hashTargetText,
   inferLeanDeclarationName,
+  suggestLeanDeclarationName,
   isValidLeanIdentifier,
   normalizeTargetText,
   parseTargetDocument,
   parseTargets
 } from "../shared/theoremParser.mjs";
+
+test("Lean naming suggestions keep generated source IDs separate from declaration names", () => {
+  assert.equal(suggestLeanDeclarationName({ labelSource: "generated", latexLabel: "def:Ua" }), "Ua");
+  assert.equal(suggestLeanDeclarationName({ labelSource: "generated", latexLabel: "thm:even-square" }), "even_square");
+  assert.equal(suggestLeanDeclarationName({ labelSource: "generated", latexLabel: "def:123" }), "lea_123");
+  assert.equal(suggestLeanDeclarationName({ labelSource: "generated", latexLabel: "def:def" }), "lea_def");
+  assert.equal(suggestLeanDeclarationName({ labelSource: "explicit", latexLabel: "def:Ua" }), "");
+  assert.equal(suggestLeanDeclarationName({ labelSource: "generated" }), "");
+  assert.equal(suggestLeanDeclarationName({ targetText: "def publicName : Nat := 0", labelSource: "generated", latexLabel: "def:Ua" }), "publicName");
+});
 
 test("detects a comment-marked theorem target", () => {
   const source = [

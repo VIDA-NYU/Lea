@@ -5,6 +5,7 @@ import {
   pickInitialSession,
   readDeepLinkSessionId,
   readDeepLinkFormalizationId,
+  restoreInitialSession,
   stripNavigationParams,
   stripSessionParam,
 } from './sessionDeepLink.mjs';
@@ -67,4 +68,104 @@ test('returns none when there is nothing to restore', () => {
     pickInitialSession({ search: '', savedId: null, sessions: [] }),
     { sessionId: null, source: 'none' },
   );
+});
+
+function restoration(search, overrides = {}) {
+  const calls = [];
+  const location = { search };
+  const options = {
+    search, savedId: 'saved', sessions: [{ id: 'saved' }],
+    loadSession: async (id) => { calls.push(['session', id]); return { id }; },
+    loadFormalization: async (id) => ({ id, sessions: [{ id: 'target-session' }] }),
+    selectFormalization: (id) => calls.push(['scope', id]),
+    openProject: async (id) => { calls.push(['project', id]); return { id }; },
+    onRestored: () => { location.search = stripNavigationParams(location.search); },
+    ...overrides,
+  };
+  return { calls, location, restore: () => restoreInitialSession(options) };
+}
+
+test('a session link stays available until its requested session has loaded', async () => {
+  let finish;
+  const x = restoration('?session=target&view=chat', {
+    loadSession: () => new Promise((resolve) => { finish = resolve; }),
+  });
+  const pending = x.restore();
+  assert.equal(x.location.search, '?session=target&view=chat');
+  finish({ id: 'target' });
+  await pending;
+  assert.equal(x.location.search, '?view=chat');
+});
+
+for (const message of ['Session not found', 'HTTP 503', 'Failed to fetch']) {
+  test(`a failed session link surfaces ${message} and can be retried with the same URL`, async () => {
+    let failing = true;
+    const x = restoration('?session=target', {
+      loadSession: async (id) => {
+        x.calls.push(['session', id]);
+        if (failing) throw new Error(message);
+        return { id };
+      },
+    });
+    await assert.rejects(x.restore(), { message });
+    assert.equal(x.location.search, '?session=target');
+    failing = false;
+    await x.restore();
+    assert.equal(x.location.search, '');
+    assert.deepEqual(x.calls, [['session', 'target'], ['session', 'target']]);
+  });
+}
+
+test('combined links load the explicit session once and select the formalization after hydration', async () => {
+  const x = restoration('?session=explicit&formalization=target');
+  await x.restore();
+  assert.deepEqual(x.calls, [['session', 'explicit'], ['scope', 'target']]);
+  assert.equal(x.location.search, '');
+});
+
+test('formalization-only links select their associated session instead of the saved conversation', async () => {
+  const x = restoration('?formalization=target');
+  await x.restore();
+  assert.deepEqual(x.calls, [['session', 'target-session'], ['scope', 'target']]);
+  assert.equal(x.location.search, '');
+});
+
+test('failed formalization lookups leave both navigation parameters intact', async () => {
+  const search = '?session=explicit&formalization=missing';
+  const x = restoration(search, { loadFormalization: async () => { throw new Error('Formalization not found'); } });
+  await assert.rejects(x.restore(), /Formalization not found/);
+  assert.equal(x.location.search, search);
+  assert.deepEqual(x.calls, []);
+});
+
+test('superseded session loads do not consume the link or change the selected formalization', async () => {
+  const search = '?session=explicit&formalization=target';
+  const x = restoration(search, { loadSession: async () => null });
+  await x.restore();
+  assert.equal(x.location.search, search);
+  assert.deepEqual(x.calls, []);
+});
+
+test('a formalization with no conversation opens its project instead of the saved conversation', async () => {
+  const x = restoration('?formalization=target', {
+    loadFormalization: async (id) => ({ id, sessions: [], project_id: 'project' }),
+  });
+  await x.restore();
+  assert.deepEqual(x.calls, [['project', 'project']]);
+  assert.equal(x.location.search, '');
+});
+
+test('an unavailable formalization session surfaces an error and retains its link', async () => {
+  const x = restoration('?formalization=target', {
+    loadFormalization: async (id) => ({ id, sessions: [] }),
+  });
+  await assert.rejects(x.restore(), /No LeaChat session is available/);
+  assert.equal(x.location.search, '?formalization=target');
+  assert.deepEqual(x.calls, []);
+});
+
+test('normal startup still restores the last saved session', async () => {
+  const x = restoration('');
+  await x.restore();
+  assert.deepEqual(x.calls, [['session', 'saved']]);
 });

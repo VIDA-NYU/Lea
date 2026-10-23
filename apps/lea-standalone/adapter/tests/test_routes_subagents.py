@@ -23,7 +23,7 @@ def _pc_default(profiles):
 
 def test_list_returns_builtins_with_defaults(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    profiles = sa.list_profiles()["profiles"]
+    profiles = sa.list_profiles.worker()["profiles"]
     names = {p["name"] for p in profiles}
     assert {"proof-candidate", "premise-search"} <= names
     pc = next(p for p in profiles if p["name"] == "proof-candidate")
@@ -35,9 +35,9 @@ def test_list_returns_builtins_with_defaults(tmp_path, monkeypatch):
 
 def test_put_stores_only_the_diff_from_default(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    default = _pc_default(sa.list_profiles()["profiles"])
+    default = _pc_default(sa.list_profiles.worker()["profiles"])
     # send the EFFECTIVE settings the user edited: changed max_turns + max_cost, prompt/tools unchanged
-    updated = sa.update_profile("proof-candidate", OverrideRequest(
+    updated = sa.update_profile.worker("proof-candidate", OverrideRequest(
         model=None, max_turns=42, max_cost=0.5,
         system_prompt=default["system_prompt"], tools=default["tools"],
     ))
@@ -51,7 +51,7 @@ def test_put_stores_only_the_diff_from_default(tmp_path, monkeypatch):
 
 def test_put_custom_prompt_and_model_are_stored(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    updated = sa.update_profile("premise-search", OverrideRequest(
+    updated = sa.update_profile.worker("premise-search", OverrideRequest(
         model="anthropic/claude", system_prompt="Be terse.",
     ))
     assert updated["override"]["model"] == "anthropic/claude"
@@ -61,11 +61,11 @@ def test_put_custom_prompt_and_model_are_stored(tmp_path, monkeypatch):
 
 def test_reset_to_defaults_clears_the_override(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    sa.update_profile("proof-candidate", OverrideRequest(max_turns=42))
+    sa.update_profile.worker("proof-candidate", OverrideRequest(max_turns=42))
     assert subagent_overrides.get_override("proof-candidate") == {"max_turns": 42}
     # sending the defaults back → diff is empty → override cleared
-    default = _pc_default(sa.list_profiles()["profiles"])
-    reset = sa.update_profile("proof-candidate", OverrideRequest(
+    default = _pc_default(sa.list_profiles.worker()["profiles"])
+    reset = sa.update_profile.worker("proof-candidate", OverrideRequest(
         model=default["model"], max_turns=default["max_turns"], max_cost=default["max_cost"],
         system_prompt=default["system_prompt"], tools=default["tools"],
     ))
@@ -76,14 +76,14 @@ def test_reset_to_defaults_clears_the_override(tmp_path, monkeypatch):
 def test_unknown_role_is_404(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     with pytest.raises(HTTPException) as exc:
-        sa.update_profile("counterexample-finder", OverrideRequest(max_turns=5))
+        sa.update_profile.worker("counterexample-finder", OverrideRequest(max_turns=5))
     assert exc.value.status_code == 404
 
 
 def test_malformed_values_are_dropped(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     # max_turns=0 (invalid) and max_cost=-1 (invalid) are sanitized away; model kept
-    updated = sa.update_profile("proof-candidate", OverrideRequest(
+    updated = sa.update_profile.worker("proof-candidate", OverrideRequest(
         model="x/y", max_turns=0, max_cost=-1.0,
     ))
     assert updated["override"] == {"model": "x/y"}

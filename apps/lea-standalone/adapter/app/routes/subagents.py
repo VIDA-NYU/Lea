@@ -1,3 +1,5 @@
+from .. import peripheral_views
+from .. import workspace_commands
 """Sub-agents endpoints (D6): view/edit every built-in role's settings.
 
 Read the vendored role profiles from the prover (`lea.profiles`) and merge the user's
@@ -101,6 +103,7 @@ def _user_role_payload(role: dict) -> dict:
 
 
 @router.get("/api/sub-agents/profiles")
+@peripheral_views.query('list_profiles')
 def list_profiles() -> dict:
     """Every role the coordinator can be offered — built-in and user-authored.
 
@@ -113,6 +116,7 @@ def list_profiles() -> dict:
 
 
 @router.post("/api/sub-agents/roles", status_code=201)
+@workspace_commands.register('role.create')
 def create_role(request: RoleCreate) -> dict:
     """Author a new role (B2/B3). Refused if the name collides with a built-in — two
     roles answering to one name makes "which one ran?" unanswerable."""
@@ -129,6 +133,7 @@ def create_role(request: RoleCreate) -> dict:
 
 
 @router.put("/api/sub-agents/roles/{role_id}")
+@workspace_commands.register('role.update')
 def update_role(role_id: str, request: RoleUpdate) -> dict:
     try:
         updated = store.update_agent_role(role_id, **request.model_dump())
@@ -147,6 +152,7 @@ def delete_role(role_id: str) -> dict:
 
 
 @router.put("/api/sub-agents/profiles/{name}")
+@workspace_commands.register('peripheral.update_profile')
 def update_profile(name: str, request: OverrideRequest) -> dict:
     """Save a role's override. The body carries the *effective* settings the user edited;
     we store only the fields that DIFFER from the role's default (so untouched vendored

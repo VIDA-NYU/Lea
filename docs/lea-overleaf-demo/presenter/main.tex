@@ -1,0 +1,40 @@
+\documentclass[11pt]{article}
+\usepackage[margin=0.8in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage[hidelinks]{hyperref}
+\definecolor{leagreen}{HTML}{155E50}
+\definecolor{papergray}{HTML}{F3F5F4}
+\definecolor{inkgray}{HTML}{45514D}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.45em}
+\setlist[enumerate]{leftmargin=1.6em,itemsep=0.28em,topsep=0.35em}
+\setlist[itemize]{leftmargin=1.3em,itemsep=0.18em,topsep=0.3em}
+\lstset{basicstyle=\ttfamily\footnotesize,columns=fullflexible,
+  keepspaces=true,breaklines=true,showstringspaces=false,
+  backgroundcolor=\color{papergray},frame=single,rulecolor=\color{papergray},
+  xleftmargin=0.6em,xrightmargin=0.6em,framesep=0.6em}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\sffamily Lea in Overleaf}
+\fancyhead[R]{\small\sffamily Presenter script}
+\fancyfoot[C]{\small\thepage}
+\setlength{\headheight}{14pt}
+\newcommand{\scene}[3]{%
+  {\small\color{leagreen}\sffamily\bfseries #1}\par
+  {\LARGE\sffamily\bfseries #2}\par
+  {\small\color{inkgray}#3}\par\vspace{0.5em}}
+\newcommand{\click}{\par\textbf{Click and do}\par}
+\newcommand{\say}{\par\textbf{Say}\par}
+\newcommand{\fallback}{\par\textbf{If the state differs}\par}
+\newcommand{\cue}[1]{\textbf{#1}}
+\hypersetup{pdftitle={Lea in Overleaf: click-by-click presenter script},
+  pdfauthor={Lea demo}}
+\begin{document}
+\input{script}
+\end{document}

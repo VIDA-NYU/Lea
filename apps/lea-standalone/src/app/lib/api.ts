@@ -5,6 +5,7 @@
 // straight from ./types.
 
 import type {
+  ApprovalMode,
   ApprovalDecision,
   LeanCheckExecution,
   LeanCheckRuntime,
@@ -38,6 +39,10 @@ import type {
 } from './types';
 
 export * from './types';
+import { workspaceResult, submitWithRecovery } from '../../../../../packages/lea-workspace-client/index.mjs';
+import { createIntentRegistry } from './submissionIdentity.mjs';
+const runIntents = createIntentRegistry('runs');
+const projectIntents = createIntentRegistry('projects');
 
 // ────────────────────────────────────────────────────────────────────────────
 // HTTP
@@ -51,17 +56,52 @@ async function detailMessage(response: Response, fallback: string): Promise<stri
   return fallback;
 }
 
+async function readWorkspaceResponse(response: Response): Promise<any> {
+  return readWorkspaceValue(await response.json());
+}
+
+async function readWorkspaceValue(initial: any): Promise<any> {
+  try {
+    return await workspaceResult(initial, async (id: string) => {
+      const receipt = await fetch(`/api/workspace/commands/${encodeURIComponent(id)}`);
+      if (!receipt.ok) throw Object.assign(new Error(await detailMessage(receipt, 'Unable to read workspace receipt.')), {status: receipt.status});
+      return receipt.json();
+    });
+  } catch (error: any) {
+    if (error.detail?.code === 'revision_conflict') throw new RevisionConflictError(error.message, error.detail);
+    throw error;
+  }
+}
+
+async function workspaceMutation(url:string,method:string,body:Record<string,unknown>):Promise<Response> {
+  const key=String(body.idempotency_key || globalThis.crypto?.randomUUID?.() || `edit-${Date.now()}-${Math.random()}`);
+  const serialized=JSON.stringify({...body,idempotency_key:key,draft_id:body.draft_id || key});
+  return submitWithRecovery(
+    ()=>fetch(url,{method,headers:{'Content-Type':'application/json'},body:serialized}),
+    async()=>{
+      const response=await fetch(`/api/workspace/receipts?idempotency_key=${encodeURIComponent(key)}`);
+      if(!response.ok)throw Object.assign(new Error('Unable to recover the edit receipt.'),{status:response.status});
+      return response;
+    });
+}
+
 export async function listSessions(): Promise<SessionSummary[]> {
+  return (await sessionListSnapshot()).sessions;
+}
+
+export async function sessionListSnapshot(): Promise<{ sessions: SessionSummary[]; projects?: Project[]; cursor?: number }> {
   const response = await fetch('/api/sessions');
   if (!response.ok) throw new Error(`Failed to load sessions: ${response.statusText}`);
-  const data = await response.json();
-  return Array.isArray(data.sessions) ? data.sessions : [];
+  const data = await readWorkspaceResponse(response);
+  return { sessions: Array.isArray(data.sessions) ? data.sessions : [],
+    projects: Array.isArray(data.projects) ? data.projects : undefined,
+    cursor: Number.isSafeInteger(data.cursor) ? data.cursor : undefined };
 }
 
 export async function getSession(sessionId: string, signal?: AbortSignal): Promise<SessionDetail> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { signal });
   if (!response.ok) throw new Error(`Failed to load session: ${response.statusText}`);
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function createRun(
@@ -85,24 +125,65 @@ export async function createRun(
     };
     source_context_ref?: string;
     idempotency_key?: string;
+    artifact_operation?: 'reformalize';
   },
+  onQueued?: (operation: { session_id: string; reformalization_id: string }) => void,
+  stillSelected?: () => boolean,
 ): Promise<{
   session_id: string;
   run_id: string;
   model: string;
+  autonomous?: boolean;
+  approval_mode?: ApprovalMode;
   message: ChatMessage;
   focus_formalization_id?: string | null;
   formalization?: Formalization | null;
 }> {
+  const send = async (payload: Record<string, unknown>) => {
   const response = await fetch('/api/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, session_id: sessionId, model, ...scope }),
+    body: JSON.stringify(payload),
   });
   if (!response.ok) {
     throw Object.assign(new Error(await detailMessage(response, `Failed to start run: ${response.statusText}`)), { status: response.status });
   }
-  return response.json();
+  return awaitReformalization(await response.json(), onQueued, stillSelected);
+  };
+  const payload = { message, session_id: sessionId, model, ...scope };
+  return scope?.idempotency_key ? send(payload) : runIntents.run(payload, send);
+}
+
+
+export async function cancelReformalization(id: string): Promise<void> {
+  const response = await fetch(`/api/reformalizations/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+  if (!response.ok) throw new Error(await detailMessage(response, 'Could not stop the reformalization.'));
+}
+
+
+export async function getReformalization(id: string): Promise<{
+  reformalization_id: string; state: string; session_id: string; run_id?: string;
+  result?: { detail?: string }; drafts: CodeStep[];
+}> {
+  const response = await fetch(`/api/reformalizations/${encodeURIComponent(id)}`);
+  if (!response.ok) throw new Error(await detailMessage(response, 'Could not load the retained retry.'));
+  return readWorkspaceResponse(response);
+}
+
+export async function awaitReformalization(initial: any,
+  onQueued?: (operation: { session_id: string; reformalization_id: string }) => void,
+  stillSelected: () => boolean = () => true): Promise<any> {
+  let operation = initial;
+  if (operation.reformalization_id) onQueued?.(operation);
+  while (operation.reformalization_id && !operation.run_id) {
+    if (!stillSelected()) return operation;
+    if (operation.state && !['queued', 'active'].includes(operation.state)) {
+      throw new Error(operation.result?.detail || 'This retry is retained without an active solver.');
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    operation = await getReformalization(operation.reformalization_id);
+  }
+  return operation;
 }
 
 export async function resumeInterruptedRun(runId: string): Promise<{ run_id: string; session_id: string }> {
@@ -111,13 +192,13 @@ export async function resumeInterruptedRun(runId: string): Promise<{ run_id: str
     body: JSON.stringify({ acknowledge_uncertainty: true, idempotency_key: `resume:${runId}` }),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Could not resume the interrupted run.'));
-  return response.json();
+  return awaitReformalization(await response.json());
 }
 
 export async function prepareOverleafSource(formalizationId: string): Promise<{ source_context_ref: string; captured_at: string }> {
-  const response = await fetch(`/api/formalizations/${encodeURIComponent(formalizationId)}/overleaf-source/prepare`, { method: 'POST' });
+  const response = await fetch(`/api/formalizations/${encodeURIComponent(formalizationId)}/published-source`);
   if (!response.ok) throw Object.assign(new Error(await detailMessage(response, 'Could not connect to the Overleaf document.')), { status: response.status });
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function continueOverleafRun(runId: string, reference: string, idempotencyKey: string): Promise<{ run_id: string; session_id: string }> {
@@ -126,7 +207,7 @@ export async function continueOverleafRun(runId: string, reference: string, idem
     body: JSON.stringify({ source_context_ref: reference, idempotency_key: idempotencyKey })
   });
   if (!response.ok) throw Object.assign(new Error(await detailMessage(response, 'Could not continue the saved Overleaf formalization.')), { status: response.status });
-  return response.json();
+  return awaitReformalization(await response.json());
 }
 
 export async function listProjectFormalizations(
@@ -138,7 +219,7 @@ export async function listProjectFormalizations(
   if (!response.ok) {
     throw new Error(await detailMessage(response, 'Failed to load formalizations.'));
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function getFormalization(formalizationId: string): Promise<Formalization> {
@@ -148,7 +229,7 @@ export async function getFormalization(formalizationId: string): Promise<Formali
   if (!response.ok) {
     throw new Error(await detailMessage(response, 'Failed to load formalization.'));
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function getCurrentFormalization(
@@ -162,7 +243,7 @@ export async function getCurrentFormalization(
   if (!response.ok) {
     throw new Error(await detailMessage(response, 'Failed to load the current formalization.'));
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function updateSessionTitle(
@@ -177,7 +258,7 @@ export async function updateSessionTitle(
   if (!response.ok) {
     throw new Error(await detailMessage(response, 'Failed to rename conversation.'));
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function submitApproval(
@@ -237,33 +318,35 @@ export async function compactSession(sessionId: string): Promise<CompactionResul
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Failed to compact: ${response.statusText}`));
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 // ── Projects (v2.1) ────────────────────────────────────────────────────────────
 export async function listProjects(): Promise<Project[]> {
   const response = await fetch('/api/projects');
   if (!response.ok) throw new Error(`Failed to load projects: ${response.statusText}`);
-  const data = await response.json();
+  const data = await readWorkspaceResponse(response);
   return Array.isArray(data.projects) ? data.projects : [];
 }
 
 export async function getProject(projectId: string): Promise<ProjectDetail> {
   const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}`);
-  if (!response.ok) throw new Error(`Failed to load project: ${response.statusText}`);
-  return response.json();
+  if (!response.ok) throw Object.assign(new Error(`Failed to load project: ${response.statusText}`), {status: response.status});
+  return readWorkspaceResponse(response);
 }
 
 export async function createProject(title: string, description?: string): Promise<Project> {
+  return projectIntents.run({ title, description }, async (payload: Record<string, unknown>) => {
   const response = await fetch('/api/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, description }),
+    body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    throw new Error(await detailMessage(response, `Failed to create project: ${response.statusText}`));
+    throw Object.assign(new Error(await detailMessage(response, `Failed to create project: ${response.statusText}`)), {status: response.status});
   }
-  return response.json();
+  return readWorkspaceResponse(response);
+  });
 }
 
 export async function updateProject(
@@ -278,7 +361,7 @@ export async function updateProject(
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Failed to update project: ${response.statusText}`));
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function deleteProject(projectId: string): Promise<void> {
@@ -286,6 +369,7 @@ export async function deleteProject(projectId: string): Promise<void> {
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Failed to delete project: ${response.statusText}`));
   }
+  await readWorkspaceResponse(response);
 }
 
 export interface ProjectSession {
@@ -307,28 +391,33 @@ export async function createSessionInProject(projectId: string, title?: string):
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Failed to create session: ${response.statusText}`));
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 // ── Project files: upload / list / download / delete (.lea/files/, S1/S2) ──────
 export async function listProjectFiles(projectId: string): Promise<ProjectFile[]> {
   const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files`);
   if (!response.ok) throw new Error(await detailMessage(response, `Failed to load files: ${response.statusText}`));
-  const data = await response.json();
+  const data = await readWorkspaceResponse(response);
   return Array.isArray(data.files) ? data.files : [];
 }
 
 export async function uploadProjectFile(projectId: string, file: File): Promise<ProjectFile> {
   const form = new FormData();
   form.append('file', file);
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files`, {
-    method: 'POST',
-    body: form, // no Content-Type header — the browser sets the multipart boundary
+  const key=globalThis.crypto?.randomUUID?.() || `upload-${Date.now()}-${Math.random()}`;
+  const response = await submitWithRecovery(()=>fetch(`/api/projects/${encodeURIComponent(projectId)}/files`, {
+    method: 'POST',headers:{'Idempotency-Key':key},
+    body: form, // the browser sets the multipart boundary
+  }),async()=>{
+    const value=await fetch(`/api/workspace/receipts?idempotency_key=${encodeURIComponent(key)}`);
+    if(!value.ok)throw Object.assign(new Error('Unable to recover the upload receipt.'),{status:value.status});
+    return value;
   });
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Failed to upload ${file.name}: ${response.statusText}`));
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function deleteProjectFile(projectId: string, fileId: string): Promise<void> {
@@ -339,6 +428,7 @@ export async function deleteProjectFile(projectId: string, fileId: string): Prom
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Failed to delete file: ${response.statusText}`));
   }
+  await readWorkspaceResponse(response);
 }
 
 // The browser navigates here to download; the route streams the stored bytes.
@@ -353,33 +443,32 @@ export function projectFileDownloadUrl(projectId: string, fileId: string): strin
 export type ProjectDocName = 'instructions' | 'memory' | 'blueprint';
 
 export async function getProjectDoc(projectId: string, doc: ProjectDocName): Promise<string> {
+  return (await getProjectDocSnapshot(projectId,doc)).content;
+}
+
+export async function getProjectDocSnapshot(projectId: string, doc: ProjectDocName): Promise<{content:string; file_revision?:string}> {
   const response = await fetch(
     `/api/projects/${encodeURIComponent(projectId)}/${doc}`,
   );
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Failed to load ${doc}: ${response.statusText}`));
   }
-  const data = await response.json();
-  return typeof data.content === 'string' ? data.content : '';
+  const data = await readWorkspaceResponse(response);
+  return {content:typeof data.content === 'string' ? data.content : '',file_revision:data.file_revision};
 }
 
 export async function putProjectDoc(
   projectId: string,
   doc: ProjectDocName,
   content: string,
-): Promise<{ content: string; commit_sha?: string }> {
-  const response = await fetch(
-    `/api/projects/${encodeURIComponent(projectId)}/${doc}`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
-    },
-  );
+  fileRevision?: string,
+): Promise<{ content: string; commit_sha?: string; file_revision?:string }> {
+  const response = await workspaceMutation(`/api/projects/${encodeURIComponent(projectId)}/${doc}`,'PUT',
+    {content,file_revision:fileRevision});
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Failed to save ${doc}: ${response.statusText}`));
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 // ── Blueprint authoring + derived graph (Slice 5, D28/D29) ─────────────────────
@@ -394,7 +483,7 @@ export async function getProjectBlueprint(
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Failed to load blueprint: ${response.statusText}`));
   }
-  const data = await response.json();
+  const data = await readWorkspaceResponse(response);
   return { content: typeof data.content === 'string' ? data.content : '', warnings: data.warnings ?? [] };
 }
 
@@ -403,7 +492,7 @@ export async function getProjectGraph(projectId: string): Promise<ProjectGraph> 
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Failed to load graph: ${response.statusText}`));
   }
-  const data = await response.json();
+  const data = await readWorkspaceResponse(response);
   return { nodes: Array.isArray(data.nodes) ? data.nodes : [], edges: Array.isArray(data.edges) ? data.edges : [] };
 }
 
@@ -414,7 +503,7 @@ export async function getProjectGraph(projectId: string): Promise<ProjectGraph> 
 export async function getProjectTree(projectId: string): Promise<TreeEntry[]> {
   const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/tree`);
   if (!response.ok) throw new Error(await detailMessage(response, `Failed to load files: ${response.statusText}`));
-  const data = await response.json();
+  const data = await readWorkspaceResponse(response);
   return Array.isArray(data.tree) ? data.tree : [];
 }
 
@@ -423,28 +512,26 @@ export async function getProjectTree(projectId: string): Promise<TreeEntry[]> {
 export async function getProjectFile(
   projectId: string,
   path: string,
-): Promise<{ path: string; content: string; lean: boolean; binary: boolean }> {
+): Promise<{ path: string; content: string; lean: boolean; binary: boolean; file_revision?: string }> {
   const response = await fetch(
     `/api/projects/${encodeURIComponent(projectId)}/file?path=${encodeURIComponent(path)}`,
   );
   if (response.status === 415) return { path, content: '', lean: false, binary: true };
   if (!response.ok) throw new Error(await detailMessage(response, `Failed to load ${path}: ${response.statusText}`));
-  const data = await response.json();
-  return { path: data.path ?? path, content: data.content ?? '', lean: !!data.lean, binary: false };
+  const data = await readWorkspaceResponse(response);
+  return { path: data.path ?? path, content: data.content ?? '', lean: !!data.lean, binary: false, file_revision: data.file_revision };
 }
 
 export async function putProjectFile(
   projectId: string,
   path: string,
   content: string,
-): Promise<{ path: string; commit_sha: string; check: { status: 'ok' | 'error'; detail?: string | null } | null }> {
-  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/file`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, content }),
-  });
+  fileRevision?: string,
+): Promise<{ path: string; commit_sha: string; file_revision?: string; check: { status: 'ok' | 'error'; detail?: string | null } | null }> {
+  const response = await workspaceMutation(`/api/projects/${encodeURIComponent(projectId)}/file`,'PUT',
+    {path,content,file_revision:fileRevision});
   if (!response.ok) throw new Error(await detailMessage(response, `Failed to save ${path}: ${response.statusText}`));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export class GithubImportApiError extends Error {
@@ -482,7 +569,7 @@ export async function previewProjectGithubImport(
   if (!response.ok) {
     return throwGithubImportError(response, 'Failed to analyze the GitHub repository.');
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function confirmProjectGithubImport(
@@ -500,7 +587,7 @@ export async function confirmProjectGithubImport(
   if (!response.ok) {
     return throwGithubImportError(response, 'Failed to add the Lean files.');
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function getProjectGithubImport(
@@ -513,7 +600,7 @@ export async function getProjectGithubImport(
   if (!response.ok) {
     return throwGithubImportError(response, 'Failed to load GitHub import progress.');
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 // The browser navigates here to download the project as a zip.
@@ -525,6 +612,13 @@ export function projectExportUrl(projectId: string): string {
 // have no other download path; used by the session header's Download button.
 export function sessionExportUrl(sessionId: string): string {
   return `/api/sessions/${encodeURIComponent(sessionId)}/export`;
+}
+
+export async function downloadWorkspaceExport(url: string): Promise<void> {
+  const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  if(!response.ok)throw new Error(await detailMessage(response,'Could not prepare this export.'));
+  const artifact=await readWorkspaceResponse(response) as {download_url:string};
+  const link=document.createElement('a');link.href=artifact.download_url;link.download='';link.click();
 }
 
 // ── Git sharing: set remote + push to GitHub (6b/U3, D34) ─────────────────────
@@ -539,7 +633,7 @@ export async function setProjectRemote(
     body: JSON.stringify({ remote_url: remoteUrl }),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to set the GitHub remote.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function pushProject(
@@ -549,7 +643,7 @@ export async function pushProject(
     method: 'POST',
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Push to GitHub failed.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 // ── Sub-agents (D6) ───────────────────────────────────────────────────────────
@@ -569,7 +663,7 @@ export async function createSubagentRole(input: {
     body: JSON.stringify(input),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to add the sub-agent.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function updateSubagentRole(
@@ -582,7 +676,7 @@ export async function updateSubagentRole(
     body: JSON.stringify(update),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to update the sub-agent.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function deleteSubagentRole(roleId: string): Promise<void> {
@@ -594,7 +688,7 @@ export async function listSubagentProfiles(): Promise<SubagentProfile[]> {
   const response = await fetch('/api/sub-agents/profiles');
   if (!response.ok)
     throw new Error(await detailMessage(response, `Failed to load sub-agents: ${response.statusText}`));
-  const data = await response.json();
+  const data = await readWorkspaceResponse(response);
   return Array.isArray(data.profiles) ? data.profiles : [];
 }
 
@@ -611,7 +705,7 @@ export async function updateSubagentProfile(
   });
   if (!response.ok)
     throw new Error(await detailMessage(response, `Failed to save sub-agent: ${response.statusText}`));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 // ── Skills (Skill Factory, v2.1.1) ────────────────────────────────────────────
@@ -621,7 +715,7 @@ export async function updateSubagentProfile(
 export async function listSkills(): Promise<Skill[]> {
   const response = await fetch('/api/skills');
   if (!response.ok) throw new Error(`Failed to load skills: ${response.statusText}`);
-  const data = await response.json();
+  const data = await readWorkspaceResponse(response);
   return Array.isArray(data.skills) ? data.skills : [];
 }
 
@@ -638,7 +732,7 @@ export async function createSkill(input: {
     body: JSON.stringify(input),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to create the skill.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 // Import a skill from a GitHub link (D56) — the headline "paste a link → Add".
@@ -658,7 +752,7 @@ export async function importSkill(input: {
     body: JSON.stringify(input),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to import the skill.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function updateSkill(
@@ -671,7 +765,7 @@ export async function updateSkill(
     body: JSON.stringify(update),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to update the skill.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function setSkillAssignment(
@@ -684,7 +778,7 @@ export async function setSkillAssignment(
     body: JSON.stringify(assignment),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to update the skill scope.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function deleteSkill(skillId: string): Promise<void> {
@@ -714,7 +808,7 @@ export interface McpServerInput {
 export async function listMcpServers(): Promise<McpServer[]> {
   const response = await fetch('/api/mcp-servers');
   if (!response.ok) throw new Error(`Failed to load MCP servers: ${response.statusText}`);
-  const data = await response.json();
+  const data = await readWorkspaceResponse(response);
   return Array.isArray(data.servers) ? data.servers : [];
 }
 
@@ -725,7 +819,7 @@ export async function createMcpServer(input: McpServerInput): Promise<McpServer>
     body: JSON.stringify(input),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to add the MCP server.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function updateMcpServer(
@@ -738,7 +832,7 @@ export async function updateMcpServer(
     body: JSON.stringify(update),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to update the MCP server.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function setMcpServerAssignment(
@@ -751,7 +845,7 @@ export async function setMcpServerAssignment(
     body: JSON.stringify(assignment),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to update the server scope.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function deleteMcpServer(serverId: string): Promise<void> {
@@ -763,7 +857,7 @@ export async function deleteMcpServer(serverId: string): Promise<void> {
 export async function getSessionSkillsMcp(sessionId: string): Promise<SessionSkillsMcp> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/skills-mcp`);
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to load skills and servers.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function setSessionSkillMcp(
@@ -776,19 +870,19 @@ export async function setSessionSkillMcp(
     body: JSON.stringify(toggle),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to update skills and servers.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function getMcpServerDefaults(): Promise<{ lean_project_path: string | null }> {
   const response = await fetch('/api/mcp-servers/defaults');
   if (!response.ok) return { lean_project_path: null };
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function listCustomTools(): Promise<CustomTool[]> {
   const response = await fetch('/api/custom-tools');
   if (!response.ok) return [];
-  const data = await response.json();
+  const data = await readWorkspaceResponse(response);
   return Array.isArray(data.tools) ? data.tools : [];
 }
 
@@ -809,7 +903,7 @@ export async function createCustomTool(input: {
     body: JSON.stringify(input),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to add the tool.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function setCustomToolAssignment(
@@ -822,7 +916,7 @@ export async function setCustomToolAssignment(
     body: JSON.stringify(assignment),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Failed to scope the tool.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function deleteCustomTool(toolId: string): Promise<void> {
@@ -844,7 +938,7 @@ export interface CatalogEntry {
 export async function listMcpCatalog(): Promise<CatalogEntry[]> {
   const response = await fetch('/api/mcp-servers/catalog');
   if (!response.ok) return [];
-  const data = await response.json();
+  const data = await readWorkspaceResponse(response);
   return Array.isArray(data.entries) ? data.entries : [];
 }
 
@@ -853,7 +947,7 @@ export async function installMcpCatalogEntry(entryId: string): Promise<McpServer
     method: 'POST',
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Could not install that.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export interface ToolCatalogEntry {
@@ -867,7 +961,7 @@ export interface ToolCatalogEntry {
 export async function listToolCatalog(): Promise<ToolCatalogEntry[]> {
   const response = await fetch('/api/custom-tools/catalog');
   if (!response.ok) return [];
-  const data = await response.json();
+  const data = await readWorkspaceResponse(response);
   return Array.isArray(data.entries) ? data.entries : [];
 }
 
@@ -876,7 +970,7 @@ export async function installToolCatalogEntry(entryId: string): Promise<CustomTo
     method: 'POST',
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Could not install that.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export interface McpKeyRequirement {
@@ -888,7 +982,7 @@ export interface McpKeyRequirement {
 export async function getMcpKeyRequirements(): Promise<McpKeyRequirement[]> {
   const response = await fetch('/api/mcp-servers/key-requirements');
   if (!response.ok) return [];
-  const data = await response.json();
+  const data = await readWorkspaceResponse(response);
   return Array.isArray(data.requirements) ? data.requirements : [];
 }
 
@@ -907,7 +1001,7 @@ export async function testMcpServer(spec: {
     body: JSON.stringify(spec),
   });
   if (!response.ok) throw new Error(await detailMessage(response, 'Could not run the test.'));
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 // ── Global search (Slice 7, D41) ──────────────────────────────────────────────
@@ -916,7 +1010,7 @@ export async function testMcpServer(spec: {
 export async function searchSessions(query: string): Promise<SearchResult[]> {
   const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
   if (!response.ok) throw new Error(await detailMessage(response, `Search failed: ${response.statusText}`));
-  const data = await response.json();
+  const data = await readWorkspaceResponse(response);
   return Array.isArray(data.results) ? data.results : [];
 }
 
@@ -926,9 +1020,20 @@ export interface FileWriteResult {
   code_step?: CodeStep | null;
   note?: ChatMessage | null;
   revision_token?: string | null;
+  draft_id: string;
+  file_revision: string;
+}
+
+export interface EditorDraftBase {
+  session_id: string;
+  path: string;
+  file_revision: string;
+  formalization_id?: string;
+  formalization_revision?: string;
 }
 
 export class RevisionConflictError extends Error {
+  status = 409;
   currentRevision?: string | null;
   lastUpdatedSession?: { id: string; title: string } | null;
 
@@ -953,53 +1058,61 @@ export async function writeSessionFile(
   note?: string,
   formalizationId?: string,
   baseRevision?: string,
+  fileRevision?: string,
+  draftIdentity?: string,
 ): Promise<FileWriteResult> {
-  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/file`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      path,
-      content,
-      note,
-      formalization_id: formalizationId,
-      base_revision: baseRevision,
-    }),
-  });
-  if (!response.ok) {
-    if (response.status === 409) {
-      const body = await response.clone().json().catch(() => ({} as any));
-      if (body.detail?.code === 'revision_conflict') {
-        throw new RevisionConflictError(
-          body.detail.message || 'This formalization changed in another conversation.',
-          body.detail,
-        );
-      }
+  if (!fileRevision) throw new Error('The loaded file revision is required before saving.');
+  const idempotencyKey = draftIdentity || globalThis.crypto?.randomUUID?.() || `save-${Date.now()}-${Math.random()}`;
+  const draftId = idempotencyKey;
+  const payload = {version: 1, action: 'session.save', idempotency_key: idempotencyKey, draft_id: draftId,
+    expected_revision: fileRevision,
+    arguments: {session_id: sessionId, request: {path, content, note, formalization_id: formalizationId, base_revision: baseRevision}}};
+  const send = async () => {
+    const response = await fetch('/api/workspace/commands', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    if (!response.ok) {
+      const body = await response.clone().json().catch(() => ({}));
+      if (body.detail?.code === 'revision_conflict') throw new RevisionConflictError(body.detail.message, body.detail);
+      throw Object.assign(new Error(await detailMessage(response, 'Unable to save file.')), {status: response.status});
     }
-    throw new Error(await detailMessage(response, `Failed to save file: ${response.statusText}`));
-  }
-  return response.json();
+    return response.json();
+  };
+  const lookup = async () => {
+    const response = await fetch(`/api/workspace/receipts?idempotency_key=${encodeURIComponent(idempotencyKey)}`);
+    if (!response.ok) throw Object.assign(new Error('Unable to recover the save receipt.'), {status:response.status});
+    return response.json();
+  };
+  const admitted = await submitWithRecovery(send, lookup);
+  return readWorkspaceValue(admitted);
 }
 
 export async function fetchLeanCheckRuntime(sessionId: string, signal?: AbortSignal): Promise<LeanCheckRuntime> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/lean-check-runtime`, { signal });
-  if (!response.ok) return { state: 'unavailable' };
-  return response.json();
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const detail = body.detail;
+    return { state: 'unavailable', observation: {
+      state: response.status === 503 && detail?.error === 'projection_unavailable' ? 'pending' : 'unavailable',
+      message: typeof detail === 'string' ? detail : detail?.message || body.message || `Could not read Lean runtime status (HTTP ${response.status}).`,
+    } };
+  }
+  return readWorkspaceResponse(response);
 }
 
 export async function leanCheckSession(
   sessionId: string,
   path?: string,
   formalizationId?: string,
+  fileRevision?: string,
 ): Promise<{ path: string; status: 'ok' | 'error'; check_current: boolean; check_stale_reason?: string | null; detail?: string | null; execution?: LeanCheckExecution; diagnostics?: Diagnostic[]; lean_check_runtime?: LeanCheckRuntime }> {
   const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/lean-check`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, formalization_id: formalizationId }),
+    body: JSON.stringify({ path, formalization_id: formalizationId, file_revision: fileRevision }),
   });
   if (!response.ok) {
     throw new Error(await detailMessage(response, `lean_check failed: ${response.statusText}`));
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function verifySession(
@@ -1015,7 +1128,7 @@ export async function verifySession(
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Verify failed: ${response.statusText}`));
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1072,8 +1185,22 @@ export interface SettingsUpdate {
   github_token?: { value?: string; clear?: boolean };
 }
 
-export interface ModelCatalogEntry { value: string; label: string; provider: string }
+export interface ModelCatalogEntry {
+  value: string; label: string; provider: string;
+  compatibility?: string; availability?: string; preview?: boolean;
+}
 export interface ModelOption { value: string; label: string; family?: string }
+export interface ModelCatalogPayload {
+  models: ModelCatalogEntry[];
+  featured?: ModelOption[];
+  revision?: string;
+  updated_at?: string | null;
+  refreshing?: boolean;
+  updates_disabled?: boolean;
+  degraded?: boolean;
+  warnings?: { message?: string; code?: string }[];
+  sources?: Record<string, { updated_at: string | null; stale: boolean; error?: string | null }>;
+}
 export interface ModelRequiredKey { env: string; label: string; configured: boolean }
 export interface ModelRequirements {
   model: string;
@@ -1151,7 +1278,7 @@ export interface UsageStats {
 export async function getSettings(): Promise<AppSettings> {
   const response = await fetch('/api/settings');
   if (!response.ok) throw new Error(`Failed to load settings: ${response.statusText}`);
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function saveSettings(update: SettingsUpdate): Promise<AppSettings> {
@@ -1164,24 +1291,24 @@ export async function saveSettings(update: SettingsUpdate): Promise<AppSettings>
     const error = new Error(await detailMessage(response, `Failed to save settings: ${response.statusText}`));
     throw error;
   }
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
-export async function fetchModelCatalog(): Promise<ModelCatalogEntry[]> {
-  const response = await fetch('/api/models');
+export async function fetchModelCatalog(refresh = false): Promise<ModelCatalogPayload> {
+  const response = await fetch(refresh ? '/api/models/refresh' : '/api/models', { method: refresh ? 'POST' : 'GET' });
   if (!response.ok) throw new Error(`Failed to load models: ${response.statusText}`);
-  const data = await response.json();
-  return Array.isArray(data.models) ? data.models : [];
+  const data = await readWorkspaceResponse(response);
+  return { ...data, models: Array.isArray(data.models) ? data.models : [] };
 }
 
 export async function fetchModelRequirements(model: string): Promise<ModelRequirements> {
   const response = await fetch(`/api/models/requirements?model=${encodeURIComponent(model)}`);
   if (!response.ok) throw new Error(`Failed to load model requirements: ${response.statusText}`);
-  return response.json();
+  return readWorkspaceResponse(response);
 }
 
 export async function getUsageStats(): Promise<UsageStats> {
   const response = await fetch('/api/stats');
   if (!response.ok) throw new Error(`Failed to load statistics: ${response.statusText}`);
-  return response.json();
+  return readWorkspaceResponse(response);
 }

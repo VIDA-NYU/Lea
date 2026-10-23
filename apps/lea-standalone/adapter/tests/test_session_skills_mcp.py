@@ -123,7 +123,7 @@ def test_capabilities_endpoint_reports_provenance(tmp_path, monkeypatch):
     mine = store.create_skill("Mine", "b")
     store.set_session_skill_mcp(session, "skill", mine["id"], "add")
 
-    by_slug = {s["slug"]: s for s in route.session_skills_mcp(session)["skills"]}
+    by_slug = {s["slug"]: s for s in route.session_skills_mcp.worker(session)["skills"]}
     assert (by_slug["global"]["source"], by_slug["global"]["locked"]) == ("global", True)
     assert (by_slug["proj"]["source"], by_slug["proj"]["on"]) == ("project", True)
     assert (by_slug["mine"]["source"], by_slug["mine"]["on"]) == ("session", True)
@@ -133,10 +133,10 @@ def test_validation_and_404s(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     session = _session(None)
     with pytest.raises(HTTPException) as exc:
-        route.session_skills_mcp("nope")
+        route.session_skills_mcp.worker("nope")
     assert exc.value.status_code == 404
     for bad in (SkillMcpToggle(kind="nonsense", item_id="x", action="add"),
                 SkillMcpToggle(kind="skill", item_id="x", action="sideways")):
         with pytest.raises(HTTPException) as exc:
-            route.update_session_skills_mcp(session, bad)
+            route.update_session_skills_mcp.worker(session, bad)
         assert exc.value.status_code == 400

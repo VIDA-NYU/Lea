@@ -60,14 +60,14 @@ export function renderLeaStatus(item, { document, loadHistory, pause }) {
           currentView.ids.add(update.id);
           const entry = node("details", undefined, entries);
           node("summary", `${new Date(update.created_at).toLocaleString()} · ${friendly(update.assessment?.confidence)} confidence · ${update.assessment?.summary || ""}`, entry);
-          renderAssessment(node, entry, update.assessment, { source_identity_hash: update.source_identity_hash, source_bundle_hash: update.source_bundle_hash, ...update.artifact_snapshot });
+          renderAssessment(node, entry, update.assessment);
         }
         for (const report of result.legacy_reports || []) {
           if (currentView.ids.has(report.id)) continue;
           currentView.ids.add(report.id);
           const entry = node("details", undefined, entries);
           node("summary", `Previous Lea Check report · ${report.status}`, entry);
-          renderAssessment(node, entry, report.report, report.report?.evaluated_revision);
+          renderAssessment(node, entry, report.report);
         }
         currentView.cursor = result.next_cursor;
         more.hidden = !result.has_more;
@@ -106,7 +106,7 @@ export function renderLeaStatus(item, { document, loadHistory, pause }) {
   const selection = document.getSelection?.();
   if (view.version !== version && !(selection?.anchorNode && view.body.contains(selection.anchorNode) && !selection.isCollapsed)) {
     view.body.replaceChildren();
-    renderAssessment(node, view.body, status.assessment, { source_identity_hash: status.source_identity_hash, source_bundle_hash: status.source_bundle_hash, ...status.latest_update?.artifact_snapshot });
+    renderAssessment(node, view.body, status.assessment);
     view.version = version;
   }
   // Lifecycle diagnostics do not imply a model assessment exists, and stay out
@@ -119,9 +119,24 @@ export function renderLeaStatus(item, { document, loadHistory, pause }) {
   return view.root;
 }
 
-function renderAssessment(node, body, assessment, revision) {
+function renderAssessment(node, body, assessment) {
   if (!assessment) return;
   node("p", assessment.confidence_reason || "", body);
+  const correspondence = assessment.correspondence;
+  if (correspondence) {
+    node("strong", "Assessed scope", body);
+    node("p", correspondence.scope_summary, body);
+    if (correspondence.omitted_source_parts?.length) {
+      node("strong", "Source parts not formalized", body);
+      const list = node("ul", undefined, body);
+      for (const part of correspondence.omitted_source_parts) node("li", part, list);
+    }
+    node("strong", `Document context: ${friendly(correspondence.context_status)}`, body);
+    node("p", correspondence.context_summary, body);
+    for (const evidence of correspondence.context_evidence || []) {
+      node("blockquote", [evidence.path, evidence.start_line ? `line ${evidence.start_line}` : "", evidence.excerpt].filter(Boolean).join(" · "), body);
+    }
+  }
   if (assessment.current_work) node("p", `Current work: ${assessment.current_work}`, body);
   for (const finding of assessment.findings || []) {
     const section = node("section", undefined, body);
@@ -143,9 +158,4 @@ function renderAssessment(node, body, assessment, revision) {
   }
   if (assessment.recommended_next_action) node("p", typeof assessment.recommended_next_action === "string"
     ? assessment.recommended_next_action : assessment.recommended_next_action.detail, body);
-  if (revision) {
-    const details = node("details", undefined, body);
-    node("summary", "Assessed revisions", details);
-    node("pre", JSON.stringify(revision, null, 2), details);
-  }
 }

@@ -1,9 +1,10 @@
+import { workspaceResult, submitWithRecovery } from '../../../packages/lea-workspace-client/index.mjs';
+import { awaitAdmission, requestFailure } from './workflowPolicy.mjs';
 // Lea standalone adapter client for the Overleaf companion.
 //
-// The adapter (apps/lea-standalone/adapter, :8001) drives the prover in-process.
-// A run is started with POST /api/runs, then driven and observed by opening its
-// SSE event stream. Per-run config lives in config/lea.local.toml; the companion
-// passes the prompt, provenance, and optional session/project metadata.
+// The API (:8001) admits commands and serves SQL projections/receipts. A separate
+// worker executes accepted work; observing a receipt or SSE stream never drives
+// execution. The companion submits prompts, provenance and session/project scope.
 
 const TOOL_APPROVAL_DECISION = "always_session";
 
@@ -20,9 +21,9 @@ function toNonNegativeNumber(value) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-function decodeChunk(chunk) {
+function decodeChunk(chunk, decoder) {
   if (typeof chunk === "string") return chunk;
-  if (chunk instanceof Uint8Array) return new TextDecoder().decode(chunk);
+  if (chunk instanceof Uint8Array) return decoder.decode(chunk, { stream: true });
   return String(chunk);
 }
 
@@ -76,6 +77,26 @@ function buildHeaders(apiKey, extra = {}) {
 const ADAPTER_METADATA_TIMEOUT_MS = 5000;
 
 async function fetchJson(fetchImpl, url, options, { timeoutMs } = {}) {
+  const result = await fetchResponseJson(fetchImpl, url, options, {timeoutMs});
+  if (!result.ok || url.includes('/api/workspace/commands/')) return result;
+  try {
+    // The HTTP deadline bounds each exchange, not the accepted worker operation.
+    // Poll only its retained SQL receipt; a slow/restarted API never resubmits it.
+    const body = await workspaceResult(result.body, async id => {
+      const receiptUrl = `${String(url).split('/api/')[0]}/api/workspace/commands/${encodeURIComponent(id)}`;
+      const receipt = await fetchResponseJson(fetchImpl, receiptUrl,
+        {method: 'GET', headers: options?.headers}, {timeoutMs});
+      if (!receipt.ok) throw Object.assign(new Error(receipt.error), {status: receipt.status});
+      return receipt.body;
+    });
+    return {...result, body};
+  } catch (error) {
+    return {ok: false, status: error.status || 409, error: error.message,
+      body: {detail: error.detail, command_id: error.commandId}};
+  }
+}
+
+async function fetchResponseJson(fetchImpl, url, options, {timeoutMs} = {}) {
   if (!(timeoutMs > 0)) return readJson(fetchImpl, url, options);
   const controller = new AbortController();
   let timer;
@@ -116,7 +137,9 @@ async function readJson(fetchImpl, url, options) {
       rawDetail && typeof rawDetail === "object"
         ? rawDetail.message || JSON.stringify(rawDetail)
         : rawDetail;
-    return { ok: false, status: response.status, error: `HTTP ${response.status}: ${detail}`, body };
+    return { ok: false, status: response.status, error: `HTTP ${response.status}: ${detail}`, body,
+      code: rawDetail?.code || rawDetail?.error || body?.error,
+      retryAfterMs: Number(response.headers?.get?.('Retry-After')) * 1000 || 0 };
   }
   return { ok: true, status: response.status, body };
 }
@@ -139,9 +162,9 @@ export function fetchAdapterSettings({ fetchImpl, baseUrl, timeoutMs = ADAPTER_M
   }, { timeoutMs });
 }
 
-export function fetchAdapterModelCatalog({ fetchImpl, baseUrl, timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
-  return fetchJson(fetchImpl, `${baseUrl}/api/models`, {
-    method: "GET",
+export function fetchAdapterModelCatalog({ fetchImpl, baseUrl, refresh = false, timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/models${refresh ? "/refresh" : ""}`, {
+    method: refresh ? "POST" : "GET",
     headers: buildHeaders(null),
   }, { timeoutMs });
 }
@@ -183,13 +206,14 @@ export function fetchAdapterUsageStats({ fetchImpl, baseUrl, timeoutMs = ADAPTER
 // The adapter reconciles synchronously and defers the git commit, so this returns
 // quickly; `files` is `[{ path, content }]`. Best-effort: a transport
 // failure surfaces as `{ ok:false }` and the caller logs/ignores it.
-export function mirrorProjectTexFiles({ fetchImpl, baseUrl, slug, files, mode = "reconcile" }) {
+export function mirrorProjectTexFiles({ fetchImpl, baseUrl, slug, files, mode = "reconcile", overleafProjectTitle = null }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/mirror`, {
     method: "POST",
     headers: buildHeaders(null, { "Content-Type": "application/json" }),
     // mode "upsert" (PLAN 3.2) writes only the provided files — the active-
     // buffer tier; "reconcile" treats the payload as the full truth set.
-    body: JSON.stringify({ source: "overleaf", mode, files: files || [] }),
+    body: JSON.stringify({ source: "overleaf", mode, files: files || [],
+      ...(overleafProjectTitle != null ? { overleaf_project_title: overleafProjectTitle } : {}) }),
   });
 }
 
@@ -276,6 +300,14 @@ export function fetchProjectIdentityBySlug({ fetchImpl, baseUrl, slug }) {
   });
 }
 
+export function initializeOverleafDefaultName({ fetchImpl, baseUrl, slug, overleafProjectTitle }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/identity/default-name`, {
+    method: "POST",
+    headers: buildHeaders(null, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ overleaf_project_title: overleafProjectTitle }),
+  });
+}
+
 export function previewProjectNamespace({ fetchImpl, baseUrl, projectName, namespace = null, excludeProjectId = null }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/projects/namespace-preview`, {
     method: "POST",
@@ -297,6 +329,7 @@ export function updateProjectIdentityBySlug({
   namespace = null,
   expectedNamespace = null,
   createIfMissing = false,
+  overleafProjectTitle = null,
 }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/projects/by-slug/${encodeURIComponent(slug)}/identity`, {
     method: "PUT",
@@ -306,7 +339,8 @@ export function updateProjectIdentityBySlug({
       mode,
       namespace,
       expected_namespace: expectedNamespace,
-      create_if_missing: Boolean(createIfMissing)
+      create_if_missing: Boolean(createIfMissing),
+      ...(overleafProjectTitle != null ? { overleaf_project_title: overleafProjectTitle } : {})
     }),
   });
 }
@@ -429,14 +463,17 @@ export async function startApiRun({
   autonomous = true,
   projectSlug = null,
   projectTitle = null,
+  overleafProjectTitle = null,
   projectNamespace = null,
   origin = null,
   originUrl = null,
   focusFormalizationId = null,
   focusSourceHash = null,
   newFormalization = null,
+  artifactOperation = null,
   purpose = "general",
   sourceBundle = null,
+  sourceContextRef = null,
   allowSourcePause = false,
   idempotencyKey = null,
   timeoutSeconds = null,
@@ -455,22 +492,29 @@ export async function startApiRun({
   // `origin` / `originUrl` record session providence: 'overleaf' + the canonical
   // Overleaf document URL, so the Lea UI can show an origin indicator and open/focus
   // the source document. Independent of the project usage-namespace above.
-  if (["overleaf_solver", "overleaf_continuation"].includes(purpose)) {
+  if (["overleaf_solver", "overleaf_continuation", "overleaf_stub"].includes(purpose)) {
     const health = await fetchAdapterHealth({ fetchImpl, baseUrl, apiKey });
     const capability = health.body?.capabilities?.lea_status;
     if (!health.ok || capability?.version !== 1 || !capability.admission_enabled || capability.source_pause_policy !== 1) {
-      return { ok: false, status: 409, error: "Update/start compatible Lea components: live Lea Status v1 and source pause policy support are required." };
+      if (!health.ok) return health;
+      if (health.body?.ready === false || ['worker_unavailable', 'recovering', 'draining'].includes(health.body?.lifecycle_state)) {
+        return { ok: false, status: 503, code: 'worker_unavailable', error: 'Waiting for the worker.' };
+      }
+      return { ok: false, status: 409, code: 'incompatible_components', error: "Update/start compatible Lea components: live Lea Status v1 and source pause policy support are required." };
     }
     if (!sourceBundle?.bundleHash) return { ok: false, status: 422, error: "Current LaTeX source context is required. Refresh the Overleaf pane before continuing." };
   }
   const body = { message, autonomous, purpose, allow_source_pause: allowSourcePause === true };
+  if (artifactOperation) body.artifact_operation = artifactOperation;
   if (idempotencyKey) body.idempotency_key = idempotencyKey;
   if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) body.timeout_seconds = Math.ceil(timeoutSeconds);
+  if (sourceContextRef) body.source_context_ref = sourceContextRef;
   if (sourceBundle) { body.source_bundle = sourceBundle; body.lea_status_version = 1; }
   if (sessionId) body.session_id = sessionId;
   if (projectSlug) {
     body.project_slug = projectSlug;
     body.project_title = projectTitle || projectSlug;
+    if (overleafProjectTitle != null) body.overleaf_project_title = overleafProjectTitle;
     if (projectNamespace) body.project_namespace = projectNamespace;
   }
   if (origin) body.origin = origin;
@@ -498,7 +542,7 @@ export function startApiContinuation({ fetchImpl, baseUrl, apiKey, runId, source
   return fetchJson(fetchImpl, `${baseUrl}/api/runs/${encodeURIComponent(runId)}/continue`, {
     method: "POST",
     headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
-    body: JSON.stringify({ idempotency_key: idempotencyKey, source_bundle: sourceBundle, source_context_ref: sourceContextRef,
+    body: JSON.stringify({ idempotency_key: idempotencyKey, source_bundle: sourceContextRef?undefined:sourceBundle, source_context_ref: sourceContextRef,
       lea_status_version: 1, timeout_seconds: Math.ceil(timeoutSeconds),
       best_effort: bestEffort === true, allow_source_pause: allowSourcePause === true,
       dependency_resume: dependencyResume === true }),
@@ -518,6 +562,12 @@ export function interruptApiRun({ fetchImpl, baseUrl, apiKey, runId, reason = "u
     headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
     body: JSON.stringify({ reason, source }),
     signal,
+  });
+}
+
+export function cancelReformalization({ fetchImpl, baseUrl, apiKey, operationId }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/reformalizations/${encodeURIComponent(operationId)}/cancel`, {
+    method: "POST", headers: buildHeaders(apiKey),
   });
 }
 
@@ -559,19 +609,37 @@ export function fetchApiSessionDetail({ fetchImpl, baseUrl, apiKey, sessionId })
 // no-op save. Used by the Overleaf lean pane's manual-edit surface
 // (docs/FEATURE-overleaf-lean-pane-manual-edit.md) -- the same primitive the
 // standalone canvas already uses, just called from a second client.
-export function writeApiSessionFile({
+export async function writeApiSessionFile({
   fetchImpl, baseUrl, apiKey, sessionId, path, content, note,
-  formalizationId = null,
+  formalizationId = null, fileRevision = null,
 }) {
-  const body = { path, content };
+  const body = { path, content, check_and_cascade: true };
+  if (fileRevision) body.file_revision = fileRevision;
+  body.idempotency_key = globalThis.crypto?.randomUUID?.() || `edit-${Date.now()}-${Math.random()}`;
   if (note) body.note = note;
   if (formalizationId) body.formalization_id = formalizationId;
-  return fetchJson(fetchImpl, `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/file`, {
+  const send = () => fetchJson(fetchImpl, `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/file`, {
     method: "POST",
     headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
+  try {
+    return await submitWithRecovery(async()=>{
+      const value=await send();
+      if (!value.ok && !value.status) throw new Error(value.error || 'Submission response was lost.');
+      return value;
+    },async()=>{
+      const value=await fetchJson(fetchImpl, `${baseUrl}/api/workspace/receipts?idempotency_key=${encodeURIComponent(body.idempotency_key)}`,
+        {method:'GET',headers:buildHeaders(apiKey)});
+      if (!value.ok) throw Object.assign(new Error(value.error),{status:value.status});
+      return value;
+    });
+  } catch(error) {
+    return {ok:false,error:error.message,idempotencyKey:body.idempotency_key};
+  }
+
 }
+
 
 // Standalone LSP-backed `lean_check` on a session's working file (D2), no
 // run required. Without `author`, back-fills the verdict onto the file's
@@ -626,8 +694,8 @@ function deriveTurnProgress(payload, defaultMaxTurns) {
   return { currentTurn: turn, maxTurns: defaultMaxTurns ?? null };
 }
 
-// Drive + observe one run to terminal `done`. Opening the stream is what runs the
-// job adapter-side; auto-approving keeps it autonomous. Returns the terminal
+// Observe one already-admitted run to terminal `done`; observation starts no work.
+// Auto-approval follows the existing policy. Returns the terminal
 // outcome (NOT usage — caller reads that back via fetchApiRunUsage).
 export async function streamApiRun({
   fetchImpl,
@@ -668,10 +736,11 @@ export async function streamApiRun({
   let recoveryReason = null;
   let waitingDependencies = [];
   let buffer = "";
+  const decoder = new TextDecoder();
 
   const handleFrame = async (frame) => {
     const { type, data } = parseSseFrame(frame);
-    if (!type) return;
+    if (!type || (type==='done'&&['pending','running'].includes(String(data?.status||'').toLowerCase()))) return;
     if (onEvent) await onEvent(type, data);
     if (onProgressUpdated) {
       const progress = deriveTurnProgress(data, maxTurns);
@@ -695,7 +764,7 @@ export async function streamApiRun({
 
   try {
     for await (const chunk of iterateResponseBody(response.body)) {
-      buffer += decodeChunk(chunk);
+      buffer += decodeChunk(chunk, decoder);
       const frames = buffer.split(/\r?\n\r?\n/);
       buffer = frames.pop() || "";
       for (const frame of frames) {
@@ -703,6 +772,7 @@ export async function streamApiRun({
       }
       if (doneStatus !== null) break;
     }
+    buffer += decoder.decode();
     if (doneStatus === null && buffer.trim()) await handleFrame(buffer);
   } catch (error) {
     if (error?.name === "AbortError") return { ok: false, aborted: true, error: runError || "Run stream aborted." };
@@ -803,14 +873,19 @@ export async function runApiProofJob({
   autonomous = true,
   projectSlug = null,
   projectTitle = null,
+  overleafProjectTitle = null,
   projectNamespace = null,
   origin = null,
   originUrl = null,
   focusFormalizationId = null,
   focusSourceHash = null,
   newFormalization = null,
+  artifactOperation = null,
+  existingReformalizationId = null,
+  onOperationQueued = null,
   purpose = "general",
   sourceBundle = null,
+  sourceContextRef = null,
   allowSourcePause = false,
   appendLog = null,
   logPath = null,
@@ -818,12 +893,16 @@ export async function runApiProofJob({
   onRunStarted = null,
   onProgressUpdated = null,
   observerSignal = null,
+  onAdmissionWait = async () => {},
+  shouldCancelAdmission = () => false,
 }) {
   const log = async (line) => {
     if (appendLog && logPath) await appendLog(logPath, line);
   };
 
-  const start = startResponse || (existingRunId ? { ok: true, body: { run_id: existingRunId, session_id: sessionId } } : await startApiRun({
+  let start = startResponse || await awaitAdmission(async () => (existingReformalizationId && !existingRunId
+    ? await fetchJson(fetchImpl, `${baseUrl}/api/reformalizations/${encodeURIComponent(existingReformalizationId)}`, { headers: buildHeaders(apiKey) })
+    : existingRunId ? { ok: true, body: { run_id: existingRunId, session_id: sessionId } } : await startApiRun({
     fetchImpl,
     baseUrl,
     apiKey,
@@ -832,19 +911,36 @@ export async function runApiProofJob({
     autonomous,
     projectSlug,
     projectTitle,
+    overleafProjectTitle,
     projectNamespace,
     origin,
     originUrl,
     focusFormalizationId,
     focusSourceHash,
     newFormalization,
+    artifactOperation,
     purpose,
     sourceBundle,
+    sourceContextRef,
     allowSourcePause,
     idempotencyKey,
     timeoutSeconds: timeoutMs / 1000,
-  }));
-  if (!start.ok) return { ok: false, timedOut: false, error: start.error };
+  })), { onWait: onAdmissionWait, shouldCancel: () => observerSignal?.aborted || shouldCancelAdmission(),
+    retryDelayMs: busyRetryDelayMs, safeToRetry: Boolean(idempotencyKey || existingRunId || existingReformalizationId) });
+  if (!start.ok) return { ...start, ...requestFailure(start), ok: false, timedOut: false, phase: 'admission' };
+
+  if (start.body?.reformalization_id && onOperationQueued) await onOperationQueued(start.body);
+  while (start.body?.reformalization_id && !start.body.run_id) {
+    if (observerSignal?.aborted) return { ok: false, detached: true, error: 'Observation detached; the queued retry is retained.' };
+    if (!['queued', 'active'].includes(start.body.state)) {
+      return { ok: false, timedOut: false, error: start.body.result?.detail || 'The retry was retained without starting a solver.' };
+    }
+    if (onEvent) await onEvent('reformalization_queued', start.body);
+    await new Promise(resolve => setTimeout(resolve, busyRetryDelayMs));
+    const polled = await fetchJson(fetchImpl, `${baseUrl}/api/reformalizations/${encodeURIComponent(start.body.reformalization_id)}`, { headers: buildHeaders(apiKey) });
+    if (polled.ok) start = polled;
+    else if (polled.status != null && polled.status < 500) return { ok: false, timedOut: false, error: polled.error };
+  }
 
   const runId = start.body?.run_id;
   const newSessionId = start.body?.session_id || sessionId;
@@ -994,6 +1090,13 @@ export async function runApiProofJob({
   };
 }
 
+export function fetchInventoryAssessments({ fetchImpl, baseUrl, apiKey, comparisons }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/lea-status/compare`, {
+    method: "POST", headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
+    body: JSON.stringify({ comparisons })
+  }, { timeoutMs: ADAPTER_METADATA_TIMEOUT_MS });
+}
+
 export function fetchCurrentLeaStatus({ fetchImpl, baseUrl, apiKey, formalizationId, sourceIdentityHash, sourceBundleHash, sourceBundle, coverage = "partial", timeoutMs = ADAPTER_METADATA_TIMEOUT_MS }) {
   if (sourceBundle) return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/lea-status/compare`, {
     method: "POST", headers: buildHeaders(apiKey, { "Content-Type": "application/json" }), body: JSON.stringify({ source_bundle: sourceBundle, coverage })
@@ -1007,9 +1110,23 @@ export function fetchCurrentLeaStatus({ fetchImpl, baseUrl, apiKey, formalizatio
 }
 
 export function prepareOverleafSource({ fetchImpl, baseUrl, apiKey, formalizationId }) {
-  return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/overleaf-source/prepare`, {
-    method: "POST", headers: buildHeaders(apiKey), signal: AbortSignal.timeout(50000)
+  return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/published-source`, {
+    method: "GET", headers: buildHeaders(apiKey), signal: AbortSignal.timeout(5000)
   });
+}
+
+export function fetchFormalizationReview({ fetchImpl, baseUrl, apiKey, formalizationId, sourceContextRef }) {
+  const query = new URLSearchParams();
+  if (sourceContextRef) query.set('source_context_ref', sourceContextRef);
+  return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/review?${query}`, {
+    method: 'GET', headers: buildHeaders(apiKey)
+  }, { timeoutMs: ADAPTER_METADATA_TIMEOUT_MS });
+}
+
+export function submitFormalizationReview({ fetchImpl, baseUrl, apiKey, formalizationId, decision }) {
+  return fetchJson(fetchImpl, `${baseUrl}/api/formalizations/${encodeURIComponent(formalizationId)}/review-decisions`, {
+    method: 'POST', headers: buildHeaders(apiKey, { 'Content-Type': 'application/json' }), body: JSON.stringify(decision)
+  }, { timeoutMs: ADAPTER_METADATA_TIMEOUT_MS });
 }
 export function fetchLeaStatusHistory({ fetchImpl, baseUrl, apiKey, formalizationId, after }) {
   const query = new URLSearchParams({ limit: "50" });

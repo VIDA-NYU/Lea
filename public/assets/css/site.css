@@ -1863,6 +1863,17 @@ h3:hover .anchor,
     padding-inline: 1.15rem;
   }
 
+  .header-inner {
+    height: auto;
+    min-height: 3.75rem;
+    padding-block: 0.5rem;
+  }
+
+  .nav {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
   .section {
     padding: 3rem 0;
   }

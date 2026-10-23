@@ -93,10 +93,11 @@ const PANE_STATUS_LABELS = {
   disproved: "counterexample",
   "in-progress": "in progress",
   paused: "paused",
-  "needs-review": "Needs review",
+  "needs-review": "unchecked",
   invalid: "invalid",
   stale: "out of date",
   error: "error",
+  synchronizing: "updating status",
   mixed: "mixed",
   unknown: "unknown"
 };
@@ -175,8 +176,11 @@ const PROGRESS_SEGMENT_DEFS = [
   { id: "success", label: "Verified", countKey: "success" },
   { id: "disproved", label: "Disproved", countKey: "disproved" },
   { id: "sorry-stubbed", label: "Sorry-stubbed", countKey: "sorryStubbed" },
+  { id: "needs-review", label: "Needs review", countKey: "needsReview" },
   { id: "failed", label: "Failed", countKey: "failed" },
   { id: "out-of-date", label: "Out of date", countKey: "outOfDate" },
+  { id: "running", label: "Running", countKey: "inProgress" },
+  { id: "unconfirmed", label: "Awaiting status", countKey: "unconfirmed" },
   { id: "unformalized", label: "Unformalized", countKey: "unformalized" }
 ];
 
@@ -410,6 +414,7 @@ export function aggregatePaneStatus(items) {
   if (statuses.includes("error")) return "error";
   if (statuses.includes("invalid")) return "invalid";
   if (statuses.includes("stale")) return "stale";
+  if (hasPendingPaneObservations(items)) return "synchronizing";
   if (statuses.includes("missing-stub")) return "missing-stub";
   if (statuses.includes("stub-generated")) return "stub-generated";
   if (statuses.every((status) => SUCCESS_PANE_STATUSES.has(status))) {
@@ -422,6 +427,10 @@ export function aggregatePaneStatus(items) {
 
 export function paneProgressBucketForItem(item) {
   const status = String(item?.status || item?.effectiveStatus || "unknown").toLowerCase();
+  if (PROGRESS_IN_PROGRESS_STATUSES.has(status)) return "inProgress";
+  if (hasPendingPaneObservations([item]) || ["unknown", "unavailable", "offline"].includes(status)) return "unconfirmed";
+  if (item?.inProgress) return "inProgress";
+  if (["needs-review", "needs_review"].includes(status)) return "needsReview";
   if (PROGRESS_SUCCESS_STATUSES.has(status)) return "success";
   if (status === "disproved") return "disproved";
   if (PROGRESS_STUB_STATUSES.has(status)) return "sorryStubbed";
@@ -436,20 +445,31 @@ export function summarizePaneProgress(items) {
     success: 0,
     disproved: 0,
     sorryStubbed: 0,
+    needsReview: 0,
     failed: 0,
     outOfDate: 0,
     unformalized: 0,
+    unconfirmed: 0,
     inProgress: 0
   };
   for (const item of Array.isArray(items) ? items : []) {
     summary.total += 1;
     summary[paneProgressBucketForItem(item)] += 1;
-    const status = String(item?.status || "").toLowerCase();
-    if (item?.inProgress || PROGRESS_IN_PROGRESS_STATUSES.has(status)) {
-      summary.inProgress += 1;
-    }
   }
   return summary;
+}
+
+export function formatPaneProgressSummary(summary) {
+  const parts = [`${Number(summary?.success || 0)} verified`];
+  appendProgressLabelPart(parts, summary?.disproved, "disproved");
+  appendProgressLabelPart(parts, summary?.inProgress, "running");
+  appendProgressLabelPart(parts, summary?.unconfirmed, "awaiting SQL status");
+  appendProgressLabelPart(parts, summary?.needsReview, "needs review");
+  appendProgressLabelPart(parts, summary?.sorryStubbed, "sorry-stubbed");
+  appendProgressLabelPart(parts, summary?.failed, "failed");
+  appendProgressLabelPart(parts, summary?.outOfDate, "out of date");
+  appendProgressLabelPart(parts, summary?.unformalized, "unformalized");
+  return parts.join(" · ");
 }
 
 export function paneProgressSegments(summary) {
@@ -480,6 +500,8 @@ export function formatPaneProgressLabel(path, summary) {
   appendProgressLabelPart(parts, summary?.failed, "failed");
   appendProgressLabelPart(parts, summary?.outOfDate, "out of date");
   appendProgressLabelPart(parts, summary?.unformalized, "unformalized");
+  appendProgressLabelPart(parts, summary?.unconfirmed, "awaiting status");
+  appendProgressLabelPart(parts, summary?.needsReview, "needs review");
   appendProgressLabelPart(parts, summary?.inProgress, "in progress");
   return `${parts.join(", ")}.`;
 }
@@ -526,18 +548,25 @@ export function hasInProgressItems(items) {
   return Array.isArray(items) && items.some((item) => item && item.inProgress);
 }
 
+// Observation work continues after the solver finishes. It does not imply a
+// compiler error, a missing proof, or current verification of an earlier result.
+export function hasPendingPaneObservations(items) {
+  return Array.isArray(items) && items.some(item => item && (item.status === "synchronizing"
+    || item.projection && item.projection.state !== "observed"));
+}
+
 // Pane statuses included by the project-level "Formalize all" action. Completed
 // work stays out of a batch even though its per-item Re-formalize action remains
 // available.
 const BATCH_FORMALIZABLE_PANE_STATUSES = new Set([
-  "missing-stub", "stub-generated", "invalid", "unknown", "error", "paused", "needs-review"
+  "missing-stub", "stub-generated", "invalid", "unknown", "error", "paused"
 ]);
 
 // Whether the pane should offer a Formalize / Re-formalize action for an item.
 // Any valid marker target can be rerun, including a settled valid, defined, or
 // disproved item; only an active run suppresses the action.
 export function canFormalizePaneItem(item) {
-  if (!item || !item.formalizable || item.inProgress) return false;
+  if (!item || !item.formalizable || item.inProgress || hasPendingPaneObservations([item])) return false;
   return item.status !== "in-progress";
 }
 
@@ -561,7 +590,7 @@ export function canContinueBestEffort(item) {
 // artifact yet — definitions always get a full body, and once a stub or proof
 // exists, Formalize / Re-formalize is the right action.
 export function canStubPaneItem(item) {
-  if (!item || !item.formalizable || item.inProgress) return false;
+  if (!item || !item.formalizable || item.inProgress || hasPendingPaneObservations([item])) return false;
   if (item.leanKind === "def") return false;
   return item.status === "missing-stub";
 }
@@ -658,20 +687,11 @@ export function githubImportMatchedTargetKeys(preview, targets) {
   return githubImportMatchedTargets(preview, targets).map((target) => target.key);
 }
 
-// These statuses imply a recorded run or artifact. A saved session also stays
-// reachable when source freshness, review, or an unavailable check changes the
-// item's status: navigation to its history does not certify the formalization.
-const LEA_UI_VIEWABLE_PANE_STATUSES = new Set([
-  "valid", "defined", "disproved", "in-progress",
-  "stub-generated", "stale", "invalid", "paused"
-]);
-
-// Whether the pane should offer a "View in Lea UI" action for an item. Needs a
-// stable target identity (like chat) to resolve the associated Lea session.
+// Opening LeaChat requires a recorded session. A Lean artifact or status alone
+// does not establish one; saved sessions remain reachable regardless of status.
 export function canViewPaneItemInLeaUi(item) {
   if (!item || !(item.leanDeclarationName || item.label)) return false;
-  return Boolean(item.leaSessionId || item.leaSessionUrl || item.leanArtifactPath)
-    || LEA_UI_VIEWABLE_PANE_STATUSES.has(item.status);
+  return Boolean(item.leaSessionId || item.leaSessionUrl);
 }
 
 // --- Lean-pane chat mirror -------------------------------------------------
@@ -752,8 +772,8 @@ export function canEditPaneItem(item) {
 
 // --- Item action hierarchy ---------------------------------------------------
 
-// The full action set for a pane item. The renderer keeps Formalize and Go to
-// source in the summary, with the remaining actions in expanded details:
+// The full action set for a pane item. The renderer keeps Formalize, Go to
+// source and Open in LeaChat in the summary, with the rest in expanded details:
 //   primary  -- at most ONE status-derived accented text button (repair wins
 //               over formalize: breakage attribution means the guided path).
 //   rail     -- always-relevant navigation, rendered as icon buttons.
@@ -792,7 +812,7 @@ export function paneItemActions(item, { editing = false } = {}) {
 
   const rail = [{ id: "go-to-source", label: "Go to source" }];
   if (canChatPaneItem(item)) rail.push({ id: "chat", label: "Chat" });
-  if (canViewPaneItemInLeaUi(item)) rail.push({ id: "view-in-lea", label: "Open in LeaChat" });
+  if (canChatPaneItem(item)) rail.push({ id: "view-in-lea", label: "Open in LeaChat" });
 
   const overflow = [];
   if (wait && !editing) {
@@ -1012,7 +1032,8 @@ export function formatRepairOutcome(entry, operation = "repair") {
     case "incomplete": return entry.reason === "dependency_wait"
       ? `${label}: waiting for a supporting result.${entry.detail ? ` ${entry.detail}` : ""} Inspect Shared mathematics for the result and its next action.`
       : `${label}: incomplete${entry.reason ? ` — ${String(entry.reason).replaceAll("_", " ")}` : "."}${entry.detail ? ` · ${entry.detail}` : ""}${entry.recoverable ? " · Resume available." : ""}`;
-    case "needs_review": return operation === "formalize"
+    case "needs_review": return entry.reason === 'awaiting_approval'
+      ? `${label}: awaiting approval.` : operation === "formalize"
       ? `${label}: Needs review${entry.reason ? ` — ${entry.reason}` : "."}`
       : `${label}: repaired, but the statement changed -- review required.`;
     case "canceled": return `${label}: stopped.`;

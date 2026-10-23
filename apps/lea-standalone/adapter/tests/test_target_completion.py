@@ -35,7 +35,7 @@ def test_target_identity_rejects_helpers_claims_comments_and_ambiguous_names():
     assert match is None and "thmD" in reason
 
 
-def test_partial_target_is_reviewed_until_successful_target_run(tmp_path, monkeypatch):
+def test_partial_helper_is_unchecked_until_successful_target_run(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
     db.init_db()
     proof_root = tmp_path / "proofs"
@@ -67,36 +67,37 @@ def test_partial_target_is_reviewed_until_successful_target_run(tmp_path, monkey
     store.update_run(first["id"], "needs_review", result_kind="needs_review")
 
     def status():
-        return project_target_status_by_slug(
+        return project_target_status_by_slug.worker(
             project["slug"], declarations="thmB", formalization_ids=target["id"]
         )["targets"][0]
 
     initial_read = formalizations.get(target["id"])
-    assert initial_read["validity_status"] == "needs_review"
-    assert initial_read["check_current"] is True
+    assert initial_read["validity_status"] == "unchecked"
+    assert initial_read["check_current"] is True  # The helper's file check is independent of target certification.
+    assert initial_read["certification"] is None
     partial = status()
-    assert partial["validity_status"] == "needs_review"
+    assert partial["validity_status"] == "unchecked"
     assert partial["recorded"] is False
     assert partial["exists"] is True
     assert partial["declaration_present"] is False
     assert partial["check_current"] is True  # The helper itself passed Lean.
-    assert project_target_status_by_slug(project["slug"], declarations="thmB")["targets"][0]["validity_status"] == "needs_review"
+    assert project_target_status_by_slug.worker(project["slug"], declarations="thmB")["targets"][0]["validity_status"] == "unchecked"
 
-    # A later chat turn and a manual check cannot clear the review verdict.
+    # A later chat turn and a helper check cannot certify the missing target.
     chat = store.create_run(session["id"], "model", None, 3,
                             project_id=project["id"], focus_formalization_id=target["id"])
     store.update_run(chat["id"], "answered", result_kind="answered")
     store.add_code_step(session["id"], None, "Helper.lean", content=helper,
                         check_status="ok", author="user", formalization_id=target["id"])
-    assert formalizations.get(target["id"])["validity_status"] == "needs_review"
-    assert status()["validity_status"] == "needs_review"
+    assert formalizations.get(target["id"])["validity_status"] == "unchecked"
+    assert status()["validity_status"] == "unchecked"
 
     # Editing the file on disk invalidates the recorded passing check.
     theorem = "import Mathlib\n\ntheorem thmB : True := by trivial\n"
     artifact.write_text(theorem)
     stale = status()
     assert stale["check_current"] is False
-    assert stale["validity_status"] == "needs_review"
+    assert stale["validity_status"] == "unchecked"
 
     # Only a later successful target run can certify the new current revision.
     second = store.create_run(session["id"], "model", None, 3,
@@ -146,7 +147,7 @@ def test_batch_explanation_is_informational_and_hidden_after_newer_work(tmp_path
             values ('formalize-batch-old',?,'hash','2026-01-01','2026-01-02',0,'ready',?,'t','t')""",
             (project["id"], json.dumps({"items": [{"targetKind": "theorem", "targetLabel": "target", "state": "skipped", "reason": "depends_on_incomplete:base"}]})))
     def status():
-        return project_target_status_by_slug(project["slug"], declarations="target")["targets"][0]
+        return project_target_status_by_slug.worker(project["slug"], declarations="target")["targets"][0]
     before = status()
     assert before["last_batch_outcome"]["reason"] == "depends_on_incomplete:base"
     assert before["check_current"] is False
@@ -182,7 +183,7 @@ def test_disproof_evidence_does_not_require_original_declaration(tmp_path, monke
         artifact_kind="proof", formalization_id=target["id"])
     store.update_run(run["id"], "disproved", result_kind="disproved")
     def status():
-        return project_target_status_by_slug(project["slug"], declarations="target")["targets"][0]
+        return project_target_status_by_slug.worker(project["slug"], declarations="target")["targets"][0]
     checked = status()
     assert checked["validity_status"] == "disproved"
     assert checked["declaration_present"] is False
@@ -194,7 +195,7 @@ def test_disproof_evidence_does_not_require_original_declaration(tmp_path, monke
     assert status()["exists"] is False
 
 
-def test_historical_compile_promoted_definition_is_now_reviewed_without_rewriting_history(tmp_path, monkeypatch):
+def test_historical_compile_promoted_definition_stays_unchecked_without_rewriting_history(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.sqlite3")
     db.init_db()
     session = store.create_session("Formalize thmD")
@@ -211,9 +212,9 @@ def test_historical_compile_promoted_definition_is_now_reviewed_without_rewritin
                         artifact_kind="definition", formalization_id=target["id"])
     store.update_run(run["id"], "proved", result_kind="defined")
 
-    assert formalizations.get(target["id"])["validity_status"] == "needs_review"
-    assert store.session_detail(session["id"])["status"] == "needs_review"
-    assert next(item for item in store.list_sessions() if item["id"] == session["id"])["status"] == "needs_review"
+    assert formalizations.get(target["id"])["validity_status"] == "unchecked"
+    assert store.session_detail(session["id"])["status"] == "unchecked"
+    assert next(item for item in store.list_sessions() if item["id"] == session["id"])["status"] == "unchecked"
     assert store.get_run(run["id"])["result_kind"] == "defined"
 
     # A historical definition result cannot certify even a present theorem.
@@ -223,7 +224,11 @@ def test_historical_compile_promoted_definition_is_now_reviewed_without_rewritin
                         content="theorem thmD : True := by trivial", check_status="ok",
                         artifact_kind="proof", formalization_id=target["id"])
     store.update_run(second["id"], "proved", result_kind="defined")
-    assert formalizations.get(target["id"])["validity_status"] == "needs_review"
+    current = formalizations.get(target["id"])
+    assert current["validity_status"] == "unchecked"
+    assert current["certification"] is None
+    assert current["review"]["eligible"] is False
+    assert store.get_run(second["id"])["result_kind"] == "defined"
 
 
 # This module mocks compiler behavior; bind those mock verdicts to their inputs.

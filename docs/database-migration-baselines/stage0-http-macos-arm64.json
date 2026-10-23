@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-16T20:47:21.678257+00:00",
+  "workload": "synthetic history and SQLite operations; no paid solver or compiler",
+  "environment": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "release": "25.5.0",
+    "python": "3.14.4",
+    "sqlite": "3.53.1"
+  },
+  "measurements": [],
+  "http": {
+    "startup_ms": 2203.473,
+    "health": {
+      "ok": true,
+      "runtime_id": "2afb52048caf4e8cb0c7edf3f523a58a",
+      "ready": true,
+      "restart_supported": false,
+      "lifecycle_state": "ready",
+      "active_runs": 0,
+      "active_operations": 0,
+      "queued_runs": 0,
+      "recovery_capability_version": 1,
+      "capabilities": {
+        "lea_status": {
+          "version": 1,
+          "admission_enabled": true,
+          "independent_checks": false,
+          "source_pause_policy": 1
+        },
+        "overleaf_source_refresh": {
+          "version": 1
+        },
+        "project_library": {
+          "version": 1,
+          "dependency_coordination": true
+        },
+        "reformalization": {
+          "version": 1,
+          "staging": true,
+          "serialization": "project",
+          "automatic_shared_files": true,
+          "admission_enabled": true
+        }
+      }
+    },
+    "health_read": {
+      "samples": 24,
+      "p50_ms": 2.255,
+      "p95_ms": 3.105,
+      "max_ms": 3.107
+    },
+    "disconnected_observer_does_not_cancel": true,
+    "reconnect_first_frame_matches": true,
+    "parked_session_detail": {
+      "samples": 24,
+      "p50_ms": 7.351,
+      "p95_ms": 8.072,
+      "max_ms": 8.079
+    },
+    "cancellation_acceptance": {
+      "samples": 8,
+      "p50_ms": 4.503,
+      "p95_ms": 4.937,
+      "max_ms": 4.937
+    },
+    "session_list": {
+      "samples": 24,
+      "p50_ms": 4.682,
+      "p95_ms": 5.605,
+      "max_ms": 10.022
+    }
+  },
+  "executor_capability": {
+    "available": true,
+    "backend": "macos-seatbelt",
+    "reason": null
+  },
+  "peak_rss_platform_units": 55984128,
+  "limitations": [
+    "Synthetic fixtures do not measure provider/Lean latency or production project throughput.",
+    "Queue sweep measures bounded storage cost; durable command scheduler ships in Stage 3.",
+    "WAL trial changes only the temporary database; current application journal policy is unchanged."
+  ],
+  "source_sha256": {
+    "scripts/benchmark-db-boundary.py": "26492d721fbda50e0cde1bf771c4091df5de84f8202b80e451990818e1701e4d",
+    "apps/lea-standalone/adapter/app/db.py": "cd62f5642da5b777ce1d87746456e98a7ec8c72f8075deffec4f9ca425b719a2",
+    "apps/lea-standalone/adapter/app/store.py": "811216320c2c057ea49c767e3b5c480eeee3b9c5a9ff080c242dc277fe1e771b",
+    "apps/lea-standalone/adapter/app/bridge.py": "23a5c3dd8fab55940d5ff7e86df028304246e5884ff123a40062b6136aecc7ac"
+  },
+  "source_sha256_note": "Recorded immediately after measurement, before Stage 1 adapter edits; benchmark diagnostics/provenance fields added after early captures."
+}

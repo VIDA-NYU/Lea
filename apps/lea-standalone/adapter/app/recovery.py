@@ -64,37 +64,47 @@ def _file_fingerprint(path: Path) -> str | None:
         return None
 
 
-def _dependency_fingerprints(repo: Path) -> dict:
+def _dependency_fingerprints(repo: Path, *, snapshot=None) -> dict:
     """Record the enclosing Lake configuration and installed package revisions."""
     root = next((p for p in [repo, *repo.parents]
                  if (p / "lakefile.lean").exists() or (p / "lakefile.toml").exists()), None)
     if root is None:
         return {}
-    values = {name: _file_fingerprint(root / name) for name in
+    observe=(lambda path:snapshot.observation(path)[0]) if snapshot else _file_fingerprint
+    if snapshot:
+        from lea.check_evidence import file_version
+        for candidate in (root/'.lake/packages',root/'lake-packages',root/'proofs'):
+            snapshot.topology[str(candidate)]=file_version(candidate)
+    values = {name: observe(root / name) for name in
               ("lakefile.lean", "lakefile.toml", "lake-manifest.json", "lean-toolchain")}
     for packages in (root / ".lake/packages", root / "lake-packages"):
         if not packages.is_dir():
             continue
         for package in sorted(packages.iterdir()):
             gitdir = package / ".git"
+            if snapshot:snapshot.topology[str(gitdir)]=file_version(gitdir)
             if gitdir.is_file():
+                if snapshot:snapshot.observation(gitdir)
                 entry = gitdir.read_text().strip()
                 if entry.startswith("gitdir: "):
                     gitdir = (package / entry[8:]).resolve()
             head = gitdir / "HEAD"
-            values[f"{package.name}:HEAD"] = _file_fingerprint(head)
+            values[f"{package.name}:HEAD"] = observe(head)
             if head.exists():
                 ref = head.read_text().strip()
                 if ref.startswith("ref: "):
-                    values[f"{package.name}:revision"] = _file_fingerprint(gitdir / ref[5:])
-                    values[f"{package.name}:packed-refs"] = _file_fingerprint(gitdir / "packed-refs")
+                    values[f"{package.name}:revision"] = observe(gitdir / ref[5:])
+                    values[f"{package.name}:packed-refs"] = observe(gitdir / "packed-refs")
     # Sibling proof modules share this Lake project and may be imported by the
     # target. Their content is outside the target's own Git repository.
     proofs = root / "proofs"
     if proofs.is_dir():
+        if snapshot:
+            for directory in proofs.rglob('*'):
+                if directory.is_dir():snapshot.topology[str(directory)]=file_version(directory)
         for path in sorted(proofs.rglob("*.lean")):
             if not path.is_relative_to(repo):
-                values[str(path.relative_to(root))] = _file_fingerprint(path)
+                values[str(path.relative_to(root))] = observe(path)
     return values
 
 
@@ -103,9 +113,17 @@ def manifest(*, run: dict, config, repo: Path) -> dict:
     settings = asdict(config)
     skill_paths = settings.pop("skills", [])
     role_roots = settings.pop("agent_dirs", [])
+    if not settings.get("stub_generation"):
+        settings.pop("stub_generation", None)
     settings.pop("status_context", None)  # the saved execution position owns this mutable context
     settings.pop("project_context", None)  # fresh reservations belong to the current execution segment
     settings.pop("skills_root", None)
+    if not settings.get('selected_result'):
+        settings.pop('selected_result', None)  # canonical checkpoints retain their existing config contract
+    if not settings.get('target_declaration'):
+        settings.pop('target_declaration', None)
+    if not settings.get('mathematical_request'):
+        settings.pop('mathematical_request', None)
     settings["lea_root"] = str(settings.get("lea_root") or "")
     files: dict[str, str | None] = {}
     if repo.exists():
@@ -121,10 +139,15 @@ def manifest(*, run: dict, config, repo: Path) -> dict:
         if root_path.exists():
             role_contents.extend(_file_fingerprint(p) for p in sorted(root_path.rglob("*.yaml")))
             role_contents.extend(_file_fingerprint(p) for p in sorted(root_path.rglob("*.md")))
-    from lea import agent, mcp, registry, tools, project_library_tools, providers, condenser, events, stall, usage, subagents, check_evidence, lean_checks, check_runtime, interface, lsp_daemon, imports
+    from lea import agent, mcp, registry, tools, project_library_tools, providers, condenser, events, stall, usage, subagents, check_evidence, lean_checks, check_runtime, interface, lsp_daemon, imports, execution, result_selection, safeverify
     tool_code = [_file_fingerprint(Path(module.__file__))
                  for module in (agent, tools, registry, mcp, project_library_tools,
-                                providers, condenser, events, stall, usage, subagents, check_evidence, lean_checks, check_runtime, interface, lsp_daemon, imports)]
+                                providers, condenser, events, stall, usage, subagents, check_evidence, lean_checks, check_runtime, interface, lsp_daemon, imports, execution, result_selection, safeverify)]
+    tool_code.extend(_file_fingerprint(path) for path in (result_selection.INSPECTOR,
+        safeverify.SAFE_VERIFY_DIR / 'Main.lean', safeverify.SAFE_VERIFY_DIR / 'SafeVerify/Monads.lean'))
+    # Target agreement and exact-statement completion are executable inputs too.
+    tool_code.extend(_file_fingerprint(Path(__file__).with_name(name))
+                     for name in ('target_contexts.py', 'target_completion.py', 'artifacts.py'))
     tool_modules = {}
     for name in config.tool_modules:
         try:
@@ -337,10 +360,11 @@ def start_attempt(run_id: str) -> str:
 
 
 class Recorder:
-    def __init__(self, run_id: str, attempt_id: str, manifest_value):
+    def __init__(self, run_id: str, attempt_id: str, manifest_value, *, command_token=None):
         self.run_id = run_id
         self.attempt_id = attempt_id
         self.manifest = manifest_value
+        self.command_token = command_token
 
     def __call__(self, event: str, payload: dict) -> None:
         try:
@@ -364,6 +388,9 @@ class Recorder:
                                 (select id from run_checkpoints where run_id = ? order by id desc limit 2)""",
                              (self.run_id, self.run_id))
             elif event == "invocation_start":
+                if self.command_token:
+                    from .run_commands import authorize_invocation
+                    authorize_invocation(conn,self.run_id,self.command_token,payload)
                 conn.execute("""insert into run_invocations(id, run_id, attempt_id, kind, name,
                                 turn, call_index, input_json, started_at)
                                 values (?, ?, ?, ?, ?, ?, ?, ?, ?)""",

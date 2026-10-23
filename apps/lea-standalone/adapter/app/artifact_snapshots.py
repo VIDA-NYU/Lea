@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from . import formalizations, store
-from .read_projections import read_projection
+from .read_projections import read_projection, current_artifact_snapshots
 _IMPORT_LINE = re.compile(r"(?m)^\s*import\s+([^\n-]+)")
 
 def _imported_modules(code: str) -> list[str]:
@@ -19,8 +19,6 @@ def _imported_modules(code: str) -> list[str]:
 def _transitive_project_dependencies(project_id: str | None, roots: list[dict]) -> list[dict]:
     if not project_id:
         return []
-    artifacts = store.list_artifacts_for_scope(project_id)
-    by_module = {item.get("module_name"): item for item in artifacts if item.get("module_name")}
     queued = [module for item in roots for module in _imported_modules(item.get("code") or "")]
     seen_modules: set[str] = set()
     seen_paths = {str(item.get("path") or "") for item in roots}
@@ -30,7 +28,14 @@ def _transitive_project_dependencies(project_id: str | None, roots: list[dict]) 
         if module in seen_modules:
             continue
         seen_modules.add(module)
-        artifact = by_module.get(module)
+        # Record only actual import lookups, including missing modules. Reading
+        # the entire registry would make unrelated artifact publication a
+        # dependency of every target observation.
+        from . import db
+        with db.connect() as conn:
+            row = conn.execute('select * from artifacts where scope=? and module_name=? order by updated_at desc,id desc limit 1',
+                               (project_id, module)).fetchone()
+        artifact = dict(row) if row else None
         if not artifact:
             continue
         path = str(artifact.get("path") or "")
@@ -57,6 +62,30 @@ def _transitive_project_dependencies(project_id: str | None, roots: list[dict]) 
 
 @read_projection
 def _snapshot(formalization_id: str, *, run_id: str | None = None) -> tuple[dict, list[dict]] | None:
+    cache = current_artifact_snapshots()
+    # Live and historical assessments in one response must describe the same
+    # canonical revision. Discard this reuse when the response ends or retries;
+    # attempt drafts and publication never reuse a captured canonical snapshot.
+    if run_id is not None or cache is None:
+        return _capture_snapshot(formalization_id, run_id=run_id)
+    if formalization_id not in cache:
+        cache[formalization_id] = _capture_snapshot(formalization_id)
+    return cache[formalization_id]
+
+
+def _capture_snapshot(formalization_id: str, *, run_id: str | None = None) -> tuple[dict, list[dict]] | None:
+    if run_id:
+        from . import reformalizations
+        op = reformalizations.for_run(run_id)
+        if op and op['formalization_id'] == formalization_id:
+            drafts = reformalizations.drafts(op['id'])
+            roots = [{**d, 'id': str(d['id']), 'role': 'generated',
+                      'blob_sha256': reformalizations.digest(d['code'])} for d in drafts]
+            refs = [{'path': d['path'], 'blob_id': d['blob_id'], 'sha256': d['blob_sha256'],
+                     'code_step_id': d['id'], 'role': 'generated', 'artifact_scope': 'attempt',
+                     'check_status': (d.get('evidence') or {}).get('status')} for d in roots]
+            return {'revision_token': reformalizations.digest(reformalizations.dumps(refs)),
+                    'files': refs, 'artifact_scope': 'attempt'}, roots
     current = formalizations.current_snapshot(formalization_id)
     if not current or not current.get("revision_token") or not current.get("files"):
         return None

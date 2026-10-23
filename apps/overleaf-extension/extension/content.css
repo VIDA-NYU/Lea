@@ -355,7 +355,7 @@
   position: fixed;
   right: 20px;
   bottom: 66px;
-  z-index: 2147483646;
+  z-index: 2147483647;
   display: grid;
   place-items: center;
   width: 38px;
@@ -371,6 +371,51 @@
 .ol-lean-pane-trigger:hover {
   border-color: var(--ol-accent);
   background: var(--ol-panel-2);
+}
+
+.ol-lean-activity-spinner,
+.ol-lean-activity-label {
+  display: none;
+  pointer-events: none;
+}
+
+.ol-lean-pane-trigger.is-working .ol-lean-activity-spinner {
+  position: absolute;
+  inset: -4px;
+  display: block;
+  border: 2px solid var(--ol-accent-soft);
+  border-top-color: var(--ol-accent);
+  border-right-color: var(--ol-accent);
+  border-radius: 50%;
+  animation: ol-lean-activity-spin 900ms linear infinite;
+}
+
+.ol-lean-pane-trigger.is-working .ol-lean-activity-label {
+  position: absolute;
+  right: 46px;
+  display: block;
+  padding: 7px 10px;
+  border: 1px solid var(--ol-line);
+  border-radius: 8px;
+  color: var(--ol-ink);
+  background: var(--ol-panel);
+  box-shadow: var(--ol-shadow-float);
+  font: 500 12px/1.4 var(--ol-sans);
+  white-space: nowrap;
+}
+
+.ol-lean-pane-trigger[data-page-hidden="true"] .ol-lean-activity-spinner {
+  animation-play-state: paused;
+}
+
+@keyframes ol-lean-activity-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ol-lean-pane-trigger.is-working .ol-lean-activity-spinner {
+    animation: none;
+  }
 }
 
 .ol-lean-settings-trigger:hover {
@@ -1111,6 +1156,23 @@ body.ol-lean-pane-resizing {
   line-height: 1.5;
 }
 
+.ol-lean-project-pane-refresh-warning.is-pending {
+  color: var(--ol-ink-2);
+  background: var(--ol-panel-2);
+  border-color: var(--ol-line);
+}
+
+.ol-lean-project-pane-runtime {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  color: var(--ol-ink-2);
+  background: var(--ol-panel-2);
+  border: 1px solid var(--ol-line);
+  border-radius: var(--ol-radius-sm);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .ol-lean-project-pane-diagnostics p {
   margin: 0;
 }
@@ -1209,18 +1271,10 @@ body.ol-lean-pane-resizing {
   grid-column: auto;
 }
 
-.ol-lean-project-progress-outcomes {
+.ol-lean-project-progress-summary {
   grid-column: 2 / -1;
-  font: 550 11px/1.4 var(--ol-sans);
-}
-
-.ol-lean-project-progress-outcome-verified {
   color: var(--ol-ink-2);
-}
-
-.ol-lean-project-progress-outcome-disproved {
-  color: var(--ol-ink);
-  font-weight: 650;
+  font: 550 11px/1.5 var(--ol-sans);
 }
 
 .ol-lean-project-progress {
@@ -1235,25 +1289,6 @@ body.ol-lean-pane-resizing {
   border: 1px solid var(--ol-line);
   border-radius: 999px;
   background: var(--ol-line-2);
-}
-
-.ol-lean-project-progress-in-progress::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.22) 0,
-    rgba(255, 255, 255, 0.22) 25%,
-    transparent 25%,
-    transparent 50%,
-    rgba(255, 255, 255, 0.22) 50%,
-    rgba(255, 255, 255, 0.22) 75%,
-    transparent 75%,
-    transparent 100%
-  );
-  background-size: 12px 12px;
-  pointer-events: none;
 }
 
 .ol-lean-project-progress-segment {
@@ -1274,12 +1309,24 @@ body.ol-lean-pane-resizing {
   background: var(--ol-amber);
 }
 
+.ol-lean-project-progress-segment-needs-review { background: var(--ol-amber); }
+
 .ol-lean-project-progress-segment-failed {
   background: var(--ol-red);
 }
 
 .ol-lean-project-progress-segment-unformalized {
   background: var(--ol-line-2);
+}
+
+.ol-lean-project-progress-segment-unconfirmed {
+  box-sizing: border-box;
+  border: 1px dashed var(--ol-line-2);
+  background: var(--ol-panel);
+}
+
+.ol-lean-project-progress-segment-running {
+  background: var(--ol-accent);
 }
 
 .ol-lean-project-progress-segment-out-of-date {
@@ -1296,6 +1343,7 @@ body.ol-lean-pane-resizing {
 }
 
 .ol-lean-project-item {
+  container-type: inline-size;
   margin-bottom: 8px;
   padding: 10px 12px;
   border: 1px solid var(--ol-line);
@@ -1321,6 +1369,13 @@ body.ol-lean-pane-resizing {
   grid-template-areas: "identity identity" "checks actions";
   align-items: end;
   gap: 8px 10px;
+}
+
+@container (max-width: 380px) {
+  .ol-lean-project-item-summary {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "identity" "checks" "actions";
+  }
 }
 
 .ol-lean-project-item-header {
@@ -1384,13 +1439,15 @@ body.ol-lean-pane-resizing {
 .ol-lean-project-summary-actions {
   grid-area: actions;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
   min-width: 0;
 }
 
-.ol-lean-project-summary-formalize {
+.ol-lean-project-summary-formalize,
+.ol-lean-project-summary-actions .ol-lean-open-chat {
   min-height: 30px;
   padding: 0 9px;
   font-size: 11.5px;
@@ -2145,6 +2202,13 @@ button.ol-lean-project-relationship-chip {
   background: var(--ol-line-2);
 }
 
+.ol-lean-batch-queue-processed,
+.ol-lean-batch-queue-status-delayed {
+  margin: 6px 0 0;
+  color: var(--ol-ink-2);
+  font: 550 12px/1.5 var(--ol-sans);
+}
+
 .ol-lean-batch-queue-progress-segment {
   flex: 0 0 auto;
   min-width: 0;
@@ -2271,6 +2335,37 @@ button.ol-lean-project-relationship-chip {
   overflow-wrap: anywhere;
   color: var(--ol-muted);
   font-size: 11px;
+}
+
+.ol-lean-batch-queue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.ol-lean-batch-queue-actions .ol-lean-batch-queue-action {
+  min-width: 0;
+  min-height: 28px;
+  max-width: 100%;
+  padding: 3px 7px;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.ol-lean-batch-queue-action:focus-visible {
+  outline: 2px solid var(--ol-accent);
+  outline-offset: 2px;
+}
+
+.ol-lean-batch-queue-action[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.ol-lean-batch-queue-action[aria-busy="true"] {
+  cursor: progress;
 }
 
 .ol-lean-batch-queue-item-running .ol-lean-batch-queue-marker {
@@ -3701,6 +3796,40 @@ body.ol-lean-settings-resizing {
    standalone (a wide page, side-by-side), the pane is narrow, so the graph stacks:
    canvas on top, legend + node detail below. */
 
+.ol-lean-tags-setup {
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--ol-line);
+}
+.ol-lean-tags-setup-summary {
+  color: var(--ol-ink-2);
+  font: 600 12px/1.5 var(--ol-sans);
+  cursor: pointer;
+}
+.ol-lean-tags-setup-summary:hover { color: var(--ol-ink); }
+.ol-lean-tags-setup-summary:focus-visible {
+  outline: 2px solid var(--ol-focus-ring);
+  outline-offset: 3px;
+}
+.ol-lean-tags-setup-disclosure[open] > .ol-lean-tags-setup-summary { margin-bottom: 8px; }
+.ol-lean-tags-setup-hint,
+.ol-lean-tags-setup-status {
+  margin: 5px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ol-lean-tags-setup-hint { color: var(--ol-muted); }
+.ol-lean-tags-setup-status:empty { display: none; }
+.ol-lean-tags-setup-status.is-error { color: var(--ol-red); }
+.ol-lean-tags-setup-fallback {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.ol-lean-tags-setup-fallback[hidden] { display: none; }
+.ol-lean-tags-setup-fallback code { flex-basis: 100%; overflow-wrap: anywhere; }
+
 .ol-lean-pane-viewtabs {
   display: flex;
   gap: 2px;
@@ -3778,6 +3907,8 @@ body.ol-lean-settings-resizing {
 .bp-node-g { cursor: pointer; }
 .bp-node { stroke-width: 1.5; transition: filter .1s ease; }
 .bp-node-g:hover .bp-node { filter: brightness(0.97); }
+.bp-node-g:focus-visible { outline: none; }
+.bp-node-g:focus-visible .bp-node { stroke: var(--ol-focus-ring); stroke-width: 3; }
 .bp-node.is-selected { stroke-width: 3; }
 .bp-node.bp-planned { fill: var(--ol-panel-2); stroke: var(--ol-line); }
 .bp-node.bp-stated  { fill: #eaf0f7; stroke: #9fb6d4; }

@@ -61,6 +61,22 @@ export function inferLeanDeclarationName(text) {
   return "";
 }
 
+// Source identity stays in targetLabel. Inventory and solver prompts must use
+// the same suggested Lean name without turning that name into a source ID.
+export function suggestLeanDeclarationName({ targetText = "", labelSource = "explicit", latexLabel = "" } = {}) {
+  const declared = inferLeanDeclarationName(targetText);
+  if (declared || labelSource !== "generated") return declared;
+  const withoutPrefix = String(latexLabel || "").trim()
+    .replace(/^(?:thm|theorem|lem|lemma|prop|proposition|cor|corollary|def|definition):/i, "");
+  let name = withoutPrefix.replace(/[^A-Za-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "").slice(0, 80);
+  if (!name) return "";
+  if (/^[0-9]/.test(name) || /^(?:theorem|lemma|def|by|where|if|then|else|match)$/.test(name)) {
+    name = `lea_${name}`;
+  }
+  return isValidLeanIdentifier(name) ? name : "";
+}
+
 export function parseTargetDocument(source, options) {
   const result = parseTargetDocumentCore(source, options);
   return {

@@ -38,6 +38,7 @@ export const site = {
 
   nav: [
     { label: "install", href: "/install/" },
+    { label: "usage", href: "/overleaf/" },
     { label: "blog", href: "/blog/" },
     { label: "github", href: "https://github.com/VIDA-NYU/Lea", external: true },
     { label: "discord", href: "https://discord.gg/58ZWUXU8FM", external: true },

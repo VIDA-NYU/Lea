@@ -1,5 +1,6 @@
 """Metadata reads must not pay for certification; status reads must stay strict."""
 import json
+import os
 from collections import Counter
 
 import pytest
@@ -70,7 +71,7 @@ def test_inventory_target_sync_does_not_wait_for_compiler_lease(database, tmp_pa
         pending = None
         try:
             assert entered.wait(2)
-            pending = pool.submit(routes.sync_project_formalizations_by_slug, project['slug'], request)
+            pending = pool.submit(routes.sync_project_formalizations_by_slug.worker, project['slug'], request)
             try:
                 result = pending.result(timeout=1)
             except TimeoutError:
@@ -149,7 +150,7 @@ def test_inventory_target_sync_retains_project_reservation(database, monkeypatch
 
     monkeypatch.setattr(routes.github_import_service, 'sync_targets', sync)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        pending = pool.submit(routes.sync_project_formalizations_by_slug, project['slug'], request)
+        pending = pool.submit(routes.sync_project_formalizations_by_slug.worker, project['slug'], request)
         try:
             assert entered.wait(2)
             with pytest.raises(HTTPException) as exc:
@@ -271,17 +272,24 @@ def test_change_during_projection_retries_before_publishing(tmp_path, change):
             else:
                 (target.parent / 'lakefile.toml').write_text('name = "changed"\n')
         return answer
-    assert project()[0] is False
+    assert project()[0] is (change == 'replace')
     assert attempts[0] == (True, None)
     assert len(attempts) == 2
 
 
-def test_continuous_changes_fail_closed_and_reset_context(tmp_path):
+@pytest.mark.parametrize('metadata_only', [False, True])
+def test_continuous_changes_fail_closed_and_reset_context(tmp_path, metadata_only):
     target, raw = execution_with_imports(tmp_path, 1)
     @read_projection
     def project():
         check_evidence.freshness(decode_evidence(raw), target, snapshot=current_snapshot())
-        target.write_text(target.read_text() + '\n')
+        if metadata_only:
+            # Identical-byte writes can share timestamps on coarse clocks.
+            # Explicitly change metadata so both attempts observe a mutation.
+            stat = target.stat()
+            os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        else:
+            target.write_text(target.read_text() + '\n')
         return {'check_current': True}
     with pytest.raises(HTTPException) as exc:
         project()

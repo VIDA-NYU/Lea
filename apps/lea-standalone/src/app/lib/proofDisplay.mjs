@@ -17,6 +17,8 @@ export function hasSorryLikeCheckDetail(detail) {
 
 export function codeStepContainsSorry(step) {
   if (!step) return false;
+  if (step.selected_result) return (step.selected_result.axioms || []).some(name =>
+    !['propext', 'Classical.choice', 'Quot.sound'].includes(name));
   return hasSorryLikeCode(step.code) || hasSorryLikeCheckDetail(step.check_detail);
 }
 
@@ -42,7 +44,7 @@ export function latestCodeStep(steps = []) {
  */
 export function deriveRunCompletionStatus(runStatus, steps = [], resultKind = null) {
   if (runStatus === 'disproved') return runStatus;
-  if (runStatus === 'needs_review' || resultKind === 'needs_review') return 'needs_review';
+  if (runStatus === 'needs_review' || resultKind === 'needs_review') return 'answered';
   if (runStatus !== 'proved' && runStatus !== 'success') return runStatus || 'pending';
   const latest = latestCodeStep(steps);
   const proofStatus = deriveCodeStepProofStatus(latest);

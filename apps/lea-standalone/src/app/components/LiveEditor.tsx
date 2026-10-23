@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import type { SafeVerifyResult } from '../lib/api';
+import type { SafeVerifyResult, EditorDraftBase, FileWriteResult } from '../lib/api';
 import { LeanQuery } from '../lib/leanQuery';
+import { EditorClient } from '../lib/editorClient.mjs';
+import { EditorDraft } from '../lib/editorDraft.mjs';
 import { useProofSession } from '../stores/proofSession';
 
 type SaveResult = { status: string; detail?: string | null; current?: boolean; check_current?: boolean; check_stale_reason?: string | null };
@@ -9,37 +11,31 @@ type SaveResult = { status: string; detail?: string | null; current?: boolean; c
 // every character (git churn / redundant checks), short enough to feel automatic.
 const AUTOSAVE_MS = 1200;
 
-// v2.2 · LF2/LF3 — the live Lean editor. A real Monaco editor via `lean4monaco`,
-// wired over a WebSocket LSP to the adapter's per-session `lake serve` (D60/D61),
-// so you get genuine goal state (the InfoView panel), hover, and diagnostics on
-// *every keystroke*. This IS the edit experience — it replaces the old
-// contentEditable "Edit → Run lean_check" hack.
-//
-// Two automatic things, so there's nothing to remember to click:
-//   * The **LSP checks continuously** as you type (inline errors + goals).
-//   * Edits **auto-save** (debounced) to git via the existing write+check path
-//     (D62), so the buffer becomes a code_step the agent picks up. A status label
-//     shows exactly where you are: Editing… / Saving… / Saved.
-// While an agent run is active the editor is read-only (the modal lock, D62).
-//
-// `lean4monaco` (Monaco + monaco-vscode services) is heavy, so it's dynamically
-// imported — it code-splits out of the main bundle and only loads when Edit mode
-// is first opened (D68, mirrors #11's lazy Shiki).
+// Monaco retains the local draft, cursor and undo. Language results are bounded
+// SQL observations; only explicit save/check actions can update proof evidence.
 export function LiveEditor({
   sessionId,
+  path,
+  formalizationId,
   locked,
   onSave,
+  onCheck,
   onVerify,
   captureSelection,
 }: {
   sessionId: string;
+  path?: string;
+  formalizationId?: string;
   captureSelection: () => () => boolean;
   locked?: boolean;
-  onSave?: (content: string, path: string) => Promise<SaveResult>;
+  onSave?: (content: string, path: string, base: EditorDraftBase, draftId: string) => Promise<FileWriteResult>;
+  onCheck?: (path: string, base: EditorDraftBase) => Promise<SaveResult>;
   onVerify?: (path: string) => Promise<SaveResult>;
 }) {
   const editorRef = useRef<HTMLDivElement>(null);
-  const infoviewRef = useRef<HTMLDivElement>(null);
+  const clientRef = useRef<EditorClient | null>(null);
+  const [analysis, setAnalysis] = useState('pending');
+  const [goals, setGoals] = useState('Click inside a proof to inspect its goals.');
   const splitRef = useRef<HTMLDivElement>(null);
   // The editor/InfoView split is a draggable vertical divider: `editorPct` is the
   // editor's share of the height; the InfoView takes the rest.
@@ -54,12 +50,15 @@ export function LiveEditor({
   const leanQueryRef = useRef<LeanQuery | null>(null);
   const pathRef = useRef<string>('');
   const onSaveRef = useRef(onSave);
+  const onCheckRef = useRef(onCheck);
+  const draftRef = useRef<EditorDraft | null>(null);
   const lockedRef = useRef(locked);
   const saveTimerRef = useRef<number | null>(null);
   const savingRef = useRef(false);
   const pendingRef = useRef(false);
   const suppressChangeRef = useRef(false);
   onSaveRef.current = onSave;
+  onCheckRef.current = onCheck;
   lockedRef.current = locked;
 
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -76,8 +75,22 @@ export function LiveEditor({
   useEffect(() => {
     let disposed = false;
     /* eslint-disable @typescript-eslint/no-explicit-any */
-    let leanMonaco: any;
     let leanMonacoEditor: any;
+    let client: EditorClient;
+    let analysisTimer: number;
+    let goalTimer: number;
+    let goalGeneration = 0;
+    let analysisGeneration = 0;
+    let environmentTimer: number;
+    let refreshing = false;
+    const draft = new EditorDraft(sessionId, formalizationId);
+    draftRef.current = draft;
+    savingRef.current = false;
+    pendingRef.current = false;
+    setStatus('loading');
+    setError(null);
+    setSave({ state: 'clean', detail: '' });
+    setVerify({ state: 'idle' });
     /* eslint-enable @typescript-eslint/no-explicit-any */
 
     // Serialize saves: never let two writes overlap; if the buffer changed while a
@@ -95,20 +108,41 @@ export function LiveEditor({
       savingRef.current = true;
       setSave({ state: 'saving', detail: '' });
       try {
-        const result = await onSaveFn(value, pathRef.current);
+        const submitted = draft.prepare(value);
+        const receipt = await onSaveFn(value, submitted.base.path, submitted.base, submitted.draft_id);
         if (disposed) return;
+        if (!draft.acknowledge(submitted, receipt)) return;
+        const publishedBase = draft.base;
+        // Check is a separate queued operation. Publication remains saved even
+        // when checking fails or a newer draft is typed while checking.
+        if (onCheckRef.current) {
+          void onCheckRef.current(publishedBase.path, publishedBase).then(result => {
+            if (!disposed && draft.base === publishedBase && api.editor?.getValue?.() === value) {
+              setSave({ state: 'saved', detail: result.status === 'ok'
+                ? result.check_current === true ? 'lean_check: 0 errors' : 'recheck required'
+                : result.detail || `lean_check: ${result.status}` });
+            }
+          }).catch(err => {
+            if (!disposed && draft.base === publishedBase && api.editor?.getValue?.() === value) {
+              setSave({ state: 'saved', detail: err instanceof Error ? err.message : 'Check unavailable' });
+            }
+          });
+        }
+        if (api.editor?.getValue?.() !== value) {
+          pendingRef.current = true;
+          setSave({ state: 'dirty', detail: '' });
+          return;
+        }
         // The write always persists (a snapshot); the verdict just annotates it.
         setSave({
           state: 'saved',
-          detail: result.status === 'ok'
-            ? result.check_current === true ? 'lean_check: 0 errors' : 'recheck required'
-            : result.detail || `lean_check: ${result.status}`,
+          detail: onCheckRef.current ? 'checking published revision…' : 'published',
         });
       } catch (err) {
         if (disposed) return;
-        setSave({ state: 'saved', detail: err instanceof Error ? err.message : String(err) });
+        setSave({ state: 'dirty', detail: err instanceof Error ? err.message : String(err) });
       } finally {
-        savingRef.current = false;
+        if (!disposed) savingRef.current = false;
         if (!disposed && pendingRef.current) {
           pendingRef.current = false;
           scheduleSave();
@@ -123,49 +157,73 @@ export function LiveEditor({
       saveTimerRef.current = window.setTimeout(() => void runSave(), AUTOSAVE_MS);
     };
 
+    const analyze = () => {
+      const generation = ++analysisGeneration;
+      window.clearTimeout(analysisTimer);
+      analysisTimer = window.setTimeout(async () => {
+        try { const value = await client.request('editor.analyze'); if (!disposed && generation === analysisGeneration) leanMonacoEditor.diagnostics(value); }
+        catch { if (!disposed && generation === analysisGeneration) leanMonacoEditor?.diagnostics({ diagnostics: [] }); }
+      }, 300);
+    };
+    const inspectGoal = () => {
+      const generation = ++goalGeneration;
+      window.clearTimeout(goalTimer);
+      setGoals('Waiting for goal analysis…');
+      goalTimer = window.setTimeout(async () => {
+        const pos = leanQueryRef.current?.cursor();
+        if (!pos) return;
+        try {
+          const result = await client.request('editor.goals', pos);
+          if (!disposed && generation === goalGeneration) setGoals(result?.rendered || result?.goals?.join('\n\n') || 'No goals at this position.');
+        } catch (err) { if (!disposed && generation === goalGeneration) setGoals(err instanceof Error ? err.message : 'Goal analysis unavailable.'); }
+      }, 250);
+    };
     (async () => {
       try {
-        const res = await fetch(`/api/sessions/${sessionId}/lsp-info`);
-        if (!res.ok) throw new Error(`lsp-info ${res.status}`);
-        const info = (await res.json()) as { fileName: string; content: string; path: string };
-        if (disposed) return;
+        client = new EditorClient(sessionId, path, { formalizationId, onState: (state: string) => { if (!disposed) setAnalysis(state); } });
+        clientRef.current = client;
+        const info = await client.open();
+        if (disposed) { client.dispose(); return; }
+        draft.load(info);
         pathRef.current = info.path;
-
-        const { LeanMonaco, LeanMonacoEditor } = await import('lean4monaco');
+        const { createQueuedEditor } = await import('../lib/queuedMonaco');
         if (disposed) return;
-
-        const proto = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-        const socketUrl = `${proto}${window.location.host}/api/sessions/${sessionId}/lsp`;
-
-        leanMonaco = new LeanMonaco();
-        leanMonacoEditor = new LeanMonacoEditor();
-        leanMonaco.setInfoviewElement(infoviewRef.current!);
-        await leanMonaco.start({ websocket: { url: socketUrl } });
-        if (disposed) return;
-        // `start` sets the initial content BEFORE we attach the change listener,
-        // so the initial load never counts as a dirty edit.
-        await leanMonacoEditor.start(editorRef.current!, info.fileName, info.content ?? '');
-        if (disposed) return;
+        leanMonacoEditor = createQueuedEditor(editorRef.current!, info.path, info.content ?? '', client);
         editorApiRef.current = leanMonacoEditor;
-        leanQueryRef.current = new LeanQuery(leanMonaco, leanMonacoEditor.editor);
-        leanMonacoEditor.editor?.updateOptions({ readOnly: !!lockedRef.current });
-        // Auto-save on edit (unless the change was our own programmatic Reload).
-        leanMonacoEditor.editor?.onDidChangeModelContent(() => {
-          if (suppressChangeRef.current) return;
-          scheduleSave();
+        leanQueryRef.current = new LeanQuery(client, leanMonacoEditor.editor);
+        leanMonacoEditor.editor.updateOptions({ readOnly: !!lockedRef.current });
+        leanMonacoEditor.editor.onDidChangeModelContent(() => {
+          client.setContent(leanMonacoEditor.editor.getValue());
+          leanMonacoEditor.diagnostics({ diagnostics: [] });
+          if (!suppressChangeRef.current) scheduleSave();
+          analyze(); inspectGoal();
         });
-        setStatus('ready');
+        leanMonacoEditor.editor.onDidChangeCursorPosition(inspectGoal);
+        setStatus('ready'); analyze(); inspectGoal();
+        environmentTimer = window.setInterval(async () => {
+          if (disposed || refreshing) return;
+          refreshing = true;
+          try {
+            if (await client.refresh()) {
+              leanMonacoEditor.diagnostics({ diagnostics: [] }); analyze(); inspectGoal();
+            }
+          } catch (err) {
+            if (!disposed) { client.invalidate(); leanMonacoEditor.diagnostics({ diagnostics: [] }); setGoals('Environment unavailable.'); }
+          } finally { refreshing = false; }
+        }, 2000);
       } catch (err) {
-        if (!disposed) {
-          setError(err instanceof Error ? err.message : String(err));
-          setStatus('error');
-        }
+        if (!disposed) { setError(err instanceof Error ? err.message : String(err)); setStatus('error'); }
       }
     })();
 
     return () => {
       disposed = true;
       if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+      window.clearTimeout(analysisTimer);
+      window.clearTimeout(goalTimer);
+      window.clearInterval(environmentTimer);
+      client?.dispose();
+      clientRef.current = null;
       editorApiRef.current = null;
       leanQueryRef.current = null;
       try {
@@ -173,13 +231,8 @@ export function LiveEditor({
       } catch {
         /* ignore */
       }
-      try {
-        leanMonaco?.dispose();
-      } catch {
-        /* ignore */
-      }
     };
-  }, [sessionId]);
+  }, [sessionId, path, formalizationId]);
 
   // Reflect the modal lock onto the live editor when a run starts/stops.
   useEffect(() => {
@@ -281,18 +334,26 @@ export function LiveEditor({
   // Suppress the resulting change event so it isn't treated as a user edit.
   const handleReload = async () => {
     const owned = captureSelection();
+    const draft = draftRef.current;
+    const content = editorApiRef.current?.editor?.getValue();
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/lsp-info`);
-      if (!res.ok) throw new Error(`lsp-info ${res.status}`);
-      const info = (await res.json()) as { content: string };
-      if (!owned()) return;
+      const info = await clientRef.current!.info();
+      if (!owned() || draft !== draftRef.current) return;
+      if (editorApiRef.current?.editor?.getValue() !== content) {
+        throw new Error('The draft changed during reload. Reload again to replace it.');
+      }
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+      pendingRef.current = false;
+      draft!.load(info);
       suppressChangeRef.current = true;
-      editorApiRef.current?.editor?.getModel()?.setValue(info.content ?? '');
+      const editor = editorApiRef.current?.editor;
+      const model = editor?.getModel();
+      if (model) { editor.pushUndoStop(); editor.executeEdits('reload', [{ range: model.getFullModelRange(), text: info.content ?? '' }]); editor.pushUndoStop(); }
       suppressChangeRef.current = false;
-      setSave({ state: 'clean', detail: 'reloaded from disk' });
+      setSave({ state: 'clean', detail: 'reloaded published file' });
     } catch (err) {
       if (!owned()) return;
-      setSave({ state: 'clean', detail: err instanceof Error ? err.message : String(err) });
+      setSave(s => ({ ...s, detail: err instanceof Error ? err.message : String(err) }));
     }
   };
 
@@ -301,7 +362,7 @@ export function LiveEditor({
     : save.state === 'saving'
     ? 'Saving…'
     : save.state === 'dirty'
-    ? 'Editing…'
+    ? save.detail ? `Unsaved · ${save.detail}` : 'Editing…'
     : save.state === 'saved'
     ? `Saved · ${save.detail}`
     : save.detail || 'All changes saved';
@@ -312,8 +373,9 @@ export function LiveEditor({
         <span className={`live-editor-status-dot ${locked ? 'locked' : save.state}`} />
         <span className="live-editor-note">{saveLabel}</span>
         <span className="live-editor-bar-spacer" />
-        {status === 'loading' && <span className="live-editor-note">Starting Lean server…</span>}
+        {status === 'loading' && <span className="live-editor-note">Opening editor…</span>}
         {status === 'error' && <span className="live-editor-note err">unavailable: {error}</span>}
+        {status === 'ready' && <span className="live-editor-note" role="status">{analysis === 'available' ? 'Analysis ready' : analysis.replace(/_/g, ' ')}</span>}
         {goalNote && <span className="live-editor-note">{goalNote}</span>}
         <button
           className="cv-btn"
@@ -337,7 +399,7 @@ export function LiveEditor({
           className="cv-btn"
           onClick={handleReload}
           disabled={status !== 'ready'}
-          title="Pull the latest file from disk (e.g. after the agent edited it)"
+          title="Load the latest published file"
         >
           ↻ Reload
         </button>
@@ -352,7 +414,10 @@ export function LiveEditor({
           }}
           title="Drag to resize the goal panel"
         />
-        <div ref={infoviewRef} className="live-editor-infoview vscode-light" />
+        <div className="live-editor-infoview vscode-light" aria-label="Goal analysis" style={{ overflow: 'auto', padding: 12 }}>
+          <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{goals}</pre>
+          <p className="live-editor-note">Draft analysis. Interactive widgets, navigation and code actions are unavailable.</p>
+        </div>
       </div>
     </div>
   );

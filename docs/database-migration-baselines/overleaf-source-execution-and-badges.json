@@ -1,0 +1,291 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-18T15:26:01.946666+00:00",
+  "scope": "Read-only live diagnosis and isolated fixture/copy qualification. No live restart, interrupt, retry, solver request, historical result rewrite or selection control.",
+  "batch": {
+    "batchId": "formalize-batch-1792336376248-1",
+    "createdAt": "2026-10-18T15:12:56.248Z",
+    "finishedAt": "2026-10-18T15:16:21.500Z",
+    "acceptedCommandId": "b0d77b198dbb43ccb6670b69c88aa214",
+    "done": true,
+    "reportState": "ready"
+  },
+  "items": [
+    {
+      "targetLabel": "descent_energy",
+      "state": "formalized",
+      "reason": null,
+      "detail": null,
+      "runJobId": "definition-descent_energy-2026-10-18T15-12-57-134Z"
+    },
+    {
+      "targetLabel": "descent_step",
+      "state": "formalized",
+      "reason": null,
+      "detail": null,
+      "runJobId": "definition-descent_step-2026-10-18T15-14-53-296Z"
+    },
+    {
+      "targetLabel": "descent_error",
+      "state": "failed",
+      "reason": "source_changed",
+      "detail": "Lea run ended with status: failed",
+      "runJobId": "theorem-descent_error-2026-10-18T15-15-59-103Z"
+    },
+    {
+      "targetLabel": "descent_energy_step",
+      "state": "skipped",
+      "reason": "depends_on_failed:descent_error",
+      "detail": null,
+      "runJobId": null
+    },
+    {
+      "targetLabel": "descent_strict",
+      "state": "skipped",
+      "reason": "depends_on_failed:descent_error",
+      "detail": null,
+      "runJobId": null
+    },
+    {
+      "targetLabel": "descent_geometric",
+      "state": "skipped",
+      "reason": "depends_on_failed:descent_error",
+      "detail": null,
+      "runJobId": null
+    },
+    {
+      "targetLabel": "descent_converges",
+      "state": "skipped",
+      "reason": "depends_on_failed:descent_error",
+      "detail": null,
+      "runJobId": null
+    },
+    {
+      "targetLabel": "descent_calibration",
+      "state": "failed",
+      "reason": "source_changed",
+      "detail": "The source publisher generation changed. Publish from the current tab before sending.",
+      "runJobId": "theorem-descent_calibration-2026-10-18T15-16-06-383Z"
+    },
+    {
+      "targetLabel": "independent_square",
+      "state": "failed",
+      "reason": "source_changed",
+      "detail": "The source publisher generation changed. Publish from the current tab before sending.",
+      "runJobId": "theorem-independent_square-2026-10-18T15-16-14-745Z"
+    }
+  ],
+  "runs": [
+    {
+      "id": "63f6fd4d-9032-4cd3-b366-bde8f657ff88",
+      "status": "proved",
+      "result_kind": "defined",
+      "stop_reason": null,
+      "result_detail": null,
+      "source_context_ref": "0ccf2c636d964737b0cd22d893f200b9"
+    },
+    {
+      "id": "c8f0bca2-e425-4cb3-aaaa-ed295a33fc52",
+      "status": "proved",
+      "result_kind": "defined",
+      "stop_reason": null,
+      "result_detail": null,
+      "source_context_ref": "7a1ec476ff27493a87a14d0fc2f38742"
+    },
+    {
+      "id": "9cbd9cf4-ac20-40a0-ad86-895d3c25ab2f",
+      "status": "failed",
+      "result_kind": "failed",
+      "stop_reason": "source_changed",
+      "result_detail": "The source publisher generation changed. Publish from the current tab before sending.",
+      "source_context_ref": "09364d13430242d4a559abf9c96d15d1"
+    },
+    {
+      "id": "180f4236-f35e-4e69-be91-790deee76fd2",
+      "status": "failed",
+      "result_kind": "failed",
+      "stop_reason": "source_changed",
+      "result_detail": "The source publisher generation changed. Publish from the current tab before sending.",
+      "source_context_ref": "bb7ce5db71a740b998fcd03b8980837b"
+    },
+    {
+      "id": "1df70f6d-9d54-460c-9412-c7de4c54fc72",
+      "status": "failed",
+      "result_kind": "failed",
+      "stop_reason": "source_changed",
+      "result_detail": "The source publisher generation changed. Publish from the current tab before sending.",
+      "source_context_ref": "36537cb4194c437f844bc1b3c7da8d16"
+    }
+  ],
+  "frozen_sources": [
+    {
+      "generation": 1,
+      "sequence": 1,
+      "id": "0ccf2c636d964737b0cd22d893f200b9",
+      "target": "descent_energy",
+      "bundle_hash": "156b0edac3cfb8e22d6170a6e47609689725222ad476fbaa54603b6c54a4db04",
+      "files_json": "{\"$archive\":\"0a5a161256ae4c79a2250ab861489590\"}"
+    },
+    {
+      "generation": 1,
+      "sequence": 2,
+      "id": "7a1ec476ff27493a87a14d0fc2f38742",
+      "target": "descent_step",
+      "bundle_hash": "475da9760be6be4aa54609b280ebb3e7eb4da004187c743a655f95ef20e2f801",
+      "files_json": "{\"$archive\":\"0a5a161256ae4c79a2250ab861489590\"}"
+    },
+    {
+      "generation": 1,
+      "sequence": 3,
+      "id": "09364d13430242d4a559abf9c96d15d1",
+      "target": "descent_error",
+      "bundle_hash": "803925967b79ad439798a2eb6aee89867efce6a6210f1e5160fcef67b01f680e",
+      "files_json": "{\"$archive\":\"0a5a161256ae4c79a2250ab861489590\"}"
+    },
+    {
+      "generation": 1,
+      "sequence": 4,
+      "id": "c4139229dc144233bbe313fd155178c0",
+      "target": "descent_energy_step",
+      "bundle_hash": "deda09cc72e718a276040713d982d688c0428e327198c7bd891f7af2d2a8558f",
+      "files_json": "{\"$archive\":\"0a5a161256ae4c79a2250ab861489590\"}"
+    },
+    {
+      "generation": 1,
+      "sequence": 5,
+      "id": "4c7e69f6b02142fc9f8dc03774a9464a",
+      "target": "descent_strict",
+      "bundle_hash": "c5ede5661632612f025665b8d490e172dc464290b5c6e985b71f84906d304378",
+      "files_json": "{\"$archive\":\"0a5a161256ae4c79a2250ab861489590\"}"
+    },
+    {
+      "generation": 1,
+      "sequence": 6,
+      "id": "3c83c96c009c451783e9ead0bef6b74b",
+      "target": "descent_geometric",
+      "bundle_hash": "ca89f845ffa34ebf855e8aba9e27be360844504062d06084d194126e95e7fba4",
+      "files_json": "{\"$archive\":\"0a5a161256ae4c79a2250ab861489590\"}"
+    },
+    {
+      "generation": 1,
+      "sequence": 7,
+      "id": "c6d3f061741143cf894cdf97e16c0364",
+      "target": "descent_converges",
+      "bundle_hash": "5ee023ef24bd1cadcafed9b2284ddb79594a1a893fdef7e3c6c3bc41d9d33472",
+      "files_json": "{\"$archive\":\"0a5a161256ae4c79a2250ab861489590\"}"
+    },
+    {
+      "generation": 1,
+      "sequence": 8,
+      "id": "bb7ce5db71a740b998fcd03b8980837b",
+      "target": "descent_calibration",
+      "bundle_hash": "69d2cd54cc0cedea13d69e55ee99f4d729f8ee4131ae88af8b162240e9db841e",
+      "files_json": "{\"$archive\":\"0a5a161256ae4c79a2250ab861489590\"}"
+    },
+    {
+      "generation": 1,
+      "sequence": 9,
+      "id": "36537cb4194c437f844bc1b3c7da8d16",
+      "target": "independent_square",
+      "bundle_hash": "5d9e461639f7e4b1283e882cdbfa88f862f2672f61e424f890c948c4c90bee65",
+      "files_json": "{\"$archive\":\"0a5a161256ae4c79a2250ab861489590\"}"
+    }
+  ],
+  "renewed_sources": [
+    {
+      "generation": 2,
+      "sequence": 1,
+      "id": "9a0d7441dfde41efa1218589d026a8cd",
+      "target": "descent_energy",
+      "bundle_hash": "156b0edac3cfb8e22d6170a6e47609689725222ad476fbaa54603b6c54a4db04",
+      "files_json": "{\"$archive\":\"0a5a161256ae4c79a2250ab861489590\"}"
+    },
+    {
+      "generation": 2,
+      "sequence": 2,
+      "id": "b25b29dfb4b04f33aaafd88ee0ff370f",
+      "target": "descent_step",
+      "bundle_hash": "475da9760be6be4aa54609b280ebb3e7eb4da004187c743a655f95ef20e2f801",
+      "files_json": "{\"$archive\":\"0a5a161256ae4c79a2250ab861489590\"}"
+    },
+    {
+      "generation": 2,
+      "sequence": 3,
+      "id": "c6e4d4221e6e4bc9a0c3f5edc108f7d4",
+      "target": "descent_error",
+      "bundle_hash": "803925967b79ad439798a2eb6aee89867efce6a6210f1e5160fcef67b01f680e",
+      "files_json": "{\"$archive\":\"0a5a161256ae4c79a2250ab861489590\"}"
+    }
+  ],
+  "source_equality": {
+    "all_archives_identical": true,
+    "renewed_targets_have_identical_bundle_hashes": true
+  },
+  "root_causes": {
+    "execution": "The previous fix covered accepted business admission. At run startup, HTTP parent context was gone and materialize_run still applied the publisher generation check despite admission=False. All three later runs stopped before solver execution.",
+    "badges": "Current proof freshness is scoped to the project. Unrelated target activity invalidates the shared observation. getTheoremStatus returns unknown for noncurrent projections; formatStatus labelled unknown as checking, discarding the distinction between retained results and active work."
+  },
+  "fix": {
+    "execution": "Validate immutable source as already admitted only after checking the exact live owned run command. Initial admission, current target/archive equality and command fencing still apply.",
+    "display": "SQL publishes last_observed_result separately while current evidence is unavailable, only for a previously checked successful result with the same source hash. Current validity, certification, completion and review eligibility remain withheld.",
+    "badges": "Recorded results show formalized/defined/counterexample found plus updating status. Unknown results show awaiting status. Active work and actual source changes retain their own statuses.",
+    "polling": "Unobserved document statuses reconcile every three seconds through the existing coalesced SQL query intake, without starting a compiler.",
+    "layout": "Measure the source badge width and reserve approval-button room when placing longer labels at the viewport edge.",
+    "activation": "Restart the development stack, reload the unpacked extension, and refresh the Overleaf tab. No live services were reloaded during qualification."
+  },
+  "validation": {
+    "accepted_source_lifetime_tests": 25,
+    "historical_projection_tests": 8,
+    "stage6_boundary_tests": 35,
+    "inventory_stability_tests": 4,
+    "core_and_process_contract_tests": 28,
+    "loopback_process_case": {
+      "passed": 1,
+      "scripted_solver_only": true,
+      "scenario": "Independent API and worker remain live while a SQL reader blocks publication longer than busy_timeout.",
+      "initial_sandbox_skip": "Resolved by running the isolated loopback case with the process-test grant."
+    },
+    "overleaf_tests": 863,
+    "content_script_cases": 175,
+    "chromium_cases": 1,
+    "failed": 0,
+    "real_sql_copy_replay": {
+      "source": "SQLite backup of the live database into a temporary isolated file",
+      "simulation": "Advance only the isolated project revision to simulate activity on another target",
+      "outcome": "descent_energy and descent_step retained last_observed_result=defined, while check_current=false and projection=inputs_changed. descent_error had no retained success."
+    },
+    "visual_review": "Desktop 1280x900 and narrow 480x740 screenshots reviewed. All three tag states fit; narrow viewport edge handling and preserved browser selection verified.",
+    "boundary_audit": {
+      "adapter_routes": 179,
+      "companion_dispatch_branches": 27,
+      "result": "pass"
+    },
+    "whitespace_check": "pass",
+    "release_scope": "Development-source regression qualification only; no production image or native compiler release requalification."
+  },
+  "runtime_after": {
+    "runtime_id": "69c0586845c0450fa454a3abeebd0cbb",
+    "generation": 1,
+    "pid": 14310,
+    "lifecycle_state": "ready",
+    "heartbeat_at": "2026-10-18T15:26:01.814520+00:00"
+  },
+  "runtime_before": {
+    "runtime_id": "69c0586845c0450fa454a3abeebd0cbb",
+    "generation": 1,
+    "pid": 14310
+  },
+  "source_sha256": {
+    "apps/lea-standalone/adapter/app/queries/sources.py": "8d976d4a71c1338ea58054d9696b5c985d40bef7a46fa3ebe4df433a7d29097c",
+    "apps/lea-standalone/adapter/app/source_publications.py": "bebb710b4b2a85767f36fafc0f206e6c0c1952dcccb4b7f9ec72bdc7576816ae",
+    "apps/lea-standalone/adapter/app/queries/core.py": "66aa53413b4df26d8babee6b9e65c8a00baa9822ab40974177e224a16323039a",
+    "apps/lea-standalone/adapter/app/queries/proofs.py": "68963f56f6e33c2c9b34d1ebfedab5aea5b291a656f9ccf235ea74a007dc4725",
+    "apps/lea-standalone/adapter/tests/test_accepted_source_lifetime.py": "3b672152b877ba3fd6a09e25e54f78a14032fedde1b3f232c7a7679107a123aa",
+    "apps/lea-standalone/adapter/tests/test_projection_history_display.py": "7c14016efb3b7908fbe2eec7f4c727707f8b7f877f421fe0cb27acd514079775",
+    "apps/overleaf-extension/companion/workerService.mjs": "4487e93a2b7efb960b9d26d40cb0e98d8a86bebfa571874debbd47bc03b0b82e",
+    "apps/overleaf-extension/extension/content.js": "c693cfc332e1e85d9f98b514f001241ac5785d2ebd9a83bc01d3a9ab77a1703a",
+    "apps/overleaf-extension/tests/companion.test.mjs": "b8c87c0dde2e035c58609b0dab0024c7e71901b54937c28b904d3663a2029649",
+    "apps/overleaf-extension/tests/contentActions.test.mjs": "946db237530e452ebf31d76c2174fdb4fd78ba3979c195a1184382934abfe83b",
+    "tests/browser/overleaf-admission.spec.mjs": "e6c4be80d409065c3b21b3391a36eed3fc2c0eee66a962b079529820923a91da"
+  }
+}

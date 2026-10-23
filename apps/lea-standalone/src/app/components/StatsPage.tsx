@@ -59,7 +59,7 @@ function fmtRecordedCost(value: number, incomplete?: number, unconfirmed?: numbe
   if (incomplete == null && unconfirmed == null) {
     return value > 0 ? fmtCost(value) : 'Usage unavailable';
   }
-  if (incomplete) return value > 0 ? `${fmtCost(value)} recorded so far` : 'Awaiting usage';
+  if (incomplete) return value > 0 ? fmtCost(value) : 'Awaiting usage';
   if (unconfirmed) return value > 0 ? fmtCost(value) : 'Usage unavailable';
   return usageCostText(value, details);
 }

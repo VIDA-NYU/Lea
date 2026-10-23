@@ -9,6 +9,8 @@ per-project join, D47). No prover coupling — run-time resolution to
 
 from __future__ import annotations
 
+from .. import workspace_commands
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -66,6 +68,7 @@ def create_skill(request: SkillCreate) -> dict:
 
 
 @router.post("/api/skills/import", status_code=201)
+@workspace_commands.register('peripheral.import_skill')
 def import_skill(request: SkillImport) -> dict:
     """Add a skill from a GitHub link (D56): shallow-clone → snapshot the md into
     `body` → create + scope in one call. Uses the global GitHub token from Settings

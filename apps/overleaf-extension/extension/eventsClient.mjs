@@ -10,7 +10,7 @@
 
 export const EVENTS_RECONNECT_MIN_MS = 1000;
 export const EVENTS_RECONNECT_MAX_MS = 60000;
-export const EVENT_TYPES = ["jobs-changed", "chat-updated", "repair-batch-updated", "source-refresh-requested", "project-identity-changed"];
+export const EVENT_TYPES = ["jobs-changed", "chat-updated", "repair-batch-updated", "resync", "project-identity-changed"];
 
 export function createEventsClient({
   url,
@@ -28,6 +28,7 @@ export function createEventsClient({
   let backoff = minBackoffMs;
   let connected = false;
   let stopped = true;
+  const cursors = new Map();
 
   const setConnected = (value) => {
     if (connected === value) return;
@@ -65,7 +66,10 @@ export function createEventsClient({
     }
     let candidate;
     try {
-      candidate = new EventSourceImpl(target);
+      const cursor = cursors.get(target);
+      const resume = new URL(target);
+      if (cursor !== undefined) resume.searchParams.set('after', cursor);
+      candidate = new EventSourceImpl(cursor === undefined ? target : resume.href);
     } catch {
       scheduleReconnect();
       return;
@@ -76,9 +80,17 @@ export function createEventsClient({
       backoff = minBackoffMs;
       setConnected(true);
     };
-    for (const type of eventTypes) {
+    for (const type of new Set([...eventTypes, 'cursor'])) {
       candidate.addEventListener(type, (event) => {
         if (source !== candidate) return;
+        if (/^\d+$/.test(event?.lastEventId || '')) {
+          const previous = cursors.get(target);
+          if (type === 'resync' || previous === undefined || BigInt(event.lastEventId) > BigInt(previous)) {
+            cursors.set(target, event.lastEventId);
+            if (cursors.size > 64) cursors.delete(cursors.keys().next().value);
+          }
+        }
+        if (type === 'cursor') return;
         let data = null;
         try {
           data = JSON.parse(event?.data ?? "null");

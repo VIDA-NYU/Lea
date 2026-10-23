@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json
 from uuid import uuid4
-from lea.status_reporting import merge_assessment, validate_payload
+
 from .db import connect, write, utc_now
 
 
@@ -59,13 +59,14 @@ def invocation(run_id, invocation_key):
 
 
 def append(run_id, invocation_key, payload, snapshot, dependency_hash):
-    payload = validate_payload(payload)
+    from lea.status_reporting import merge_assessment, validate_payload, validate_assessment
     with write() as conn:
         prior_call = unpack(conn.execute("select * from lea_status_updates where run_id = ? and invocation_key = ?", (run_id, invocation_key)).fetchone())
         if prior_call:
             if prior_call["payload"] != payload:
                 raise ValueError("Invocation identity already used with different content")
             return prior_call
+        payload = validate_payload(payload)
         ctx = unpack(conn.execute("select * from lea_status_run_contexts where run_id = ?", (run_id,)).fetchone())
         if not ctx:
             raise ValueError("Run has no reporting context")
@@ -75,7 +76,9 @@ def append(run_id, invocation_key, payload, snapshot, dependency_hash):
         previous = unpack(conn.execute("select * from lea_status_updates where run_id = ? order by sequence desc limit 1", (run_id,)).fetchone())
         if not previous and ctx["inherited_update_id"]:
             previous = unpack(conn.execute("select * from lea_status_updates where id = ?", (ctx["inherited_update_id"],)).fetchone())
-        assessment = merge_assessment(previous["assessment"] if previous else None, payload, ctx["source_identity_hash"])
+        assessment = merge_assessment(previous["assessment"] if previous else None, payload,
+                                      ctx["source_identity_hash"], source_bundle_hash=ctx["source_bundle_hash"])
+        validate_assessment(assessment, ctx["source_bundle"]["targetKind"])
         sequence = conn.execute("select coalesce(max(sequence), 0) + 1 from lea_status_updates where formalization_id = ?", (ctx["formalization_id"],)).fetchone()[0]
         update_id = str(uuid4())
         conn.execute("""insert into lea_status_updates

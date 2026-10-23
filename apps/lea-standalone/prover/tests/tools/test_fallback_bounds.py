@@ -4,9 +4,9 @@
   * a semaphore around the cold `lake env lean <file>` compile in `lean_check`,
     so concurrent runs can't each spawn a full-Mathlib subprocess at once; and
   * a per-lake_root lock around `rebuild_module`'s `lake build`, with the
-    `lsp_daemon.mark_stale` call held INSIDE that lock.
+    daemon reconciliation held INSIDE that lock.
 
-Both stub `subprocess.run` (and `mark_stale`) so no real Lean toolchain is
+Both stub `subprocess.run` (and reconciliation) so no real Lean toolchain is
 needed; they assert the concurrency shape, not Lean behavior. On `main` (no
 semaphore / no build lock) the concurrency assertions fail.
 
@@ -21,9 +21,10 @@ from pathlib import Path
 
 import lea.tools as tools
 import lea.lean_checks as lean_checks
+import lea.check_evidence as check_evidence
 from unittest.mock import patch
-import lea.lsp_daemon as lsp_daemon
 from lea.tools import lean_check, rebuild_module
+from tests.check_fixtures import unit_environment
 
 _FAILURES: list[str] = []
 
@@ -45,6 +46,7 @@ def test_cold_check_semaphore_bounds_concurrency():
     """N threads on the cold subprocess path; no more than the semaphore's
     permit count run their compile at once."""
     limit = 2
+    _FAILURES.clear()
     n_threads = 6
 
     live = {"now": 0, "max": 0}
@@ -67,6 +69,7 @@ def test_cold_check_semaphore_bounds_concurrency():
         tmp = Path(directory) / "T.lean"
         tmp.write_text("theorem t : True := trivial\n")
         with patch.object(lean_checks.subprocess, 'Popen', FakeProcess), \
+             patch('lea.check_evidence.prepared_environment', unit_environment), \
              patch.object(lean_checks, 'stop_process'), \
              patch.object(lean_checks, '_cold_check_sem', threading.BoundedSemaphore(limit)):
             results = []
@@ -80,6 +83,7 @@ def test_cold_check_semaphore_bounds_concurrency():
             check("all cold checks succeeded", len(results) == n_threads and all(r.startswith('OK') for r in results))
             check(f"never more than {limit} cold compiles at once (saw {live['max']})", live["max"] <= limit)
             check("the bound was actually exercised (>1 concurrent)", live["max"] >= 2)
+            assert not _FAILURES
 
 
 def _make_project():
@@ -92,14 +96,15 @@ def _make_project():
     return f
 
 
-def test_lake_build_lock_serializes_and_marks_stale_inside():
+def test_lake_build_lock_serializes_and_reconciles_inside():
     """Concurrent rebuilds of one lake_root serialize, and each build's
-    mark_stale fires before the lock releases — so no other build can slip in
-    between a build writing its olean and that build flagging the daemon."""
+    reconciliation completes before the lock releases, before another build or
+    check can use potentially changed artifacts."""
     path = _make_project()
+    _FAILURES.clear()
     n = 3
 
-    # [enter, stale] window per thread; if mark_stale were outside the lock a
+    # [enter, reconciled] window per thread; if reconciliation were outside the lock a
     # sibling build would enter during this window and the intervals overlap.
     windows: dict[int, dict] = {}
     wlock = threading.Lock()
@@ -111,15 +116,15 @@ def test_lake_build_lock_serializes_and_marks_stale_inside():
         time.sleep(0.05)
         return _FakeCompleted(returncode=0, stdout="", stderr="")
 
-    def fake_mark_stale(lake_root):
+    def fake_reconcile(lake_root):
         tid = threading.get_ident()
         with wlock:
-            windows.setdefault(tid, {})["stale"] = time.monotonic()
+            windows.setdefault(tid, {})["reconciled"] = time.monotonic()
 
     orig_run = tools.subprocess.run
-    orig_stale = lsp_daemon.mark_stale
+    orig_stale = check_evidence.reconcile_daemon
     tools.subprocess.run = fake_run
-    lsp_daemon.mark_stale = fake_mark_stale
+    check_evidence.reconcile_daemon = fake_reconcile
     try:
         threads = [threading.Thread(target=lambda: rebuild_module(str(path))) for _ in range(n)]
         for t in threads:
@@ -128,22 +133,23 @@ def test_lake_build_lock_serializes_and_marks_stale_inside():
             t.join(timeout=5)
 
         check("all rebuilds completed", all(not t.is_alive() for t in threads))
-        check("mark_stale called once per successful build", len(windows) == n
-              and all("stale" in w for w in windows.values()))
+        check("daemon reconciliation called once per build", len(windows) == n
+              and all("reconciled" in w for w in windows.values()))
 
-        intervals = sorted((w["enter"], w["stale"]) for w in windows.values())
+        intervals = sorted((w["enter"], w["reconciled"]) for w in windows.values())
         disjoint = all(intervals[i][1] <= intervals[i + 1][0] + 1e-9
                        for i in range(len(intervals) - 1))
-        check("build+mark_stale windows are disjoint (stale is inside the lock)", disjoint)
+        check("build+reconciliation windows are disjoint", disjoint)
+        assert not _FAILURES
     finally:
         tools.subprocess.run = orig_run
-        lsp_daemon.mark_stale = orig_stale
+        check_evidence.reconcile_daemon = orig_stale
 
 
 def main():
     print("tools fallback-bounds tests (item 6 / D74):")
     test_cold_check_semaphore_bounds_concurrency()
-    test_lake_build_lock_serializes_and_marks_stale_inside()
+    test_lake_build_lock_serializes_and_reconciles_inside()
     print()
     if _FAILURES:
         print(f"FAILED ({len(_FAILURES)}): {', '.join(_FAILURES)}")

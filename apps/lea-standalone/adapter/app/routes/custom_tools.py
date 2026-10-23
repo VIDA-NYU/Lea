@@ -8,6 +8,9 @@ time (G6: fail while the user is looking at the field, not mid-proof).
 
 from __future__ import annotations
 
+from .. import peripheral_views
+from .. import workspace_commands
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -60,6 +63,7 @@ def create_tool(request: ToolPayload) -> dict:
 
 
 @router.get("/api/custom-tools/catalog")
+@peripheral_views.query('list_tool_catalog')
 def list_tool_catalog() -> dict:
     """Suggested tools, each marked with whether it is already installed (E2)."""
     from .. import catalog
@@ -72,6 +76,7 @@ def list_tool_catalog() -> dict:
 
 
 @router.post("/api/custom-tools/catalog/{entry_id}", status_code=201)
+@workspace_commands.register('peripheral.install_tool_entry')
 def install_tool_entry(entry_id: str) -> dict:
     """Install a suggested tool, UNSCOPED.
 

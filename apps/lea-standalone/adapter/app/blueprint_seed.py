@@ -15,9 +15,8 @@ Design:
   represented (matched by ``lean:`` FQN), and existing content is never modified or
   removed. Safe to re-run after formalizing more theorems; never clobbers hand/agent
   authoring done in the standalone UI.
-- **Edges are derived**, not invented: a new node ``uses`` another formalized decl iff
-  its own decl span textually references that decl's short name (reusing the same
-  decl-span scan :mod:`graph` uses for its ``sorry`` check).
+- **Edges use compiler-resolved constants**, including namespace and binder scope.
+  Incomplete inspection leaves the blueprint unchanged and exposes diagnostics.
 
 The status/color of the generated nodes is *not* written here — it stays derived from
 live Lean state by :mod:`graph`, exactly as for hand-authored nodes.
@@ -26,6 +25,8 @@ live Lean state by :mod:`graph`, exactly as for hand-authored nodes.
 from __future__ import annotations
 
 import re
+import json
+import subprocess
 
 from . import blueprint
 from . import graph
@@ -67,18 +68,6 @@ def _unique_key(base: str, taken: set[str]) -> str:
     return key
 
 
-def _decl_span_and_keyword(text: str, short: str) -> tuple[str | None, str]:
-    """``(keyword, span_text)`` for the decl named ``short`` in ``text`` — the header
-    line's Lean keyword and that decl's span (header to the next decl header/EOF).
-    ``(None, "")`` when the decl isn't found in the text."""
-    if not text:
-        return None, ""
-    matches = [decl for decl in scan_lean_declarations(text) if decl.short_name == short]
-    if len(matches) != 1:
-        return None, ""
-    return matches[0].keyword, matches[0].span
-
-
 def _signature(span_text: str) -> str:
     """The decl header from after its name up to ``:=`` (binders + type), as the node's
     statement. The source's own line breaks are **preserved** so a multi-line signature
@@ -100,39 +89,6 @@ def _signature(span_text: str) -> str:
     return "\n".join(lines)[:_SIGNATURE_CAP].rstrip()
 
 
-def _strip_lean_comments(text: str) -> str:
-    """Remove Lean comments — ``--`` to end of line and (nesting) ``/- … -/`` blocks —
-    so decl references used for edge derivation aren't matched inside a comment. Best
-    effort: it doesn't model string literals (a decl name inside a string is rare in
-    proof terms and low-risk)."""
-    out: list[str] = []
-    i, n, depth = 0, len(text), 0
-    while i < n:
-        pair = text[i:i + 2]
-        if depth:
-            if pair == "/-":
-                depth += 1
-                i += 2
-            elif pair == "-/":
-                depth -= 1
-                i += 2
-            else:
-                i += 1
-            continue
-        if pair == "/-":
-            depth += 1
-            i += 2
-        elif pair == "--":
-            nl = text.find("\n", i)
-            if nl == -1:
-                break
-            i = nl  # keep the newline so line structure survives
-        else:
-            out.append(text[i])
-            i += 1
-    return "".join(out)
-
-
 def _kind_for(keyword: str | None, artifact_kind: str | None) -> str:
     """Blueprint kind from the Lean keyword, falling back to the artifact's kind."""
     if keyword and keyword in _KEYWORD_KIND:
@@ -150,6 +106,34 @@ def _render_block(node: dict) -> str:
     return "\n".join(lines)
 
 
+def _compiler_references(project: dict, repo, relative: str, *, required=()) -> dict[str, list[str]]:
+    """Use current compiler-selected constants, never source token guesses.
+
+    Final checks normally already contain the selected declaration's references.
+    Generation may inspect other declarations explicitly on the worker, but a
+    graph read never invokes the compiler.
+    """
+    steps = store.code_steps_for_project_path(project['id'], relative)
+    step = steps[0] if steps else None
+    if step and step.get('check_current') and step.get('code') == (repo / relative).read_text():
+        from .db import connect
+        with connect() as conn:
+            row = conn.execute('select evidence_json from proof_check_evidence where id=?',
+                               (step.get('check_evidence_id'),)).fetchone()
+        selected = json.loads(row[0]).get('selected_result') if row else None
+        if (selected and isinstance(selected.get('dependencies'), list)
+                and set(required) <= {selected['user_name']}):
+            return {selected['user_name']: selected['dependencies']}
+    from .project_library import lake_root
+    if lake_root(repo) is None:
+        raise ValueError('No compatible Lake workspace is available for dependency inspection.')
+    from lea.result_selection import inspect_file
+    report = inspect_file(repo / relative)
+    if not report.get('complete'):
+        raise ValueError('Compiler inspection was incomplete.')
+    return {d['user_name']: d['dependencies'] for d in report['declarations']}
+
+
 def generate(project: dict, proofs_root) -> dict:
     """Append blueprint nodes for the project's formalized artifacts (additive,
     idempotent). Writes + commits ``.lea/blueprint.md`` when anything is added.
@@ -163,64 +147,75 @@ def generate(project: dict, proofs_root) -> dict:
     existing_text = project_service.read_doc(project, proofs_root, "blueprint.md")
     parsed = blueprint.parse(existing_text)
     existing_nodes = parsed["nodes"]
-    existing_leans = {n["lean"] for n in existing_nodes if n["lean"]}
     taken_keys = {n["key"] for n in existing_nodes}
 
-    _fqn_to_file, file_to_text = graph._scan_lean_decls(repo)
+    fqn_to_file, file_to_text = graph._scan_lean_decls(repo)
+    existing_leans = {graph._resolve_name(n['lean'], fqn_to_file) or n['lean']
+                      for n in existing_nodes if n['lean']}
 
     warnings: list[str] = []
     candidates: list[dict] = []
     skipped = 0
     for art in artifacts:
-        fqn = art["declaration_name"]
-        if not fqn or fqn in existing_leans:
+        recorded_name = art["declaration_name"]
+        # Ordinary target artifacts historically record a short name. Resolve
+        # it only when unique, using the same identity rules as graph reads.
+        fqn = graph._resolve_name(recorded_name, fqn_to_file) if recorded_name else None
+        if not recorded_name or fqn in existing_leans:
+            skipped += 1
+            continue
+        if not fqn:
+            warnings.append(f"`{recorded_name}` is recorded but its exact or unambiguous declaration was not found; no node was added.")
             skipped += 1
             continue
         short = graph._short(fqn)
         text = file_to_text.get(art.get("path") or "", "")
-        keyword, span = _decl_span_and_keyword(text, short)
+        declaration = next((d for d in scan_lean_declarations(text) if d.full_name == fqn), None)
+        keyword, span = (declaration.keyword, declaration.span) if declaration else (None, '')
         if keyword is None:
-            warnings.append(f"`{fqn}` recorded but not found in a .lean file — node added without kind/edges.")
+            warnings.append(f"`{recorded_name}` is recorded but its exact or unambiguous declaration was not found; no node was added.")
+            skipped += 1
+            continue
         candidates.append({
             "key": _unique_key(short, taken_keys),
             "lean": fqn,
-            "short": short,
+            "path": art["path"],
             "kind": _kind_for(keyword, art.get("kind")),
             "statement": _signature(span) or f"Formalized as `{fqn}`.",
-            "span": span,
         })
 
-    # Derive `uses` edges: a candidate depends on any formalized decl (existing node
-    # or sibling candidate) whose short name its own span references. Keyed by the
-    # target node's blueprint key so the edge resolves in the graph.
-    # A short name may map to several decls (same last component in different
-    # namespaces); such references are ambiguous, so we skip them rather than guess
-    # (better a missing edge than a wrong one). Unambiguous shorts (one owner) edge.
-    short_to_keys: dict[str, list[str]] = {}
-    for node in existing_nodes:
-        if node["lean"]:
-            short_to_keys.setdefault(graph._short(node["lean"]), []).append(node["key"])
+    keys_by_name = {graph._resolve_name(node['lean'], fqn_to_file) or node['lean']: node['key']
+                    for node in existing_nodes if node['lean']}
+    keys_by_name.update({cand['lean']: cand['key'] for cand in candidates})
+    references = {}
+    by_path = {}
+    for candidate in candidates:
+        by_path.setdefault(candidate['path'], set()).add(candidate['lean'])
+    for relative, required in by_path.items():
+        try:
+            inspected = _compiler_references(project, repo, relative, required=required)
+            if required - inspected.keys():
+                raise ValueError('A recorded declaration is missing from the compiled module.')
+            references.update(inspected)
+        except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+            warnings.append(f'Dependencies for {relative} could not be resolved by Lean: {exc}')
     for cand in candidates:
-        short_to_keys.setdefault(cand["short"], []).append(cand["key"])
+        # Missing inspection is visible and cannot manufacture a dependency.
+        cand['uses'] = list(dict.fromkeys(keys_by_name[name]
+            for name in references.get(cand['lean'], [])
+            if name in keys_by_name and keys_by_name[name] != cand['key']))
 
-    for cand in candidates:
-        uses: list[str] = []
-        seen: set[str] = set()
-        # Scan the comment-stripped span so a decl name mentioned only in a comment
-        # doesn't produce a phantom dependency.
-        scan = _strip_lean_comments(cand["span"])
-        for other_short, keys in short_to_keys.items():
-            if other_short == cand["short"] or len(keys) != 1:
-                continue
-            other_key = keys[0]
-            if other_key == cand["key"] or other_key in seen:
-                continue
-            if re.search(rf"\b{re.escape(other_short)}\b", scan):
-                seen.add(other_key)
-                uses.append(other_key)
-        cand["uses"] = uses
-
-    if candidates:
+    # A partial generation must not persist incomplete edges and then call itself
+    # idempotently complete on the next attempt. Keep the existing document until
+    # all new declarations have compiler references; retry remains safe.
+    complete = all(c['lean'] in references for c in candidates)
+    if candidates and complete:
+        unchanged = (project_service.read_doc(project, proofs_root, 'blueprint.md') == existing_text
+                     and all((repo / path).read_text() == file_to_text[path] for path in by_path))
+        if not unchanged:
+            complete = False
+            warnings.append('Project source or Blueprint changed during inspection. Refresh and generate again.')
+    if candidates and complete:
         blocks = "\n\n".join(_render_block(c) for c in candidates)
         # If the existing content ends inside an unclosed ``` fence (an odd number of
         # fence lines), close it first — otherwise the appended `## ` sections land
@@ -232,7 +227,7 @@ def generate(project: dict, proofs_root) -> dict:
         project_service.write_doc(project, proofs_root, "blueprint.md", new_text)
 
     return {
-        "added": len(candidates),
+        "added": len(candidates) if complete else 0,
         "skipped": skipped,
         "warnings": warnings,
         "graph": graph.build_graph(project, proofs_root),

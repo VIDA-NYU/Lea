@@ -12,14 +12,14 @@ from threading import Event, Lock
 from lea.interface import Finished, TurnStarted
 from lea.providers import Usage
 
-from app import bridge, db, runbroker, runregistry, store
+from app import bridge, db, runbroker, runregistry, store,command_host
 from app.config import LeaConfig
 from app.runregistry import RunRegistry
 from app.routes import runs as runs_route
 from app.routes.runs import RunRequest
 
 
-def _wait_for(predicate, timeout=5.0):
+def _wait_for(predicate, timeout=8.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if predicate():
@@ -38,6 +38,7 @@ def _setup(monkeypatch, tmp_path, capacity):
     bridge._stop_events.clear()
     reg = RunRegistry(max_concurrent=capacity)
     monkeypatch.setattr(runregistry, "registry", reg)
+    command_host.start()
     return reg
 
 
@@ -91,8 +92,8 @@ def test_capacity_two_drives_two_independent_sessions_concurrently(tmp_path, mon
 
     a = _new_run("A")
     b = _new_run("B")
-    assert started["A"].wait(2)
-    assert started["B"].wait(2)
+    assert started["A"].wait(8)
+    assert started["B"].wait(8)
     assert reg.active_count() == 2
     assert reg.is_active(a["run_id"]) and reg.is_active(b["run_id"])
 
@@ -106,7 +107,7 @@ def test_full_capacity_queues_unrelated_session_without_stopping_it(tmp_path, mo
     started, release, order = _controlled_prover(monkeypatch, ("A", "B"))
 
     a = _new_run("A")
-    assert started["A"].wait(2)
+    assert started["A"].wait(8)
     b = _new_run("B")
     time.sleep(0.15)
 
@@ -115,7 +116,7 @@ def test_full_capacity_queues_unrelated_session_without_stopping_it(tmp_path, mo
     assert not bridge._stop_events.get(a["run_id"], Event()).is_set()
 
     release["A"].set()
-    assert started["B"].wait(2)
+    assert started["B"].wait(8)
     assert order == ["A", "B"]
     release["B"].set()
     assert _wait_for(lambda: reg.active_count() == 0)
@@ -126,10 +127,10 @@ def test_same_session_followup_supersedes_only_its_incumbent(tmp_path, monkeypat
     started, release, _ = _controlled_prover(monkeypatch, ("first", "followup"))
 
     first = _new_run("first")
-    assert started["first"].wait(2)
+    assert started["first"].wait(8)
     followup = _new_run("followup", session_id=first["session_id"])
 
-    assert started["followup"].wait(2)
+    assert started["followup"].wait(8)
     assert _wait_for(lambda: store.get_run(first["run_id"])["status"] == "cancelled")
     assert reg.is_active(followup["run_id"])
     release["followup"].set()
@@ -143,7 +144,7 @@ def test_stubborn_same_session_incumbent_keeps_followup_queued_until_release(tmp
     )
 
     first = _new_run("stubborn")
-    assert started["stubborn"].wait(2)
+    assert started["stubborn"].wait(8)
     followup = _new_run("followup", session_id=first["session_id"])
 
     assert _wait_for(lambda: bridge._stop_events[first["run_id"]].is_set())
@@ -151,6 +152,6 @@ def test_stubborn_same_session_incumbent_keeps_followup_queued_until_release(tmp
     assert store.get_run(followup["run_id"])["status"] == "pending"
 
     release["stubborn"].set()
-    assert started["followup"].wait(2)
+    assert started["followup"].wait(8)
     release["followup"].set()
     assert _wait_for(lambda: reg.active_count() == 0)

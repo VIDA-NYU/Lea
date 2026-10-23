@@ -23,7 +23,6 @@ def seed(run_id):
 
 
 def publish(run_id, invocation_key, payload):
-    payload = validate_payload(payload)
     ctx = storage.context(run_id)
     if not ctx:
         raise ValueError("No source-bound Lea Status context for this run")
@@ -32,6 +31,7 @@ def publish(run_id, invocation_key, payload):
         if replay["payload"] != payload:
             raise ValueError("Invocation identity already used with different content")
         return replay, event_payload(ctx, replay)
+    payload = validate_payload(payload)
     captured = _snapshot(ctx["formalization_id"], run_id=run_id)
     snapshot = captured[0] if captured else {"revision_token": None, "files": []}
     if not snapshot["files"] and payload["scope"] != "source_only":

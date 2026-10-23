@@ -2,6 +2,24 @@
 
 ## Summary
 
+Automatic defaults now use the Overleaf browser title (without trailing Overleaf
+branding), then the available LaTeX `\title{...}`, then `Overleaf Project`.
+Duplicate automatic names receive numbered suffixes such as `Topology Notes (2)`;
+the adapter allocates display names and Lean namespaces in a serialized database
+transaction. The Overleaf ID remains the immutable project binding.
+
+Existing Overleaf-linked projects with known generated names adopt a source title
+when next opened. This updates their display name and generated document headings
+while retaining their namespaces, repository paths, and proof content. Titles are
+adopted once; later Overleaf renames do not rename Lea projects. Explicit Lea name
+edits always remain protected.
+
+The `name_source` field records `generated`, `overleaf`, or `custom`. Optional
+`overleaf_project_title` metadata travels independently of the saved project title
+on mirror and run requests. The existing-project-only default-name POST endpoint
+does not create projects on tab open; run-starting actions can initialize a project
+through the identity PUT route's `default-name` mode before composing their prompt.
+
 Let users choose a human project name for an Overleaf-backed Lea project instead
 of exposing the URL-derived project slug, e.g. `P6a4584b313b8ddc4ba20e377`.
 

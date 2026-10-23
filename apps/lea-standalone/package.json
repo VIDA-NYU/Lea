@@ -12,9 +12,9 @@
     "setup:api": "node scripts/setup-api.mjs",
     "setup:agent": "cd prover && uv sync",
     "dev:web": "vite",
-    "start:api": "cd adapter && ./.venv/bin/python run_api.py",
-    "dev:api": "cd adapter && ./.venv/bin/python run_api.py",
-    "dev:api:venv": "cd adapter && ./.venv/bin/python run_api.py --host 127.0.0.1 --port 8001 --log-level debug",
+    "start:api": "node scripts/dev.mjs --adapter-only",
+    "dev:api": "node scripts/dev.mjs --adapter-only",
+    "dev:api:venv": "node scripts/dev.mjs --adapter-only",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

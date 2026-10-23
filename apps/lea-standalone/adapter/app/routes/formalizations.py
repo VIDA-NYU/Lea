@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import sqlite3
 
+from ..core_query_dispatch import database_query
+from .. import workspace_commands
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Literal
 
 from .. import formalizations as service
 from .. import github_import_service
 from ..config import load_config
-from .. import store, project_coordination
+from .. import store, project_coordination, formalization_reviews
 
 
 def _scope_project(arguments):
@@ -47,7 +50,31 @@ class FormalizationUpdate(BaseModel):
     source_hash: str | None = None
 
 
+class ReviewDecision(BaseModel):
+    action: Literal['approve', 'withdraw']
+    outcome: Literal['proved', 'defined', 'disproved'] | None = None
+    revision_token: str | None = None
+    approval_id: str | None = None
+    source_context_ref: str | None = None
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+@router.get('/api/formalizations/{formalization_id}/review')
+@project_coordination.guarded(_scope_project, metadata=True)
+def review_context(formalization_id: str, source_context_ref: str | None = None) -> dict:
+    return formalization_reviews.context(formalization_id, source_context_ref)
+
+
+@router.post('/api/formalizations/{formalization_id}/review-decisions', status_code=202)
+@workspace_commands.register('formalization.review')
+@project_coordination.guarded(_scope_project)
+def review_decision(formalization_id: str, request: ReviewDecision) -> dict:
+    # The service owns the mutation reservation, before its environment lease.
+    return formalization_reviews.decide(formalization_id, request.model_dump())
+
+
 @router.get("/api/projects/{project_id}/formalizations")
+@database_query('project_forms')
 @project_coordination.guarded(_scope_project, metadata=True)
 def project_formalizations(project_id: str) -> dict:
     if store.get_project(project_id) is None:
@@ -57,6 +84,7 @@ def project_formalizations(project_id: str) -> dict:
 
 
 @router.get("/api/projects/by-slug/{slug}/formalizations")
+@database_query('slug_forms')
 @project_coordination.guarded(_scope_project, metadata=True)
 def project_formalizations_by_slug(slug: str) -> dict:
     project = store.get_project_by_slug(slug)
@@ -71,7 +99,8 @@ def project_formalizations_by_slug(slug: str) -> dict:
     }
 
 
-@router.post("/api/projects/{project_id}/formalizations", status_code=201)
+@router.post('/api/projects/{project_id}/formalizations', status_code=202)
+@workspace_commands.register('formalization.create')
 @project_coordination.guarded(_scope_project, write=True)
 def create_project_formalization(
     project_id: str, request: FormalizationCreate
@@ -105,6 +134,7 @@ def create_project_formalization(
 
 
 @router.get("/api/sessions/{session_id}/formalizations")
+@database_query('session_forms')
 @project_coordination.guarded(_scope_project, metadata=True)
 def session_formalizations(session_id: str) -> dict:
     if store.get_session(session_id) is None:
@@ -114,6 +144,7 @@ def session_formalizations(session_id: str) -> dict:
 
 
 @router.get("/api/formalizations/{formalization_id}")
+@database_query('formalization')
 @project_coordination.guarded(_scope_project, metadata=True)
 def formalization_detail(formalization_id: str) -> dict:
     item = service.get(formalization_id)
@@ -123,6 +154,7 @@ def formalization_detail(formalization_id: str) -> dict:
 
 
 @router.get("/api/formalizations/{formalization_id}/current")
+@database_query('current')
 @project_coordination.guarded(_scope_project, metadata=True)
 def formalization_current(
     formalization_id: str,
@@ -139,7 +171,8 @@ def formalization_current(
     return item
 
 
-@router.patch("/api/formalizations/{formalization_id}")
+@router.patch("/api/formalizations/{formalization_id}",status_code=202)
+@workspace_commands.register('formalization.update')
 @project_coordination.guarded(_scope_project, write=True)
 def update_formalization(
     formalization_id: str, request: FormalizationUpdate
