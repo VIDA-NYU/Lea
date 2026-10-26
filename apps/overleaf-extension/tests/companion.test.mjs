@@ -3934,7 +3934,7 @@ test('a projection wait stops when its worker epoch is fenced',async t=>{
   assert.equal(reads,1);
 });
 
-test('cancelling a persisted batch projection wait never launches its target',async ()=>{
+test('cancelling a persisted batch projection wait never launches its target',async t=>{
   const calls=[],fallback=makeAdapterApiFetch(calls);
   const state=await makeState({leaRepoPath:await makeLeaRepo(),env:{OPENAI_API_KEY:'test-key'},fetchImpl:async(url,options)=>{
     const requested=new URL(String(url)).searchParams.get('declarations');
@@ -3946,7 +3946,17 @@ test('cancelling a persisted batch projection wait never launches its target',as
   const accepted=await handleFormalizeAll({overleafProjectId:'project-1',items:[{
     targetKind:'theorem',targetLabel:'child',targetText:'True.',targetUses:['support']}]},state);
   const batch=state.repairBatches[accepted.body.batchId];
-  await waitFor(()=>batch.items[0].waitingForProjection);
+  t.after(async()=>{
+    if(!batch.done)await handleBatchCancel({batchId:batch.batchId},state);
+    await waitFor(()=>batch.done);
+    await batch.reportSubmission;
+  });
+  // The in-memory flag precedes the asynchronous atomic write. Observe the
+  // persisted state before asserting the recovery and cancellation contract.
+  await waitFor(async()=>{
+    const saved=JSON.parse(await fs.readFile(state.repairBatchesPath,'utf8'));
+    return saved[batch.batchId]?.items[0]?.waitingForProjection===true;
+  });
   const saved=JSON.parse(await fs.readFile(state.repairBatchesPath,'utf8'));
   assert.equal(saved[batch.batchId].items[0].waitingForProjection,true);
   assert.equal((await handleLeanPaneRepairStatus({batchId:batch.batchId},state)).body.items[0].state,'waiting');
