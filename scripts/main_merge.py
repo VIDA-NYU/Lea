@@ -178,7 +178,16 @@ def preview(repository, manifest_path, main_ref='vida/main', record=False):
                     'feature_head': head, 'main': main}
         manifest, digest = read_manifest(manifest_path)
         if manifest.get('main') != main:
-            raise MergePreparationError('Main advanced: review its changes and refresh the manifest.')
+            # A historical integration recipe need not pin every later PR's
+            # base. Both the reviewed baseline and current main must already
+            # be integrated, with no new changes requiring resolution.
+            integrated = (not required and isinstance(manifest.get('main'), str)
+                          and repository.git('merge-base', '--is-ancestor', manifest['main'],
+                                             main, check=False).returncode == 0
+                          and repository.git('merge-base', '--is-ancestor', main,
+                                             head, check=False).returncode == 0)
+            if not integrated:
+                raise MergePreparationError('Main advanced: review its changes and refresh the manifest.')
         unknown = required - manifest['resolutions'].keys()
         if unknown:
             raise MergePreparationError('Unreviewed conflicts: ' + ', '.join(sorted(unknown)))

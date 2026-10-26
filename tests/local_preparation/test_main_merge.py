@@ -187,6 +187,32 @@ class MainIntegrationTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
         self.assertTrue((self.root / 'history.md').exists())
 
+    def test_followup_pr_previews_after_main_contains_the_reviewed_integration(self):
+        prepare_integration(self.repository, self.manifest, self.approved(), apply=True)
+        self.git('commit', '-q', '-m', 'fixture integration')
+        integrated = self.git('rev-parse', 'HEAD')
+        self.git('update-ref', 'refs/remotes/vida/main', integrated)
+        (self.root / '.python-version').write_text('3.13\n')
+        self.commit('followup Python pin')
+        before = self.snapshot()
+        result = self.approved()
+        self.assertEqual(result['main'], integrated)
+        self.assertEqual(result['resolution_paths'], [])
+        self.assertEqual(result['resolved_tree'], self.git('rev-parse', 'HEAD^{tree}'))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_new_main_still_requires_review_before_it_is_integrated(self):
+        self.git('checkout', '-q', 'main')
+        (self.root / 'unreviewed-main.txt').write_text('new main behavior\n')
+        self.commit('advance main')
+        advanced = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '-q', 'LeaCheckAddition')
+        self.git('update-ref', 'refs/remotes/vida/main', advanced)
+        before = self.snapshot()
+        with self.assertRaisesRegex(MergePreparationError, 'Main advanced'):
+            self.approved()
+        self.assertEqual(self.snapshot(), before)
+
     def test_ignored_local_file_cannot_be_overwritten_by_main(self):
         self.git('checkout', '-q', 'main')
         (self.root / 'private-data/proof.lean').write_text('new main file\n')
