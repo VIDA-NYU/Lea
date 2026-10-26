@@ -20,7 +20,11 @@ def record_start(identity,pid):
 
 
 def publish(identity,value,capabilities):
+    """Evaluate live observations only after acquiring the serialized writer."""
     with db.write(timeout_seconds=PUBLICATION_TIMEOUT_SECONDS) as conn:
+        # A heartbeat queued before a drain must not publish its old ready state
+        # after the control thread has already published the drain transition.
+        if callable(value):value=value()
         # Queuing for the writer must not consume the heartbeat's new lifetime.
         now=datetime.now(timezone.utc)
         changed=conn.execute('''update worker_process set lifecycle_state=?,heartbeat_at=?,expires_at=?,

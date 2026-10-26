@@ -89,7 +89,7 @@ def startup() -> None:
         capabilities=health()['capabilities']
         from lea import execution
         capabilities['execution']=execution.capability()
-        process_state.publish(runtime.IDENTITY,runtime.snapshot(),capabilities)
+        process_state.publish(runtime.IDENTITY,lambda:runtime.snapshot(include_queue=False),capabilities)
         observation_maintenance.start()
         command_host.start()
     except BaseException:

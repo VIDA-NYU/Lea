@@ -1,5 +1,7 @@
 """Contention must not restart a live worker; failures must survive its exit."""
 import importlib
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import json
 import logging
 import os
@@ -8,7 +10,7 @@ import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
-from threading import Event
+from threading import Event, current_thread
 
 import pytest
 from app import db, process_state, runtime, worker_diagnostics
@@ -46,6 +48,40 @@ def test_real_sqlite_contention_keeps_runtime_and_can_publish_after_release(isol
         row = conn.execute('select * from worker_process').fetchone()
     assert row['runtime_id'] == 'same-lifetime' and row['generation'] == 1
     assert any(e['event'] == 'worker.status_write_delayed' for e in json.loads(row['snapshot_json'])['diagnostics']['events'])
+
+
+@pytest.mark.parametrize(('before', 'after'), [('ready', 'draining'), ('draining', 'ready')])
+def test_delayed_heartbeat_cannot_overwrite_a_newer_lifecycle_state(isolated, monkeypatch, before, after):
+    entry = importlib.import_module('run_worker')
+    monkeypatch.setattr(runtime, '_state', before)
+    process_state.record_start(runtime.IDENTITY, os.getpid())
+    capabilities = {'database_boundary': process_state.BOUNDARY}
+    assert entry.publish_status(capabilities)
+    waiting, resume = Event(), Event()
+    original_write = db.write
+
+    @contextmanager
+    def delayed_write(**kwargs):
+        if current_thread().name.startswith('delayed-status'):
+            waiting.set()
+            assert resume.wait(5), 'Timed out releasing the queued heartbeat'
+        with original_write(**kwargs) as conn:
+            yield conn
+
+    monkeypatch.setattr(db, 'write', delayed_write)
+    with ThreadPoolExecutor(1, thread_name_prefix='delayed-status') as pool:
+        pending = pool.submit(entry.publish_status, capabilities)
+        try:
+            assert waiting.wait(5), 'Heartbeat did not queue for its database write'
+            runtime.set_state(after)
+            process_state.publish(runtime.IDENTITY, runtime.snapshot(include_queue=False), capabilities)
+            assert process_state.snapshot()['lifecycle_state'] == after
+        finally:
+            resume.set()
+        assert pending.result(timeout=5)
+    value = process_state.snapshot()
+    assert value['lifecycle_state'] == after
+    assert value['ready'] is (after == 'ready')
 
 
 def test_obsolete_lifetime_and_non_contention_fail_closed(isolated, monkeypatch):

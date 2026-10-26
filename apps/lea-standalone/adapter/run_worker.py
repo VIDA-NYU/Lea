@@ -15,7 +15,7 @@ def publish_status(capabilities):
     try:
         # Public health derives queue counts from SQL. Avoid an unbounded read
         # before the heartbeat's bounded write, especially behind a busy COMMIT.
-        process_state.publish(runtime.IDENTITY, {**runtime.snapshot(include_queue=False),
+        process_state.publish(runtime.IDENTITY, lambda: {**runtime.snapshot(include_queue=False),
             'diagnostics': worker_diagnostics.snapshot()}, capabilities)
         return True
     except sqlite3.OperationalError as exc:
