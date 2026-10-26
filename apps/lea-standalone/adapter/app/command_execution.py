@@ -38,7 +38,7 @@ def control(token):
         from . import process_state
         with db.connect() as conn:
             row=conn.execute('select capabilities_json from worker_process where id=1 and runtime_id=?',(runtime.IDENTITY,)).fetchone()
-        if row:process_state.publish(runtime.IDENTITY,runtime.snapshot(),json.loads(row[0]))
+        if row:process_state.publish(runtime.IDENTITY,lambda:runtime.snapshot(include_queue=False),json.loads(row[0]))
         return result
     raise ValueError('Unknown control handler')
 
