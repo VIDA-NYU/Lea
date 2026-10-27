@@ -27,6 +27,8 @@ class DownloadBundleTests(unittest.TestCase):
             with zipfile.ZipFile(output / "Lea.zip") as archive:
                 self.assertIn("Lea/extension/manifest.json", archive.namelist())
                 self.assertIn("Lea/compose.yaml", archive.namelist())
+                self.assertIn("Lea/start-lea.command", archive.namelist())
+                self.assertEqual(archive.getinfo("Lea/start-lea.command").external_attr >> 16 & 0o777, 0o755)
             self.assertIn("Lea.zip", (output / "SHA256SUMS").read_text())
 
     def test_incomplete_or_invalid_bundle_is_rejected(self):

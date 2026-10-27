@@ -41,6 +41,7 @@ Fresh install
 1. Install and start Docker Desktop.
 2. Extract this ZIP into a permanent directory.
 3. Run `docker compose -f compose.yaml pull`, then `docker compose -f compose.yaml up`.
+   On macOS you can double-click start-lea.command; on Linux run `bash start-lea.sh`.
 4. Wait for http://localhost:8001/api/ready to return ready, then open http://localhost:8001.
 5. Add your provider key in Settings and select a model for that provider.
 6. For Overleaf, load the included extension/ directory at chrome://extensions with Developer Mode enabled.
@@ -63,6 +64,9 @@ health diagnostics explain when restricted execution is unavailable.
         (bundle / "compose.yaml").write_text(compose)
         (bundle / "release.json").write_text(json.dumps(manifest, indent=2) + "\n")
         (bundle / "README.txt").write_text(instructions)
+        for name in ("start-lea.command", "start-lea.sh"):
+            shutil.copyfile(root / ".github/scripts/release-launcher.sh", bundle / name)
+            (bundle / name).chmod(0o755)
         shutil.copytree(extension, bundle / "extension")
         for filename, directory in (("Lea.zip", bundle), ("Lea-Overleaf-extension.zip", bundle / "extension")):
             with zipfile.ZipFile(output / filename, "w", zipfile.ZIP_DEFLATED) as archive:
