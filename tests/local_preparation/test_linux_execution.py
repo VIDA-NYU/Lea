@@ -80,6 +80,17 @@ class LinuxExecutionTests(unittest.TestCase):
         result = self.run_code(f"from pathlib import Path; Path({str(self.root / 'sibling')!r}).write_text('denied')")
         self.assertNotEqual(result.returncode, 0)
 
+    def test_canonical_metadata_changes_are_denied(self):
+        before = self.sentinel.stat()
+        for expression in ("os.chmod(p, 0)", "os.utime(p, (1, 1))", "os.setxattr(p, 'user.lea_probe', b'changed')",
+                           "os.chown(p, os.getuid(), os.getgid())"):
+            with self.subTest(expression=expression):
+                result = self.run_code(f"import os; p={str(self.sentinel)!r}; {expression}")
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("PermissionError", result.stderr)
+                self.assertEqual(self.sentinel.stat().st_mode, before.st_mode)
+                self.assertEqual(self.sentinel.stat().st_mtime_ns, before.st_mtime_ns)
+
     def test_invalid_policy_never_executes_command(self):
         self.policy["writable_roots"] = ["/"]
         result = self.run_code(f"from pathlib import Path; Path({str(self.sentinel)!r}).write_text('changed')")

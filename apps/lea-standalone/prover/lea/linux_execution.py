@@ -20,6 +20,15 @@ class PathBeneath(ctypes.Structure):
     _fields_ = [("allowed_access", ctypes.c_uint64), ("parent_fd", ctypes.c_int32)]
 
 
+class SocketFilter(ctypes.Structure):
+    _fields_ = [("code", ctypes.c_ushort), ("jt", ctypes.c_ubyte),
+                ("jf", ctypes.c_ubyte), ("k", ctypes.c_uint32)]
+
+
+class SocketProgram(ctypes.Structure):
+    _fields_ = [("length", ctypes.c_ushort), ("filter", ctypes.POINTER(SocketFilter))]
+
+
 def checked(result: int, operation: str) -> int:
     if result < 0:
         code = ctypes.get_errno()
@@ -78,10 +87,21 @@ def restrict(policy: dict) -> None:
     if not context:
         raise RuntimeError("Unable to create seccomp filter")
     try:
-        for name in ("socket", "socketpair", "connect", "bind", "listen", "accept", "accept4",
+        # Landlock does not mediate chmod/chown, timestamps or xattrs. Deny
+        # these globally, including inside the workspace, rather than allowing
+        # canonical metadata changes. ioctl is also blocked to cover file flags.
+        denied = ("socket", "socketpair", "connect", "bind", "listen", "accept", "accept4",
                      "sendto", "sendmsg", "sendmmsg", "io_uring_setup", "io_uring_enter", "io_uring_register",
-                     "ptrace", "process_vm_writev"):
+                     "ptrace", "process_vm_writev", "ioctl", "fchmod", "fchmodat", "fchmodat2",
+                     "fchown", "fchownat", "utimensat", "setxattr", "lsetxattr", "fsetxattr",
+                     "removexattr", "lremovexattr", "fremovexattr")
+        # These legacy calls do not exist on AArch64; libseccomp represents
+        # them with negative pseudo syscall IDs. Native x86_64 must deny them.
+        legacy = ("chmod", "chown", "lchown", "utime", "utimes", "futimesat")
+        for name in denied + legacy:
             number = seccomp.seccomp_syscall_resolve_name(name.encode())
+            if name in legacy and number < -10000:
+                continue
             if number < 0:
                 raise RuntimeError(f"libseccomp does not recognize required syscall {name}")
             result = seccomp.seccomp_rule_add(context, 0x00050000 | errno.EPERM, number, 0)
@@ -92,6 +112,17 @@ def restrict(policy: dict) -> None:
             raise OSError(-result, "Unable to install seccomp filter")
     finally:
         seccomp.seccomp_release(context)
+    # Syscalls added after mseal (462), including Linux 6.13's xattrat family,
+    # remain unavailable until audited. ENOSYS permits libc to fall back to the
+    # older, explicitly restricted calls. It also blocks the x32 syscall range.
+    filters = (SocketFilter * 4)(
+        SocketFilter(0x20, 0, 0, 0),  # load seccomp_data.nr
+        SocketFilter(0x35, 0, 1, 463),  # nr >= 463
+        SocketFilter(0x06, 0, 0, 0x00050000 | errno.ENOSYS),
+        SocketFilter(0x06, 0, 0, 0x7FFF0000),
+    )
+    program = SocketProgram(len(filters), filters)
+    checked(libc.prctl(22, 2, ctypes.byref(program), 0, 0), "seccomp syscall boundary")
 
 
 def main() -> int:
