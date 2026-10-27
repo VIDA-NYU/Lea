@@ -29,6 +29,12 @@ def package(source, digests, output, root=ROOT):
     version = json.loads((extension / "manifest.json").read_text())["version"]
     manifest = {"version": 1, "source": source, "extension_version": version,
                 "images": {role: image + "@" + digests[role] for role, image in IMAGES.items()}}
+    manifest["runtimes"] = {"node": (root / ".nvmrc").read_text().strip(),
+                            "python": (root / "apps/lea-standalone/adapter/.python-version").read_text().strip(),
+                            "lean": (root / "apps/lea-standalone/prover/workspace/lean-toolchain").read_text().strip()}
+    manifest["dependency_locks"] = {
+        name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+        for name in ("package-lock.json", "apps/lea-standalone/adapter/uv.lock", "apps/lea-standalone/prover/uv.lock")}
     instructions = f"""Lea release {source[:12]}
 
 Fresh install

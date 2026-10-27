@@ -52,6 +52,7 @@ FROM node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10
 # Stage 2: runtime — Python 3.13 + uv (base), plus Lean toolchain and Mathlib
 # -----------------------------------------------------------------------------
 FROM ghcr.io/astral-sh/uv:0.9.30-python3.13-bookworm-slim@sha256:531f855bda2c73cd6ef67d56b733b357cea384185b3022bd09f05e002cd144ca AS runtime
+COPY apps/lea-standalone/docker/debian.sources /etc/apt/sources.list.d/debian.sources
 
 LABEL org.opencontainers.image.source="https://github.com/VIDA-NYU/Lea" \
       org.opencontainers.image.description="Lea theorem-proving UI, adapter, Overleaf companion, Lean, and Mathlib"
@@ -60,7 +61,7 @@ LABEL org.opencontainers.image.source="https://github.com/VIDA-NYU/Lea" \
 # health checks), libgmp10 (Lean runtime dependency).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      git=1:2.39.5-0+deb12u3 curl=7.88.1-10+deb12u15 ca-certificates=20250419~deb12u1 libgmp10=2:6.2.1+dfsg1-1.1 libseccomp2=2.5.4-1+deb12u1 \
+      git=1:2.39.5-0+deb12u3 curl=7.88.1-10+deb12u15 ca-certificates=20250419~deb12u2 libgmp10=2:6.2.1+dfsg1-1.1 libseccomp2=2.5.4-1+deb12u1 \
  && rm -rf /var/lib/apt/lists/*
 
 # Install the Lean toolchain manager (elan) and pin the project's Lean version.
@@ -173,9 +174,10 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 # Copy only Python dependencies, API sources and static assets into a clean
 # base. Workspace/compiler/config bytes are absent from every API image layer.
 FROM ghcr.io/astral-sh/uv:0.9.30-python3.13-bookworm-slim@sha256:531f855bda2c73cd6ef67d56b733b357cea384185b3022bd09f05e002cd144ca AS api
+COPY apps/lea-standalone/docker/debian.sources /etc/apt/sources.list.d/debian.sources
 ARG LEA_BUILD_SOURCE=development
 LABEL org.opencontainers.image.revision=$LEA_BUILD_SOURCE
-RUN apt-get update && apt-get install -y --no-install-recommends curl=7.88.1-10+deb12u15 ca-certificates=20250419~deb12u1 \
+RUN apt-get update && apt-get install -y --no-install-recommends curl=7.88.1-10+deb12u15 ca-certificates=20250419~deb12u2 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=runtime /app/adapter /app/adapter
 COPY --from=web /web/apps/lea-standalone/dist /app/dist
