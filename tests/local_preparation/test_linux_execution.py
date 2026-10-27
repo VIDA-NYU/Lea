@@ -7,11 +7,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[2]
-spec = importlib.util.spec_from_file_location("execution", ROOT / "apps/lea-standalone/prover/lea/execution.py")
-execution = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(execution)
+if os.environ.get("LEA_TEST_PACKAGED_EXECUTOR") == "1":
+    from lea import execution
+else:
+    ROOT = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location("execution", ROOT / "apps/lea-standalone/prover/lea/execution.py")
+    execution = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(execution)
 
 
 @unittest.skipUnless(sys.platform == "linux", "Linux kernel restrictions")
@@ -80,6 +84,12 @@ class LinuxExecutionTests(unittest.TestCase):
         self.policy["writable_roots"] = ["/"]
         result = self.run_code(f"from pathlib import Path; Path({str(self.sentinel)!r}).write_text('changed')")
         self.assertEqual(result.returncode, 126)
+        self.assertEqual(self.sentinel.read_text(), "original")
+
+    def test_unavailable_executor_has_no_unconfined_fallback(self):
+        with patch.object(execution, "capability", return_value={"available": False}):
+            with self.assertRaisesRegex(RuntimeError, "unavailable"):
+                self.run_code(f"from pathlib import Path; Path({str(self.sentinel)!r}).write_text('changed')")
         self.assertEqual(self.sentinel.read_text(), "original")
 
 

@@ -92,10 +92,11 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           docker run --rm --pull=never --network none \
-            -v "$GITHUB_WORKSPACE:/validation-source:ro" -w /validation-source \
-            -e LEA_REQUIRE_LINUX_EXECUTOR=1 --entrypoint /app/adapter/.venv/bin/python \
+            -v "$GITHUB_WORKSPACE/tests/local_preparation:/validation-tests:ro" -w /validation-tests \
+            -e LEA_REQUIRE_LINUX_EXECUTOR=1 -e LEA_TEST_PACKAGED_EXECUTOR=1 \
+            --entrypoint /app/adapter/.venv/bin/python \
             "lea-stage8-candidate-worker:$ARCH" \
-            -m unittest discover -s tests/local_preparation -p test_linux_execution.py -v
+            -m unittest discover -s . -p test_linux_execution.py -v
       - name: Native production-code ownership and recovery regressions
         env:
           ARCH: ${{ matrix.arch }}

@@ -77,8 +77,8 @@ directory, then run `docker compose -f compose.yaml pull` and
 Keep an existing installation's data directories and volumes when upgrading;
 follow the included instructions to select the existing Compose project directory.
 
-Runs the standalone UI, shared adapter, Overleaf companion, Lean, and Mathlib in
-one prebuilt container published by VIDA. The only thing you install is Docker.
+Runs the standalone UI, shared adapter, Overleaf companion, Lean, and Mathlib
+using VIDA's matching prebuilt images. Docker Compose starts the services together.
 
 1. **Install Docker Desktop** and start it: https://www.docker.com/products/docker-desktop/
    (verify with `docker --version`). Keep at least **20 GB free** in Docker's
@@ -106,7 +106,7 @@ Overleaf job state persist on your machine under
 
 To use Overleaf, load `apps/overleaf-extension/extension` as an unpacked Chrome
 extension. Its default companion URL (`http://127.0.0.1:31245`) points to the
-same running container; no separate local toolchain is required.
+running Docker stack; no separate local toolchain is required.
 
 ### Option B — Local install (macOS / Linux)
 
@@ -269,9 +269,10 @@ reachable at `LEA_API_BASE_URL`.
 
 ## Set Up The Overleaf Extension
 
-The Overleaf integration requires the [local install](#option-b--local-install-macos--linux);
-it is not included in the Docker image. If you previously ran the UI-only setup,
-add the Overleaf side from the monorepo root:
+The Docker release includes the Overleaf companion. Start its Compose stack and
+load the extension bundled with the same release. For a
+[local install](#option-b--local-install-macos--linux), if you previously ran the
+UI-only setup, add the Overleaf side from the monorepo root:
 
 ```sh
 npm run setup -- --target overleaf
