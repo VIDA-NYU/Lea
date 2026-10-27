@@ -208,6 +208,11 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Free runner disk space for images and the persistent compiler cache
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+          df -h /
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:

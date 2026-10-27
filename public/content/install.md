@@ -1,7 +1,7 @@
 ---
 title: Install Lea
 description: Run Lea from VIDA's prebuilt Docker image, or use a local development install. Includes the Overleaf extension, first-proof walkthrough, and troubleshooting.
-updated: 2026-10-13
+updated: 2026-10-27
 ---
 
 Lea runs on your own machine: the web client, adapter, companion, prover, Lean, and Mathlib.
@@ -11,8 +11,8 @@ The only runtime data that leaves your computer is the prompt sent to your chose
 Pick **Docker** for both applications without installing Lea's local toolchains. Pick the
 **local install** if you plan to develop Lea itself.
 
-> **Note.** The Docker image downloads about 3.7 GB and occupies about 10.7 GB after extraction.
-> Keep at least 20 GB free in Docker's storage for extraction. It happens once.
+> **Note.** The first Docker download is several gigabytes. Allow about **30 GB free** in
+> Docker's storage for image extraction and the persistent Lean/Mathlib cache.
 
 ## Before you start
 
@@ -45,6 +45,56 @@ Then add the model `hosted_vllm/<your-model>` and its key in the Settings pane.
 **Supported platforms.** macOS (Apple Silicon and Intel) and Linux for the local install; Docker
 works anywhere Docker Desktop does. Windows users should use Docker or WSL2.
 
+## Option A — Docker release
+
+Download a tested release containing the Compose configuration, the matching Overleaf
+extension, launchers, and checksums. Docker provides Lean and Mathlib; you do not need Git,
+Node, Python, or a local Lean toolchain for this path.
+
+1. **Install Docker Desktop** from [docker.com](https://www.docker.com/products/docker-desktop/)
+   and start it. Wait until Docker reports that it is running.
+2. **Download [Lea.zip](https://github.com/VIDA-NYU/Lea/releases/latest/download/Lea.zip)** and
+   extract it into a permanent folder. The data you create will live beside its `compose.yaml`.
+3. **Start Lea.** On macOS, double-click `start-lea.command`. On Linux, run `bash start-lea.sh`.
+   You can also start it from a terminal on any supported Docker platform:
+
+```bash
+docker compose -f compose.yaml pull
+docker compose -f compose.yaml up
+```
+
+The launchers open your browser when the API and companion are ready. When starting manually,
+open [http://localhost:8001](http://localhost:8001). The initial compiler-cache preparation can
+keep the worker starting for a while; keep the terminal open.
+
+4. **Add your key.** Open **Settings**, choose a model, paste the matching provider API key,
+   and save. No provider key is required to start Lea.
+
+The release supports Intel/AMD and ARM64 machines. Its image references are pinned by digest;
+`release.json` records their source revision, runtime versions, and dependency-lock hashes.
+The download includes `SHA256SUMS` so you can check the files you received.
+
+Your sessions, settings, proofs, project records, and Overleaf state persist in the release
+folder's `data`, `config`, `proofs`, `projects`, and `overleaf-state` directories. Stop Lea with
+`Ctrl+C`. Retain these directories and the Docker volumes when upgrading.
+
+**Overleaf:** open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and
+select the download's `extension` folder. Keep the companion URL at `http://127.0.0.1:31245`.
+For an upgrade, replace the files in your existing unpacked-extension folder and click
+**Reload**, or remove the old extension entry before loading the new folder. Then refresh
+Overleaf so only the new extension is active.
+
+**Existing installations:** follow the download's `README.txt` upgrade instructions. Stop the
+old stack first, preserve a backup, and use the new Compose file with `--project-directory`
+pointing to your existing app directory and the same Compose project name. Keep the workspace
+ownership volume as well as your data; resetting or recreating volumes is not an upgrade step.
+
+## Option B — Local install
+
+This path gives you both applications and a live editable checkout. It needs three toolchains:
+**Node 22.23.4**, **[uv](https://docs.astral.sh/uv/)** and the **[Lean toolchain (elan)](https://leanprover.github.io/)**.
+The bundled bootstrap installs `uv` and `elan` for you if they are missing.
+
 > **Note.** If `git clone` reports that Git or command-line developer tools are missing, install
 > them with the command for your system, let the installer finish, and then retry the clone step.
 
@@ -59,62 +109,10 @@ sudo apt-get install -y git
 
 Run `git --version` to confirm that Git is available before continuing.
 
-## Option A — Docker, no toolchain
-
-The standalone UI, adapter, Overleaf companion, Lean, and a baked Mathlib cache run in one
-container. There is no Node, Python, Lean, or Mathlib toolchain to install locally; after cloning
-the repository, Docker handles the rest.
-
-1. **Install Docker Desktop** from [docker.com](https://www.docker.com/products/docker-desktop/)
-   and open it once. Wait until it reports *running*, then check:
+1. **Install Node 22.23.4** — [nodejs.org](https://nodejs.org), or `nvm install 22.23.4`:
 
 ```bash
-docker --version
-```
-
-2. **Clone the repo and enter the app folder:**
-
-```bash
-git clone https://github.com/VIDA-NYU/Lea.git
-cd Lea/apps/lea-standalone
-```
-
-3. **Download and start:**
-
-```bash
-docker compose pull
-docker compose up
-```
-
-The VIDA image supports `linux/amd64` and `linux/arm64`; Docker selects the correct variant.
-
-4. **Open [http://localhost:8001](http://localhost:8001).** The app boots without a key.
-
-5. **Add your key.** Open **Settings**, choose a model, paste the matching API key, save. The key
-   is validated against the provider immediately, so a typo tells you right away.
-
-Session metadata, your key, proof repositories, project registry, and Overleaf state persist
-under `apps/lea-standalone/{data,config,proofs,projects,overleaf-state}`. Stop with `Ctrl+C`;
-`docker compose down` and image updates preserve these directories.
-
-To use Overleaf, open `chrome://extensions`, enable Developer mode, choose **Load unpacked**,
-and select `apps/overleaf-extension/extension`. Leave its companion URL at
-`http://127.0.0.1:31245`; the container already runs that service.
-
-On macOS there is also a double-clickable `start-lea.command` in `apps/lea-standalone/` that does
-all of the above and opens your browser — useful for handing the app to someone who does not live
-in a terminal.
-
-## Option B — Local install
-
-This path gives you both applications and a live editable checkout. It needs three toolchains:
-**Node 22**, **[uv](https://docs.astral.sh/uv/)** and the **[Lean toolchain (elan)](https://leanprover.github.io/)**.
-The bundled bootstrap installs `uv` and `elan` for you if they are missing.
-
-1. **Install Node 22** if you do not have it — [nodejs.org](https://nodejs.org), or `nvm install 22`:
-
-```bash
-node --version   # want v22 or newer
+node --version   # v22.23.4, matching the repository's .nvmrc
 ```
 
 2. **Clone the repo:**
