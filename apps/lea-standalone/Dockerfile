@@ -116,7 +116,8 @@ COPY apps/lea-standalone/adapter ./
 RUN uv sync --frozen --no-dev
 ARG LEA_BUILD_SOURCE=development
 RUN LEA_BUILD_SOURCE="$LEA_BUILD_SOURCE" .venv/bin/python -c 'import json,os; from pathlib import Path; Path("app/_release.json").write_text(json.dumps({"source":os.environ["LEA_BUILD_SOURCE"]}))'
-LABEL org.opencontainers.image.revision=$LEA_BUILD_SOURCE
+LABEL org.opencontainers.image.revision=$LEA_BUILD_SOURCE \
+      org.opencontainers.image.source="https://github.com/VIDA-NYU/Lea"
 
 # --- Overleaf companion (:31245) -------------------------------------------
 # The companion has ZERO third-party npm deps (pure Node built-ins + local
@@ -176,7 +177,8 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 FROM ghcr.io/astral-sh/uv:0.9.30-python3.13-bookworm-slim@sha256:531f855bda2c73cd6ef67d56b733b357cea384185b3022bd09f05e002cd144ca AS api
 COPY apps/lea-standalone/docker/debian.sources /etc/apt/sources.list.d/debian.sources
 ARG LEA_BUILD_SOURCE=development
-LABEL org.opencontainers.image.revision=$LEA_BUILD_SOURCE
+LABEL org.opencontainers.image.revision=$LEA_BUILD_SOURCE \
+      org.opencontainers.image.source="https://github.com/VIDA-NYU/Lea"
 RUN apt-get update && apt-get install -y --no-install-recommends curl=7.88.1-10+deb12u15 ca-certificates=20250419~deb12u2 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=runtime /app/adapter /app/adapter
@@ -192,7 +194,8 @@ CMD ["api"]
 
 FROM companion-node AS companion
 ARG LEA_BUILD_SOURCE=development
-LABEL org.opencontainers.image.revision=$LEA_BUILD_SOURCE
+LABEL org.opencontainers.image.revision=$LEA_BUILD_SOURCE \
+      org.opencontainers.image.source="https://github.com/VIDA-NYU/Lea"
 WORKDIR /app
 COPY --from=runtime /app/apps /app/apps
 COPY --from=runtime /app/packages/lea-workspace-client /app/packages/lea-workspace-client
