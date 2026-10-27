@@ -83,10 +83,20 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -o pipefail
-          python3 tests/integration/stage8_release.py qualify --require-native \
+          python3 tests/integration/stage8_release.py qualify --require-native --require-linux-executor \
             --source "$GITHUB_SHA" --api-image "lea-stage8-candidate-api:$ARCH" \
             --worker-image "lea-stage8-candidate-worker:$ARCH" --companion-image "lea-stage8-candidate-companion:$ARCH" \
             --output validation/candidate.json 2>&1 | tee validation/candidate-runtime.log
+      - name: Require real Linux confinement on both native architectures
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          docker run --rm --pull=never --network none \
+            -v "$GITHUB_WORKSPACE/tests/local_preparation:/validation-tests:ro" -w /validation-tests \
+            -e LEA_REQUIRE_LINUX_EXECUTOR=1 -e LEA_TEST_PACKAGED_EXECUTOR=1 \
+            --entrypoint /app/adapter/.venv/bin/python \
+            "lea-stage8-candidate-worker:$ARCH" \
+            -m unittest discover -s . -p test_linux_execution.py -v
       - name: Native production-code ownership and recovery regressions
         env:
           ARCH: ${{ matrix.arch }}

@@ -880,20 +880,20 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "alembic", specifier = ">=1.18.5" },
-    { name = "certifi", specifier = ">=2024.8.30" },
-    { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "alembic", specifier = "==1.18.5" },
+    { name = "certifi", specifier = "==2026.5.20" },
+    { name = "fastapi", specifier = "==0.136.3" },
     { name = "lea-prover", editable = "../prover" },
-    { name = "litellm", specifier = ">=1.88.1,<2.0.0" },
-    { name = "pdfminer-six", specifier = ">=20240706" },
-    { name = "pydantic", specifier = ">=2.8.0" },
-    { name = "python-docx", specifier = ">=1.1.0" },
-    { name = "python-multipart", specifier = ">=0.0.9" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
+    { name = "litellm", specifier = "==1.88.1" },
+    { name = "pdfminer-six", specifier = "==20260107" },
+    { name = "pydantic", specifier = "==2.13.4" },
+    { name = "python-docx", specifier = "==1.2.0" },
+    { name = "python-multipart", specifier = "==0.0.32" },
+    { name = "uvicorn", extras = ["standard"], specifier = "==0.48.0" },
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.3.0" }]
+dev = [{ name = "pytest", specifier = "==9.0.3" }]
 
 [[package]]
 name = "lea-prover"
@@ -910,19 +910,19 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=0.96.0" },
-    { name = "google-genai", specifier = ">=1.70.0" },
-    { name = "litellm", specifier = ">=1.88.1,<2.0.0" },
-    { name = "mcp", specifier = ">=1.0" },
-    { name = "openai", specifier = ">=2.32.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "anthropic", specifier = "==0.109.2" },
+    { name = "google-genai", specifier = "==2.8.0" },
+    { name = "litellm", specifier = "==1.88.1" },
+    { name = "mcp", specifier = "==1.28.0" },
+    { name = "openai", specifier = "==2.41.1" },
+    { name = "pyyaml", specifier = "==6.0.3" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "pytest", specifier = "==9.0.3" },
+    { name = "pytest-asyncio", specifier = "==1.4.0" },
 ]
 
 [[package]]

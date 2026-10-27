@@ -15,12 +15,25 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 
 _policy = ContextVar("lea_filesystem_policy", default=None)
 
 
 @lru_cache(maxsize=1)
 def capability() -> dict:
+    if sys.platform == "linux":
+        try:
+            with tempfile.TemporaryDirectory(prefix="lea-executor-probe-") as root:
+                result = subprocess.run(
+                    [sys.executable, str(Path(__file__).with_name("linux_execution.py")),
+                     json.dumps({"writable_roots": [root]}), "/usr/bin/true"],
+                    capture_output=True, text=True, timeout=10,
+                )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return {"available": False, "backend": "linux-landlock-seccomp", "reason": str(error)}
+        return {"available": result.returncode == 0, "backend": "linux-landlock-seccomp",
+                "reason": result.stderr.strip() if result.returncode else None}
     if sys.platform != "darwin" or not shutil.which("sandbox-exec"):
         return {"available": False, "reason": "This runtime has no supported filesystem executor."}
     try:
@@ -74,7 +87,11 @@ def _prepare(args, kwargs):
     kwargs = dict(kwargs)
     if kwargs.pop("shell", False):
         args = [kwargs.pop("executable", "/bin/sh"), "-c", args]
-    args = ["sandbox-exec", "-p", profile(policy), *map(str, args)]
+    if sys.platform == "linux":
+        args = [sys.executable, str(Path(__file__).with_name("linux_execution.py")),
+                json.dumps(policy), *map(str, args)]
+    else:
+        args = ["sandbox-exec", "-p", profile(policy), *map(str, args)]
     env = dict(kwargs.get("env") or os.environ)
     if policy.get("temporary_root"):
         env["TMPDIR"] = str(policy["temporary_root"])

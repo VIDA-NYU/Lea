@@ -17,7 +17,8 @@ def reports():
         bundles.append({'source':source,'roles':roles,'passed':True,'native':True,
             'host_architecture':'amd64','docker_architecture':'amd64','qualification':{
                 'scenarios':[{'from_revision':revision,'retained_history':True} for revision in ('0019_custom_tools','0031_usage_details')],
-                'compiler':{'complete_mathlib':True,'real_compilation':True,'safeverify_accepts_proof':True,'safeverify_rejects_sorry':True}}})
+                'compiler':{'complete_mathlib':True,'real_compilation':True,'safeverify_accepts_proof':True,'safeverify_rejects_sorry':True,
+                    'confined_compilation':True,'confined_lean_write_denied':True}}})
     rollback={'passed':True,'baseline':copy.deepcopy(bundles[0]['roles']),'candidate':copy.deepcopy(bundles[1]['roles']),
         'rehearsal':{'distinct_strict_binaries':True,'same_database_and_workspace_volumes':True,'schema_downgrade':False,
             'backup_restore':False,'volume_recreation':False,'candidate_history_and_receipt_preserved':True,
@@ -52,6 +53,10 @@ class ReleaseBundleTests(unittest.TestCase):
 
     def test_missing_historical_migration_is_rejected(self):
         values=reports();values[0]['qualification']['scenarios'].pop()
+        with self.assertRaises(AssertionError):self.validate(values)
+
+    def test_unqualified_linux_executor_cannot_publish(self):
+        values=reports();values[1]['qualification']['compiler']['confined_lean_write_denied']=False
         with self.assertRaises(AssertionError):self.validate(values)
 
     def test_rollback_of_another_candidate_is_rejected(self):

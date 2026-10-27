@@ -170,10 +170,13 @@ def preserve(before,after):
     assert all(row in after['timeline'] for row in before['timeline']),'Retained timeline changed'
 
 
-def qualify(bundle):
+def qualify(bundle,require_linux_executor=False):
     scenarios=[]
     with fixture(bundle) as stack:
         compiler=stack.private('compiler')
+        if require_linux_executor:
+            assert compiler['confined_execution']['available'],compiler
+            assert compiler['confined_compilation'] and compiler['confined_lean_write_denied'],compiler
         for revision in ('0019_custom_tools','0031_usage_details'):
             if scenarios:
                 stack.stop();stack.restore_ownership();stack.home=stack.home/revision;stack.home.mkdir()
@@ -184,7 +187,8 @@ def qualify(bundle):
             assert first['capabilities']['release']['source']==bundle['source']
             assert first['capabilities']['database_boundary']['processes']=='separate'
             assert first['capabilities']['editor']['direct_lsp'] is False
-            assert not first['capabilities']['execution']['available'],'Linux execution support must be explicitly qualified before enabling it'
+            execution_available=first['capabilities']['execution']['available']
+            if require_linux_executor:assert execution_available,first
             before=stack.private('snapshot',running=True)
             assert before['blobs']['b']
             assert request(stack.base,'/api/sessions/s')['code_steps'][0]['check_current'] is False
@@ -211,8 +215,11 @@ def qualify(bundle):
                 'environment_revision':buffer['environment_revision'],'sequence':1,'idempotency_key':'unsupported-runtime',
                 'deadline':(datetime.now(timezone.utc)+timedelta(seconds=4.9)).isoformat()},editor_headers)
             refused=wait(lambda:(v if (v:=request(stack.base,'/api/editor/requests/'+analysis['id'],headers=editor_headers))['state'] not in {'queued','claimed'} else None),timeout=8)
-            assert refused['error']=='confined_editor_executor_unavailable' and not refused['current'],refused
-            assert refused['result'] is None
+            if execution_available:
+                assert refused.get('error')!='confined_editor_executor_unavailable',refused
+            else:
+                assert refused['error']=='confined_editor_executor_unavailable' and not refused['current'],refused
+                assert refused['result'] is None
             # Distinct DB + identical ownership mount must not create a second writer.
             duplicate=stack.label+'-duplicate'
             docker('run','-d','--pull=never','--name',duplicate,'--network','none',*stack.env,*stack.mounts('second-data'),stack.image('worker'),'worker')
@@ -273,13 +280,14 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('mode',choices=['qualify','rollback'])
     parser.add_argument('--api-image');parser.add_argument('--worker-image');parser.add_argument('--companion-image')
     parser.add_argument('--require-native',action='store_true');parser.add_argument('--baseline',type=Path);parser.add_argument('--candidate',type=Path)
+    parser.add_argument('--require-linux-executor',action='store_true')
     parser.add_argument('--source');parser.add_argument('--output',type=Path,required=True);args=parser.parse_args()
     if args.mode=='qualify':
         if not all((args.api_image,args.worker_image,args.companion_image)):parser.error('All production role images are required')
         bundle=images(args.api_image,args.worker_image,args.companion_image,args.require_native)
         bundle['source']=args.source
         if args.source:assert all(role['source']==args.source for role in bundle['roles'].values())
-        result={**bundle,'source':args.source,'qualification':qualify(bundle)}
+        result={**bundle,'source':args.source,'qualification':qualify(bundle,args.require_linux_executor)}
     else:
         baseline=json.loads(args.baseline.read_text());candidate=json.loads(args.candidate.read_text())
         result={'baseline':baseline['roles'],'candidate':candidate['roles'],'rehearsal':rehearse(baseline,candidate)}

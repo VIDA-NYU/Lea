@@ -26,6 +26,8 @@ def validate(baseline,candidate,rollback,source,architecture):
             assert re.fullmatch(r'sha256:[0-9a-f]{64}',role['id']),'Invalid immutable role ID'
             assert role['architecture']==architecture and role['source']==bundle['source'],'Role provenance mismatch'
     assert candidate['source']==source,'Qualified source does not match the dispatched release'
+    compiler=candidate['qualification']['compiler']
+    assert compiler.get('confined_compilation') is True and compiler.get('confined_lean_write_denied') is True,'Linux confinement was not qualified'
     assert rollback.get('passed') is True and rollback.get('rehearsal')==REHEARSAL,'Rollback qualification did not pass'
     assert rollback.get('baseline')==baseline['roles'] and rollback.get('candidate')==candidate['roles'],'Rollback used a different bundle'
     assert all(baseline['roles'][role]['id']!=candidate['roles'][role]['id'] for role in ('api','worker')),'Rollback retagged identical binaries'

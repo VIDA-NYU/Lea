@@ -30,7 +30,7 @@ if have uv; then
   say "uv found: $(uv --version)"
 else
   say "Installing uv (Python env manager)..."
-  curl -LsSf https://astral.sh/uv/install.sh | sh
+  curl -LsSf https://astral.sh/uv/0.11.14/install.sh | sh
   # uv installs to ~/.local/bin (or ~/.cargo/bin); surface it for this session.
   export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
   have uv || { warn "uv installed but not on PATH — restart your shell and re-run ./install.sh"; exit 1; }
@@ -41,7 +41,7 @@ if have lake; then
   say "Lean toolchain found: $(lake --version)"
 else
   say "Installing the Lean toolchain (elan)..."
-  curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y
+  bash scripts/install-elan.sh --default-toolchain none
   export PATH="$HOME/.elan/bin:$PATH"
   have lake || { warn "elan installed but 'lake' not on PATH — restart your shell and re-run ./install.sh"; exit 1; }
 fi

@@ -388,6 +388,8 @@ def canonical_policy(root, repo):
     temporary = repo / ".lea/executor-tmp"
     temporary.mkdir(parents=True, exist_ok=True)
     roots = [root / ".lake/build", root / ".lake/config", root / ".sv_scratch", scratch, temporary]
+    for writable in roots:
+        writable.mkdir(parents=True, exist_ok=True)
     return {"writable_roots": list(map(str, roots)), 'writable_files': [str(root / '.lake')],
             "temporary_root": str(temporary)}
 

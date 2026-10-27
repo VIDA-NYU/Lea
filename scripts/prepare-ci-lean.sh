@@ -3,9 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if ! command -v elan >/dev/null; then
-  curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o /tmp/lea-ci-elan.sh
-  sh /tmp/lea-ci-elan.sh -y --default-toolchain none
-  rm /tmp/lea-ci-elan.sh
+  bash scripts/install-elan.sh --default-toolchain none
 fi
 elan_bin="${ELAN_HOME:-$HOME/.elan}/bin"
 export PATH="$elan_bin:$PATH"
