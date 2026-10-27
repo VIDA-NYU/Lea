@@ -6,22 +6,22 @@ description = "Database-only FastAPI API and separately owned Lea workspace work
 # prover library, which requires Python >=3.13.
 requires-python = ">=3.13"
 dependencies = [
-  "certifi>=2024.8.30",
-  "fastapi>=0.115.0",
-  "uvicorn[standard]>=0.32.0",
-  "pydantic>=2.8.0",
+  "certifi==2026.5.20",
+  "fastapi==0.136.3",
+  "uvicorn[standard]==0.48.0",
+  "pydantic==2.13.4",
   # 1.88.1 adds the Chat→Responses bridge used by GPT-5.6 reasoning + tools.
-  "litellm>=1.88.1,<2.0.0",
+  "litellm==1.88.1",
   # Project file uploads (D27, Slice 4): python-multipart is what FastAPI needs to
   # parse multipart/form-data uploads; pdfminer.six + python-docx do the Tier-2
   # text extraction (.pdf/.docx → .txt sidecar) the agent reads via read_file.
-  "python-multipart>=0.0.9",
-  "pdfminer.six>=20240706",
-  "python-docx>=1.1.0",
+  "python-multipart==0.0.32",
+  "pdfminer.six==20260107",
+  "python-docx==1.2.0",
   # The private worker imports the vendored prover as a library. Editable path
   # dependency so worker edits under prover/lea need no re-sync.
   "lea-prover",
-  "alembic>=1.18.5",
+  "alembic==1.18.5",
 ]
 
 [tool.uv.sources]
@@ -29,7 +29,7 @@ lea-prover = { path = "../prover", editable = true }
 
 [dependency-groups]
 dev = [
-  "pytest>=8.3.0",
+  "pytest==9.0.3",
 ]
 
 [tool.pytest.ini_options]

@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
 
 # =============================================================================
 # Lea Interface — separate api, worker and companion targets. Only the worker
@@ -21,7 +21,7 @@
 # -----------------------------------------------------------------------------
 # Browser assets are architecture-independent. Keep their native build tools on
 # the builder's platform; emulated Go/esbuild can crash on cross-platform builds.
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web
+FROM --platform=$BUILDPLATFORM node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS web
 WORKDIR /web
 
 # npm workspaces are locked at the monorepo root.  The older app-local lockfile
@@ -46,12 +46,12 @@ RUN npm run build   # -> /web/apps/lea-standalone/dist
 # -----------------------------------------------------------------------------
 # Target-platform Node, kept separate from the native frontend build stage.
 # The companion's executable must match the runtime architecture.
-FROM node:22-bookworm-slim AS companion-node
+FROM node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS companion-node
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime — Python 3.13 + uv (base), plus Lean toolchain and Mathlib
 # -----------------------------------------------------------------------------
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS runtime
+FROM ghcr.io/astral-sh/uv:0.9.30-python3.13-bookworm-slim@sha256:531f855bda2c73cd6ef67d56b733b357cea384185b3022bd09f05e002cd144ca AS runtime
 
 LABEL org.opencontainers.image.source="https://github.com/VIDA-NYU/Lea" \
       org.opencontainers.image.description="Lea theorem-proving UI, adapter, Overleaf companion, Lean, and Mathlib"
@@ -60,15 +60,15 @@ LABEL org.opencontainers.image.source="https://github.com/VIDA-NYU/Lea" \
 # health checks), libgmp10 (Lean runtime dependency).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      git curl ca-certificates libgmp10 \
+      git=1:2.39.5-0+deb12u3 curl=7.88.1-10+deb12u15 ca-certificates=20250419~deb12u1 libgmp10=2:6.2.1+dfsg1-1.1 libseccomp2=2.5.4-1+deb12u1 \
  && rm -rf /var/lib/apt/lists/*
 
 # Install the Lean toolchain manager (elan) and pin the project's Lean version.
 ENV ELAN_HOME=/root/.elan
 ENV PATH="/root/.elan/bin:${PATH}"
-RUN curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o /tmp/elan-init.sh \
- && sh /tmp/elan-init.sh -y --default-toolchain leanprover/lean4:v4.29.0 \
- && rm /tmp/elan-init.sh \
+COPY scripts/install-elan.sh /tmp/install-elan.sh
+RUN bash /tmp/install-elan.sh --default-toolchain leanprover/lean4:v4.29.0 \
+ && rm /tmp/install-elan.sh \
  && lean --version
 
 WORKDIR /app
@@ -172,10 +172,10 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Copy only Python dependencies, API sources and static assets into a clean
 # base. Workspace/compiler/config bytes are absent from every API image layer.
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS api
+FROM ghcr.io/astral-sh/uv:0.9.30-python3.13-bookworm-slim@sha256:531f855bda2c73cd6ef67d56b733b357cea384185b3022bd09f05e002cd144ca AS api
 ARG LEA_BUILD_SOURCE=development
 LABEL org.opencontainers.image.revision=$LEA_BUILD_SOURCE
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends curl=7.88.1-10+deb12u15 ca-certificates=20250419~deb12u1 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=runtime /app/adapter /app/adapter
 COPY --from=web /web/apps/lea-standalone/dist /app/dist

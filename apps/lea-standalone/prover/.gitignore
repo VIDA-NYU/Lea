@@ -5,7 +5,6 @@ __pycache__/
 dist/
 build/
 .venv/
-uv.lock
 
 # Secrets — never commit API keys or tokens
 .gemini_key

@@ -42,9 +42,9 @@ ensure(
 
 // The adapter venv runs the app: `uv sync` here builds the vendored prover
 // (lea-prover) as an editable path dep and installs its deps too (D1).
-run("Installing UI adapter dependencies (incl. the in-process prover)", ["uv", "sync"], path.join(root, "adapter"));
+run("Installing UI adapter dependencies (incl. the in-process prover)", ["uv", "sync", "--locked"], path.join(root, "adapter"));
 // The prover's own venv is only needed to run the prover's standalone test suite.
-run("Installing prover dependencies (for prover tests)", ["uv", "sync"], path.join(root, "prover"));
+run("Installing prover dependencies (for prover tests)", ["uv", "sync", "--locked"], path.join(root, "prover"));
 run("Downloading Lean workspace cache", ["lake", "exe", "cache", "get"], path.join(root, "prover", "workspace"));
 ensure(
   "prover/workspace/.lake/packages/mathlib/.lake/build/lib/lean/Mathlib.olean",

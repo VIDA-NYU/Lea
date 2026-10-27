@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Overleaf Lea Formalizer MVP",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Run Lea formalization jobs from labeled Overleaf theorem blocks.",
   "permissions": ["storage", "tabs"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],

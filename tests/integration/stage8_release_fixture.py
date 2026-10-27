@@ -34,6 +34,10 @@ def compiler():
         return result.stdout.strip()
     lean=run(['lake','env','lean','--version'])
     run(['lake','build','--no-build','Mathlib'])
+    from lea import execution
+    confined = execution.capability()
+    confined_compilation = False
+    denied_write = False
     with tempfile.TemporaryDirectory(prefix='ReleaseProbe',dir=root) as folder:
         folder=Path(folder);source=folder/'Probe.lean';target=folder/'Target.lean'
         source.write_text('import Mathlib.Data.Nat.Prime.Basic\ntheorem release_probe (n : Nat) : n = n := by rfl\n')
@@ -43,11 +47,22 @@ def compiler():
         run(['lake','env',binary,'--disallow-partial',str(target.with_suffix('.olean')),str(source.with_suffix('.olean'))])
         bad=subprocess.run(['lake','env',binary,'--disallow-partial',str(target.with_suffix('.olean')),str(target.with_suffix('.olean'))],cwd=root,capture_output=True,text=True,timeout=180)
         assert bad.returncode!=0,'SafeVerify accepted a sorry proof'
-    from lea import execution
+        if confined['available']:
+            with tempfile.TemporaryDirectory(prefix='ReleaseSentinel') as outside:
+                sentinel=Path(outside)/'sentinel';sentinel.write_text('original')
+                policy={'writable_roots':[str(folder)],'temporary_root':str(folder)}
+                with execution.scope(policy):
+                    good=execution.run(['lake','env','lean',str(source)],cwd=root,capture_output=True,text=True,timeout=180)
+                    assert good.returncode==0,good.stdout+good.stderr
+                    hostile=folder/'Hostile.lean'
+                    hostile.write_text('#eval IO.FS.writeFile '+json.dumps(str(sentinel))+' "changed"\n')
+                    denied=execution.run(['lake','env','lean',str(hostile)],cwd=root,capture_output=True,text=True,timeout=180)
+                    assert denied.returncode!=0 and sentinel.read_text()=='original',denied.stdout+denied.stderr
+                confined_compilation=True;denied_write=True
     return {'lean':lean,'complete_mathlib':True,'real_compilation':True,
         'safeverify_accepts_proof':True,'safeverify_rejects_sorry':True,
-        'confined_execution':execution.capability(),
-        'note':'Trusted packaging probes do not enable application execution on unsupported platforms.'}
+        'confined_execution':confined,'confined_compilation':confined_compilation,
+        'confined_lean_write_denied':denied_write}
 
 
 def crash_publication():

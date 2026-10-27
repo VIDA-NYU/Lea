@@ -149,8 +149,7 @@ jobs:
         with:
           images: ${{ env.ROLE_IMAGE }}
           tags: |
-            type=semver,pattern={{version}}
-            type=ref,event=branch
+            type=sha,format=long
 
       - name: Create multi-architecture manifest
         working-directory: /tmp/digests
@@ -173,3 +172,51 @@ jobs:
       - name: Write publication summary
         run: |
           echo "Published \`$ROLE_IMAGE:${{ steps.meta.outputs.version }}\` for linux/amd64 and linux/arm64." >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    if: github.ref == 'refs/heads/main'
+    needs: merge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Verify anonymous access, both architectures and all source identities
+        run: python3 .github/scripts/verify-published-images.py --source "$GITHUB_SHA" --output /tmp/lea-image-digests.json
+      - name: Assemble the pinned download and matching extension
+        run: python3 .github/scripts/package-download.py --source "$GITHUB_SHA" --digests /tmp/lea-image-digests.json --output release-download
+      - name: Retain the verified release download
+        uses: actions/upload-artifact@v4
+        with:
+          name: lea-release-download
+          path: release-download
+          retention-days: 30
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote the complete bundle and publish its download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$GITHUB_SHA"
+          python3 - <<'PY'
+          import json,subprocess
+          from pathlib import Path
+          manifest=json.loads(Path('release-download/release.json').read_text())
+          for reference in manifest['images'].values():
+              image=reference.split('@')[0]
+              subprocess.run(['docker','buildx','imagetools','create','-t',image+':main',reference],check=True)
+          PY
+          tag="release-${GITHUB_SHA:0:12}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" release-download/* --clobber
+          else
+            gh release create "$tag" release-download/* \
+              --target "$GITHUB_SHA" --title "Lea ${GITHUB_SHA:0:12}" \
+              --notes-file release-download/README.txt --latest
+          fi

@@ -16,12 +16,13 @@ class PythonSelectionTests(unittest.TestCase):
                if not key.startswith('UV_') and key not in
                {'VIRTUAL_ENV', 'CONDA_PREFIX', 'CONDA_DEFAULT_ENV'}}
         uv = shutil.which('uv')
+        pinned = (ROOT / 'apps/lea-standalone/adapter/.python-version').read_text().strip()
         flags = ['--offline', '--no-cache', '--no-python-downloads']
         available = subprocess.run([uv, 'python', 'find', '--system', '--no-project',
-                                    '3.13', *flags], env=env, text=True,
+                                    pinned, *flags], env=env, text=True,
                                    capture_output=True, timeout=30)
         if available.returncode:
-            self.skipTest('Install Python 3.13 before running interpreter discovery')
+            self.skipTest(f'Install Python {pinned} before running interpreter discovery')
         with tempfile.TemporaryDirectory(prefix='lea-python-selection-') as directory:
             root = Path(directory)
             (root / '.git').mkdir()
@@ -38,4 +39,4 @@ class PythonSelectionTests(unittest.TestCase):
                                              '--show-version', *flags], cwd=project,
                                             env=env, text=True, capture_output=True, timeout=30)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertRegex(result.stdout.strip(), r'^3\.13\.\d+$')
+                    self.assertEqual(result.stdout.strip(), pinned)

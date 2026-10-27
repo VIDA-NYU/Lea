@@ -31,7 +31,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.23.4
 
       # The site has no dependencies, so there is nothing to install.
       - name: Test the Markdown renderer

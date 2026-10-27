@@ -68,6 +68,15 @@ Then pick one of the two paths below.
 
 ### Option A — Docker (no local toolchain) ⭐ easiest
 
+For a matched, reproducible installation, download **Lea.zip** from the
+[latest release](https://github.com/VIDA-NYU/Lea/releases/latest). It includes
+`compose.yaml` with immutable image digests, the matching Overleaf extension,
+installation and upgrade instructions, and checksums. Extract it into a permanent
+directory, then run `docker compose -f compose.yaml pull` and
+`docker compose -f compose.yaml up`. Open http://localhost:8001 when ready.
+Keep an existing installation's data directories and volumes when upgrading;
+follow the included instructions to select the existing Compose project directory.
+
 Runs the standalone UI, shared adapter, Overleaf companion, Lean, and Mathlib in
 one prebuilt container published by VIDA. The only thing you install is Docker.
 

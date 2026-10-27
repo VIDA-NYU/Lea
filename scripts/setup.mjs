@@ -69,7 +69,7 @@ async function main() {
 
 async function installNodeDependencies() {
   console.log("Installing monorepo Node dependencies...");
-  await run("npm", ["install"], { cwd: MONOREPO_ROOT });
+  await run("npm", ["ci"], { cwd: MONOREPO_ROOT });
 }
 
 // Provision the standalone app's Python environment + Lean cache by delegating to
