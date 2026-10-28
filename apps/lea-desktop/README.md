@@ -1,113 +1,151 @@
-# Lea Desktop (proof of concept)
+# Lea Desktop
 
 Lea as a native desktop application: its own window, dock icon and menu bar,
-with the backend started and stopped by the app. The UI is the unchanged
-`apps/lea-standalone` React app; the backend is the unchanged adapter, worker
-and Overleaf companion. Only the launcher is new.
+with the backend provisioned, started and stopped by the app. The UI is the
+unchanged `apps/lea-standalone` React app; the backend is the unchanged
+adapter, worker and Overleaf companion. Only the launcher is new.
 
-This is a POC. It runs from the repository checkout and assumes the local
-toolchain install (`npm run setup`) has been done. Packaging, first-run
-provisioning of Lean and Mathlib, signing and auto-update are not here yet;
-see "What is missing" below.
+## For users
 
-## Run it
+Download the DMG for your Mac (Apple Silicon or Intel) from the GitHub
+release, drag Lea to Applications, and open it. Until builds are signed,
+right-click → Open the first time.
 
-```sh
-# once, from the monorepo root
-npm install
-npm run build -w apps/lea-standalone     # the app serves this dist/ when it owns the backend
+The first launch provisions everything Lea needs into
+`~/Library/Application Support/Lea` and shows progress while it does:
 
-# start the app
-npm start -w apps/lea-desktop
+| Step | What happens | First run |
+|---|---|---|
+| Lea runtime | copies the backend out of the app bundle | seconds |
+| Python environment | bundled `uv` installs Python 3.13 and the locked dependencies | ~300 MB |
+| Lean toolchain | reuses `~/.elan` if it has the pinned Lean, else installs elan + Lean | ~300 MB |
+| Mathlib library | `lake exe cache get` + build check, exactly like the Docker image | several GB |
+| Proof verifier | builds SafeVerify against the shared Mathlib (optional) | minutes |
+| Starting Lea | database bootstrap, worker, API, Overleaf companion | seconds |
+
+Later launches take seconds. Then add your provider key in **Settings** (⌘,)
+and start proving. Git must be installed (macOS offers the Command Line Tools
+automatically the first time it is needed).
+
+Your data lives outside the app and survives updates and reinstalls:
+
+```
+~/Library/Application Support/Lea/
+  data/            sessions, timeline, backups (SQLite)
+  config/          lea.local.toml with your keys
+  app/prover/workspace/{proofs,projects,.lake}   proof repositories and the Mathlib cache
+  venv/ python/ elan/ uv-cache/                  provisioned toolchains
+~/Library/Logs/Lea/   one log per backend process
 ```
 
-On launch the app looks for a Lea adapter on `127.0.0.1:8001`:
+Quitting the app stops the backend. Closing the window keeps it running (so
+the Overleaf extension keeps working); the dock icon reopens it.
 
-- **A stack is already running** (`./start-dev.sh` or `npm run dev:ui` in a
-  terminal): the app attaches to it and opens the Vite UI on `:5173`. Nothing is
-  started or stopped by the app.
-- **Nothing is running**: the app starts the stack itself, in the same order as
-  `scripts/supervisor.mjs` — `bootstrap.py`, the worker, the API (serving the
-  built UI on `:8001`), and the Overleaf companion on `:31245` — shows progress
-  on a splash screen, and opens the UI once `/api/ready` answers. Quitting the
-  app stops everything it started.
+### Overleaf
 
-Force one mode with `LEA_DESKTOP_ATTACH=1` (attach or fail) or
-`LEA_DESKTOP_ATTACH=0` (always own the stack); `npm run start:attach` and
-`npm run start:spawn` are shortcuts.
+The app runs the companion on `127.0.0.1:31245`, where the Chrome extension
+looks by default. **Overleaf → Install the Chrome extension…** has the steps.
+"Open in Lea" from Overleaf uses `lea://` links and focuses the app.
 
-Backend logs go to the app's log folder (**Help → Show logs folder**;
-`~/Library/Logs/Lea` on macOS), one file per process.
-
-## What the shell adds
-
-- Native menu bar with the usual Edit/View/Window roles, **Settings…** (⌘,),
-  **Home** and **Statistics** items that navigate the UI, an **Overleaf** menu
-  (open Overleaf, extension install guide, companion status), and **Help →
-  Backend status…**.
-- External links open in the system browser; only the local UI stays in the
-  window.
-- Window size and position are remembered. Closing the window on macOS keeps
-  the app and its backend running (so the Overleaf companion stays up); the
-  dock icon reopens it.
-- Single-instance: a second launch focuses the existing window.
-- `lea://` deep links (`lea://session/<id>`, `lea://formalization/<id>`,
-  `lea://settings`). macOS only honours the scheme for a packaged app, so this is
-  wired but inert under `electron .`.
-- The worker's private Node child and the companion run on the app's own
-  binary (`ELECTRON_RUN_AS_NODE`), so a Finder launch needs no Node on PATH.
-  `PATH` is extended with the usual elan, uv and Homebrew locations for the same
-  reason.
-
-## Smoke test
+## For developers
 
 ```sh
-LEA_DESKTOP_SCREENSHOT=/tmp/lea-desktop.png npm start -w apps/lea-desktop
+npm install                                 # once, from the monorepo root
+npm start -w apps/lea-desktop               # dev mode: backend from this checkout
 ```
 
-Starts the app, waits for the UI to settle (`LEA_DESKTOP_SCREENSHOT_DELAY_MS`,
-default 6000), writes a PNG of the window and quits. Useful for CI and for
-checking the shell without a person at the screen.
+Dev mode uses the checkout's adapter venv and Lean workspace (`npm run setup`
+must have been run). If a stack is already running on `:8001` (for example
+`./start-dev.sh`), the app attaches to it instead of starting its own; force
+one behaviour with `LEA_DESKTOP_ATTACH=1|0`.
+
+To exercise the packaged behaviour without packaging:
+
+```sh
+npm run build:backend -w apps/lea-desktop   # assembles build/backend from git-tracked files (+ built UI)
+npm run fetch:uv -w apps/lea-desktop        # pinned uv binary into build/bin/<arch>/
+npm run start:managed -w apps/lea-desktop   # provisions into ~/Library/Application Support/Lea
+```
+
+Add `-- --user-data-dir=/some/dir` to provision somewhere disposable.
+
+### Packaging
+
+```sh
+npm run dist:mac -w apps/lea-desktop        # arm64: release/Lea-<version>-arm64.{dmg,zip}
+npm run dist:mac:x64 -w apps/lea-desktop
+```
+
+`electron-builder.yml` has the configuration. Builds are unsigned unless
+`CSC_LINK`/`CSC_KEY_PASSWORD` are set; add `-c.mac.notarize=true` with
+`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` to notarize.
+`.github/workflows/desktop-release.yml` does both architectures on GitHub's
+macOS runners and, for a `desktop-v*` tag, publishes a release with the
+`latest-mac.yml` feed that `electron-updater` reads. Auto-update only works
+once builds are signed; unsigned apps log the failure and stay quiet.
+
+### How the managed runtime works
+
+`scripts/build-backend.mjs` assembles the backend the same way the Dockerfile
+does (`adapter/`, `prover/`, `dist/`, `apps/overleaf-extension/…`,
+`packages/…`, `scripts/env.mjs`, `config/`), taking only git-tracked files, and
+writes a `manifest.json` with a content id and the file list. The app bundles
+that tree under `Contents/Resources/backend`.
+
+On launch `src/provision.mjs` syncs it into `<userData>/app`: files from the
+manifest are copied, files from the previous manifest that disappeared are
+removed, and everything else in that tree is left alone. That is what makes
+`prover/workspace/{.lake,proofs,projects}` and SafeVerify's build persistent
+across updates. Then it runs `uv sync --frozen` (venv outside the tree),
+ensures elan and the toolchain from `lean-toolchain`, runs the Mathlib cache
+steps from `docker/prepare-mathlib.sh`, and builds SafeVerify with its
+`.lake/packages` symlinked to the workspace's, as the Dockerfile does.
+
+`src/backend.mjs` then runs `bootstrap.py`, the worker, the API (serving
+`dist/`) and the companion through the repo's `scripts/process-supervisor.mjs`,
+with `LEA_SHARED_DATA_DIR`, `LEA_CONFIG_FILE` and `LEA_ROOT` pointing at app
+support. Both Node children (the worker's private companion worker and the
+companion server) run on the app's own binary via `ELECTRON_RUN_AS_NODE`.
+
+### Smoke test
+
+```sh
+LEA_DESKTOP_SCREENSHOT=/tmp/lea.png LEA_DESKTOP_SCREENSHOT_VIEW=settings npm start -w apps/lea-desktop
+```
+
+Starts the app, waits for the UI (`LEA_DESKTOP_SCREENSHOT_DELAY_MS`, default
+6000), optionally drives a native-menu navigation, writes a PNG of the window
+and quits. Failures never block on a dialog in this mode.
+
+### Files
+
+- `src/main.mjs` — lifecycle, window, deep links, updater, quit → backend stop.
+- `src/layout.mjs` — paths for dev (checkout) and managed (app support) modes.
+- `src/provision.mjs` — first-run / after-update provisioning with progress.
+- `src/backend.mjs` — attach-or-spawn; reuses the repo's supervisor modules.
+- `src/menu.mjs`, `src/preload.cjs`, `src/splash.html`, `src/updater.mjs`.
+- `scripts/build-backend.mjs`, `scripts/fetch-uv.mjs`, `scripts/launch.mjs`,
+  `scripts/make-icon.py`.
+- `electron-builder.yml`, `build-resources/entitlements.mac.plist`.
 
 ## Troubleshooting
 
-- **"This UI requires the database-only API and separate Lea worker. Update the
-  services together."** An adapter from before your last `git pull` is still
-  running on `:8001` (for example a `./start-dev.sh` left open in a terminal),
-  and the current UI refuses it. Stop that stack (Ctrl+C there, or `kill` its
-  supervisor) and launch the app again; with nothing on `:8001` it starts a
-  current stack itself.
-- **"The requested module 'electron' does not provide an export named 'app'"**
-  when running the Electron binary by hand: `ELECTRON_RUN_AS_NODE=1` is set in
-  your environment (VS Code's extension host sets it), which turns Electron into
-  plain Node. `npm start` goes through `scripts/launch.mjs`, which strips it.
-- **Port 8001 busy but no healthy adapter:** something else holds the port;
-  `lsof -nP -iTCP:8001 -sTCP:LISTEN` shows what.
+- **"This UI requires the database-only API and separate Lea worker."** An
+  adapter from before your last `git pull` is still running on `:8001`. Stop it
+  and launch again.
+- **"does not provide an export named 'app'"** when running the Electron binary
+  by hand: `ELECTRON_RUN_AS_NODE=1` is set in your environment (VS Code's
+  extension host sets it). `npm start` goes through `scripts/launch.mjs`, which
+  strips it.
+- **Provisioning failed.** The splash offers **Open logs**; the step that
+  failed is named there. Mathlib and Python steps need network. Deleting
+  `~/Library/Application Support/Lea/state.json` forces the Mathlib and
+  SafeVerify checks to run again; deleting the whole folder starts from scratch.
+- **Port 8001 busy but no healthy adapter:** `lsof -nP -iTCP:8001 -sTCP:LISTEN`.
 
-## Files
+## Not yet
 
-- `src/main.mjs` — app lifecycle, window, deep links, quit → backend stop.
-- `src/backend.mjs` — attach-or-spawn logic; reuses the repo's
-  `scripts/process-supervisor.mjs`, `service-env.mjs`, `env.mjs` and
-  `dev-stack-preflight.mjs`.
-- `src/menu.mjs` — the native menu.
-- `src/preload.cjs` — the sandboxed bridge (`window.leaDesktop`).
-- `src/splash.html` — startup progress page.
-- `scripts/make-icon.py` — regenerates `assets/icon.{svg,png,icns}` from the
-  wordmark (macOS tools only).
-
-## What is missing (next steps toward a shippable app)
-
-1. **Run from an app-data directory instead of the checkout.** Resolve the
-   adapter, prover and workspace from `app.getPath('userData')`; today the
-   backend's own path assumptions point at the repo.
-2. **First-run bootstrap.** Provision Python (via a bundled `uv`), the Lean
-   toolchain and the Mathlib cache into app data with a progress screen; this
-   is `install.sh` + `docker/prepare-mathlib.sh` behind a UI.
-3. **Packaging and updates.** electron-builder, Developer ID signing and
-   notarization, `electron-updater` fed from GitHub Releases. `assets/icon.icns`
-   is ready for that.
-4. **Title bar.** `titleBarStyle: 'hiddenInset'` plus a drag region in the UI
-   for the VS Code look; left default here so nothing overlaps the UI.
-5. **Windows.** The native path is POSIX-only today (venv paths, process groups,
-   exclusive file locks); Windows stays on Docker until that is ported.
+- Linux (AppImage) and Windows. The native path is POSIX-only today (venv
+  paths, process groups, exclusive file locks); Windows stays on Docker.
+- Signed and notarized builds (configuration is in place; needs the Apple
+  Developer ID secrets).

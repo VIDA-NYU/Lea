@@ -1,0 +1,59 @@
+# electron-builder configuration for Lea Desktop.
+#
+#   npm run dist:mac -w apps/lea-desktop        # arm64 DMG + zip into release/
+#   npm run dist:mac:x64 -w apps/lea-desktop
+#
+# Signing: builds are unsigned unless CSC_LINK / CSC_KEY_PASSWORD are set. To
+# notarize as well, pass -c.mac.notarize=true with APPLE_ID,
+# APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID in the environment (see
+# .github/workflows/desktop-release.yml).
+appId: edu.nyu.vida.lea
+productName: Lea
+copyright: Copyright © 2026 VIDA, New York University
+directories:
+  output: release
+  buildResources: build-resources
+files:
+  - src/**
+  - package.json
+  - assets/icon.png
+  - assets/*.svg
+asar: true
+extraResources:
+  # The backend tree (scripts/build-backend.mjs) and the uv binary for this
+  # architecture (scripts/fetch-uv.mjs). Lean, Mathlib and Python are
+  # provisioned into app support on first run, not bundled.
+  - from: build/backend
+    to: backend
+  - from: build/bin/${arch}/uv
+    to: bin/uv
+protocols:
+  - name: Lea
+    schemes: [lea]
+mac:
+  category: public.app-category.developer-tools
+  icon: assets/icon.icns
+  minimumSystemVersion: '12.0'
+  target:
+    - target: dmg
+    - target: zip
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build-resources/entitlements.mac.plist
+  entitlementsInherit: build-resources/entitlements.mac.plist
+  notarize: false
+  artifactName: ${productName}-${version}-${arch}.${ext}
+dmg:
+  sign: false
+  contents:
+    - x: 140
+      y: 180
+    - x: 420
+      y: 180
+      type: link
+      path: /Applications
+publish:
+  provider: github
+  owner: VIDA-NYU
+  repo: Lea
+  releaseType: release

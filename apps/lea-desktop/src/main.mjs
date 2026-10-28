@@ -1,13 +1,16 @@
-// Lea Desktop — proof of concept.
+// Lea Desktop — main process.
 //
-// A native window around the existing Lea UI, with the backend started and
-// stopped by the app. See README.md for what is and is not in this POC.
+// A native window around the Lea UI, with the backend provisioned, started and
+// stopped by the app. See README.md for the runtime layout and build steps.
 import { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, nativeTheme, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend.mjs';
+import { devLayout, managedLayout } from './layout.mjs';
 import { buildMenu } from './menu.mjs';
+import { createProvisioner } from './provision.mjs';
+import { setupUpdater } from './updater.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(here, '..');
@@ -22,7 +25,10 @@ const log = (...args) => console.log('[lea-desktop]', ...args);
 
 let win = null;
 let backend = null;
+let provisioner = null;
+let updater = null;
 let runtime = null; // { mode, apiUrl, uiUrl, companionUrl }
+let layout = null;
 let logDir = null;
 let quitting = false;
 const pendingDeepLinks = [];
@@ -39,8 +45,8 @@ if (!app.requestSingleInstanceLock()) {
     for (const arg of argv) if (arg.startsWith(`${PROTOCOL}://`)) handleDeepLink(arg);
   });
 
-  // In a packaged build the scheme comes from Info.plist; in `electron .` dev
-  // mode macOS ignores this, so lea:// links only work once packaged.
+  // In a packaged build the scheme comes from Info.plist (electron-builder's
+  // `protocols`); under `electron .` macOS ignores this registration.
   if (process.defaultApp && process.argv.length >= 2) {
     app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
   } else {
@@ -55,6 +61,20 @@ if (!app.requestSingleInstanceLock()) {
     log(error.stack || error.message);
     app.exit(1);
   });
+}
+
+// ---- mode -------------------------------------------------------------------
+
+function resolveLayout() {
+  const managed = app.isPackaged || process.env.LEA_DESKTOP_MODE === 'managed';
+  if (!managed) return { layout: devLayout(MONOREPO_ROOT), uvBinary: null };
+  const resources = app.isPackaged ? process.resourcesPath : path.join(APP_ROOT, 'build');
+  const backendSource = path.join(resources, 'backend');
+  const bundledUv = app.isPackaged
+    ? path.join(resources, 'bin', 'uv')
+    : path.join(resources, 'bin', process.arch, 'uv');
+  const uvBinary = fs.existsSync(bundledUv) ? bundledUv : 'uv';
+  return { layout: managedLayout(app.getPath('userData'), backendSource), uvBinary };
 }
 
 // ---- lifecycle ---------------------------------------------------------------
@@ -78,22 +98,55 @@ async function main() {
     if (/^https?:\/\//i.test(String(url))) return shell.openExternal(String(url));
     return undefined;
   });
+  ipcMain.handle('lea:show-logs', () => shell.openPath(logDir));
+  ipcMain.handle('lea:quit', () => app.quit());
+
+  const resolved = resolveLayout();
+  layout = resolved.layout;
+  log(`mode ${layout.mode}${layout.mode === 'managed' ? ` (${layout.userData})` : ''}`);
 
   createWindow();
+  updater = setupUpdater({ log });
   Menu.setApplicationMenu(buildMenu({
     navigate,
     getRuntime: () => runtime,
     getBackend: () => backend,
     getLogDir: () => logDir,
+    getDataDir: () => (layout.mode === 'managed' ? layout.userData : layout.dataDir),
+    checkForUpdates: () => updater.check({ interactive: true }),
   }));
 
-  backend = createBackend({ root: MONOREPO_ROOT, logDir, log, onStatus: sendStatus, onCrash });
+  backend = createBackend({ layout, logDir, log, onStatus: sendStatus, onCrash });
 
   try {
-    runtime = await backend.start();
+    let provisioned = { env: {} };
+    if (layout.mode === 'managed') {
+      const provisionLog = fs.createWriteStream(path.join(logDir, 'provision.log'), { flags: 'a' });
+      provisionLog.write(`\n--- ${new Date().toISOString()} ---\n`);
+      provisioner = createProvisioner(layout, {
+        uvBinary: resolved.uvBinary,
+        log: (message) => { log(message); provisionLog.write(`${message}\n`); },
+        onStatus: sendStatus,
+        onLog: (line) => {
+          provisionLog.write(`${line}\n`);
+          win?.webContents.send('lea:log', { line });
+        },
+      });
+      try {
+        provisioned = await provisioner.run();
+      } finally {
+        provisioner = null;
+        provisionLog.end();
+      }
+    }
+    // "Open in Lea" links from Overleaf: the lea:// scheme only resolves for a
+    // packaged app, so dev builds keep pointing at the adapter-served UI.
+    const uiBaseUrl = app.isPackaged ? `${PROTOCOL}://open` : undefined;
+    runtime = await backend.start({ env: provisioned.env, uiBaseUrl });
   } catch (error) {
+    if (quitting) return;
     log(error.stack || error.message);
-    sendStatus({ step: 'error', message: error.message });
+    sendStatus({ step: 'services', state: 'error', message: error.message });
     if (!SMOKE) {
       await dialog.showMessageBox(win ?? undefined, {
         type: 'error',
@@ -109,7 +162,6 @@ async function main() {
   }
 
   log(`backend ${runtime.mode}; ui ${runtime.uiUrl}; api ${runtime.apiUrl}`);
-  sendStatus({ step: 'loading', message: 'Opening Lea…' });
   if (win) await win.loadURL(runtime.uiUrl);
   for (const link of pendingDeepLinks.splice(0)) handleDeepLink(link);
   maybeSmokeTest();
@@ -118,6 +170,7 @@ async function main() {
 app.on('before-quit', (event) => {
   if (quitting) return;
   quitting = true;
+  provisioner?.cancel();
   // The supervisor ends the process itself once every child is gone.
   if (backend?.stop()) event.preventDefault();
 });
@@ -146,6 +199,11 @@ function createWindow(initialUrl = null) {
     title: 'Lea',
     show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#111318' : '#f7f7f5',
+    // macOS: no title bar; the UI reserves a 28px drag strip for the traffic
+    // lights when it detects the desktop shell (html.lea-desktop-mac).
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 12, y: 8 } }
+      : {}),
     webPreferences: {
       preload: path.join(here, 'preload.cjs'),
       contextIsolation: true,
@@ -195,7 +253,7 @@ function navigate(view) {
   focusWindow();
 }
 
-// lea://session/<id> · lea://formalization/<id> · lea://settings · lea://open
+// lea://session/<id> · lea://formalization/<id> · lea://settings · lea://open[?session=..&formalization=..]
 function handleDeepLink(raw) {
   let url;
   try { url = new URL(raw); } catch { return; }
@@ -204,9 +262,17 @@ function handleDeepLink(raw) {
   const kind = url.hostname;
   const id = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
   focusWindow();
-  if (kind === 'session' && id) win?.loadURL(`${runtime.uiUrl}/?session=${encodeURIComponent(id)}`);
-  else if (kind === 'formalization' && id) win?.loadURL(`${runtime.uiUrl}/?formalization=${encodeURIComponent(id)}`);
-  else if (kind === 'settings') navigate('settings');
+  const target = new URL(runtime.uiUrl);
+  if (kind === 'session' && id) target.searchParams.set('session', id);
+  else if (kind === 'formalization' && id) target.searchParams.set('formalization', id);
+  else if (kind === 'settings') { navigate('settings'); return; }
+  else if (kind === 'open') {
+    for (const key of ['session', 'formalization']) {
+      const value = url.searchParams.get(key);
+      if (value) target.searchParams.set(key, value);
+    }
+  } else return;
+  if ([...target.searchParams.keys()].length) win?.loadURL(target.toString());
 }
 
 async function onCrash(label, { code, signal }) {

@@ -5,54 +5,111 @@
   <title>Lea</title>
   <style>
     :root {
-      --bg: #f7f7f5;
-      --fg: #1b1f24;
-      --muted: #6b7280;
-      --bar: #e5e7eb;
-      --accent-a: #2f5aa8;
-      --accent-b: #16733d;
+      --bg: #f7f7f5; --fg: #1b1f24; --muted: #6b7280; --line: #e5e7eb; --panel: #ffffff;
+      --ok: #16733d; --run: #2f5aa8; --bad: #b42318;
+      --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     }
     @media (prefers-color-scheme: dark) {
-      :root { --bg: #111318; --fg: #e8eaee; --muted: #9aa3b2; --bar: #272b33; }
+      :root { --bg: #111318; --fg: #e8eaee; --muted: #9aa3b2; --line: #272b33; --panel: #171a21; --ok: #3fae6a; --run: #7aa2f7; --bad: #f08080; }
     }
     html, body { height: 100%; margin: 0; }
     body {
       background: var(--bg); color: var(--fg);
-      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
       display: grid; place-items: center;
-      -webkit-user-select: none; user-select: none;
-      -webkit-app-region: drag;
+      -webkit-user-select: none; user-select: none; -webkit-app-region: drag;
     }
-    main { width: min(420px, 80vw); text-align: center; }
-    picture img { width: 160px; height: auto; display: block; margin: 0 auto 28px; }
-    .bar { height: 3px; border-radius: 2px; background: var(--bar); overflow: hidden; margin: 0 auto 18px; }
-    .bar i {
-      display: block; height: 100%; width: 40%;
-      background: linear-gradient(90deg, var(--accent-a), var(--accent-b));
-      animation: slide 1.4s ease-in-out infinite;
-    }
+    main { width: min(560px, 86vw); }
+    picture img { width: 140px; height: auto; display: block; margin: 0 auto 26px; }
+    .bar { height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; margin: 0 0 18px; }
+    .bar i { display: block; height: 100%; width: 40%; background: linear-gradient(90deg, var(--run), var(--ok)); animation: slide 1.4s ease-in-out infinite; }
     @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
     .bar.done i { animation: none; width: 100%; }
-    .bar.error i { animation: none; width: 100%; background: #b42318; }
-    #status { color: var(--muted); min-height: 3em; margin: 0; white-space: pre-wrap; }
+    .bar.error i { animation: none; width: 100%; background: var(--bad); }
+    ol { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 6px; }
+    ol:empty { display: none; }
+    li { display: grid; grid-template-columns: 18px 1fr; gap: 10px; align-items: baseline; color: var(--muted); }
+    li .dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--line); display: inline-block; position: relative; top: 1px; }
+    li.running { color: var(--fg); } li.running .dot { border-color: var(--run); background: var(--run); box-shadow: 0 0 0 3px color-mix(in srgb, var(--run) 25%, transparent); }
+    li.done .dot { border-color: var(--ok); background: var(--ok); }
+    li.failed { color: var(--bad); } li.failed .dot { border-color: var(--bad); background: var(--bad); }
+    li .detail { display: block; font-size: 12px; color: var(--muted); }
+    #status { margin: 0 0 12px; min-height: 1.5em; color: var(--muted); white-space: pre-wrap; }
+    pre { margin: 0; padding: 10px 12px; height: 7.5em; overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; font: 11px/1.45 var(--mono); color: var(--muted); white-space: pre-wrap; word-break: break-all; }
+    pre:empty { display: none; }
+    .note { margin: 14px 0 0; font-size: 12px; color: var(--muted); text-align: center; }
+    .actions { display: none; gap: 10px; justify-content: center; margin-top: 14px; -webkit-app-region: no-drag; }
+    .actions.show { display: flex; }
+    button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer; }
   </style>
 </head>
 <body>
   <main>
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="../../../public/assets/img/lea-wordmark-dark.svg">
-      <img src="../../../public/assets/img/lea-wordmark-light.svg" alt="Lea">
+      <source media="(prefers-color-scheme: dark)" srcset="../assets/lea-wordmark-dark.svg">
+      <img src="../assets/lea-wordmark-light.svg" alt="Lea">
     </picture>
     <div class="bar" id="bar"><i></i></div>
+    <ol id="steps"></ol>
     <p id="status">Starting…</p>
+    <pre id="log"></pre>
+    <p class="note" id="note"></p>
+    <div class="actions" id="actions">
+      <button id="logs">Open logs</button>
+      <button id="quit">Quit</button>
+    </div>
   </main>
   <script>
+    const LABELS = {
+      runtime: 'Lea runtime', python: 'Python environment', lean: 'Lean toolchain',
+      mathlib: 'Mathlib library', safeverify: 'Proof verifier', services: 'Starting Lea',
+    };
+    const ORDER = Object.keys(LABELS);
+    const steps = document.getElementById('steps');
     const status = document.getElementById('status');
     const bar = document.getElementById('bar');
+    const logBox = document.getElementById('log');
+    const note = document.getElementById('note');
+    const actions = document.getElementById('actions');
+    const lines = [];
+    let sawProvisioning = false;
+
+    function row(step) {
+      let li = document.getElementById(`step-${step}`);
+      if (li) return li;
+      li = document.createElement('li');
+      li.id = `step-${step}`;
+      li.innerHTML = `<span class="dot"></span><span><span class="label">${LABELS[step] || step}</span><span class="detail"></span></span>`;
+      const after = [...steps.children].find((el) => ORDER.indexOf(el.id.replace('step-', '')) > ORDER.indexOf(step));
+      steps.insertBefore(li, after || null);
+      return li;
+    }
+
     window.leaDesktop?.onStatus?.((update) => {
-      status.textContent = update?.message || '';
-      bar.className = 'bar' + (update?.step === 'error' ? ' error' : update?.step === 'loading' ? ' done' : '');
+      if (!update) return;
+      if (update.step && update.step !== 'services') sawProvisioning = true;
+      if (update.step) {
+        const li = row(update.step);
+        li.className = update.state || '';
+        li.querySelector('.detail').textContent = update.state === 'done' || update.state === 'failed' ? (update.message || '') : '';
+      }
+      if (update.state === 'running' || update.state === 'error') status.textContent = update.message || '';
+      if (update.state === 'done' && update.step === 'services') status.textContent = 'Opening Lea…';
+      bar.className = 'bar' + (update.state === 'error' ? ' error' : update.step === 'services' && update.state === 'done' ? ' done' : '');
+      if (update.state === 'error') actions.classList.add('show');
+      note.textContent = sawProvisioning && update.step === 'mathlib' && update.state === 'running'
+        ? 'The first launch downloads Lean and Mathlib (about 10 GB). Later launches take seconds.'
+        : '';
     });
+    window.leaDesktop?.onLog?.((entry) => {
+      const line = typeof entry === 'string' ? entry : entry?.line;
+      if (!line) return;
+      lines.push(line);
+      while (lines.length > 6) lines.shift();
+      logBox.textContent = lines.join('\n');
+    });
+    document.getElementById('logs').onclick = () => window.leaDesktop?.showLogs?.();
+    document.getElementById('quit').onclick = () => window.leaDesktop?.quit?.();
   </script>
 </body>
 </html>

@@ -1,0 +1,125 @@
+# Build Lea Desktop for macOS (Apple Silicon and Intel). Unsigned unless the
+# signing secrets below exist; a tag `desktop-v*` also publishes a GitHub
+# release with the DMGs, zips and latest-mac.yml (electron-updater feed).
+#
+# Secrets for signed + notarized builds (optional):
+#   MAC_CERT_P12_BASE64   Developer ID Application certificate, base64 .p12
+#   MAC_CERT_PASSWORD     its password
+#   APPLE_ID              Apple ID used for notarization
+#   APPLE_APP_SPECIFIC_PASSWORD
+#   APPLE_TEAM_ID
+
+name: Desktop release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['desktop-v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Build the UI
+        run: npm run build -w apps/lea-standalone
+
+      - name: Assemble the backend tree and fetch uv
+        run: |
+          npm run build:backend -w apps/lea-desktop
+          npm run fetch:uv -w apps/lea-desktop -- --arch ${{ matrix.arch }}
+
+      - name: Package (signed when secrets are present)
+        working-directory: apps/lea-desktop
+        env:
+          CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          extra=()
+          if [ -n "${CSC_LINK:-}" ] && [ -n "${APPLE_ID:-}" ]; then
+            extra+=(-c.mac.notarize=true)
+          else
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+            echo "No signing secrets: building an unsigned app." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          npx electron-builder --mac --${{ matrix.arch }} --publish never "${extra[@]}"
+          ls -la release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lea-desktop-mac-${{ matrix.arch }}
+          path: |
+            apps/lea-desktop/release/*.dmg
+            apps/lea-desktop/release/*.zip
+            apps/lea-desktop/release/*.yml
+            apps/lea-desktop/release/*.blockmap
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lea-desktop-mac-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Merge the updater feeds
+        run: |
+          # electron-builder writes one latest-mac.yml per architecture build;
+          # the updater reads a single file, so merge the file lists.
+          python3 - <<'PY'
+          import glob, re
+          files = sorted(glob.glob('artifacts/latest-mac*.yml'))
+          if len(files) > 1:
+              heads, bodies = [], []
+              for f in files:
+                  text = open(f).read()
+                  m = re.search(r'files:\n((?:  .*\n)+)', text)
+                  bodies.append(m.group(1))
+                  heads.append(text)
+              merged = re.sub(r'files:\n((?:  .*\n)+)', 'files:\n' + ''.join(bodies), heads[0], count=1)
+              open('artifacts/latest-mac.yml', 'w').write(merged)
+          PY
+          ls -la artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.dmg
+            artifacts/*.zip
+            artifacts/latest-mac.yml
+            artifacts/*.blockmap
+          generate_release_notes: true

@@ -35,7 +35,7 @@
 .lea-app ::-webkit-scrollbar-thumb:hover { background: #c8c3b8; }
 .lea-app ::-webkit-scrollbar-track { background: transparent; }
 .lea-app * { scrollbar-width: thin; scrollbar-color: #d9d4ca transparent; }
-.app { display: grid; grid-template-columns: 264px 1fr; grid-template-rows: minmax(0, 1fr); height: 100vh; overflow: hidden; }
+.app { display: grid; grid-template-columns: 264px 1fr; grid-template-rows: minmax(0, 1fr); height: calc(100vh - var(--lea-titlebar, 0px)); overflow: hidden; }
 .app.sidebar-collapsed { grid-template-columns: 0 1fr; }
 .app.sidebar-collapsed .sidebar { display: none; }
 .main-area { position: relative; grid-column: 2; display: grid; grid-template-columns: 1fr 46%; grid-template-rows: minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; }
@@ -1401,3 +1401,11 @@ pre.code { margin: 0; padding: 16px 0; font-family: ui-monospace, monospace; fon
 .spawn .kid-error-msg { font: 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink-2);
   background: var(--red-soft); border: 1px solid var(--red-soft); border-radius: 8px; padding: 10px 12px;
   white-space: pre-wrap; word-break: break-word; overflow-x: auto; margin: 0; line-height: 1.5; }
+
+/* Desktop shell (apps/lea-desktop) on macOS: the window has no title bar, so the
+   top 28px is reserved for the traffic lights and doubles as the drag region.
+   App.tsx adds html.lea-desktop-mac when it runs inside the shell. */
+html.lea-desktop-mac { --lea-titlebar: 28px; }
+html.lea-desktop-mac body { padding-top: var(--lea-titlebar); box-sizing: border-box; }
+html.lea-desktop-mac body::before { content: ''; position: fixed; top: 0; left: 0; right: 0; height: var(--lea-titlebar);
+  -webkit-app-region: drag; z-index: 2147483000; }

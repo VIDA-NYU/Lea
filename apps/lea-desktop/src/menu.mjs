@@ -7,15 +7,17 @@ const DISCORD_URL = 'https://discord.gg/58ZWUXU8FM';
 const EXTENSION_GUIDE_URL = `${GITHUB_URL}/blob/main/apps/overleaf-extension/README.md`;
 const OVERLEAF_URL = 'https://www.overleaf.com/project';
 
-export function buildMenu({ navigate, getRuntime, getBackend, getLogDir }) {
+export function buildMenu({ navigate, getRuntime, getBackend, getLogDir, getDataDir, checkForUpdates }) {
   const isMac = process.platform === 'darwin';
   const settingsItem = { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => navigate('settings') };
+  const updatesItem = { label: 'Check for Updates…', click: () => checkForUpdates?.() };
 
   const template = [
     ...(isMac ? [{
       label: app.name,
       submenu: [
         { role: 'about' },
+        updatesItem,
         { type: 'separator' },
         settingsItem,
         { type: 'separator' },
@@ -92,8 +94,10 @@ export function buildMenu({ navigate, getRuntime, getBackend, getLogDir }) {
         { label: 'Lea on GitHub', click: () => shell.openExternal(GITHUB_URL) },
         { label: 'Join the Discord', click: () => shell.openExternal(DISCORD_URL) },
         { type: 'separator' },
+        ...(isMac ? [] : [updatesItem]),
         { label: 'Backend status…', click: () => showBackendStatus(getRuntime(), getBackend()) },
         { label: 'Show logs folder', click: () => { const dir = getLogDir(); if (dir) shell.openPath(dir); } },
+        { label: 'Show data folder', click: () => { const dir = getDataDir?.(); if (dir) shell.openPath(dir); } },
       ],
     },
   ];

@@ -1,19 +1,29 @@
 {
   "name": "lea-desktop",
   "private": true,
-  "version": "0.0.1",
-  "description": "Lea as a native desktop application (proof of concept).",
+  "version": "0.1.0",
+  "description": "Lea as a native desktop application.",
   "type": "module",
   "main": "src/main.mjs",
   "scripts": {
     "start": "node scripts/launch.mjs",
     "start:attach": "LEA_DESKTOP_ATTACH=1 node scripts/launch.mjs",
     "start:spawn": "LEA_DESKTOP_ATTACH=0 node scripts/launch.mjs",
+    "start:managed": "LEA_DESKTOP_MODE=managed node scripts/launch.mjs",
     "smoke": "LEA_DESKTOP_SCREENSHOT=${LEA_DESKTOP_SCREENSHOT:-/tmp/lea-desktop-smoke.png} node scripts/launch.mjs",
-    "icon": "python3 scripts/make-icon.py"
+    "icon": "python3 scripts/make-icon.py",
+    "build:ui": "npm --prefix ../.. run build -w apps/lea-standalone",
+    "build:backend": "node scripts/build-backend.mjs",
+    "fetch:uv": "node scripts/fetch-uv.mjs",
+    "dist:mac": "npm run build:backend && npm run fetch:uv -- --arch arm64 && electron-builder --mac --arm64 --publish never",
+    "dist:mac:x64": "npm run build:backend && npm run fetch:uv -- --arch x64 && electron-builder --mac --x64 --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.11"
   },
   "devDependencies": {
-    "electron": "45.1.0"
+    "electron": "45.1.0",
+    "electron-builder": "26.18.0"
   },
   "engines": {
     "node": ">=22.13"

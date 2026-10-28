@@ -135,10 +135,17 @@ export default function App() {
     setLayoutView(next);
   };
   // Desktop shell (apps/lea-desktop): native menu items such as Settings… (⌘,)
-  // navigate the UI through the preload bridge. No-op in a browser.
-  useEffect(() => window.leaDesktop?.onNavigate?.(({ view: next }) => {
-    if (DESKTOP_MENU_VIEWS.has(next)) setView(next as View);
-  }), []);
+  // navigate the UI through the preload bridge, and the root element is tagged
+  // so the stylesheet can reserve the macOS title-bar strip. No-op in a browser.
+  useEffect(() => {
+    const bridge = window.leaDesktop;
+    if (!bridge) return undefined;
+    document.documentElement.classList.add('lea-desktop');
+    if (bridge.platform === 'darwin') document.documentElement.classList.add('lea-desktop-mac');
+    return bridge.onNavigate?.(({ view: next }) => {
+      if (DESKTOP_MENU_VIEWS.has(next)) setView(next as View);
+    });
+  }, []);
   // editedPath (M20 canvas-edit nudge) now lives in the proofSession store
   // (v2.0.1 R1a): App sets it; ChatThread reads it straight from the store.
   const setEditedPath = useProofSession((s) => s.setEditedPath);
