@@ -18,6 +18,7 @@ from .config import (
     permission_tier as config_permission_tier, PERMISSION_TIERS,
     github_token as config_github_token, write_private_text,
     PROVIDER_ENDPOINT_ENV, provider_endpoint,
+    ENVIRONMENT_TABLE, configured_environment, environment_name_problem,
 )
 from . import models_catalog
 from .catalog_service import bundled_catalog, service as catalog_service
@@ -92,7 +93,39 @@ KNOWN_KEY_LABELS = {
     "XAI_API_KEY": "xAI",
     "PERPLEXITYAI_API_KEY": "Perplexity",
     "PORTKEY_API_KEY": "Portkey",
+    "HOSTED_VLLM_API_KEY": "vLLM / OpenAI-compatible server",
+    "OLLAMA_API_KEY": "Ollama",
 }
+
+
+# What Settings shows for each provider endpoint setting (config.PROVIDER_ENDPOINT_ENV).
+PROVIDER_ENDPOINT_DETAILS: dict[str, dict[str, Any]] = {
+    "PORTKEY_BASE_URL": {
+        "label": "Portkey gateway URL", "provider": "portkey", "key_env": "PORTKEY_API_KEY",
+        "key_optional": False, "model_prefix": "portkey/", "placeholder": "https://api.portkey.ai/v1",
+        "description": "Your Portkey gateway's /v1 root; Portkey's hosted service when blank.",
+    },
+    "HOSTED_VLLM_API_BASE": {
+        "label": "vLLM / OpenAI-compatible server", "provider": "hosted_vllm", "key_env": "HOSTED_VLLM_API_KEY",
+        "key_optional": True, "model_prefix": "hosted_vllm/", "placeholder": "http://localhost:8000/v1",
+        "description": "Any OpenAI-compatible server: vLLM, SGLang, TGI, LM Studio, a LiteLLM proxy. "
+                       "Pick the model as hosted_vllm/<served model name>; the key is optional.",
+    },
+    "OLLAMA_API_BASE": {
+        "label": "Ollama server", "provider": "ollama", "key_env": None,
+        "key_optional": True, "model_prefix": "ollama/", "placeholder": "http://localhost:11434",
+        "description": "A local or remote Ollama. Pick the model as ollama/<model>.",
+    },
+    "OPENAI_BASE_URL": {
+        "label": "OpenAI-compatible base URL for openai/ models", "provider": "openai", "key_env": "OPENAI_API_KEY",
+        "key_optional": False, "model_prefix": "openai/", "placeholder": "https://api.openai.com/v1",
+        "description": "Send openai/<model> requests to a different OpenAI-compatible endpoint instead of api.openai.com.",
+    },
+}
+# Providers whose models need a server URL (and no key) to run.
+SELF_HOSTED_ENDPOINT = {"hosted_vllm": "HOSTED_VLLM_API_BASE"}
+# Environment variables whose values look like credentials are never echoed back.
+SECRET_NAME_RE = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL", re.IGNORECASE)
 
 
 def _key_label(env_name: str) -> str:
@@ -127,6 +160,10 @@ def settings_payload(path: Path | None = None) -> dict[str, Any]:
         "provider_endpoints": {
             env: provider_endpoint(env, path) for env in PROVIDER_ENDPOINT_ENV
         },
+        "provider_endpoint_details": PROVIDER_ENDPOINT_DETAILS,
+        # User-set environment variables from the config file; secret-looking
+        # values are presence-only like the keys.
+        "environment": _environment_payload(path),
         "model_options": catalog_service().payload(config.model)["featured"],
         "permission_tier": config_permission_tier(path),
         "permission_tiers": [
@@ -135,6 +172,19 @@ def settings_payload(path: Path | None = None) -> dict[str, Any]:
         # Presence-only, like the provider keys — the raw token never reaches the client.
         "github_token": _masked_key(config_github_token(path)),
     }
+
+
+def _environment_payload(path: Path | None = None) -> list[dict[str, Any]]:
+    entries = []
+    for name, value in sorted(configured_environment(path).items()):
+        secret = bool(SECRET_NAME_RE.search(name))
+        entries.append({
+            "name": name,
+            "secret": secret,
+            "value": None if secret else value,
+            "last4": value[-4:] if secret and len(value) >= 8 else None,
+        })
+    return entries
 
 
 def _api_keys_payload(keys: dict[str, str]) -> dict[str, Any]:
@@ -201,6 +251,17 @@ def model_requirements(model: str, path: Path | None = None) -> dict[str, Any]:
     required = _required_env_keys(model)
     saved = set(configured_provider_keys(path).keys())
     provider = models_catalog.provider_for(model) or _model_family(model)
+    # A self-hosted provider needs its server URL (saved, or exported in the shell)
+    # the way a hosted one needs a key.
+    endpoint = None
+    endpoint_env = SELF_HOSTED_ENDPOINT.get(provider or "")
+    if endpoint_env:
+        endpoint = {
+            "env": endpoint_env,
+            "label": PROVIDER_ENDPOINT_DETAILS[endpoint_env]["label"],
+            "configured": bool(provider_endpoint(endpoint_env, path)["value"]),
+        }
+    keys_ok = (not required) or any(_key_available(env, saved) for env in required)
     return {
         "model": model,
         "provider": provider,
@@ -208,7 +269,8 @@ def model_requirements(model: str, path: Path | None = None) -> dict[str, Any]:
             {"env": env, "label": _key_label(env), "configured": _key_available(env, saved)}
             for env in required
         ],
-        "satisfied": (not required) or any(_key_available(env, saved) for env in required),
+        "required_endpoint": endpoint,
+        "satisfied": keys_ok and (endpoint is None or endpoint["configured"]),
     }
 
 
@@ -224,6 +286,12 @@ def validate_configured_model(model: str, path: Path | None = None) -> str:
         raise SettingsValidationError("model must not be empty", "model")
     requirements = model_requirements(normalized, path)
     if not requirements["satisfied"]:
+        endpoint = requirements.get("required_endpoint")
+        if endpoint and not endpoint["configured"]:
+            raise SettingsValidationError(
+                f"A server URL ({endpoint['label']}) is required before starting a run with this model.",
+                f"provider_endpoints.{endpoint['env']}",
+            )
         required = requirements["required_keys"][0]
         raise SettingsValidationError(
             f"An API key ({required['label']}) is required before starting a run with this model.",
@@ -388,7 +456,40 @@ def update_settings(values: dict[str, Any], path: Path | None = None, *, databas
             )
         updates[toml_key] = value
 
-    _validate_selected_model_has_key(str(current_config.model), current_keys, updates)
+    # User-set environment variables, same {value, clear} shape, into the
+    # `[environment]` table. Names are checked against the loader's reserved list so
+    # a saved file can never set something the loader would then refuse to export.
+    environment_updates = values.get("environment") or {}
+    if not isinstance(environment_updates, dict):
+        raise ValueError("environment must be an object")
+    table_updates: dict[str, str | None] = {}
+    for name, raw_update in environment_updates.items():
+        if raw_update is None:
+            continue
+        name = str(name).strip()
+        if not isinstance(raw_update, dict):
+            raise ValueError(f"environment.{name} must be an object")
+        problem = environment_name_problem(name)
+        if problem:
+            raise SettingsValidationError(problem, f"environment.{name}")
+        if raw_update.get("clear"):
+            table_updates[name] = None
+            continue
+        value = raw_update.get("value")
+        if value is None:
+            continue
+        value = str(value).strip()
+        if not value:
+            continue
+        if any(c in value for c in "\x00\r\n"):
+            raise SettingsValidationError(
+                f"{name} must be a single line without control characters.", f"environment.{name}",
+            )
+        table_updates[name] = value
+
+    _validate_selected_model_has_key(str(current_config.model), current_keys, updates, config_path)
+    if table_updates:
+        _write_toml_table(config_path, ENVIRONMENT_TABLE, table_updates)
     if database:
         from . import settings_policy
         from .workspace_commands import authorize
@@ -438,9 +539,19 @@ def _configured_env_keys_after(current_keys: set[str], updates: dict[str, Any]) 
 
 
 def _validate_selected_model_has_key(
-    current_model: str, current_keys: set[str], updates: dict[str, Any]
+    current_model: str, current_keys: set[str], updates: dict[str, Any], path: Path | None = None,
 ) -> None:
     model = str(updates.get("model", current_model))
+    # A self-hosted model needs its server URL: one saved in this request, or the
+    # effective one (file, shell, default).
+    endpoint_env = SELF_HOSTED_ENDPOINT.get(models_catalog.provider_for(model) or _model_family(model) or "")
+    if endpoint_env:
+        configured_url = updates[endpoint_env] if endpoint_env in updates else provider_endpoint(endpoint_env, path)["value"]
+        if not configured_url:
+            raise SettingsValidationError(
+                f"A server URL ({PROVIDER_ENDPOINT_DETAILS[endpoint_env]['label']}) is required before saving this model.",
+                f"provider_endpoints.{endpoint_env}",
+            )
     required = _required_env_keys(model)
     if not required:
         return
@@ -487,15 +598,17 @@ def _validated_endpoint_url(env_name: str, value: str) -> str:
 
     parts = urlsplit(value)
     if parts.scheme not in {"http", "https"} or not parts.netloc or any(c.isspace() for c in value):
+        example = PROVIDER_ENDPOINT_DETAILS.get(env_name, {}).get("placeholder") or "https://gateway.example.edu/v1"
         raise SettingsValidationError(
-            f"{_endpoint_label(env_name)} must be an http(s) URL such as https://gateway.example.edu/v1.",
+            f"{_endpoint_label(env_name)} must be an http(s) URL such as {example}.",
             f"provider_endpoints.{env_name}",
         )
     return value.rstrip("/")
 
 
 def _endpoint_label(env_name: str) -> str:
-    return {"PORTKEY_BASE_URL": "The Portkey gateway URL"}.get(env_name, env_name)
+    details = PROVIDER_ENDPOINT_DETAILS.get(env_name)
+    return f"The {details['label']}" if details else env_name
 
 
 def _verify_api_key_credentials(
@@ -719,6 +832,69 @@ def _escape_toml_basic(text: str) -> str:
         else:
             out.append(char)
     return "".join(out)
+
+
+def _write_toml_table(path: Path, table: str, updates: dict[str, Any]) -> None:
+    """Update keys inside one `[table]`, creating the table at the end of the file
+    when it does not exist. Keys outside the table and other tables are untouched."""
+    if not updates:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = path.read_text().splitlines() if path.exists() else []
+    header_pattern = re.compile(r"^\s*\[([^\]]+)\]\s*(#.*)?$")
+    key_pattern = re.compile(r"^(\s*)([A-Za-z0-9_]+)(\s*=\s*)(.*)$")
+    out: list[str] = []
+    in_table = False
+    found = False
+    written: set[str] = set()
+    insert_at: int | None = None  # where the table ends when another table follows it
+    for line in lines:
+        header = header_pattern.match(line)
+        if header:
+            if in_table and insert_at is None:
+                insert_at = len(out)
+            in_table = header.group(1).strip() == table and not found
+            found = found or in_table
+            out.append(line)
+            continue
+        if in_table:
+            match = key_pattern.match(line)
+            if match and match.group(2) in updates:
+                written.add(match.group(2))
+                value = updates[match.group(2)]
+                if value is None:
+                    continue
+                out.append(f"{match.group(1)}{match.group(2)}{match.group(3)}{_toml_scalar(value)}")
+                continue
+        out.append(line)
+    missing = [f"{key} = {_toml_scalar(value)}" for key, value in updates.items()
+               if key not in written and value is not None]
+    if found and not missing:
+        # Remove a header left without any keys (and the blank lines around it).
+        start = next(i for i, line in enumerate(out) if header_pattern.match(line) and header_pattern.match(line).group(1).strip() == table)
+        end = start + 1
+        while end < len(out) and not header_pattern.match(out[end]) and not out[end].strip():
+            end += 1
+        if end == len(out) or header_pattern.match(out[end]):
+            del out[start:end]
+            while out and not out[-1].strip():
+                out.pop()
+    if missing:
+        if not found:
+            if out and out[-1].strip():
+                out.append("")
+            out.append(f"[{table}]")
+            out.extend(missing)
+        elif insert_at is None:
+            while out and not out[-1].strip():
+                out.pop()
+            out.extend(missing)
+        else:
+            at = insert_at
+            while at > 0 and not out[at - 1].strip():
+                at -= 1
+            out[at:at] = missing
+    write_private_text(path, "\n".join(out).rstrip() + "\n")
 
 
 def _toml_scalar(value: Any) -> str:

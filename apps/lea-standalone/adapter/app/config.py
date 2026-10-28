@@ -30,6 +30,7 @@ from pathlib import Path
 __all__ = [
     "LeaConfig", "load_config", "configured_provider_keys", "ROOT", "LEGACY_KEY_ENV",
     "PROVIDER_ENDPOINT_ENV", "configured_provider_endpoints", "provider_endpoint",
+    "ENDPOINT_ALIASES", "ENVIRONMENT_TABLE", "configured_environment", "environment_name_problem",
     "permission_tier", "PERMISSION_TIERS", "DEFAULT_PERMISSION_TIER", "github_token",
     "write_private_text", "read_config_data",
 ]
@@ -105,7 +106,70 @@ _ENV_KEY_RE = re.compile(r"[A-Z][A-Z0-9_]*_API_KEY")
 # key. Value = the default the prover applies when nothing is configured.
 PROVIDER_ENDPOINT_ENV: dict[str, str] = {
     "PORTKEY_BASE_URL": "https://api.portkey.ai/v1",
+    # Self-hosted / OpenAI-compatible servers. `hosted_vllm/<model>` is LiteLLM's
+    # route for any OpenAI-compatible endpoint (vLLM, SGLang, TGI, LM Studio, a
+    # LiteLLM proxy) and needs no key; `ollama/<model>` talks to an Ollama server;
+    # `openai/<model>` can be pointed at a compatible server instead of
+    # api.openai.com. An empty default means "not configured".
+    "HOSTED_VLLM_API_BASE": "",
+    "OLLAMA_API_BASE": "http://localhost:11434",
+    "OPENAI_BASE_URL": "https://api.openai.com/v1",
 }
+# A second name some libraries read for the same setting; exported together and
+# retracted together.
+ENDPOINT_ALIASES: dict[str, tuple[str, ...]] = {
+    "OPENAI_BASE_URL": ("OPENAI_API_BASE",),
+}
+
+# --- user-set environment variables (`[environment]` table) ---------------------
+# Anything else the backend or LiteLLM reads from the environment (LEA_* tunables,
+# proxy settings, a provider's extra variables) can be saved here instead of
+# exported in a shell. Exported like the keys: the file wins over the shell, and
+# clearing retracts. The loader never lets the file set process identity, paths
+# the supervisor controls, or the interpreter's own switches.
+ENVIRONMENT_TABLE = "environment"
+ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+RESERVED_ENV_NAMES = frozenset({
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "PWD", "LANG", "LC_ALL",
+    "VIRTUAL_ENV", "ELAN_HOME",
+    "LEA_PROCESS_ROLE", "LEA_SHARED_DATA_DIR", "LEA_CONFIG_FILE", "LEA_DATABASE_FILE",
+    "LEA_WEB_DIST", "LEA_ROOT", "LEA_NODE", "LEA_API_BASE_URL", "LEA_API_PORT",
+    "LEA_API_DENY_PATHS", "LEA_WORKSPACE_OWNERSHIP_DIR", "LEA_OWNED_PROCESS_DIR",
+    "LEA_REQUIRE_SHARED_OWNERSHIP", "LEA_COMPANION_IMPORT_DIR", "LEA_ITEST_PORT",
+})
+RESERVED_ENV_PREFIXES = ("LD_", "DYLD_", "PYTHON", "UV_", "ELECTRON_")
+
+
+def environment_name_problem(name: str) -> str | None:
+    """Why `name` cannot be a user-set environment variable, or None if it can."""
+    if not ENV_NAME_RE.fullmatch(name):
+        return "Names are uppercase letters, digits and underscores, like LEA_JOB_TIMEOUT_SECONDS."
+    if name in RESERVED_ENV_NAMES or name.startswith(RESERVED_ENV_PREFIXES):
+        return f"{name} is managed by the app and cannot be set here."
+    if _ENV_KEY_RE.fullmatch(name):
+        return f"{name} is an API key; add it under Providers instead."
+    if name in PROVIDER_ENDPOINT_ENV or any(name in aliases for aliases in ENDPOINT_ALIASES.values()):
+        return f"{name} is a provider server URL; set it under Providers instead."
+    return None
+
+
+def _environment_entries(data: dict) -> dict[str, str]:
+    """The user-set variables in the TOML `[environment]` table, reserved names dropped."""
+    table = data.get(ENVIRONMENT_TABLE)
+    if not isinstance(table, dict):
+        return {}
+    return {
+        name: str(value)
+        for name, value in table.items()
+        if isinstance(name, str) and environment_name_problem(name) is None
+        and value is not None and str(value) != ""
+    }
+
+
+def configured_environment(path: Path | None = None) -> dict[str, str]:
+    """User-set environment variables saved in the config file (read-only; no export)."""
+    config_path = path or Path(os.environ.get("LEA_CONFIG_FILE",ROOT / "config" / "lea.local.toml"))
+    return _environment_entries(read_config_data(config_path))
 
 
 def _provider_endpoints(data: dict) -> dict[str, str]:
@@ -274,7 +338,12 @@ def load_config(path: Path | None = None) -> LeaConfig:
     # in-process, sees the keys the same way the old subprocess did. Endpoint
     # overrides (a Portkey gateway URL) ride along: the prover reads them from the
     # same place, and clearing one must retract it from the environment too.
-    _export_provider_keys({**_provider_keys(data), **_provider_endpoints(data)})
+    exported = {**_provider_keys(data), **_provider_endpoints(data), **_environment_entries(data)}
+    for env_name, aliases in ENDPOINT_ALIASES.items():
+        if env_name in exported:
+            for alias in aliases:
+                exported.setdefault(alias, exported[env_name])
+    _export_provider_keys(exported)
 
     return LeaConfig(
         model=data.get("model", "gemini/gemini-3.1-pro-preview"),

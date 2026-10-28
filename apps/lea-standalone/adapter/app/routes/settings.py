@@ -30,6 +30,8 @@ class SettingsRequest(BaseModel):
     api_keys: dict[str, ApiKeyUpdateRequest] | None = None
     # Provider endpoint overrides (e.g. PORTKEY_BASE_URL), same {value, clear} shape.
     provider_endpoints: dict[str, ApiKeyUpdateRequest] | None = None
+    # User-set environment variables ([environment] table), same {value, clear} shape.
+    environment: dict[str, ApiKeyUpdateRequest] | None = None
     # D3: acknowledge the "this key is still in use" warning and clear it regardless.
     force_clear_keys: bool = False
     # Same {value, clear} shape as a provider key; redacted on read (D34).
@@ -72,7 +74,13 @@ def model_requirements(model: str) -> dict:
     required=_PROVIDER_KEYS.get('gemini' if family=='google' else family,
         [family.upper().replace('-','_')+'_API_KEY'] if family and '/' in model else [])
     keys=[{'env':key,'label':settings_service._key_label(key),'configured':bool(current['api_keys'].get(key,{}).get('configured'))} for key in required]
-    return {'model':model,'provider':family,'required_keys':keys,'satisfied':not required or any(k['configured'] for k in keys)}
+    endpoint=None
+    endpoint_env=settings_service.SELF_HOSTED_ENDPOINT.get(family or '')
+    if endpoint_env:
+        value=((current.get('provider_endpoints') or {}).get(endpoint_env) or {}).get('value') or ''
+        endpoint={'env':endpoint_env,'label':settings_service.PROVIDER_ENDPOINT_DETAILS[endpoint_env]['label'],'configured':bool(value)}
+    satisfied=(not required or any(k['configured'] for k in keys)) and (endpoint is None or endpoint['configured'])
+    return {'model':model,'provider':family,'required_keys':keys,'required_endpoint':endpoint,'satisfied':satisfied}
 
 
 class CredentialReference(BaseModel):
@@ -95,7 +103,7 @@ def apply_settings(request:CredentialReference):
             if isinstance(value,dict):
                 for item in value.values():yield from strings(item)
             elif isinstance(value,str) and len(value)>4:yield value
-        for secret in strings({k:v for k,v in values.items() if k in {'api_keys','github_token'}}):message=message.replace(secret,'[redacted]')
+        for secret in strings({k:v for k,v in values.items() if k in {'api_keys','github_token','environment'}}):message=message.replace(secret,'[redacted]')
         raise HTTPException(422,detail={'message':message,'field':getattr(exc,'field',None)}) from exc
     finally:path.unlink(missing_ok=True)
 

@@ -30,3 +30,19 @@ lea_root = "prover"
 # institution's); omit it for Portkey's hosted service. The Settings page edits both.
 # PORTKEY_API_KEY = "..."
 # PORTKEY_BASE_URL = "https://your-gateway.example.edu/v1"
+
+# Self-hosted / OpenAI-compatible servers (Settings → Providers → Self-hosted
+# servers edits these). `hosted_vllm/<model>` needs HOSTED_VLLM_API_BASE and no key;
+# `ollama/<model>` uses OLLAMA_API_BASE; OPENAI_BASE_URL redirects `openai/<model>`.
+# HOSTED_VLLM_API_BASE = "http://localhost:8000/v1"
+# HOSTED_VLLM_API_KEY = "optional"
+# OLLAMA_API_BASE = "http://localhost:11434"
+# OPENAI_BASE_URL = "http://localhost:1234/v1"
+
+# Any other environment variable the backend or LiteLLM reads, instead of
+# exporting it in a shell (Settings → Environment edits this table). Exported
+# for every run; the file wins over the shell. Names the app manages (PATH,
+# LEA_PROCESS_ROLE, …) are ignored.
+# [environment]
+# LEA_JOB_TIMEOUT_SECONDS = "1800"
+# HTTPS_PROXY = "http://proxy.example.edu:3128"

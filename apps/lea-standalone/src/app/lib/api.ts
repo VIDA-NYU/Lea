@@ -1164,6 +1164,10 @@ export interface AppSettings {
   // Provider endpoint overrides (e.g. PORTKEY_BASE_URL): the effective value and
   // whether it was saved in Settings, exported in the shell, or is the default.
   provider_endpoints?: Record<string, ProviderEndpoint>;
+  // Display metadata for each provider endpoint setting (label, model prefix, …).
+  provider_endpoint_details?: Record<string, ProviderEndpointDetails>;
+  // User-set environment variables saved in the config file ([environment] table).
+  environment?: EnvironmentEntry[];
   github_token?: { configured: boolean; last4?: string | null };
   model_options?: { value: string; label: string; family?: string }[];
   [key: string]: unknown;
@@ -1175,6 +1179,24 @@ export interface ProviderEndpoint {
   default: string;
 }
 
+export interface ProviderEndpointDetails {
+  label: string;
+  description: string;
+  provider: string;
+  key_env?: string | null;
+  key_optional?: boolean;
+  model_prefix: string;
+  placeholder: string;
+}
+
+// A user-set environment variable; credential-looking values are presence-only.
+export interface EnvironmentEntry {
+  name: string;
+  secret: boolean;
+  value?: string | null;
+  last4?: string | null;
+}
+
 export interface SettingsUpdate {
   model?: string;
   permission_tier?: PermissionTier;
@@ -1182,6 +1204,7 @@ export interface SettingsUpdate {
   max_spend_usd?: number | null;
   api_keys?: Record<string, { value?: string; clear?: boolean }>;
   provider_endpoints?: Record<string, { value?: string; clear?: boolean }>;
+  environment?: Record<string, { value?: string; clear?: boolean }>;
   github_token?: { value?: string; clear?: boolean };
 }
 
@@ -1206,6 +1229,8 @@ export interface ModelRequirements {
   model: string;
   provider?: string | null;
   required_keys: ModelRequiredKey[];
+  // A self-hosted provider (hosted_vllm/…) needs its server URL rather than a key.
+  required_endpoint?: { env: string; label: string; configured: boolean } | null;
   satisfied: boolean;
 }
 

@@ -55,14 +55,14 @@ the Settings pane. [LiteLLM's provider pages](https://docs.litellm.ai/docs/provi
 give the model ID and env var for the rest — DeepSeek, for example, is
 `deepseek/deepseek-v4-flash` with `DEEPSEEK_API_KEY`.
 
-You can even use open-weight models you host yourself. For example, for a model
-served by vLLM, point Lea at your server on the way in:
-
-```sh
-export HOSTED_VLLM_API_BASE=http://localhost:<PORT>/v1 && ./start-dev.sh
-```
-
-Then add the model `hosted_vllm/<your-model>` and its key in the Settings pane.
+You can even use open-weight models you host yourself. In **Settings →
+Providers → Self-hosted servers**, enter your server's URL (for example
+`http://localhost:8000/v1` for vLLM, SGLang, TGI, LM Studio or a LiteLLM proxy;
+an Ollama URL; or a different base URL for `openai/` models), then pick the
+model as `hosted_vllm/<served model name>` (or `ollama/<model>`). A key is
+optional for self-hosted servers. Any other environment variable the backend
+reads (`LEA_*` tunables, proxies, a provider's extra settings) can be saved in
+**Settings → Environment** instead of being exported in a shell.
 
 Then pick one of the two paths below.
 

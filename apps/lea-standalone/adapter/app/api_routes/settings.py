@@ -20,6 +20,8 @@ class SettingsRequest(BaseModel):
     max_spend_usd: float | None = None
     api_keys: dict[str, ApiKeyUpdateRequest] | None = None
     provider_endpoints: dict[str, ApiKeyUpdateRequest] | None = None
+    # User-set environment variables ([environment] table), same {value, clear} shape.
+    environment: dict[str, ApiKeyUpdateRequest] | None = None
     force_clear_keys: bool = False
     github_token: ApiKeyUpdateRequest | None = None
 
@@ -48,7 +50,20 @@ def model_requirements(model: str) -> dict:
     from ..admission_policy import _PROVIDER_KEYS
     required = _PROVIDER_KEYS.get('gemini' if family == 'google' else family, [family.upper().replace('-', '_') + '_API_KEY'] if family and '/' in model else [])
     keys = [{'env': key, 'label': settings_service._key_label(key), 'configured': bool(current['api_keys'].get(key, {}).get('configured'))} for key in required]
-    return {'model': model, 'provider': family, 'required_keys': keys, 'satisfied': not required or any((k['configured'] for k in keys))}
+    endpoint = _required_endpoint(current, family)
+    satisfied = (not required or any((k['configured'] for k in keys))) and (endpoint is None or endpoint['configured'])
+    return {'model': model, 'provider': family, 'required_keys': keys, 'required_endpoint': endpoint, 'satisfied': satisfied}
+
+
+def _required_endpoint(current: dict, family: str | None) -> dict | None:
+    """A self-hosted provider needs its server URL rather than a key."""
+    from ..admission_policy import _SELF_HOSTED_ENDPOINT
+    env = _SELF_HOSTED_ENDPOINT.get(family or '')
+    if not env:
+        return None
+    value = ((current.get('provider_endpoints') or {}).get(env) or {}).get('value') or ''
+    label = ((current.get('provider_endpoint_details') or {}).get(env) or {}).get('label') or env
+    return {'env': env, 'label': label, 'configured': bool(value)}
 
 class CredentialReference(BaseModel):
     ticket: str

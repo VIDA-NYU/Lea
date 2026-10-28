@@ -24,7 +24,10 @@ The first launch provisions everything Lea needs into
 | Starting Lea | database bootstrap, worker, API, Overleaf companion | seconds |
 
 Later launches take seconds. Then add your provider key in **Settings** (⌘,)
-and start proving. Git must be installed (macOS offers the Command Line Tools
+and start proving. Self-hosted models (vLLM, Ollama, any OpenAI-compatible
+server) and any environment variable the backend reads are set there too, under
+**Providers → Self-hosted servers** and **Environment**; nothing needs
+exporting. Git must be installed (macOS offers the Command Line Tools
 automatically the first time it is needed).
 
 Your data lives outside the app and survives updates and reinstalls:

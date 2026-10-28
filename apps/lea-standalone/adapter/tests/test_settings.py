@@ -646,11 +646,13 @@ def test_update_settings_rejects_a_malformed_gateway_url_or_unknown_endpoint(tmp
         )
     assert exc.value.field == "provider_endpoints.PORTKEY_BASE_URL"
 
+    # OPENAI_BASE_URL, HOSTED_VLLM_API_BASE and OLLAMA_API_BASE are recognised now;
+    # a provider Settings has no endpoint entry for is still refused.
     with pytest.raises(settings_service.SettingsValidationError) as exc:
         settings_service.update_settings(
-            {"provider_endpoints": {"OPENAI_BASE_URL": {"value": "https://x.example/v1"}}}, config_path,
+            {"provider_endpoints": {"MISTRAL_API_BASE": {"value": "https://x.example/v1"}}}, config_path,
         )
-    assert exc.value.field == "provider_endpoints.OPENAI_BASE_URL"
+    assert exc.value.field == "provider_endpoints.MISTRAL_API_BASE"
     assert config_path.read_text() == ""
 
 
@@ -719,3 +721,156 @@ def test_a_portkey_key_the_gateway_rejects_is_not_saved(tmp_path, monkeypatch):
     assert "Invalid API Key" in str(exc.value)
     assert exc.value.field == "api_keys.portkey"
     assert "PORTKEY_API_KEY" not in config_path.read_text()
+
+
+# ── Self-hosted servers and user-set environment variables ─────────────────────
+# `hosted_vllm/<model>` is LiteLLM's route for any OpenAI-compatible server (vLLM,
+# SGLang, TGI, LM Studio, a LiteLLM proxy): it needs a server URL, not a key. The
+# URL and any other variable the backend reads can be saved in Settings instead of
+# exported in a shell.
+
+VLLM_MODEL = "hosted_vllm/qwen3-32b"
+
+
+def test_hosted_vllm_models_need_a_server_url_and_no_key(tmp_path, monkeypatch):
+    config_path = _blank_config(tmp_path)
+    for name in ("HOSTED_VLLM_API_BASE", "HOSTED_VLLM_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    requirements = settings_service.model_requirements(VLLM_MODEL, config_path)
+    assert requirements["provider"] == "hosted_vllm"
+    assert requirements["required_keys"] == []
+    assert requirements["required_endpoint"] == {
+        "env": "HOSTED_VLLM_API_BASE", "label": "vLLM / OpenAI-compatible server", "configured": False,
+    }
+    assert requirements["satisfied"] is False
+
+    config_path.write_text('HOSTED_VLLM_API_BASE = "http://gpu-box.local:8000/v1"\n')
+    assert settings_service.model_requirements(VLLM_MODEL, config_path)["satisfied"] is True
+
+    # A URL exported in the shell counts too, like a key would.
+    config_path.write_text("")
+    monkeypatch.setenv("HOSTED_VLLM_API_BASE", "http://localhost:8000/v1")
+    assert settings_service.model_requirements(VLLM_MODEL, config_path)["satisfied"] is True
+
+
+def test_update_settings_saves_a_vllm_server_then_accepts_its_models_without_a_key(tmp_path, monkeypatch):
+    _init_db(tmp_path, monkeypatch)
+    config_path = _blank_config(tmp_path)
+    for name in ("HOSTED_VLLM_API_BASE", "HOSTED_VLLM_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(settings_service.SettingsValidationError) as refused:
+        settings_service.update_settings({"model": VLLM_MODEL}, config_path)
+    assert refused.value.field == "provider_endpoints.HOSTED_VLLM_API_BASE"
+
+    payload = settings_service.update_settings(
+        {"provider_endpoints": {"HOSTED_VLLM_API_BASE": {"value": "http://localhost:8000/v1/"}}}, config_path,
+    )
+    assert payload["provider_endpoints"]["HOSTED_VLLM_API_BASE"] == {
+        "value": "http://localhost:8000/v1", "source": "config", "default": "",
+    }
+    assert payload["provider_endpoint_details"]["HOSTED_VLLM_API_BASE"]["model_prefix"] == "hosted_vllm/"
+    from app.config import load_config
+    load_config(config_path)
+    assert os.environ["HOSTED_VLLM_API_BASE"] == "http://localhost:8000/v1"
+
+    # Saving the URL and the model together works as well.
+    payload = settings_service.update_settings({"model": VLLM_MODEL}, config_path)
+    assert payload["model"] == VLLM_MODEL
+
+
+def test_openai_base_url_is_exported_under_both_names_and_retracted(tmp_path, monkeypatch):
+    _init_db(tmp_path, monkeypatch)
+    config_path = _blank_config(tmp_path)
+    for name in ("OPENAI_BASE_URL", "OPENAI_API_BASE"):
+        monkeypatch.delenv(name, raising=False)
+    from app.config import load_config
+
+    settings_service.update_settings(
+        {"provider_endpoints": {"OPENAI_BASE_URL": {"value": "http://localhost:1234/v1"}}}, config_path,
+    )
+    load_config(config_path)
+    assert os.environ["OPENAI_BASE_URL"] == "http://localhost:1234/v1"
+    assert os.environ["OPENAI_API_BASE"] == "http://localhost:1234/v1"
+
+    settings_service.update_settings({"provider_endpoints": {"OPENAI_BASE_URL": {"clear": True}}}, config_path)
+    load_config(config_path)
+    assert "OPENAI_BASE_URL" not in os.environ
+    assert "OPENAI_API_BASE" not in os.environ
+
+
+def test_environment_variables_are_saved_masked_exported_and_cleared(tmp_path, monkeypatch):
+    _init_db(tmp_path, monkeypatch)
+    config_path = _blank_config(tmp_path)
+    for name in ("LEA_JOB_TIMEOUT_SECONDS", "MY_SERVICE_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    from app.config import load_config
+
+    payload = settings_service.update_settings(
+        {"environment": {
+            "LEA_JOB_TIMEOUT_SECONDS": {"value": " 1800 "},
+            "MY_SERVICE_TOKEN": {"value": "tok-secret-9876"},
+        }},
+        config_path,
+    )
+    entries = {entry["name"]: entry for entry in payload["environment"]}
+    assert entries["LEA_JOB_TIMEOUT_SECONDS"] == {
+        "name": "LEA_JOB_TIMEOUT_SECONDS", "secret": False, "value": "1800", "last4": None,
+    }
+    # A credential-looking name is presence-only, like a provider key.
+    assert entries["MY_SERVICE_TOKEN"] == {"name": "MY_SERVICE_TOKEN", "secret": True, "value": None, "last4": "9876"}
+    text = config_path.read_text()
+    assert "[environment]" in text and 'LEA_JOB_TIMEOUT_SECONDS = "1800"' in text
+    load_config(config_path)
+    assert os.environ["LEA_JOB_TIMEOUT_SECONDS"] == "1800"
+    assert os.environ["MY_SERVICE_TOKEN"] == "tok-secret-9876"
+
+    # Root settings written afterwards stay at the root, not inside the table.
+    settings_service.update_settings({"max_turns": 7}, config_path)
+    import tomllib
+    data = tomllib.loads(config_path.read_text())
+    assert data["max_turns"] == 7
+    assert "max_turns" not in data["environment"]
+
+    payload = settings_service.update_settings({"environment": {"MY_SERVICE_TOKEN": {"clear": True}}}, config_path)
+    assert [entry["name"] for entry in payload["environment"]] == ["LEA_JOB_TIMEOUT_SECONDS"]
+    load_config(config_path)
+    assert "MY_SERVICE_TOKEN" not in os.environ
+    assert os.environ["LEA_JOB_TIMEOUT_SECONDS"] == "1800"
+
+
+@pytest.mark.parametrize("name", [
+    "PATH", "LEA_PROCESS_ROLE", "DYLD_LIBRARY_PATH", "PYTHONPATH", "lowercase",
+    "OPENAI_API_KEY", "PORTKEY_BASE_URL", "OPENAI_API_BASE",
+])
+def test_reserved_or_misplaced_environment_names_are_refused(tmp_path, monkeypatch, name):
+    _init_db(tmp_path, monkeypatch)
+    config_path = _blank_config(tmp_path)
+
+    with pytest.raises(settings_service.SettingsValidationError) as refused:
+        settings_service.update_settings({"environment": {name: {"value": "x"}}}, config_path)
+    assert refused.value.field == f"environment.{name}"
+    assert "[environment]" not in config_path.read_text()
+
+
+def test_the_loader_ignores_a_reserved_name_written_by_hand(tmp_path, monkeypatch):
+    config_path = _blank_config(tmp_path)
+    original_path = os.environ["PATH"]
+    config_path.write_text('[environment]\nPATH = "/evil"\nLEA_PROCESS_ROLE = "api"\nSAFE_ONE = "ok"\n')
+    from app.config import load_config
+    load_config(config_path)
+    assert os.environ["PATH"] == original_path
+    assert os.environ.get("SAFE_ONE") == "ok"
+
+
+def test_clearing_the_last_environment_variable_removes_the_table_header(tmp_path, monkeypatch):
+    _init_db(tmp_path, monkeypatch)
+    config_path = _blank_config(tmp_path)
+    config_path.write_text('model = "gemini/gemini-3.1-pro-preview"\n')
+    settings_service.update_settings({"environment": {"ONLY_ONE": {"value": "1"}}}, config_path)
+    assert "[environment]" in config_path.read_text()
+    settings_service.update_settings({"environment": {"ONLY_ONE": {"clear": True}}}, config_path)
+    text = config_path.read_text()
+    assert "[environment]" not in text
+    assert text == 'model = "gemini/gemini-3.1-pro-preview"\n'

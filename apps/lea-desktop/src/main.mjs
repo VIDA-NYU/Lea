@@ -172,6 +172,10 @@ async function main() {
   }
 
   log(`backend ${runtime.mode}; ui ${runtime.uiUrl}; api ${runtime.apiUrl}`);
+  // The UI origin is the same across app versions (127.0.0.1:8001); drop the
+  // renderer's HTTP cache so an updated backend never serves against stale UI
+  // code the previous version left behind.
+  await win?.webContents.session.clearCache();
   if (win) await win.loadURL(runtime.uiUrl);
   for (const link of pendingDeepLinks.splice(0)) handleDeepLink(link);
   maybeSmokeTest();
@@ -350,6 +354,20 @@ function maybeSmokeTest() {
   // LEA_DESKTOP_SCREENSHOT_VIEW=settings exercises the native-menu → UI bridge
   // before the capture.
   const view = process.env.LEA_DESKTOP_SCREENSHOT_VIEW;
+  // LEA_DESKTOP_SCREENSHOT_HEIGHT=<px> makes the window tall enough to capture a
+  // long page in one image.
+  const height = Number(process.env.LEA_DESKTOP_SCREENSHOT_HEIGHT || 0);
+  if (height > 0) win.setSize(win.getBounds().width, height);
+  // LEA_DESKTOP_SCREENSHOT_SCROLL=<px> scrolls the page before the capture.
+  const scroll = Number(process.env.LEA_DESKTOP_SCREENSHOT_SCROLL || 0);
+  if (scroll > 0) {
+    setTimeout(() => {
+      win?.webContents.executeJavaScript(
+        `(() => { const el = document.scrollingElement || document.documentElement; el.scrollTo(0, ${scroll});
+          for (const node of document.querySelectorAll('*')) { if (node.scrollHeight > node.clientHeight + 50) node.scrollTo(0, ${scroll}); } })()`,
+      ).catch(() => {});
+    }, Math.max(500, delay - 1000));
+  }
   win.webContents.executeJavaScript('typeof window.leaDesktop + "/" + typeof window.leaDesktop?.onNavigate')
     .then((result) => log(`bridge in page: ${result}`))
     .catch((error) => log(`bridge check failed: ${error.message}`));

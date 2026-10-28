@@ -24,7 +24,10 @@ def spend_limit_reached(limit):
 def _key_label(name):
     return {'OPENAI_API_KEY':'OpenAI','ANTHROPIC_API_KEY':'Anthropic','GOOGLE_API_KEY':'Google','PORTKEY_API_KEY':'Portkey'}.get(name,name)
 
-_PROVIDER_KEYS={'openai':['OPENAI_API_KEY'],'anthropic':['ANTHROPIC_API_KEY'],'gemini':['GOOGLE_API_KEY'],'portkey':['PORTKEY_API_KEY']}
+_PROVIDER_KEYS={'openai':['OPENAI_API_KEY'],'anthropic':['ANTHROPIC_API_KEY'],'gemini':['GOOGLE_API_KEY'],'portkey':['PORTKEY_API_KEY'],
+    'hosted_vllm':[],'ollama':[]}
+# Providers that need a server URL (a provider endpoint setting) rather than a key.
+_SELF_HOSTED_ENDPOINT={'hosted_vllm':'HOSTED_VLLM_API_BASE'}
 
 
 def admission_enabled():

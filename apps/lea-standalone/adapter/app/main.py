@@ -175,6 +175,7 @@ app.include_router(formalize_batch_reports.router)
 _WEB_DIST = os.environ.get("LEA_WEB_DIST")
 if _WEB_DIST and Path(_WEB_DIST).is_dir():
     _web_root = Path(_WEB_DIST).resolve()
+    _NO_CACHE = {"Cache-Control": "no-cache"}
 
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
@@ -184,6 +185,9 @@ if _WEB_DIST and Path(_WEB_DIST).is_dir():
         # Serve a real built asset when it exists and stays inside the dist root.
         candidate = (_web_root / full_path).resolve()
         if full_path and candidate.is_relative_to(_web_root) and candidate.is_file():
-            return FileResponse(candidate)
-        # Otherwise hand back index.html for the SPA / client-side routing.
-        return FileResponse(_web_root / "index.html")
+            return FileResponse(candidate, headers=_NO_CACHE if candidate.name == "index.html" else None)
+        # Otherwise hand back index.html for the SPA / client-side routing. Never
+        # cached: it names the hashed bundle, and a browser (or the desktop app's
+        # renderer) that reused a stale copy after an update would load old code
+        # against the new backend.
+        return FileResponse(_web_root / "index.html", headers=_NO_CACHE)

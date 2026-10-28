@@ -111,6 +111,9 @@ _PROVIDER_KEYS: dict[str, tuple[str, ...]] = {
     "bedrock": (),
     "sagemaker": (),
     "ollama": (),
+    # Any OpenAI-compatible server (vLLM, SGLang, TGI, LM Studio, a LiteLLM proxy):
+    # the URL is required (Settings checks it), a key is optional.
+    "hosted_vllm": (),
 }
 
 
