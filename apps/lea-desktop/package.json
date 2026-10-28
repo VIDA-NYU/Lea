@@ -1,0 +1,21 @@
+{
+  "name": "lea-desktop",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Lea as a native desktop application (proof of concept).",
+  "type": "module",
+  "main": "src/main.mjs",
+  "scripts": {
+    "start": "node scripts/launch.mjs",
+    "start:attach": "LEA_DESKTOP_ATTACH=1 node scripts/launch.mjs",
+    "start:spawn": "LEA_DESKTOP_ATTACH=0 node scripts/launch.mjs",
+    "smoke": "LEA_DESKTOP_SCREENSHOT=${LEA_DESKTOP_SCREENSHOT:-/tmp/lea-desktop-smoke.png} node scripts/launch.mjs",
+    "icon": "python3 scripts/make-icon.py"
+  },
+  "devDependencies": {
+    "electron": "45.1.0"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

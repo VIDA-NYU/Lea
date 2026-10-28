@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Lea</title>
+  <style>
+    :root {
+      --bg: #f7f7f5;
+      --fg: #1b1f24;
+      --muted: #6b7280;
+      --bar: #e5e7eb;
+      --accent-a: #2f5aa8;
+      --accent-b: #16733d;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #111318; --fg: #e8eaee; --muted: #9aa3b2; --bar: #272b33; }
+    }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      display: grid; place-items: center;
+      -webkit-user-select: none; user-select: none;
+      -webkit-app-region: drag;
+    }
+    main { width: min(420px, 80vw); text-align: center; }
+    picture img { width: 160px; height: auto; display: block; margin: 0 auto 28px; }
+    .bar { height: 3px; border-radius: 2px; background: var(--bar); overflow: hidden; margin: 0 auto 18px; }
+    .bar i {
+      display: block; height: 100%; width: 40%;
+      background: linear-gradient(90deg, var(--accent-a), var(--accent-b));
+      animation: slide 1.4s ease-in-out infinite;
+    }
+    @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
+    .bar.done i { animation: none; width: 100%; }
+    .bar.error i { animation: none; width: 100%; background: #b42318; }
+    #status { color: var(--muted); min-height: 3em; margin: 0; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <main>
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="../../../public/assets/img/lea-wordmark-dark.svg">
+      <img src="../../../public/assets/img/lea-wordmark-light.svg" alt="Lea">
+    </picture>
+    <div class="bar" id="bar"><i></i></div>
+    <p id="status">Starting…</p>
+  </main>
+  <script>
+    const status = document.getElementById('status');
+    const bar = document.getElementById('bar');
+    window.leaDesktop?.onStatus?.((update) => {
+      status.textContent = update?.message || '';
+      bar.className = 'bar' + (update?.step === 'error' ? ' error' : update?.step === 'loading' ? ' done' : '');
+    });
+  </script>
+</body>
+</html>

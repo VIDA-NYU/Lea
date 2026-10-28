@@ -29,7 +29,7 @@ import { useSessions } from './stores/sessions';
 import { useProjects } from './stores/projects';
 import { useModel } from './stores/model';
 import { useProofStream } from './hooks/useProofStream';
-import { useLayout } from './hooks/useLayout';
+import { useLayout, type View } from './hooks/useLayout';
 import {
   type ApprovalDecision,
   type ChatMessage,
@@ -57,6 +57,9 @@ import {
 } from './lib/api';
 
 const SELECTED_SESSION_KEY = 'lea:selectedSessionId';
+
+// Views the desktop shell's menu may jump to without a selected session/project.
+const DESKTOP_MENU_VIEWS: ReadonlySet<string> = new Set(['main', 'stats', 'settings', 'projects-hub']);
 
 export default function App() {
   // Session list + selection now live in the sessions store (R3).
@@ -131,6 +134,11 @@ export default function App() {
     useProjects.getState().invalidateNavigation();
     setLayoutView(next);
   };
+  // Desktop shell (apps/lea-desktop): native menu items such as Settings… (⌘,)
+  // navigate the UI through the preload bridge. No-op in a browser.
+  useEffect(() => window.leaDesktop?.onNavigate?.(({ view: next }) => {
+    if (DESKTOP_MENU_VIEWS.has(next)) setView(next as View);
+  }), []);
   // editedPath (M20 canvas-edit nudge) now lives in the proofSession store
   // (v2.0.1 R1a): App sets it; ChatThread reads it straight from the store.
   const setEditedPath = useProofSession((s) => s.setEditedPath);
