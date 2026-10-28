@@ -139,7 +139,11 @@ and quits. Failures never block on a dialog in this mode.
 - **"does not provide an export named 'app'"** when running the Electron binary
   by hand: `ELECTRON_RUN_AS_NODE=1` is set in your environment (VS Code's
   extension host sets it). `npm start` goes through `scripts/launch.mjs`, which
-  strips it.
+  strips it. The same variable makes a packaged app launched with `open -a`
+  from such a shell exit within seconds and log
+  `codesign_util.cc ... task_name_for_pid`, because `open` forwards the caller's
+  environment; use `env -u ELECTRON_RUN_AS_NODE open -a Lea`. Finder launches
+  are unaffected.
 - **Provisioning failed.** The splash offers **Open logs**; the step that
   failed is named there. Mathlib and Python steps need network. Deleting
   `~/Library/Application Support/Lea/state.json` forces the Mathlib and
