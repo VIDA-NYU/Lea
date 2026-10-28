@@ -106,6 +106,9 @@ steps from `docker/prepare-mathlib.sh`, and builds SafeVerify with its
 with `LEA_SHARED_DATA_DIR`, `LEA_CONFIG_FILE` and `LEA_ROOT` pointing at app
 support. Both Node children (the worker's private companion worker and the
 companion server) run on the app's own binary via `ELECTRON_RUN_AS_NODE`.
+The four shared modules the shell needs (`process-supervisor`, `service-env`,
+`env`, `dev-stack-preflight`) are imported live from `<repo>/scripts` in dev
+and from `Contents/Resources/shared` when packaged.
 
 ### Smoke test
 
@@ -142,6 +145,13 @@ and quits. Failures never block on a dialog in this mode.
   `~/Library/Application Support/Lea/state.json` forces the Mathlib and
   SafeVerify checks to run again; deleting the whole folder starts from scratch.
 - **Port 8001 busy but no healthy adapter:** `lsof -nP -iTCP:8001 -sTCP:LISTEN`.
+- **A packaged app shows "A JavaScript error occurred in the main process"**
+  instead of logging: that is how Electron reports an uncaught startup error
+  when packaged. Run `release/mac-arm64/Lea.app/Contents/MacOS/Lea` from a
+  terminal to see it on stderr.
+- **Screenshot smoke test fails with `UnknownVizError`:** the window could not
+  be rendered (locked or sleeping display, or hidden behind a modal). Rerun with
+  the screen awake.
 
 ## Not yet
 
