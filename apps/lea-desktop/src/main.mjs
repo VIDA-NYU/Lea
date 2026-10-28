@@ -21,7 +21,14 @@ const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
 // Smoke-test mode (LEA_DESKTOP_SCREENSHOT set): never block on a dialog.
 const SMOKE = Boolean(process.env.LEA_DESKTOP_SCREENSHOT);
 
-const log = (...args) => console.log('[lea-desktop]', ...args);
+// Main-process log: stdout (visible under `npm start`) plus
+// ~/Library/Logs/Lea/lea-desktop.log, since a Finder launch has no stdout.
+let logFile = null;
+const log = (...args) => {
+  const line = `[lea-desktop] ${args.join(' ')}`;
+  console.log(line);
+  logFile?.write(`${new Date().toISOString()} ${line}\n`);
+};
 
 let win = null;
 let backend = null;
@@ -84,6 +91,9 @@ async function main() {
 
   logDir = app.getPath('logs');
   fs.mkdirSync(logDir, { recursive: true });
+  logFile = fs.createWriteStream(path.join(logDir, 'lea-desktop.log'), { flags: 'a' });
+  log(`Lea ${app.getVersion()} starting (${app.isPackaged ? 'packaged' : 'dev'}, pid ${process.pid})`);
+  app.on('will-quit', () => log('quitting'));
   if (process.platform === 'darwin' && fs.existsSync(ICON_PNG)) {
     app.dock.setIcon(nativeImage.createFromPath(ICON_PNG));
   }
