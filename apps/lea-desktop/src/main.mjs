@@ -271,6 +271,9 @@ function maybeSmokeTest() {
   // LEA_DESKTOP_SCREENSHOT_VIEW=settings exercises the native-menu → UI bridge
   // before the capture.
   const view = process.env.LEA_DESKTOP_SCREENSHOT_VIEW;
+  win.webContents.executeJavaScript('typeof window.leaDesktop + "/" + typeof window.leaDesktop?.onNavigate')
+    .then((result) => log(`bridge in page: ${result}`))
+    .catch((error) => log(`bridge check failed: ${error.message}`));
   if (view) setTimeout(() => navigate(view), Math.max(500, delay - 2000));
   setTimeout(async () => {
     try {
