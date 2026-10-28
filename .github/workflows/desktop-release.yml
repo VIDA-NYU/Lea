@@ -115,7 +115,8 @@ jobs:
           PY
           ls -la artifacts
 
-      - uses: softprops/action-gh-release@v2
+      - name: Versioned release
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             artifacts/*.dmg
@@ -123,3 +124,26 @@ jobs:
             artifacts/latest-mac.yml
             artifacts/*.blockmap
           generate_release_notes: true
+
+      # The app's updater reads the rolling `desktop-latest` release
+      # (electron-builder.yml `publish.url`), kept apart from the repository's
+      # other releases. Move the tag and replace its assets.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Move the desktop-latest tag
+        run: |
+          git tag -f desktop-latest "$GITHUB_SHA"
+          git push -f origin desktop-latest
+      - name: Rolling desktop-latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-latest
+          name: Lea Desktop (latest)
+          body: Rolling release used by the app's updater. See the versioned desktop-v* release for notes.
+          make_latest: false
+          files: |
+            artifacts/*.dmg
+            artifacts/*.zip
+            artifacts/latest-mac.yml
+            artifacts/*.blockmap

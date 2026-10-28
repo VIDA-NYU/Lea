@@ -61,8 +61,10 @@ dmg:
       y: 180
       type: link
       path: /Applications
+# The updater reads latest-mac.yml from the rolling `desktop-latest` release,
+# which the desktop-release workflow refreshes on every desktop-v* tag. A
+# generic URL rather than the GitHub provider, because the repository's
+# "latest release" is not necessarily a desktop build.
 publish:
-  provider: github
-  owner: VIDA-NYU
-  repo: Lea
-  releaseType: release
+  provider: generic
+  url: https://github.com/VIDA-NYU/Lea/releases/download/desktop-latest

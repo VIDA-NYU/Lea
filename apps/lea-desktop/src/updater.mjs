@@ -1,6 +1,8 @@
-// Auto-update via electron-updater against GitHub Releases (latest-mac.yml).
-// Only active in packaged builds. macOS refuses to apply updates to an unsigned
-// app, so until builds are signed this logs the failure and stays quiet.
+// Auto-update via electron-updater. The feed is the rolling `desktop-latest`
+// GitHub release (see electron-builder.yml `publish` and the desktop-release
+// workflow), kept separate from the repository's other releases. Only active in
+// packaged builds. macOS refuses to apply updates to an unsigned app, so until
+// builds are signed this logs the failure once and stays quiet.
 import { app, dialog } from 'electron';
 import electronUpdater from 'electron-updater';
 
@@ -18,7 +20,13 @@ export function setupUpdater({ log }) {
     };
   }
 
-  autoUpdater.logger = { info: log, warn: log, error: log, debug: () => {} };
+  const terse = (value) => String(value?.message ?? value).split('\n')[0].slice(0, 200);
+  autoUpdater.logger = {
+    info: (m) => log(`updater: ${terse(m)}`),
+    warn: (m) => log(`updater: ${terse(m)}`),
+    error: () => {}, // reported once by check() below
+    debug: () => {},
+  };
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
@@ -43,9 +51,9 @@ export function setupUpdater({ log }) {
         await dialog.showMessageBox({ type: 'info', title: 'Updates', message: `Lea ${latest} is the latest version.` });
       }
     } catch (error) {
-      log(`update check failed: ${error.message}`);
+      log(`updater: check failed: ${terse(error)}`);
       if (interactive) {
-        await dialog.showMessageBox({ type: 'warning', title: 'Updates', message: 'Could not check for updates.', detail: error.message });
+        await dialog.showMessageBox({ type: 'warning', title: 'Updates', message: 'Could not check for updates.', detail: terse(error) });
       }
     }
   }
