@@ -249,11 +249,13 @@ function sendStatus(status) {
 }
 
 function navigate(view) {
+  log(`navigate → ${view}`);
   win?.webContents.send('lea:navigate', { view });
   focusWindow();
 }
 
-// lea://session/<id> · lea://formalization/<id> · lea://settings · lea://open[?session=..&formalization=..]
+// lea://session/<id> · lea://formalization/<id> · lea://settings · lea://stats ·
+// lea://open[?session=..&formalization=..]
 function handleDeepLink(raw) {
   let url;
   try { url = new URL(raw); } catch { return; }
@@ -261,11 +263,12 @@ function handleDeepLink(raw) {
   if (!runtime) { pendingDeepLinks.push(raw); return; }
   const kind = url.hostname;
   const id = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
+  log(`deep link ${raw}`);
   focusWindow();
   const target = new URL(runtime.uiUrl);
   if (kind === 'session' && id) target.searchParams.set('session', id);
   else if (kind === 'formalization' && id) target.searchParams.set('formalization', id);
-  else if (kind === 'settings') { navigate('settings'); return; }
+  else if (kind === 'settings' || kind === 'stats') { navigate(kind); return; }
   else if (kind === 'open') {
     for (const key of ['session', 'formalization']) {
       const value = url.searchParams.get(key);

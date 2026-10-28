@@ -27,6 +27,15 @@ extraResources:
     to: backend
   - from: build/bin/${arch}/uv
     to: bin/uv
+  # The repo's shared supervisor modules that src/backend.mjs imports
+  # (live from <repo>/scripts in dev).
+  - from: ../../scripts
+    to: shared
+    filter:
+      - process-supervisor.mjs
+      - service-env.mjs
+      - env.mjs
+      - dev-stack-preflight.mjs
 protocols:
   - name: Lea
     schemes: [lea]

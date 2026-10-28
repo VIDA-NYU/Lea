@@ -14,10 +14,21 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createProcessSupervisor } from '../../../scripts/process-supervisor.mjs';
-import { serviceEnvironment } from '../../../scripts/service-env.mjs';
-import { loadRootEnv } from '../../../scripts/env.mjs';
-import { portAvailable } from '../../../scripts/dev-stack-preflight.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { app } from 'electron';
+
+// The repo's shared supervisor modules. In dev they are imported live from
+// <repo>/scripts; a packaged app carries copies under Resources/shared
+// (electron-builder.yml extraResources), since the asar cannot reach outside
+// the app directory.
+const SHARED_DIR = app.isPackaged
+  ? path.join(process.resourcesPath, 'shared')
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts');
+const shared = (name) => import(pathToFileURL(path.join(SHARED_DIR, name)).href);
+const { createProcessSupervisor } = await shared('process-supervisor.mjs');
+const { serviceEnvironment } = await shared('service-env.mjs');
+const { loadRootEnv } = await shared('env.mjs');
+const { portAvailable } = await shared('dev-stack-preflight.mjs');
 
 export const API_PORT = 8001;
 export const VITE_PORT = 5173;
