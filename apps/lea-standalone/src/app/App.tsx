@@ -1,5 +1,5 @@
 import { observeSessionList } from './lib/sessionObserver.mjs';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatThread } from './components/ChatThread';
 import { Canvas, type CheckOutcome } from './components/Canvas';
@@ -16,12 +16,13 @@ import { ProjectsHub } from './components/ProjectsHub';
 import { NewProjectDialog } from './components/NewProjectDialog';
 import { SearchOverlay } from './components/SearchOverlay';
 import { Home } from './components/shell/Home';
-import { ProjectHome } from './components/shell/ProjectHome';
+import { ProjectHome, type ProveMode } from './components/shell/ProjectHome';
 import { QuickOpen } from './components/files/QuickOpen';
 import { BLUEPRINT_PATH, useWorkbench } from './stores/workbench';
 import { sortCodeSteps } from './lib/timeline.mjs';
 import { inferComposerFormalizationScope } from './lib/formalizations.mjs';
 import { createChatSubmission, createCheckpointSubmission } from './lib/overleafHandoff.mjs';
+import { projectTitleFromStatement, proveNodeMessage } from './lib/shellModel.js';
 import { parseSlashCommand } from './lib/slashCommands.js';
 import { runSlashCommand } from './lib/slashCommandRunner';
 import {
@@ -45,7 +46,10 @@ import {
   type Formalization,
   type EditorDraftBase,
   type FileWriteResult,
+  type GraphNode,
+  type Project,
   createRun,
+  createSessionInProject,
   getFormalization,
   listProjectFormalizations,
   interruptRun,
@@ -78,6 +82,8 @@ export default function App() {
   const openProject = useProjects((s) => s.openProject);
   const closeProject = useProjects((s) => s.closeProject);
   const createAndOpenProject = useProjects((s) => s.createAndOpen);
+  // Redesign (shell): the project whose home is showing while its detail loads.
+  const selectedProjectId = useProjects((s) => s.selectedProjectId);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   // F9: ⌘K global search overlay — the only path to a sidebar-hidden project session.
   const [searchOpen, setSearchOpen] = useState(false);
@@ -218,7 +224,7 @@ export default function App() {
         },
         openProject: async (id: string) => {
           const project = await openProject(id);
-          if (project) setView('project');
+          if (project) setView('project-home');
           return project;
         },
         onRestored: () => {
@@ -231,6 +237,10 @@ export default function App() {
           );
         },
       });
+      // Project first: a restored session opens the workbench; nothing restored
+      // (and no project deep-link) lands on the launch screen.
+      if (useSessions.getState().selectedSessionId) setView('main');
+      else if (!useProjects.getState().selectedProjectId) setView('home');
     };
     if(restorationStarted.current)return;
     restorationStarted.current=true;
@@ -266,24 +276,12 @@ export default function App() {
     return detail;
   };
 
-  // Open a project's window (F1/F2). Loading its detail also sets it as the
-  // selected project (sidebar highlight); the view switch reveals the window.
-  const openProjectWindow = (projectId: string) => {
-    openProject(projectId)
-      .then((detail) => { if (detail) setView('project'); })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
-  };
-
+  // Redesign (shell): creating a project lands on its home; the legacy project
+  // window stays reachable from that page's ⋯ menu (view 'project').
   const handleCreateProject = async (title: string, description?: string) => {
     const project = await createAndOpenProject(title, description);
     setNewProjectOpen(false);
-    if (project) setView('project');
-  };
-
-  // Leaving a project window back to the loose-chat view.
-  const leaveProject = () => {
-    closeProject();
-    setView('main');
+    if (project) setView('project-home');
   };
 
   // F3: start a proof inside the open project — create a project session (working
@@ -326,6 +324,160 @@ export default function App() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to start the proof.');
     }
+  };
+
+  // ── Redesign (shell package): project-first launches ──────────────────────
+  // The run-start mechanics of handleStartProjectProof, lifted so the launch
+  // screen and the project home can start a run in a session they created
+  // (createSessionInProject) with a first message that is already known.
+  const launchProjectRun = async (
+    project: Project,
+    sessionId: string,
+    content: string,
+    scope: {
+      focus_formalization_id?: string;
+      new_formalization?: { display_title: string; kind?: string; declaration_name?: string; statement?: string };
+    },
+  ) => {
+    resetForNewSession(); // clear the proof view for the fresh session
+    const run = await createRun(content, sessionId, useModel.getState().model, {
+      project_slug: project.slug,
+      project_title: project.title,
+      project_namespace: project.namespace,
+      ...scope,
+    });
+    setSelectedSessionId(run.session_id);
+    setCurrentRunId(run.run_id);
+    setRunStatus('running');
+    setRunStatusById((prev) => ({ ...prev, [run.run_id]: 'running' }));
+    setRunResultKindById((prev) => ({ ...prev, [run.run_id]: null }));
+    setRunFocusById((prev) => ({ ...prev, [run.run_id]: run.focus_formalization_id }));
+    setIsRunning(true);
+    setMessages([run.message]);
+    setFormalizations(run.formalization ? [run.formalization] : []);
+    setFormalizationScope(run.focus_formalization_id || 'new');
+    window.localStorage.setItem(SELECTED_SESSION_KEY, run.session_id);
+    setView('main');
+    await refreshSessions();
+    attachStream(run.run_id, run.session_id);
+  };
+
+  // "What do you want to prove?": a statement becomes a project named from it,
+  // a session in that project, and the first run. Errors propagate so the
+  // launch screen can show them next to the composer.
+  const handleStartProject = async (statement: string) => {
+    const content = statement.trim();
+    if (!content || submitting.current) return;
+    setError(undefined);
+    submitting.current = true;
+    try {
+      const project = await createAndOpenProject(projectTitleFromStatement(content));
+      if (!project) return;
+      const session = await createSessionInProject(project.id, project.title);
+      // TODO(blueprint-package): once `/blueprint` exists in lib/slashCommands.js,
+      // run it here as the first message (draft the decomposition before any
+      // proving) instead of submitting the bare statement.
+      await launchProjectRun(project, session.id, content, {
+        new_formalization: { display_title: content.slice(0, 120) },
+      });
+    } finally {
+      submitting.current = false;
+    }
+  };
+
+  // "Prove" / "Prove the sorry" / "Retry" on the project home: a session bound
+  // to the blueprint node whose first message names the node, its declaration,
+  // file and statement. An existing formalization for the declaration is
+  // focused; otherwise one is recorded for the node.
+  const handleProveNode = async (node: GraphNode, mode: ProveMode) => {
+    const project = currentProject;
+    if (!project || submitting.current) return;
+    submitting.current = true;
+    try {
+      const session = await createSessionInProject(project.id, node.key);
+      useWorkbench.getState().bindSessionToNode(session.id, node.key);
+      useWorkbench.getState().selectNode(node.key);
+      let existingId: string | undefined;
+      if (node.lean) {
+        try {
+          const { formalizations: items } = await listProjectFormalizations(project.id);
+          existingId = items.find((item) => item.declaration_name === node.lean)?.id;
+        } catch {
+          // No list: record a new formalization for the node below.
+        }
+      }
+      await launchProjectRun(project, session.id, proveNodeMessage(node, mode), existingId
+        ? { focus_formalization_id: existingId }
+        : {
+          new_formalization: {
+            display_title: node.key,
+            kind: node.kind ?? undefined,
+            declaration_name: node.lean ?? undefined,
+            statement: node.statement || undefined,
+          },
+        });
+    } finally {
+      submitting.current = false;
+    }
+  };
+
+  // "New session" on the project home: an empty session in the project, opened
+  // in the workbench, so the first submit lands in the project (nothing unfiled).
+  const handleNewProjectSession = async () => {
+    const project = currentProject;
+    if (!project) return;
+    setError(undefined);
+    try {
+      const session = await createSessionInProject(project.id);
+      await refreshSessions();
+      setView('main');
+      await loadSession(session.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to start a session.');
+    }
+  };
+
+  // The workbench shows a project surface (blueprint, files rail) through the
+  // selected session's project, so one of the project's sessions must be
+  // selected: the current one if it belongs there, else the latest, else a new
+  // one titled after the project.
+  const ensureProjectSession = async (project: Project): Promise<void> => {
+    const state = useSessions.getState();
+    const selected = state.sessions.find((s) => s.id === state.selectedSessionId);
+    if (selected?.project_id === project.id) return;
+    const latest = state.sessions
+      .filter((s) => s.project_id === project.id && !s.parent_id)
+      .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))[0];
+    if (latest) {
+      await loadSession(latest.id);
+      return;
+    }
+    const created = await createSessionInProject(project.id, project.title);
+    await refreshSessions();
+    await loadSession(created.id);
+  };
+
+  const openProjectSurface = async (projectId: string, surface: { path?: string; rail?: boolean }) => {
+    setError(undefined);
+    try {
+      const project = currentProject?.id === projectId ? currentProject : await openProject(projectId);
+      if (!project) return;
+      await ensureProjectSession(project);
+      const workbench = useWorkbench.getState();
+      if (surface.path) workbench.openFile(surface.path);
+      if (surface.rail) workbench.setFilesRailOpen(true);
+      setView('main');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  // Open a project's home (the redesign's Overview). The legacy project window
+  // (view 'project') stays reachable from that page's ⋯ menu.
+  const openProjectHome = (projectId: string) => {
+    openProject(projectId)
+      .then((detail) => { if (detail) setView('project-home'); })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   };
 
   const handleStartProjectFormalization = async (
@@ -707,49 +859,75 @@ export default function App() {
     />
   );
 
-  // Redesign (docs/PLAN-ui-redesign.md): the project-first shell. `home` is the
-  // launch screen, `project-home` the project overview; the shell package wires
-  // the start-project path and makes `home` the default. Stubs until then.
-  if (view === 'home')
-    return (
-      <>
-        {searchOverlay}
-        {skillsMcpPicker}
-        {newProjectDialog}
-        <Home
-          onOpenProject={openProjectWindow}
-          onStartProject={(statement) => {
-            setDraft(statement);
-            setView('main');
-          }}
-          onNewProject={() => setNewProjectOpen(true)}
-        />
-      </>
+  // Redesign (docs/PLAN-ui-redesign.md): the project-first shell. The sidebar
+  // is shared by the workbench, the launch screen (`home`) and the project
+  // overview (`project-home`); sessions open through handleOpenProjectSession,
+  // project surfaces (blueprint, files) through openProjectSurface.
+  const sidebar = (
+    <Sidebar
+      runningSessionId={isRunning ? selectedSessionId : undefined}
+      activeView={view}
+      onSelectSession={handleOpenProjectSession}
+      onNewProject={() => setNewProjectOpen(true)}
+      onOpenHome={() => setView('home')}
+      onOpenProject={openProjectHome}
+      onOpenBlueprint={(projectId) => void openProjectSurface(projectId, { path: BLUEPRINT_PATH })}
+      onOpenFiles={(projectId) => void openProjectSurface(projectId, { rail: true })}
+      onOpenSkills={() => setView('skills')}
+      onOpenSubagents={() => setView('subagents')}
+      onOpenMcp={() => setView('mcp')}
+      onOpenTools={() => setView('tools')}
+      onOpenSearch={() => setSearchOpen(true)}
+      onOpenSettings={() => setView('settings')}
+      onOpenStats={() => setView('stats')}
+      onCollapse={() => setSidebarCollapsed(true)}
+    />
+  );
+  // A full-page shell view beside the sidebar, with the shared overlays.
+  const shellFrame = (content: ReactElement) => (
+    <div className="lea-app">
+      {searchOverlay}
+      {skillsMcpPicker}
+      {newProjectDialog}
+      <div className={`app ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+        {sidebar}
+        {content}
+      </div>
+    </div>
+  );
+
+  const projectHomeId = currentProject?.id ?? selectedProjectId;
+  if (view === 'home' || (view === 'project-home' && !projectHomeId && !currentProjectDeleted))
+    return shellFrame(
+      <Home
+        onOpenProject={openProjectHome}
+        onStartProject={handleStartProject}
+        onNewProject={() => setNewProjectOpen(true)}
+        onOpenSession={handleOpenProjectSession}
+        sidebarCollapsed={sidebarCollapsed}
+        onExpandSidebar={() => setSidebarCollapsed(false)}
+      />,
     );
-  if (view === 'project-home' && currentProject)
-    return (
-      <>
-        {searchOverlay}
-        {skillsMcpPicker}
-        <ProjectHome
-          projectId={currentProject.id}
-          onOpenSession={handleOpenProjectSession}
-          onNewSession={() => handleStartProjectProof('')}
-          onOpenBlueprint={() => {
-            useWorkbench.getState().openFile(BLUEPRINT_PATH);
-            setView('main');
-          }}
-          onOpenFiles={(path) => {
-            useWorkbench.getState().openFile(path ?? null);
-            useWorkbench.getState().setFilesRailOpen(true);
-            setView('main');
-          }}
-        />
-      </>
-    );
-  if (view === 'project' && currentProjectDeleted)
-    return <main className="p-8"><button onClick={leaveProject}>Back to chats</button>
+  if ((view === 'project-home' || view === 'project') && currentProjectDeleted)
+    return <main className="p-8"><button onClick={() => { closeProject(); setView('home'); }}>Back to projects</button>
       <h1>Project deleted</h1><p>This project is no longer available.</p></main>;
+  if (view === 'project-home' && projectHomeId)
+    return shellFrame(
+      <ProjectHome
+        projectId={projectHomeId}
+        onOpenSession={handleOpenProjectSession}
+        onNewSession={() => void handleNewProjectSession()}
+        onOpenBlueprint={() => void openProjectSurface(projectHomeId, { path: BLUEPRINT_PATH })}
+        onOpenFiles={(path) => void openProjectSurface(projectHomeId, { path, rail: true })}
+        onProveNode={handleProveNode}
+        onOpenLegacy={() => setView('project')}
+        onOpenHome={() => setView('home')}
+        sidebarCollapsed={sidebarCollapsed}
+        onExpandSidebar={() => setSidebarCollapsed(false)}
+      />,
+    );
+  // The pre-redesign project window, reachable from the project home's ⋯ menu
+  // ("Legacy project window") until the integrator removes it.
   if (view === 'project' && currentProject)
     return (
       <>
@@ -757,7 +935,7 @@ export default function App() {
         {skillsMcpPicker}
         <ProjectWindow
           project={currentProject}
-          onBack={leaveProject}
+          onBack={() => setView('project-home')}
           onStartProof={handleStartProjectProof}
           onStartFormalization={handleStartProjectFormalization}
           onOpenSession={handleOpenProjectSession}
@@ -803,8 +981,8 @@ export default function App() {
         {skillsMcpPicker}
         {newProjectDialog}
         <ProjectsHub
-          onBack={() => setView('main')}
-          onOpenProject={openProjectWindow}
+          onBack={() => setView('home')}
+          onOpenProject={openProjectHome}
           onNewProject={() => setNewProjectOpen(true)}
         />
       </>
@@ -839,43 +1017,7 @@ export default function App() {
       {newProjectDialog}
       <QuickOpen projectId={selectedSession?.project_id ?? null} />
       <div className={`app ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
-        <Sidebar
-          runningSessionId={isRunning ? selectedSessionId : undefined}
-          onSelectSession={(id) => {
-            closeProject();
-            loadSession(id).catch((err) => setError(err instanceof Error ? err.message : String(err)));
-          }}
-          onNewSession={() => {
-            closeProject();
-            resetForNewSession();
-          }}
-          onSelectProject={openProjectWindow}
-          onNewProject={() => setNewProjectOpen(true)}
-          onOpenProjectsHub={() => {
-            closeProject();
-            setView('projects-hub');
-          }}
-          onOpenSkills={() => {
-            closeProject();
-            setView('skills');
-          }}
-          onOpenSubagents={() => {
-            closeProject();
-            setView('subagents');
-          }}
-          onOpenMcp={() => {
-            closeProject();
-            setView('mcp');
-          }}
-          onOpenTools={() => {
-            closeProject();
-            setView('tools');
-          }}
-          onOpenSearch={() => setSearchOpen(true)}
-          onOpenSettings={() => setView('settings')}
-          onOpenStats={() => setView('stats')}
-          onCollapse={() => setSidebarCollapsed(true)}
-        />
+        {sidebar}
 
         <div
           ref={mainAreaRef}

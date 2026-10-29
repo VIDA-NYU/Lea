@@ -33,7 +33,7 @@ export function ProjectsHub({
       <div className="project-window ph">
         <div className="pw-bar">
           <button className="pw-back" onClick={onBack}>
-            <ChevronLeft size={15} /> Chats
+            <ChevronLeft size={15} /> Home
           </button>
           <span className="pw-crumbs">/ Projects</span>
         </div>
