@@ -15,6 +15,10 @@ import { useFactories } from './stores/factories';
 import { ProjectsHub } from './components/ProjectsHub';
 import { NewProjectDialog } from './components/NewProjectDialog';
 import { SearchOverlay } from './components/SearchOverlay';
+import { Home } from './components/shell/Home';
+import { ProjectHome } from './components/shell/ProjectHome';
+import { QuickOpen } from './components/files/QuickOpen';
+import { BLUEPRINT_PATH, useWorkbench } from './stores/workbench';
 import { sortCodeSteps } from './lib/timeline.mjs';
 import { inferComposerFormalizationScope } from './lib/formalizations.mjs';
 import { createChatSubmission, createCheckpointSubmission } from './lib/overleafHandoff.mjs';
@@ -703,6 +707,46 @@ export default function App() {
     />
   );
 
+  // Redesign (docs/PLAN-ui-redesign.md): the project-first shell. `home` is the
+  // launch screen, `project-home` the project overview; the shell package wires
+  // the start-project path and makes `home` the default. Stubs until then.
+  if (view === 'home')
+    return (
+      <>
+        {searchOverlay}
+        {skillsMcpPicker}
+        {newProjectDialog}
+        <Home
+          onOpenProject={openProjectWindow}
+          onStartProject={(statement) => {
+            setDraft(statement);
+            setView('main');
+          }}
+          onNewProject={() => setNewProjectOpen(true)}
+        />
+      </>
+    );
+  if (view === 'project-home' && currentProject)
+    return (
+      <>
+        {searchOverlay}
+        {skillsMcpPicker}
+        <ProjectHome
+          projectId={currentProject.id}
+          onOpenSession={handleOpenProjectSession}
+          onNewSession={() => handleStartProjectProof('')}
+          onOpenBlueprint={() => {
+            useWorkbench.getState().openFile(BLUEPRINT_PATH);
+            setView('main');
+          }}
+          onOpenFiles={(path) => {
+            useWorkbench.getState().openFile(path ?? null);
+            useWorkbench.getState().setFilesRailOpen(true);
+            setView('main');
+          }}
+        />
+      </>
+    );
   if (view === 'project' && currentProjectDeleted)
     return <main className="p-8"><button onClick={leaveProject}>Back to chats</button>
       <h1>Project deleted</h1><p>This project is no longer available.</p></main>;
@@ -793,6 +837,7 @@ export default function App() {
       {searchOverlay}
         {skillsMcpPicker}
       {newProjectDialog}
+      <QuickOpen projectId={selectedSession?.project_id ?? null} />
       <div className={`app ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
         <Sidebar
           runningSessionId={isRunning ? selectedSessionId : undefined}

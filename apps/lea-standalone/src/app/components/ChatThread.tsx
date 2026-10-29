@@ -19,6 +19,7 @@ import { checkExecutionMessage } from '../lib/leanCheckRuntime.mjs';
 import { usageCostText, usageDetailText } from '../lib/usageDetails.mjs';
 import { ModelPicker } from './ModelPicker';
 import { OriginBadge } from './OriginBadge';
+import { NodeChip } from './blueprint/NodeChip';
 import { buildTimeline } from '../lib/timeline.mjs';
 import { matchSlashCommands } from '../lib/slashCommands.js';
 import {
@@ -583,6 +584,7 @@ export function ChatThread({
           </button>
         )}
         {headChip && <span className={`chip ${headChip.cls}`}>{headChip.text}</span>}
+        <NodeChip sessionId={session?.id} />
         <OriginBadge origin={session?.origin} originUrl={session?.origin_url} />
         <span className="head-spacer" />
         {/* Download this session's files as a zip (#14). Loose sessions only — a

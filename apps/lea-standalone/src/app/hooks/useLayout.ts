@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 
 export type View =
   | 'main'
+  | 'home'
+  | 'project-home'
   | 'stats'
   | 'settings'
   | 'project'
