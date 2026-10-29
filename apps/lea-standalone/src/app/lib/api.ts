@@ -280,8 +280,8 @@ export async function submitApproval(
 }
 
 export async function interruptRun(runId: string): Promise<void> {
-  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/interrupt`, { method: 'POST' });
-  if (!response.ok && response.status !== 409) {
+  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/interrupt`, { method: 'POST', signal: AbortSignal.timeout(10000) });
+  if (!response.ok) {
     throw new Error(await detailMessage(response, `Failed to interrupt run: ${response.statusText}`));
   }
 }
@@ -290,7 +290,7 @@ export async function interruptRun(runId: string): Promise<void> {
 // without cancelling the coordinator run. A 404 means it already finished (nothing to
 // stop), which we treat as success.
 export async function interruptSubagent(sessionId: string): Promise<void> {
-  const response = await fetch(`/api/sub-agents/${encodeURIComponent(sessionId)}/interrupt`, { method: 'POST' });
+  const response = await fetch(`/api/sub-agents/${encodeURIComponent(sessionId)}/interrupt`, { method: 'POST', signal: AbortSignal.timeout(10000) });
   if (!response.ok && response.status !== 404) {
     throw new Error(await detailMessage(response, `Failed to stop sub-agent: ${response.statusText}`));
   }

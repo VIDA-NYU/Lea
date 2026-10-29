@@ -3,7 +3,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 // Every service owns a process group, so npm wrappers and their subprocesses
 // receive the same signal. Keep the group after its leader exits: a descendant
 // may still be alive and holding a socket or inherited stdout open.
-export function createProcessSupervisor({ graceMs = 5000, prefix = "[dev]", onUnexpectedExit = null } = {}) {
+export function createProcessSupervisor({ graceMs = 5000, prefix = "[dev]", onUnexpectedExit = null, onStopped = null } = {}) {
   const owned = [];
   const descendants = new Map();
   const controller = new AbortController();
@@ -14,6 +14,7 @@ export function createProcessSupervisor({ graceMs = 5000, prefix = "[dev]", onUn
   let poll;
   let lastInterrupt = -Infinity;
   let awaitingNpmCopy = false;
+  let finishing = false;
 
   function captureDescendants() {
     if (process.platform === "win32") return new Map();
@@ -101,13 +102,24 @@ export function createProcessSupervisor({ graceMs = 5000, prefix = "[dev]", onUn
     }
   }
 
-  function finish() {
+  async function finish() {
+    if (finishing) return;
+    finishing = true;
     clearTimeout(deadline);
     clearInterval(poll);
+    try {
+      await onStopped?.();
+    } catch {
+      console.error(`${prefix} Shutdown archive failed; see the snapshot diagnostic above.`);
+      if (exitCode === 0) exitCode = 1;
+    }
     process.exit(exitCode);
   }
 
   function force(code = exitCode) {
+    // Services are already gone while the shutdown archive is being written.
+    // Repeated terminal signals must not start another archive or interrupt it.
+    if (finishing) return;
     if (forced) return;
     forced = true;
     stopping = true;

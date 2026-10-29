@@ -780,8 +780,8 @@ def interrupt_run(run_id: str, request: InterruptRequest | None = None) -> dict:
 @run_commands.admission_errors
 def interrupt_subagent(session_id: str) -> dict:
     """Stop a single running child sub-agent (D2), addressed by its child SESSION id —
-    without cancelling the coordinator run that spawned it. The child returns its partial
-    findings at its next turn boundary and the coordinator carries on. A no-op (404) if
+    without cancelling the coordinator run that spawned it. The child cancels ongoing
+    work and returns partial findings while the coordinator carries on. A no-op (404) if
     the child is not currently running in-process (nothing to signal)."""
     return run_commands.child_stop(session_id)
 

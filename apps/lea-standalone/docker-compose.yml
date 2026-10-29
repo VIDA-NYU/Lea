@@ -52,6 +52,7 @@ services:
   worker:
     <<: *image
     command: [worker]
+    stop_grace_period: 5m # drain the worker, then publish its sanitized data export
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -23,6 +23,24 @@ import {
 
 const PROJECT = "project-1";
 
+test('batch Stop exposes active-run cancellation failures and can retry without starting more items',async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'lea-stop-failure-'));
+  t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  let attempts=0;
+  const batch={batchId:'stop-failure',operation:'formalize',overleafProjectId:PROJECT,running:true,done:false,
+    items:[{targetKind:'theorem',targetLabel:'a',state:'running',runJobId:'job'}]};
+  const state={jobsPath:path.join(dir,'jobs.json'),settings:{leaApiBaseUrl:'http://adapter'},jobs:{job:{jobId:'job',apiRunId:'run'}},
+    repairBatches:{[batch.batchId]:batch},fetchImpl:async()=>{
+      attempts++;
+      return {ok:attempts>1,status:attempts>1?200:503,text:async()=>JSON.stringify(attempts>1?{status:'interrupting'}:{detail:'Adapter unavailable'})};
+    }};
+  const failure=await handleBatchCancel({batchId:batch.batchId},state);
+  assert.equal(failure.statusCode,502);assert.equal(batch.cancelRequested,true);
+  assert.match(failure.body.message,/Adapter unavailable/);assert.equal(failure.body.batch.stopping,true);
+  const retry=await handleBatchCancel({batchId:batch.batchId},state);
+  assert.equal(retry.statusCode,200);assert.equal(retry.body.cancelError,null);assert.equal(attempts,2);
+});
+
 test("recovery uses the live incomplete classification without resuming saved pauses", async () => {
   const paused = { jobId: "paused", jobKey: `${PROJECT}:theorem:a`, status: "paused", recoverable: true,
     stopReason: "dependency_wait", resultDetail: "Shared worker still needs certification." };

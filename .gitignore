@@ -50,5 +50,8 @@ CLAUDE.md
 /.codex/hooks.json
 /.impeccable/
 /.release-artifacts/
+/apps/lea-standalone/prover/workspace/.lea-worker.lock
+/apps/lea-standalone/prover/workspace/.lea-workspace-id
+/apps/lea-standalone/prover/workspace/.lea-owned-processes/
 /PRODUCT.md
 /DESIGN.md

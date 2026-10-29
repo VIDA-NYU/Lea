@@ -267,6 +267,8 @@ class Finished:
     # Explicit final artifact association, independent of outcome classification.
     candidate_path: str | None = None
     selected_result: dict | None = None
+    # A cancelled provider request may not return its final usage receipt.
+    usage_status: str = "final"
 
 
 # Union of everything run_events() can yield — handy for type annotations.

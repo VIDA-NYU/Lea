@@ -524,3 +524,17 @@ test('a pending snapshot accepts first-attempt events from a legacy stream witho
   stream.emit('code_step',step('first-code',1),'first:3');
   assert.equal(x.state.codeSteps[0].id,'first-code');x.cleanup();
 });
+
+test('reconnecting restores an accepted Stop and terminal events clear it',async()=>{
+  const x=await setup();
+  x.hook.applyDetail({...detail('A',true),active_run:{id:'run-A',status:'running',stop_requested_reason:'user_stop'}});
+  assert.equal(x.state.stoppingRunId,'run-A');
+  x.sources.at(-1).emit('done',{status:'cancelled',stop_reason:'user_stop'});
+  assert.equal(x.state.stoppingRunId,undefined);assert.equal(x.state.isRunning,false);
+  x.cleanup();
+});
+test('a pending Stop survives resync for its run and clears on navigation',async()=>{
+  const x=await setup();x.hook.applyDetail(detail('A',true));x.proxy.setStoppingRunId('run-A');
+  x.hook.applyDetail(detail('A',true));assert.equal(x.state.stoppingRunId,'run-A');
+  x.hook.applyDetail(detail('B',true));assert.equal(x.state.stoppingRunId,undefined);x.cleanup();
+});

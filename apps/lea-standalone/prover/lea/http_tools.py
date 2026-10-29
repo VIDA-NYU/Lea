@@ -26,10 +26,13 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+import httpx
 
 from . import diagnostics
 from .errors import ToolError
 from .registry import Tool, is_registered, register
+from .runctx import current_should_stop
+from .cancellation import RunCancelled, check_cancelled, iterate_async
 
 DEFAULT_TIMEOUT = 20
 MAX_RESPONSE_CHARS = 20_000
@@ -118,6 +121,7 @@ def make_handler(spec: dict):
     """The `dict -> str` handler for one declared tool."""
 
     def handler(args: dict) -> str:
+        check_cancelled()
         method = str(spec.get("method") or "GET").upper()
         url = _render(str(spec.get("url") or ""), args)
         # Re-checked at CALL time, not only at save: the spec may interpolate arguments
@@ -159,6 +163,17 @@ def make_handler(spec: dict):
         def public_text(value: str) -> str:
             return value.replace(secret, "[redacted]") if secret else value
         try:
+            if current_should_stop() is not None:
+                async def request_async():
+                    async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
+                        response = await client.request(method, url, headers=headers, content=body)
+                        if 300 <= response.status_code < 400:
+                            yield "Error: the endpoint redirected. Configure its final public HTTPS URL; redirects are not followed."
+                        elif response.is_error:
+                            yield public_text(f"Error: the service returned {response.status_code} {response.reason_phrase}. {response.text[:600]}")
+                        else:
+                            yield _truncate(public_text(response.content.decode("utf-8", errors="replace")))
+                return list(iterate_async(request_async))[0]
             with urllib.request.build_opener(_NoRedirect()).open(request, timeout=timeout) as response:
                 return _truncate(public_text(response.read().decode("utf-8", errors="replace")))
         except urllib.error.HTTPError as exc:
@@ -168,6 +183,8 @@ def make_handler(spec: dict):
             detail = public_text(exc.read().decode("utf-8", errors="replace"))[:600]
             exc.close()
             return public_text(f"Error: the service returned {exc.code} {exc.reason}. {detail}")
+        except RunCancelled:
+            raise
         except Exception as exc:  # noqa: BLE001 — a failed call is a tool result, not a crash
             return public_text(f"Error: could not reach the service ({type(exc).__name__}: {exc}).")
 

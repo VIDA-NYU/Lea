@@ -260,6 +260,10 @@ export function useProofStream() {
     useProofSession.getState().setDiagnostics(detail.diagnostics || []);
     const active = detail.active_run;
     setCurrentRunId(active?.id);
+    const stopping = useProofSession.getState().stoppingRunId;
+    useProofSession.getState().setStoppingRunId(
+      active && (active.stop_requested_reason || stopping === active.id) ? active.id : undefined,
+    );
     setIsRunning(Boolean(active));
     setRunStatus((active?.status as RunStatus) || undefined);
     const approvals: ApprovalRecord[] = (detail.approval_events || []).map(event => ({
@@ -832,6 +836,7 @@ export function useProofStream() {
         /* keep default */
       }
       setIsRunning(false);
+      useProofSession.getState().setStoppingRunId(undefined);
       setRunStatus(status);
       setRunStatusById((prev) => ({ ...prev, [runId]: status }));
       setRunResultKindById((prev) => ({ ...prev, [runId]: resultKind }));

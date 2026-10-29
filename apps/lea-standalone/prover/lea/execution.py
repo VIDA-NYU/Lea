@@ -101,7 +101,45 @@ def _prepare(args, kwargs):
 
 def run(args, **kwargs):
     args, kwargs = _prepare(args, kwargs)
-    return subprocess.run(args, **kwargs)
+    from .runctx import current_should_stop
+    if current_should_stop() is None:
+        return subprocess.run(args, **kwargs)
+    from .cancellation import check_cancelled
+    from .check_runtime import stop_process
+    import time
+
+    check_cancelled()
+    timeout = kwargs.pop("timeout", None)
+    check = kwargs.pop("check", False)
+    data = kwargs.pop("input", None)
+    if data is not None:
+        if kwargs.get("stdin") is not None:
+            raise ValueError("stdin and input arguments may not both be used")
+        kwargs["stdin"] = subprocess.PIPE
+    if kwargs.pop("capture_output", False):
+        if kwargs.get("stdout") is not None or kwargs.get("stderr") is not None:
+            raise ValueError("stdout and stderr may not be used with capture_output")
+        kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    kwargs["start_new_session"] = True
+    started = time.monotonic()
+    with subprocess.Popen(args, **kwargs) as proc:
+        try:
+            while True:
+                check_cancelled()
+                remaining = None if timeout is None else timeout - (time.monotonic() - started)
+                if remaining is not None and remaining <= 0:
+                    raise subprocess.TimeoutExpired(args, timeout)
+                try:
+                    stdout, stderr = proc.communicate(data, timeout=min(0.05, remaining) if remaining is not None else 0.05)
+                    break
+                except subprocess.TimeoutExpired:
+                    data = None
+            if check and proc.returncode:
+                raise subprocess.CalledProcessError(proc.returncode, args, output=stdout, stderr=stderr)
+            return subprocess.CompletedProcess(args, proc.returncode, stdout, stderr)
+        except BaseException:
+            stop_process(proc, deadline=time.monotonic() + 0.5)
+            raise
 
 
 def popen(args, **kwargs):

@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from .cancellation import RunCancelled
 from .config import LeaConfig
 from .providers import stream, TextDelta, Done, Usage
 
@@ -267,6 +268,8 @@ def _summarize(model: str, forgotten_log: str, config: LeaConfig) -> tuple[str, 
             elif isinstance(event, Done):
                 usage.add(event.usage)
                 cost += event.cost
+    except RunCancelled:
+        raise
     except Exception:  # noqa: BLE001 — a best-effort terminal path, never fatal
         return "", usage, cost
     return text.strip(), usage, cost

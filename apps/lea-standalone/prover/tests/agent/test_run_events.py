@@ -367,16 +367,16 @@ def test_should_stop_interrupts_before_first_turn():
 
 
 def test_should_stop_after_one_turn_stops_cleanly():
-    # Stop requested while running: the current turn finishes (its write committed),
-    # then the next turn-boundary check stops the loop. turns == 1.
+    # Request Stop after the first turn's tools finish. Do not couple this test to
+    # the number of stop polls: running operations also check cancellation now.
+    from threading import Event
     install_fakes()
-    seen = {"n": 0}
-
-    def stop():
-        seen["n"] += 1
-        return seen["n"] > 1  # allow turn 1, stop at the turn-2 boundary
-
-    events = list(agent.run_events(cfg(), msgs("prove it"), should_stop=stop))
+    stop = Event()
+    events = []
+    for event in agent.run_events(cfg(), msgs("prove it"), should_stop=stop.is_set):
+        events.append(event)
+        if isinstance(event, ToolResulted) and event.name == "lean_check":
+            stop.set()
     fin = events[-1]
     assert fin.reason == "interrupted"
     assert fin.turns == 1

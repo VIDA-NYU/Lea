@@ -20,12 +20,13 @@ const cooperative = `
   setInterval(() => {}, 1000);
 `;
 
-async function fixture(t, code, graceMs = 5000, { viaNpm = false, handleExits = false, slowInspection = false } = {}) {
+async function fixture(t, code, graceMs = 5000, { viaNpm = false, handleExits = false, slowInspection = false, onStopped = "null" } = {}) {
   let output = "";
   const script = `
     import { createProcessSupervisor } from ${JSON.stringify(supervisorUrl)};
     import { spawn } from "node:child_process";
     const supervisor = createProcessSupervisor({ graceMs: ${graceMs},
+      onStopped: ${onStopped},
       onUnexpectedExit: ${handleExits ? '(label) => { console.log("HANDLED " + label); return true; }' : 'null'} });
     ${code}
   `;
@@ -230,4 +231,35 @@ test("a spawn failure stops services already started", { timeout: 6000 }, async 
   const [code] = await run.exited;
   assert.equal(code, 1, run.output);
   await assertGone(pid);
+});
+
+test("the shutdown callback runs once after services exit and survives repeated signals", { timeout: 6000 }, async t => {
+  const run = await fixture(t, service("adapter", cooperative), 1000, {
+    onStopped: `async () => {
+      console.log("SNAPSHOT STARTED");
+      await new Promise(resolve => setTimeout(resolve, 300));
+      console.log("SNAPSHOT FINISHED");
+    }`,
+  });
+  await run.waitFor(/READY (\d+)/);
+  const pid = Number(run.output.match(/READY (\d+)/)[1]);
+  run.child.kill("SIGTERM");
+  await run.waitFor(/SNAPSHOT STARTED/);
+  await assertGone(pid);
+  run.child.kill("SIGINT");
+  const [code] = await run.exited;
+  assert.equal(code, 0, run.output);
+  assert.equal(run.output.match(/SNAPSHOT STARTED/g).length, 1);
+  assert.match(run.output, /SNAPSHOT FINISHED/);
+});
+
+test("a failed shutdown callback reports failure after stopping the services", { timeout: 6000 }, async t => {
+  const run = await fixture(t, service("adapter", cooperative), 1000, {
+    onStopped: `async () => { throw new Error("test failure"); }`,
+  });
+  await run.waitFor(/READY (\d+)/);
+  run.child.kill("SIGTERM");
+  const [code] = await run.exited;
+  assert.equal(code, 1, run.output);
+  assert.match(run.output, /Shutdown archive failed/);
 });

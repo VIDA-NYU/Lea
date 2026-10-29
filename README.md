@@ -378,3 +378,35 @@ experiments, but the normal current setup uses the standalone app's data
 directory. The older `LEA_SHARED_STATE` recorder path is legacy-only for the
 retired rollback flavor; on the current `/api` path, the adapter records runs
 directly.
+
+### Shutdown data exports
+
+Stopping the local supervisor saves a sanitized ZIP after its services exit.
+In Docker, the workspace worker saves the export when it stops, including when
+stopped during Mathlib preparation. API and companion containers do not create
+duplicate exports. Internal worker restarts do not create an export.
+
+Exports accumulate under the data directory's `shutdown-archives/` folder. They
+include all saved conversations and usage, proof version history, uploads,
+Overleaf state, logs, and non-secret settings. Historical backup folders, old
+database snapshots, previous export ZIPs, dependency caches, and process ownership
+state are skipped before scanning. `--include-backups` explicitly includes old
+backup copies. Progress and elapsed-time heartbeats stream during long exports.
+
+SQLite is exported logically as schema and JSONL rows, Git history uses sanitized
+fast-export streams, and credential-bearing PDFs use decoded-object JSON.
+Credential files are excluded and recognized credentials are redacted, including
+inside nested JSON, ZIP/DOCX, and compressed files. A completed ZIP is published
+atomically with owner-only permissions; failed or cancelled exports remove their
+partial output. These are data exports rather than drop-in database backups.
+Original files and previous exports are retained. No data is uploaded.
+
+The worker has a five-minute Compose stop grace period for draining and export.
+SIGKILL or a machine crash can prevent a completed export. `LEA_SHARED_DATA_DIR`
+and `LEA_DATABASE_FILE` overrides determine the export location.
+
+For a manual export, follow the [sharing instructions](docs/export-user-data-email.txt).
+`scripts/shutdown_snapshot.py` is also provided as the self-contained
+`export-lea-data.py` attachment. Use `--require-data` to reject an empty manual
+export. In Docker, run it in the existing **worker** container, which has the
+workspace and configuration mounts. `--quiet` prints only the final result.

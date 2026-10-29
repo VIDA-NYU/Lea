@@ -1,0 +1,201 @@
+Subject: Export your current saved Lea data
+
+Repository reference: https://github.com/VIDA-NYU/Lea
+
+Hi,
+
+Please use the attached export-lea-data.py to export the saved data from your
+existing Lea installation (the VIDA-NYU/Lea repository). It creates a ZIP on
+your computer; it does not send anything, delete your data, start Lea, or
+update your installation. No administrator access is needed.
+
+The export includes saved conversations and model transcripts; run history;
+token usage and estimated costs; tool events and diagnostics; proofs and code
+history; projects, uploads, and extracted text; saved Overleaf source/context,
+jobs and logs; and non-secret settings. It includes all users/sessions saved
+in that installation, rather than filtering to one person.
+All chat histories and usage still present in the active database are included.
+Historical backup folders, old database snapshots, editor backup files, legacy
+installation data, and previous export ZIPs are excluded. Existing proof version
+history is included. The script does not delete any excluded backup files.
+
+API keys and other recognized credentials are excluded or redacted. Chat
+contents, document contents, names, paths, timestamps, and project information
+remain in the export. Please review the ZIP before choosing to share it.
+
+1. Find the EXISTING Lea folder that you normally use. This is the folder
+   containing package.json, start-dev.sh, and the apps folder. Its name might
+   be Lea or LeaEcosystem. Do not clone a new copy: your saved data is in the
+   existing installation.
+
+2. Save the attachment in that folder as export-lea-data.py. If your mail
+   service blocks Python attachments, extract it from the attached ZIP first.
+   The script is self-contained and works even if your checkout does not
+   contain scripts/shutdown_snapshot.py. Do not pull or reset the repository.
+
+3. For browser preferences and extension approvals as well, follow the
+   optional browser steps below BEFORE continuing. Conversations and usage
+   are already stored by Lea and do not need the browser steps.
+
+4. Follow the section that matches how you run Lea.
+
+LOCAL INSTALL -- macOS or Linux (you normally use ./start-dev.sh)
+
+Wait for proof runs to finish, then stop the local Lea stack with Ctrl+C in
+its terminal. Wait for shutdown to complete. Open Terminal, replace the path
+below with the path to your EXISTING Lea folder, and run:
+
+    cd "/full/path/to/Lea"
+    ./apps/lea-standalone/adapter/.venv/bin/python export-lea-data.py --root . --reason manual-user-data-export --require-data
+
+Use Lea's installed Python as shown. It already has the PDF-reading dependency
+needed to inspect uploaded PDFs. If that executable is missing, please send
+me the error and how you installed Lea instead of reinstalling or resetting it.
+
+DOCKER INSTALL -- macOS or Linux
+
+Wait for proof runs to finish. Leave Docker Desktop and your original Lea
+worker container running, and do not start new runs during the export. In Terminal,
+replace the path below with your EXISTING Lea folder and run:
+
+    cd "/full/path/to/Lea"
+    docker compose -f apps/lea-standalone/docker-compose.yml exec -T worker /app/adapter/.venv/bin/python - --root /app --reason manual-user-data-export --require-data < export-lea-data.py
+
+This runs the attached script in the existing container using its installed
+Python. It includes saved state in that container as well as its mounted data.
+It requires no Python installation on your host computer. Use the same Compose
+project name, overrides, and Docker context that you normally use, if customized.
+
+DOCKER INSTALL -- Windows PowerShell
+
+Wait for proof runs to finish, leave the original Lea worker container running, and
+open PowerShell. Replace the path below with your EXISTING Lea folder:
+
+    cd "C:\full\path\to\Lea"
+    Get-Content -Raw .\export-lea-data.py | docker compose -f apps/lea-standalone/docker-compose.yml exec -T worker /app/adapter/.venv/bin/python - --root /app --reason manual-user-data-export --require-data
+
+If Docker reports that the service is not running, let me know. Do not use a
+new temporary container for this export: it could miss saved state inside the
+original container. If you have used BOTH Docker and a local installation,
+export each installation and keep both resulting ZIPs.
+
+5. The script prints a starting message immediately, reports scanning and ZIP
+   writing progress, and prints a "Still working" update about every 10 seconds
+   during a long operation. It may take longer with large uploads or histories.
+   Database record counts restart for each database; the file number identifies
+   which one is being processed. Historical backup folders are skipped before
+   scanning begins. Temporary sanitized caches are removed on completion or
+   cancellation.
+   Do not start a second export while one is running. Ctrl+C cancels the export
+   without changing the original data; an interrupted export can be rerun.
+
+   A successful run prints "[snapshot] Saved ..." and the ZIP's location.
+   The filename is lea-current-data-<UTC timestamp>-<unique suffix>.zip.
+
+   Normally, on your computer the file is under:
+
+       Lea/apps/lea-standalone/data/shutdown-archives/
+
+   For Docker, /app/data/shutdown-archives inside the worker container maps to that
+   folder under the standard Compose configuration. If your data directory
+   or volume mounts are customized, use the corresponding host folder.
+   For a local LEA_SHARED_DATA_DIR override, the ZIP is in that directory's
+   shutdown-archives folder; the script reads this setting from .env or your
+   terminal environment.
+
+   Wait for the success message. If there is an error, no new ZIP is published;
+   please send me the error text. It should not contain any API keys.
+
+6. Open the ZIP and review its contents, including manifest.json. If you are
+   happy to share the exported material, send the new ZIP back to me using
+   the agreed sharing method. Do not attach .env, lea.local.toml, raw database
+   files, or your entire Lea folder separately. The ZIP may be too large for
+   an email attachment if there are many uploads or long proof histories.
+
+The archive is a readable data export, rather than a drop-in app backup.
+SQLite databases become .sqlite3.jsonl files: the first line describes the
+schema; later lines contain a table name and one row. Messages and usage are
+among these rows. JSON stored inside a transcript field may need to be parsed
+again to inspect the individual transcript messages. Historical proof content
+uses history.fast-export files, and current proof files are also included.
+Settings TOML becomes JSON. PDFs containing recognized credentials may be
+represented as sanitized decoded PDF objects instead of the original PDF.
+
+Scope: the script collects files still saved in Lea's configured data,
+configuration, prover workspace, and Overleaf state directories. It also
+checks standard host Docker proof/project/state folders. The retired
+apps/lea-ui/data location, directories named backup/backups/.backups, editor
+.bak/.backup/~ files, and old lea-interface database snapshot files in the data
+folder are excluded. Dependency caches, symlinks, transient files, credential
+files, and previous shutdown ZIPs are also excluded. manifest.json identifies
+this as a current-data export and lists exported files and exclusions. Automated redaction
+cannot guarantee removal of every possible secret or anonymize documents.
+
+It cannot recover deleted or already-pruned history, unsaved browser drafts,
+the full Overleaf cloud project unless Lea saved it, or records held by model
+providers, gateways, or a remote Lea server. If Lea connects to another
+computer's backend, the main export must run on THAT computer. Repeat the
+export for any other Lea installations whose data you want to include.
+
+OPTIONAL: ALSO INCLUDE SAVED BROWSER STATE
+
+These steps only read Lea's own browser state and download JSON files. They
+do not read other websites' storage or your general browser history. Complete
+them while Lea is still running, then run the main export above.
+
+A. Standalone Lea browser preferences
+
+Open the Lea URL you normally use (for example http://localhost:5173 or
+http://localhost:8001). Open the browser's developer tools, choose Console,
+review and run this snippet:
+
+    (() => {
+      const pick = store => Object.fromEntries(
+        Object.keys(store).filter(key => key.startsWith('lea:'))
+          .map(key => [key, store.getItem(key)]));
+      const data = {source: location.origin, exported_at: new Date().toISOString(),
+        localStorage: pick(localStorage), sessionStorage: pick(sessionStorage)};
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)],
+        {type: 'application/json'}));
+      const link = document.createElement('a');
+      link.href = url; link.download = 'lea-browser-state.json'; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    })();
+
+This exports saved Lea selection/layout preferences for that URL and browser
+profile. Repeat for other Lea URLs/profiles you used, keeping distinct names.
+
+B. Lea Overleaf extension settings and saved human approvals
+
+If you use the extension in Chrome, open chrome://extensions, locate the Lea
+extension, and open its Extension options page (usually under Details).
+Right-click that options page, choose Inspect, and open Console there. Make
+sure the console belongs to the extension options page, not overleaf.com.
+Review and run:
+
+    (async () => {
+      const data = {source: 'Lea extension', exported_at: new Date().toISOString(),
+        sync: await chrome.storage.sync.get(null),
+        local: await chrome.storage.local.get(null)};
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)],
+        {type: 'application/json'}));
+      const link = document.createElement('a');
+      link.href = url; link.download = 'lea-extension-state.json'; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    })();
+
+C. Include the downloaded JSON in the main export
+
+Create a browser-export folder inside Lea's actual data directory, normally:
+
+    Lea/apps/lea-standalone/data/browser-export/
+
+Place the downloaded JSON files there, then run the main script. Under Docker
+this is the host data folder mounted at /app/data. For a custom data directory
+or Docker mount, use that directory instead. The main exporter includes and
+sanitizes these files. Review/share the final ZIP rather than the raw browser
+JSON files. You can remove the downloaded JSON copies after the export if you
+do not want to keep them. Browser export is manual; the Python script does
+not access browser profiles directly.
+
+Thanks!

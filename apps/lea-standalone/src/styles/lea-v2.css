@@ -231,13 +231,14 @@
 .composer .form-dot.fail { background: var(--red); }
 .composer .form-dot.run { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .composer .form-dot.warn { background: var(--amber); }
-.composer .scope-override { position: relative; width: max-content; max-width: 100%; }
+.composer .scope-override { position: relative; width: max-content; max-width: 100%; min-width: 0; flex-shrink: 1; }
 .composer .scope-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
   border: 0; background: transparent; color: var(--muted); border-radius: 7px; padding: 3px 5px;
   cursor: pointer; font: inherit; font-size: 11.5px; }
 .composer .scope-chip:hover, .composer .scope-chip[aria-expanded="true"] {
   color: var(--ink-2); background: var(--panel-2); }
 .composer .scope-chip.manual { color: var(--accent); }
+.composer .scope-chip { overflow: hidden; white-space: nowrap; }
 .composer .scope-chip-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); opacity: .75; }
 .composer .scope-chip.manual .scope-chip-dot { background: var(--accent); opacity: 1; }
 .composer .scope-menu { position: absolute; z-index: 20; left: 0; bottom: calc(100% + 5px);
@@ -291,7 +292,7 @@
 .composer-inner { max-width: 720px; margin: 0 auto; border: 1px solid var(--line); background: var(--panel);
   border-radius: 14px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
 .composer textarea { border: none; resize: none; outline: none; font: inherit; color: var(--ink); width: 100%; min-height: 22px; max-height: 200px; overflow-y: auto; background: transparent; }
-.composer .crow { display: flex; align-items: center; gap: 8px; }
+.composer .crow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 /* The scope control, in the composer row next to send. It used to be an inert
    `<span>` reading "auto" with `cursor: pointer` and no handler, while the real
    control sat above the composer — two things saying "auto", the fake one where
@@ -300,7 +301,7 @@
 .composer .mode.manual { color: var(--accent); border-color: var(--accent); }
 .composer .mode:hover, .composer .mode[aria-expanded="true"] { color: var(--ink-2); background: var(--panel-2); }
 .composer .mode.manual:hover { color: var(--accent); }
-.composer .send { margin-left: auto; width: 32px; height: 32px; border-radius: 9px; background: var(--accent); color: #fff; border: none; cursor: pointer; font-size: 15px; }
+.composer .send { margin-left: auto; flex: 0 0 32px; width: 32px; height: 32px; border-radius: 9px; background: var(--accent); color: #fff; border: none; cursor: pointer; font-size: 15px; }
 .composer .send:disabled { opacity: .45; cursor: not-allowed; }
 .composer .send.stop { background: var(--red); }
 .thread-empty { max-width: 720px; margin: 0 auto; padding: 64px 24px; text-align: center; color: var(--muted); }
@@ -1300,6 +1301,8 @@ pre.code { margin: 0; padding: 16px 0; font-family: ui-monospace, monospace; fon
 .spawn .kid.running:hover .kid-stop, .spawn .kid-stop:focus-visible { opacity: 1; }
 .spawn .kid-stop:hover { filter: brightness(.96); }
 .spawn .kid-stop:disabled { color: var(--muted); background: var(--panel-2); cursor: default; opacity: 1; }
+.spawn .kid-toggle { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
+  border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 
 /* verdict badges (shared by the spawn node) */
 .verdict.ok { color: var(--green); background: var(--green-soft); }

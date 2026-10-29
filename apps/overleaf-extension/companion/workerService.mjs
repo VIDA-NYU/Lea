@@ -675,6 +675,13 @@ export async function handleFormalize(payload, state, { batch = false, dependenc
   finally { if (state.formalizationStarts.get(key) === request) state.formalizationStarts.delete(key); }
 }
 
+function shouldResumeBatchJob(state, job) {
+  // Explicitly stopped work may have no resumable checkpoint. A fresh batch
+  // uses the artifact-preserving retry path for these targets.
+  return job?.status === "paused" && job.stopReason !== "user_stop"
+    && !dependencyWorkflowCanceled(state, job);
+}
+
 async function handleFormalizeUnlocked(payload, state, { batch = false, dependencyWait } = {}) {
   const validation = validateTargetPayload(payload);
   if (!validation.ok) {
@@ -711,7 +718,7 @@ async function handleFormalizeUnlocked(payload, state, { batch = false, dependen
   await syncSharedSettingsFromAdapter(state);
 
   const savedTargetJob = findLatestFinishedJob(state.jobs || {}, `${overleafProjectId}:${targetKind}:${targetLabel}`);
-  const continuingSavedRun = payload.resume === true || (batch && savedTargetJob?.status === "paused");
+  const continuingSavedRun = payload.resume === true || (batch && shouldResumeBatchJob(state, savedTargetJob));
   const leaValidation = validateLeaRuntime(state, { requireApiKey: true,
     modelId: continuingSavedRun ? savedTargetJob?.leaModel : null });
   if (!leaValidation.ok) {
@@ -783,7 +790,7 @@ async function handleFormalizeUnlocked(payload, state, { batch = false, dependen
   }
   // A queued item may have paused since the pane built its batch payload.
   // Choose the resume path from the latest job when this item is dispatched.
-  const resume = payload.resume === true || (batch && previousJob?.status === "paused");
+  const resume = payload.resume === true || (batch && shouldResumeBatchJob(state, previousJob));
   const bestEffort = payload.bestEffort === true;
   if (bestEffort) {
     const pausedJob = findLatestFinishedJob(state.jobs || {}, target.jobKey);
@@ -3582,6 +3589,7 @@ function repairBatchSnapshot(batch) {
     // Cancel requested but the loop hasn't settled yet (the current item is
     // still being interrupted) -- the panel shows "Stopping...".
     stopping: Boolean(batch.cancelRequested) && !batch.done,
+    cancelError: batch.cancelError || null,
     running: batch.running,
     pausedOn: batch.pausedOn,
     dependencies: batch.dependencies || [],
@@ -3705,6 +3713,12 @@ export async function handleBatchCancel(payload, state) {
   batch.pausedOn = null;
   await persistRepairBatches(state);
   await interruptBatchActiveRun(state, batch);
+  await persistRepairBatches(state);
+  if (batch.cancelError) {
+    const failure = errorResponse(502, "interrupt_failed", batch.cancelError);
+    failure.body.batch = repairBatchSnapshot(batch);
+    return failure;
+  }
   if (!batch.running) {
     finalizeCanceledBatch(batch);
     if (batch.operation === "formalize") startFormalizeBatchReport(state, batch);
@@ -3716,12 +3730,13 @@ export async function handleBatchCancel(payload, state) {
   return { statusCode: 200, body: repairBatchSnapshot(batch) };
 }
 
-// Best-effort interrupt of the batch's currently-running item. Every run type
+// Interrupt the batch's currently-running item. Every run type
 // (formalize/stub/repair) records job.apiRunId at run start via the shared
 // runLeaProofJobForJob driver, so the running entry's job carries the id the
-// adapter needs to abort. A failure here is non-fatal: the loop still stops on
-// the cancel flag, just after the current item finishes on its own.
+// adapter needs to abort. Keep the cancel flag on failure to prevent further
+// items, but expose the failed active-run cancellation so the user can retry.
 async function interruptBatchActiveRun(state, batch) {
+  batch.cancelError = null;
   const running = batch.items.find((entry) => entry.state === "running");
   const job = running?.runJobId ? state.jobs?.[running.runJobId] : null;
   if (!job?.apiRunId && !job?.reformalizationId) return;
@@ -3734,22 +3749,25 @@ async function interruptBatchActiveRun(state, batch) {
   try {
     baseUrl = chatBaseUrls(state).baseUrl;
   } catch {
+    batch.cancelError = "Could not stop the active run: the Lea API URL is invalid.";
     return;
   }
   try {
     if (job.reformalizationId) {
-      await cancelReformalization({ fetchImpl: state.fetchImpl || fetch, baseUrl,
+      const result = await cancelReformalization({ fetchImpl: state.fetchImpl || fetch, baseUrl,
         apiKey: state.env?.LEA_API_KEY, operationId: job.reformalizationId });
+      if (!result.ok) throw new Error(result.error || "Could not cancel the queued formalization.");
       if (!job.apiRunId) return;
     }
-    await interruptApiRun({
+    const result = await interruptApiRun({
       fetchImpl: state.fetchImpl || fetch,
       baseUrl,
       apiKey: state.env?.LEA_API_KEY,
       runId: job.activeDependencyOwned && job.activeDependencyRunId && !childSharedElsewhere ? job.activeDependencyRunId : job.apiRunId
     });
-  } catch {
-    // best-effort
+    if (!result.ok) throw new Error(result.error || "Could not stop the active Lea run.");
+  } catch (error) {
+    batch.cancelError = error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -3987,7 +4005,8 @@ async function runFormalizeBatchItem(state, entry, batch) {
     return { ok: true, state: "skipped", reason: "existing_proof" };
   }
   if (result?.statusCode !== 200 || !body.jobId) {
-    return { ok: false, reason: body.error || body.message || "formalize_start_failed", jobId: body.jobId || null };
+    return { ok: false, reason: body.error || body.message || "formalize_start_failed",
+      detail: body.message || null, jobId: body.jobId || null };
   }
   // Publish the live job identity before waiting for it to settle. Stop uses
   // this id to interrupt the adapter run; assigning it only after await made a

@@ -580,10 +580,23 @@ export default function App() {
   };
 
   const handleInterrupt = async () => {
-    if (!currentRunId) return;
+    const state = useProofSession.getState();
+    const runId = state.currentRunId;
+    if (!runId || state.stoppingRunId === runId) return;
+    state.setStoppingRunId(runId);
+    setError(undefined);
     try {
-      await interruptRun(currentRunId);
+      await interruptRun(runId);
+      if (selectedSessionId && useSessions.getState().selectedSessionId === selectedSessionId
+          && useProofSession.getState().currentRunId === runId) {
+        // Refresh persisted state and replace the stream in case its final event
+        // was lost. A refresh failure does not undo an accepted stop request.
+        void reconcile(selectedSessionId).catch(() => {});
+      }
     } catch (err) {
+      if (useSessions.getState().selectedSessionId !== selectedSessionId
+          || useProofSession.getState().currentRunId !== runId) return;
+      useProofSession.getState().setStoppingRunId(undefined);
       setError(err instanceof Error ? err.message : 'Unable to interrupt the run.');
     }
   };

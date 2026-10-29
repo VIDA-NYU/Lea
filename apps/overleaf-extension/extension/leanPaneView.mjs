@@ -1039,7 +1039,7 @@ export function formatRepairOutcome(entry, operation = "repair") {
     case "canceled": return `${label}: stopped.`;
     case "failed": {
       const verb = operation === "stub" ? "stub failed" : operation === "formalize" ? "formalization failed" : "repair failed";
-      return `${label}: ${verb}${entry.reason ? ` -- ${entry.reason}` : "."}`;
+      return `${label}: ${verb}${entry.reason ? ` -- ${entry.reason}` : "."}${entry.detail && entry.detail !== entry.reason ? ` · ${entry.detail}` : ""}`;
     }
     case "skipped":
       if (String(entry.reason || "").startsWith("depends_on_incomplete:")) {

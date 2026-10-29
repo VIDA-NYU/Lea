@@ -562,13 +562,13 @@ export function interruptApiRun({ fetchImpl, baseUrl, apiKey, runId, reason = "u
     headers: buildHeaders(apiKey, { "Content-Type": "application/json" }),
     body: JSON.stringify({ reason, source }),
     signal,
-  });
+  }, { timeoutMs: ADAPTER_METADATA_TIMEOUT_MS });
 }
 
 export function cancelReformalization({ fetchImpl, baseUrl, apiKey, operationId }) {
   return fetchJson(fetchImpl, `${baseUrl}/api/reformalizations/${encodeURIComponent(operationId)}/cancel`, {
     method: "POST", headers: buildHeaders(apiKey),
-  });
+  }, { timeoutMs: ADAPTER_METADATA_TIMEOUT_MS });
 }
 
 // A run's own persisted usage is authoritative. Missing/inaccessible rows have

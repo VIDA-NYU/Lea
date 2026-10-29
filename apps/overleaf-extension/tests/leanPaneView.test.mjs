@@ -956,6 +956,9 @@ test("formatRepairOutcome covers every batch item state", () => {
 });
 
 test("formatRepairOutcome is operation-aware for stub and formalize batches", () => {
+  assert.match(formatRepairOutcome({ targetLabel: "t", state: "failed",
+    reason: "checkpoint_continuation_rejected", detail: "Saved agent state is unavailable. Use Re-formalize." }, "formalize"),
+    /checkpoint_continuation_rejected · Saved agent state is unavailable\. Use Re-formalize\./);
   // Running verb + terminal vocabulary track the batch operation.
   assert.equal(formatRepairOutcome({ targetLabel: "t", state: "running" }, "stub"), "t: stubbing...");
   assert.equal(formatRepairOutcome({ targetLabel: "t", state: "running" }, "formalize"), "t: formalizing...");

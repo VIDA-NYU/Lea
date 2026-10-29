@@ -153,8 +153,8 @@ def _public_error_detail(exc: Exception) -> str:
 # its ``finally`` on every exit.
 
 # Per-run cooperative stop flags (D18). The run registers its Event when it starts
-# and the interrupt endpoint sets it; the agent checks it at each turn boundary and
-# stops cleanly. `setdefault` everywhere makes the order race-free — whoever touches
+# and the interrupt endpoint sets it; the agent and its I/O operations poll it.
+# `setdefault` everywhere makes the order race-free — whoever touches
 # a run_id first creates the shared Event.
 _stop_events: dict[str, Event] = {}
 
@@ -178,8 +178,8 @@ _child_session_to_result: dict[str, str] = {}
 def request_subagent_stop(child_session_id: str) -> bool:
     """Ask a single running child sub-agent to stop cleanly (D2), addressed by its child
     SESSION id (what the UI holds). Returns True if a live child was found and flagged.
-    The child returns its partial findings at its next turn boundary; the coordinator run
-    keeps going — this kills one runaway child, not the whole run."""
+    The child cancels its ongoing I/O and returns its partial findings; the coordinator
+    run keeps going."""
     result_id = _child_session_to_result.get(child_session_id)
     if result_id is None:
         return False
@@ -2839,7 +2839,7 @@ def _run_lea(context: RunnerContext) -> None:
                         run_id, final_status, final_text=final_text,
                         input_tokens=ev.usage.input_tokens, output_tokens=ev.usage.output_tokens,
                         cost_usd=ev.cost,
-                        usage_status="final", usage_details=ev.usage.usage_details,
+                        usage_status=ev.usage_status, usage_details=ev.usage.usage_details,
                         result_kind=final_result_kind, result_detail=final_result_detail,
                         stop_reason=stop_reason, recoverable=recoverable,
                         command_token=context.command_token,

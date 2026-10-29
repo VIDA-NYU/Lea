@@ -55,6 +55,33 @@ test.afterAll(async () => {
   if (home) await fs.rm(home,{recursive:true,force:true});
 });
 
+for (const width of [1100, 390]) {
+  test(`Stop shows pending feedback, surfaces failure and retries at ${width}px`, async ({page}) => {
+    const started=await fetch(`${base}/api/runs`,{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({message:'Stop regression [stub:approvals]',autonomous:false,approval_mode:'always_ask'})});
+    const run=await started.json();expect(started.ok,JSON.stringify(run)).toBe(true);
+    await page.setViewportSize({width,height:850});
+    await page.goto(`${base}/?session=${run.session_id}`);
+    const stop=page.getByRole('button',{name:'Stop the run',exact:true});
+    await expect(stop).toBeVisible();
+    let release;
+    const waiting=new Promise(resolve=>{release=resolve});
+    const endpoint=`**/api/runs/${run.run_id}/interrupt`;
+    await page.route(endpoint,async route=>{await waiting;await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({detail:'Adapter unavailable. Try Stop again.'})});});
+    await stop.click();
+    await expect(page.getByRole('button',{name:'Stopping the run',exact:true})).toBeDisabled();
+    await expect(page.getByRole('status').filter({hasText:'Stopping…'})).toBeVisible();
+    if (process.env.LEA_STOP_SCREENSHOTS) await page.screenshot({path:`/private/tmp/lea-stop-${width}.png`});
+    release();
+    await expect(page.getByText('Adapter unavailable. Try Stop again.',{exact:true})).toBeVisible();
+    await expect(stop).toBeEnabled();
+    await page.unroute(endpoint);
+    await stop.click();
+    await expect(page.getByTitle('Send',{exact:true})).toBeVisible();
+    await expect.poll(async()=> (await (await fetch(`${base}/api/runs/${run.run_id}`)).json()).status).toBe('cancelled');
+  });
+}
+
 test('current canvas requires recheck after an external edit and reload', async ({page}) => {
   test.setTimeout(90000);
   await page.goto(`${base}/?session=${session}`);

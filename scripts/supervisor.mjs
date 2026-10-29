@@ -1,6 +1,6 @@
 // One supervisor; independently owned API, workspace worker and UI transports.
 // Run: node scripts/supervisor.mjs adapter|ui|stack
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,7 +35,23 @@ try {
 }
 
 const owned = new Map();
-const owner = createProcessSupervisor({ prefix: "[supervisor]", onUnexpectedExit: () => true });
+const owner = createProcessSupervisor({
+  prefix: "[supervisor]", onUnexpectedExit: () => true,
+  onStopped: async () => {
+    console.log("[supervisor] Saving current data without credentials (historical backups excluded)...");
+    // Keep the exporter outside the terminal process group so npm's forwarded
+    // Ctrl+C cannot interrupt publication after the services have stopped.
+    // Inherit output so progress/heartbeats appear immediately and long exports
+    // cannot exceed execFile's buffered-output limit.
+    await new Promise((resolve, reject) => {
+      const child = spawn(python,
+        [path.join(root, "scripts/shutdown_snapshot.py"), "--root", root, "--reason", `local-${mode}`],
+        { cwd: root, env: process.env, detached: true, stdio: "inherit" });
+      child.once("error", () => reject(new Error("Shutdown snapshot could not start")));
+      child.once("close", code => code === 0 ? resolve() : reject(new Error("Shutdown snapshot failed")));
+    });
+  },
+});
 const crashes = new Map();
 const delays = [1000, 2000, 5000];
 let stopping = false;

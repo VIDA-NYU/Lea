@@ -144,6 +144,8 @@ interface ProofSessionState {
   setIsRunning: (isRunning: boolean) => void;
   currentRunId?: string;
   setCurrentRunId: (currentRunId?: string) => void;
+  stoppingRunId?: string;
+  setStoppingRunId: (runId?: string) => void;
   runStatus?: RunStatus;
   setRunStatus: (runStatus?: RunStatus) => void;
   runStatusById: Record<string, string>;
@@ -223,6 +225,7 @@ const SESSION_SCOPED = {
   codeIndex: 0,
   isRunning: false,
   currentRunId: undefined as string | undefined,
+  stoppingRunId: undefined as string | undefined,
   runStatus: undefined as RunStatus | undefined,
   approvalBusy: false,
   safeVerify: null as SafeVerifyResult | null,
@@ -286,6 +289,7 @@ export const useProofSession = create<ProofSessionState>((set) => ({
 
   setIsRunning: (isRunning) => set({ isRunning }),
   setCurrentRunId: (currentRunId) => set({ currentRunId }),
+  setStoppingRunId: (stoppingRunId) => set({ stoppingRunId }),
   setRunStatus: (runStatus) => set({ runStatus }),
   setRunStatusById: (update) => set((s) => ({ runStatusById: apply(update, s.runStatusById) })),
   setRunResultKindById: (update) => set((s) => ({ runResultKindById: apply(update, s.runResultKindById) })),

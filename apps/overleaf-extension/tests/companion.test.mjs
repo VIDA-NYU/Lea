@@ -4470,6 +4470,66 @@ for (const recorded of [true, false]) test(`formalize all rechecks completed pro
   assert.ok(!calls.some((call) => String(call.url).endsWith("/artifacts/retire")));
 });
 
+test("Formalize all can run again after Stop without continuing the canceled attempt", async () => {
+  const calls = [];
+  let releaseStoppedRun;
+  const stoppedRun = new Promise(resolve => { releaseStoppedRun = resolve; });
+  let starts = 0;
+  const fallback = makeAdapterApiFetch(calls, { doneStatus: "failed" });
+  const state = await makeState({ leaRepoPath: await makeLeaRepo(), env: { OPENAI_API_KEY: "test-key" },
+    fetchImpl: async (url, options = {}) => {
+      const u = String(url);
+      if (u.endsWith("/api/runs") && options.method === "POST") {
+        starts += 1;
+        calls.push({ url, options, body: JSON.parse(options.body) });
+        return jsonResponse(200, { session_id: "saved-session", run_id: `attempt-${starts}` });
+      }
+      if (u.endsWith("/attempt-1/events")) {
+        await stoppedRun;
+        return adapterSseResponse([{ type: "done", data: { status: "cancelled", result_kind: "interrupted",
+          stop_reason: "user_stop", recoverable: true, usage_status: "final" } }]);
+      }
+      if (u.endsWith("/attempt-1/interrupt")) {
+        releaseStoppedRun();
+        return jsonResponse(200, { status: "interrupting" });
+      }
+      if (u.endsWith("/continue")) {
+        calls.push({ url, options, body: JSON.parse(options.body) });
+        return jsonResponse(409, { detail: "An action may have completed outside the saved state. Review interrupted work before continuing." });
+      }
+      return fallback(url, options);
+    } });
+  const payload = { overleafProjectId: "project-1", items: [
+    { targetKind: "definition", targetLabel: "base", targetText: "Define the base." },
+    { targetKind: "theorem", targetLabel: "independent", targetText: "An independent theorem." }
+  ] };
+  const first = await handleFormalizeAll(payload, state);
+  const oldBatch = state.repairBatches[first.body.batchId];
+  try {
+    await waitFor(() => oldBatch.items[0].runJobId && state.jobs[oldBatch.items[0].runJobId]?.apiRunId);
+    assert.equal((await handleBatchCancel({ batchId: oldBatch.batchId }, state)).statusCode, 200);
+    await waitFor(() => oldBatch.done);
+    const stoppedJob = state.jobs[oldBatch.items[0].runJobId];
+    assert.equal(stoppedJob.status, "paused");
+    assert.equal(stoppedJob.stopReason, "user_stop");
+    assert.equal(starts, 1, "Stop must leave queued targets unstarted");
+
+    // Dismiss only hides the panel. Both the job and canceled batch remain
+    // durable, including across a companion restart.
+    state.jobs = JSON.parse(await fs.readFile(state.jobsPath, "utf8"));
+    const next = await handleFormalizeAll(payload, state);
+    const newBatch = state.repairBatches[next.body.batchId];
+    await waitFor(() => newBatch.done);
+    assert.notEqual(newBatch.batchId, oldBatch.batchId);
+    assert.equal(starts, 3, "The stopped target and remaining queue must both start in the new batch");
+    assert.ok(!calls.some(call => String(call.url).endsWith("/continue")));
+    assert.notEqual(newBatch.items[0].runJobId, stoppedJob.jobId);
+    assert.equal(state.jobs[newBatch.items[0].runJobId].resumed, false);
+    assert.equal(state.jobs[stoppedJob.jobId].dependencyCancelRequested, true);
+    assert.deepEqual(oldBatch.items.map(entry => entry.state), ["canceled", "canceled"]);
+  } finally { releaseStoppedRun(); }
+});
+
 test("formalize all resumes a paused proof without retiring its partial artifact", async () => {
   const leaRepo = await makeLeaRepo();
   const proofPath = path.join("workspace", "proofs", "Lea", "Project1", "paused_target.lean");
@@ -5529,6 +5589,50 @@ async function pausedContinuationFixture(fetchOverride) {
     targetText: "Current theorem.", resume: true, resumeRunId: "saved-run" };
   return { state, calls, payload };
 }
+
+for (const stoppedBy of ["user_stop", "dependency_control", "historical_batch"]) {
+  test(`a new Formalize all retries a paused target stopped by ${stoppedBy}`, async () => {
+    const { state, calls, payload } = await pausedContinuationFixture();
+    const saved = state.jobs.paused;
+    if (stoppedBy === "user_stop") saved.stopReason = "user_stop";
+    if (stoppedBy === "dependency_control") saved.dependencyCancelRequested = true;
+    if (stoppedBy === "historical_batch") state.repairBatches = {
+      historical: { batchId: "historical", cancelRequested: true, done: true,
+        items: [{ runJobId: saved.jobId, state: "canceled" }] }
+    };
+    const proofPath = "workspace/proofs/Lea/Project1/saved_target.lean";
+    const partial = "theorem saved_target : True := by\n  exact missing_lemma\n";
+    await writeLeaProjectProof(state.settings.leaRepoPath, proofPath, partial);
+    saved.recordedProofPath = proofPath;
+    const { resume, resumeRunId, ...target } = payload;
+    const result = await handleFormalizeAll({ overleafProjectId: payload.overleafProjectId, items: [target] }, state);
+    const batch = state.repairBatches[result.body.batchId];
+    await waitFor(() => batch.done);
+    const retry = state.jobs[batch.items[0].runJobId];
+    assert.ok(retry);
+    assert.equal(retry.resumed, false);
+    assert.equal(retry.leaModel, state.settings.leaModel);
+    assert.equal(retry.leaSessionId, saved.leaSessionId);
+    assert.ok(calls.some(call => String(call.url).endsWith("/api/runs") && call.options.method === "POST"));
+    assert.ok(!calls.some(call => String(call.url).endsWith("/continue") || String(call.url).endsWith("/artifacts/retire")));
+    assert.equal(await fs.readFile(path.join(state.settings.leaRepoPath, proofPath), "utf8"), partial);
+    assert.equal(state.jobs.paused, saved);
+  });
+}
+
+test("Formalize all retains the adapter's explanation when checkpoint admission fails", async () => {
+  const message = "Saved agent state is unavailable. Use Re-formalize to start a new attempt.";
+  const { state, payload } = await pausedContinuationFixture(async (url, options, adapterFetch) => {
+    return String(url).endsWith("/continue") ? jsonResponse(409, { detail: message }) : adapterFetch(url, options);
+  });
+  const { resume, resumeRunId, ...target } = payload;
+  const result = await handleFormalizeAll({ overleafProjectId: payload.overleafProjectId, items: [target] }, state);
+  const batch = state.repairBatches[result.body.batchId];
+  await waitFor(() => batch.done);
+  assert.equal(batch.items[0].reason, "checkpoint_continuation_rejected");
+  assert.equal(batch.items[0].detail, `HTTP 409: ${message}`);
+  assert.deepEqual(Object.keys(state.jobs), ["paused"], "A rejected Resume must preserve the saved attempt");
+});
 
 for (const delayedProjection of [false,true]) for (const mode of ["single", "batch"]) test(`${mode} formalization coordinates L once, resumes A, and B reuses L${delayedProjection?' after delayed SQL readiness':''}`, async () => {
   const calls = [], segments = [], admissions = [];

@@ -205,7 +205,9 @@ export function ChatThread({
   const formalizations = useProofSession((s) => s.formalizations);
   const formalizationScope = useProofSession((s) => s.formalizationScope);
   const isRunning = useProofSession((s) => s.isRunning);
+  const stoppingRunId = useProofSession((s) => s.stoppingRunId);
   const currentRunId = useProofSession((s) => s.currentRunId);
+  const isStopping = Boolean(currentRunId && stoppingRunId === currentRunId);
   const approvals = useProofSession((s) => s.approvals);
   const approvalBusy = useProofSession((s) => s.approvalBusy);
   // Sub-agents (item 24): this session's children (the spawn node lists them) and, if
@@ -891,9 +893,13 @@ export function ChatThread({
           <div className="crow">
             <ComposerScopeChip session={session} />
             {isRunning ? (
-              <button className="send stop" onClick={onInterrupt} title="Stop the run">
-                ◼
-              </button>
+              <>
+                {isStopping && <span role="status" aria-live="polite">Stopping…</span>}
+                <button className="send stop" onClick={onInterrupt} disabled={isStopping}
+                  aria-label={isStopping ? 'Stopping the run' : 'Stop the run'} title={isStopping ? 'Stopping the run' : 'Stop the run'}>
+                  ◼
+                </button>
+              </>
             ) : (
               <button className="send" onClick={onSubmit} disabled={!draft.trim() || submissionBusy} title={submissionBusy ? 'Preparing your message' : 'Send'}>
                 ↑
@@ -1105,6 +1111,8 @@ function SpawnGroup({
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [stopping, setStopping] = useState<Set<string>>(new Set());
+  const pendingStops = useRef(new Set<string>());
+  const [stopErrors, setStopErrors] = useState<Record<string, string>>({});
   // E1: ephemeral live state per running child, fed by `subagent_progress` SSE.
   const progress = useProofSession((s) => s.subagentProgress);
   // Sub-agents that could not run (API/config error, crash) → the real error message,
@@ -1121,9 +1129,18 @@ function SpawnGroup({
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
-  const stop = (id: string) => {
+  const stop = async (id: string) => {
+    if (pendingStops.current.has(id)) return;
+    pendingStops.current.add(id);
     setStopping((prev) => new Set(prev).add(id));
-    interruptSubagent(id).catch(() => {}); // 404 (already done) is fine; the row will settle on finish
+    setStopErrors((prev) => ({ ...prev, [id]: '' }));
+    try {
+      await interruptSubagent(id);
+    } catch (err) {
+      pendingStops.current.delete(id);
+      setStopping((prev) => { const next = new Set(prev); next.delete(id); return next; });
+      setStopErrors((prev) => ({ ...prev, [id]: err instanceof Error ? err.message : 'Could not stop this sub-agent. Try again.' }));
+    }
   };
   return (
     <details className="spawn" open>
@@ -1174,11 +1191,13 @@ function SpawnGroup({
               className={`kid ${isOpen ? 'open' : ''} ${running ? 'running' : ''} ${error ? 'errored' : ''}`}
               key={child.id}
             >
-              <button className="kid-head" onClick={() => toggle(child.id)}>
+              <div className="kid-head">
+                <button className="kid-toggle" onClick={() => toggle(child.id)} aria-expanded={isOpen}>
                 <span className={`caret ${isOpen ? 'open' : ''}`}>▸</span>
                 <span className={`dot ${badge.dot}`} />
                 <span className="rtitle">{child.title}</span>
                 {child.role && <span className="role">{child.role.split('-')[0]}</span>}
+                </button>
                 {running && (
                   <button
                     className="kid-stop"
@@ -1189,11 +1208,12 @@ function SpawnGroup({
                     }}
                     title="Stop this sub-agent (the coordinator keeps running)"
                   >
-                    {stopping.has(child.id) ? 'stopping…' : 'Stop'}
+                    {stopping.has(child.id) ? 'Stopping…' : 'Stop'}
                   </button>
                 )}
                 <span className={`verdict ${badge.cls}`}>{badge.text}</span>
-              </button>
+              </div>
+              {stopErrors[child.id] && <div className="kid-error" role="alert">{stopErrors[child.id]} Try Stop again.</div>}
               {!isOpen && preview && (
                 <div className={`kid-preview ${error ? 'err' : ''}`}>{preview}</div>
               )}

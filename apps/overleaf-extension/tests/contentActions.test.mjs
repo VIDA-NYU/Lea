@@ -4044,6 +4044,78 @@ test("report history exposes loading, empty, and retryable error states", async 
   assert.equal(errorHarness.hasButtonText("Reload reports"), true);
 });
 
+for (const failure of ['http', 'network']) {
+  test(`batch Stop shows pending feedback and restores retry after ${failure} failure`, async () => {
+    let resolve, reject, attempts=0, retryAllowed=false;
+    const request=new Promise((a,b)=>{resolve=a;reject=b});
+    const items=[1,2].map(n=>({id:`stop-${n}`,kind:'theorem',label:`stop_${n}`,status:'missing-stub',
+      sourceFile:'main.tex',naturalLanguageLatex:'True.',leanKind:'theorem',formalizable:true}));
+    const batch={ok:true,batchId:'stop-retry',operation:'formalize',done:false,running:true,pausedOn:null,
+      items:items.map((item,index)=>({targetKind:'theorem',targetLabel:item.label,state:index?'pending':'running'}))};
+    const harness=createContentHarness({status:'unformalized'},{},{locationPath:'/project/project-1',
+      manifest:{ok:true,rootFile:'main.tex',items,diagnostics:[]},targetBatch:batch,
+      fetchOverride:async url=>{
+        if(!url.endsWith('/lean-pane/repair/all/cancel'))return;
+        attempts++;
+        if(!retryAllowed)return request;
+        return {ok:true,json:async()=>({...batch,done:true,canceled:true,running:false,items:batch.items.map(item=>({...item,state:'canceled'}))})};
+      }});
+    await harness.loadVisibleTheorems();harness.clickPaneTrigger();await flushPromises();
+    harness.clickButtonText('Formalize all (2)');await flushPromises();
+    harness.clickButtonText('Stop');await flushPromises();
+    const pending=harness.document.body.querySelector('.ol-lean-stop-batch-button');
+    assert.equal(pending.textContent,'Stopping…');assert.equal(pending.disabled,true);assert.equal(attempts,1);
+    if(failure==='http')resolve({ok:false,status:503,json:async()=>({message:'Adapter unavailable',batch:{...batch,stopping:true,cancelError:'Adapter unavailable'}})});
+    else reject(new Error('Companion offline'));
+    await flushPromises();
+    assert.match(harness.bodyText(),failure==='http'?/Adapter unavailable/:/Companion offline/);
+    const retry=harness.document.body.querySelector('.ol-lean-stop-batch-button');
+    assert.equal(retry.textContent,'Stop');assert.equal(retry.disabled,false);
+    const failedAttempts=attempts;
+    assert.equal(failedAttempts,failure==='network'?2:1);
+    retryAllowed=true;
+    harness.clickButtonText('Stop');await flushPromises();assert.equal(attempts,failedAttempts+1);
+    assert.match(harness.batchQueue().text,/Stopped/);
+  });
+}
+
+test("Formalize all can be launched again after stopping and dismissing its panel", async () => {
+  const items = ["first", "second"].map((label, index) => ({
+    id: `theorem:${label}:${index}`, kind: "theorem", label, status: index ? "missing-stub" : "paused",
+    sourceFile: "main.tex", naturalLanguageLatex: "True.", leanKind: "theorem", formalizable: true
+  }));
+  let starts = 0;
+  const batch = { ok: true, operation: "formalize", done: false, running: true,
+    items: items.map((item, index) => ({ targetKind: "theorem", targetLabel: item.label, state: index ? "pending" : "running" })) };
+  const h = createContentHarness({ status: "paused" }, {}, {
+    locationPath: "/project/project-1", companionSettings: { leaTexMirrorEnabled: false },
+    manifest: { ok: true, rootFile: "main.tex", items, diagnostics: [] },
+    fetchOverride(url) {
+      if (url.endsWith("/formalize/all")) return { ok: true, json: async () => ({ ...batch, batchId: `attempt-${++starts}` }) };
+      if (url.endsWith("/lean-pane/repair/all/cancel")) return { ok: true, json: async () => ({ ...batch,
+        batchId: "attempt-1", done: true, canceled: true, running: false,
+        items: batch.items.map(item => ({ ...item, state: "canceled" })) }) };
+    }
+  });
+  await h.loadVisibleTheorems({ activeTex: items.map(item =>
+    `\\begin{theorem}\n% lea: formalize label=${item.label}\nTrue.\n\\end{theorem}`
+  ).join("\n") });
+  h.clickPaneTrigger(); await flushPromises();
+  h.clickButtonText("Formalize all (2)"); await flushPromises();
+  h.clickButtonText("Stop"); await flushPromises();
+  assert.match(h.batchQueue().text, /Stopped/);
+  h.clickButtonText("Dismiss"); await flushPromises();
+  h.clickButtonText("Formalize all (2)"); await flushPromises();
+  assert.equal(starts, 2);
+  const requests = h.fetchCalls.filter(call => call.url.endsWith("/formalize/all"));
+  assert.equal(requests.length, 2);
+  const retry = JSON.parse(requests[1].options.body);
+  assert.deepEqual(retry.items.map(item => item.targetLabel), ["first", "second"]);
+  assert.ok(retry.items.every(item => !item.resume && !item.resumeRunId));
+  assert.doesNotMatch(h.batchQueue().text, /Stopped/);
+  assert.equal(h.hasButtonText("Stop"), true);
+});
+
 test("stopping a batch preserves a completed race winner and reports stopped items separately", async () => {
   const items = Array.from({ length: 4 }, (_unused, index) => {
     const number = index + 1;
@@ -4891,6 +4963,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
 
   const context = {
     AbortController,
+    AbortSignal,
     EventSource: options.EventSource,
     URL,
     URLSearchParams,

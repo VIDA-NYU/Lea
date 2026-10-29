@@ -18,6 +18,7 @@ dependencies = [
     # 1.88.1 adds the Chat→Responses bridge used by GPT-5.6 reasoning + tools.
     "litellm==1.88.1",
     "mcp==1.28.0",
+    "httpx==0.28.1",
     "pyyaml==6.0.3",  # declarative agent profiles (item 19); used directly by lea/profiles.py
 ]
 
@@ -25,7 +26,6 @@ dependencies = [
 dev = [
     "pytest==9.0.3",
     "pytest-asyncio==1.4.0",
-    "httpx==0.28.1",
 ]
 
 [tool.pytest.ini_options]

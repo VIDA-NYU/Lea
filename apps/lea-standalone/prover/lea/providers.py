@@ -24,6 +24,8 @@ from typing import Any
 import litellm
 
 from .usage import merge_details, legacy_details
+from .runctx import current_should_stop
+from .cancellation import check_cancelled, iterate_async
 
 
 @dataclass
@@ -718,7 +720,39 @@ def _stream_streaming(model: str, call: dict):
             yield _ToolMeta(tc["id"])
         tool_calls_acc.clear()
 
-    response = litellm.completion(stream=True, stream_options={"include_usage": True}, **call)
+    response = _completion(call, streaming=True)
+    try:
+        yield from _parse_stream(model, response, terminal, tool_calls_acc, reasoning_items, flush_tool_calls)
+    finally:
+        close = getattr(response, "close", None)
+        if close:
+            close()
+
+
+def _completion(call: dict, *, streaming: bool):
+    check_cancelled()
+    if current_should_stop() is None:
+        return litellm.completion(**({"stream": True, "stream_options": {"include_usage": True}} if streaming else {}), **call)
+
+    async def request():
+        response = await litellm.acompletion(
+            **({"stream": True, "stream_options": {"include_usage": True}} if streaming else {}), **call)
+        if not streaming:
+            yield response
+            return
+        try:
+            async for chunk in response:
+                yield chunk
+        finally:
+            await response.aclose()
+
+    result = iterate_async(request)
+    if streaming:
+        return result
+    return list(result)[0]
+
+
+def _parse_stream(model, response, terminal, tool_calls_acc, reasoning_items, flush_tool_calls):
     for chunk in response:
         metadata = _response_metadata(chunk)
         for key in ("model", "service_tier", "_hidden_params", "usage_cost"):
@@ -758,7 +792,7 @@ def _stream_streaming(model: str, call: dict):
 
 def _stream_blocking(model: str, call: dict):
     """Blocking path: one completion call, emitted as the same event types."""
-    response = litellm.completion(**call)
+    response = _completion(call, streaming=False)
     message = response.choices[0].message
     reasoning_items: dict[str, dict[str, Any]] = {}
     _merge_reasoning_items(reasoning_items, getattr(message, "reasoning_items", None))

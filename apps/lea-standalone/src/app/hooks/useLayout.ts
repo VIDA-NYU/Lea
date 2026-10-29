@@ -21,10 +21,10 @@ export type View =
  */
 export function useLayout() {
   const [view, setView] = useState<View>('main');
-  const [canvasCollapsed, setCanvasCollapsed] = useState(false);
+  const [canvasCollapsed, setCanvasCollapsed] = useState(() => window.innerWidth < 768);
   // Collapsible sidebar (M27) + draggable canvas width (M26), both remembered.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
-    () => window.localStorage.getItem('lea:sidebarCollapsed') === '1',
+    () => window.innerWidth < 768 || window.localStorage.getItem('lea:sidebarCollapsed') === '1',
   );
   const [canvasWidth, setCanvasWidth] = useState(() => {
     const v = Number(window.localStorage.getItem('lea:canvasWidth'));
@@ -34,7 +34,8 @@ export function useLayout() {
   const mainAreaRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    window.localStorage.setItem('lea:sidebarCollapsed', sidebarCollapsed ? '1' : '0');
+    // The narrow-screen default should not overwrite the desktop preference.
+    if (window.innerWidth >= 768) window.localStorage.setItem('lea:sidebarCollapsed', sidebarCollapsed ? '1' : '0');
   }, [sidebarCollapsed]);
   useEffect(() => {
     window.localStorage.setItem('lea:canvasWidth', String(canvasWidth));

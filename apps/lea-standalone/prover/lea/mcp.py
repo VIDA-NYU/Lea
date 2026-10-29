@@ -196,11 +196,19 @@ class MCPManager:
         """
         if not self.servers:
             return
+        from .cancellation import check_cancelled, RunCancelled
+        check_cancelled()
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="lea-mcp")
         self._thread.start()
         self._loop_ready.wait()
-        self._serve_future = asyncio.run_coroutine_threadsafe(self._serve(), self._loop)
+        from .runctx import current_should_stop
+        self._serve_future = asyncio.run_coroutine_threadsafe(self._serve(current_should_stop()), self._loop)
         self._started.wait()
+        try:
+            check_cancelled()
+        except RunCancelled:
+            self.stop()
+            raise
         # Discovery (on the loop thread) is done; register on THIS (caller) thread so the
         # tools land in the caller's per-activation registry overlay (item 27), not the
         # loop thread's context where the overlay isn't visible.
@@ -214,10 +222,18 @@ class MCPManager:
         self._loop.run_forever()
         self._loop.close()
 
-    async def _serve(self) -> None:
+    async def _serve(self, should_stop=None) -> None:
         """Open all sessions in THIS task, signal ready, park until stop, then the
         `async with` unwinds every context in this same task (anyio-safe)."""
         self._stop_event = asyncio.Event()
+        owner = asyncio.current_task()
+        async def watch_startup():
+            while True:
+                await asyncio.sleep(0.05)
+                if should_stop and should_stop():
+                    owner.cancel()
+                    return
+        watcher = asyncio.create_task(watch_startup()) if should_stop else None
         try:
             async with AsyncExitStack() as stack:
                 for name, spec in self.servers.items():
@@ -235,9 +251,13 @@ class MCPManager:
                             "message": f"{type(e).__name__}: {e}",
                             "stderr_tail": _tail_of(capture),
                         })
+                if watcher:
+                    watcher.cancel()
                 self._started.set()
                 await self._stop_event.wait()
         finally:
+            if watcher:
+                watcher.cancel()
             self._started.set()  # ensure start() unblocks even if setup raised
 
     async def _connect_one(self, stack: AsyncExitStack, name: str, spec: dict) -> None:
@@ -355,10 +375,23 @@ class MCPManager:
 
     def _make_handler(self, server: str, tool: str):
         def handler(args: dict) -> str:
+            from concurrent.futures import TimeoutError
+            from .cancellation import check_cancelled
+            check_cancelled()
             if self._loop is None:
                 raise McpError(f"MCP loop not running for {server}__{tool}")
             fut = asyncio.run_coroutine_threadsafe(self._acall(server, tool, args), self._loop)
-            return fut.result()
+            try:
+                while True:
+                    check_cancelled()
+                    try:
+                        return fut.result(timeout=0.05)
+                    except TimeoutError:
+                        if fut.done():
+                            raise
+            finally:
+                if not fut.done():
+                    fut.cancel()
 
         return handler
 
@@ -366,7 +399,18 @@ class MCPManager:
         session = self._sessions.get(server)
         if session is None:
             raise McpError(f"no live MCP session for server {server!r}")
-        result = await session.call_tool(tool, args or {})
+        # call_tool enters send_request before its first await, assigning this
+        # id on the same event loop. Cancellation must notify the server too;
+        # cancelling only our Future leaves its tool working in the background.
+        request_id = session._request_id
+        try:
+            result = await session.call_tool(tool, args or {})
+        except asyncio.CancelledError:
+            from mcp import types
+            await asyncio.wait_for(session.send_notification(types.ClientNotification(
+                types.CancelledNotification(params=types.CancelledNotificationParams(
+                    requestId=request_id, reason="Run stopped")))), timeout=1)
+            raise
         return _stringify(result)
 
     def is_alive(self) -> bool:

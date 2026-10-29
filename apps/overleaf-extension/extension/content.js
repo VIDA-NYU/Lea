@@ -365,6 +365,8 @@
   let leanPaneChatRunId = "";
   let leanPaneChatLoading = false;
   let leanPaneChatSending = false;
+  let leanPaneChatStopping = false;
+  let leanPaneBatchStoppingId = null;
   let leanPaneChatError = null;
   let leanPaneChatOptimistic = [];
   let leanPaneChatPollTimer = null;
@@ -4521,21 +4523,32 @@
   // settles); keep polling so the panel reflects the final stopped state.
   async function cancelRepairBatch() {
     const batchId = leanPaneRepairBatch?.batchId;
-    if (!batchId) return;
+    if (!batchId || leanPaneBatchStoppingId === batchId) return;
+    leanPaneBatchStoppingId = batchId;
+    leanPaneRepairError = null;
+    renderLeanPaneManifest(lastLeanPaneManifest);
     try {
       const baseUrl = await chatCompanionBaseUrl();
       const response = await companionFetch(`${baseUrl}/lean-pane/repair/all/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batchId })
+        body: JSON.stringify({ batchId }), signal: AbortSignal.timeout(12000)
       });
       const payload = await response.json().catch(() => ({}));
-      if (response.ok) leanPaneRepairBatch = { ...payload, overleafProjectId: leanPaneRepairBatch?.overleafProjectId };
+      if (leanPaneRepairBatch?.batchId !== batchId) return;
+      if (!response.ok || payload.ok === false) {
+        if (payload.batch) leanPaneRepairBatch = { ...payload.batch, overleafProjectId: leanPaneRepairBatch?.overleafProjectId };
+        throw new Error(payload.message || payload.error || `Could not stop the batch (HTTP ${response.status}). Try Stop again.`);
+      }
+      leanPaneRepairBatch = { ...payload, overleafProjectId: leanPaneRepairBatch?.overleafProjectId };
       startRepairBatchPolling({ immediate: true });
     } catch (error) {
+      if (leanPaneRepairBatch?.batchId !== batchId) return;
       leanPaneRepairError = { itemKey: "batch", message: normalizeErrorMessage(error) };
+    } finally {
+      if (leanPaneBatchStoppingId === batchId) leanPaneBatchStoppingId = null;
+      renderLeanPaneManifest(lastLeanPaneManifest);
     }
-    renderLeanPaneManifest(lastLeanPaneManifest);
   }
 
   // Project-level "Stub all" / "Formalize all" launchers, above the item tree.
@@ -4927,11 +4940,12 @@
       }
     }
 
-    if (leanPaneRepairError && leanPaneRepairError.itemKey === "batch") {
-      const dismissKey = leanPaneErrorKey("repair-dispatch", "batch", leanPaneRepairError.message);
+    const batchError = leanPaneRepairError?.itemKey === "batch" ? leanPaneRepairError.message : batch.cancelError;
+    if (batchError) {
+      const dismissKey = leanPaneErrorKey("repair-dispatch", "batch", batchError);
       const line = document.createElement("p");
       line.className = "ol-lean-project-breakage-failed";
-      line.textContent = leanPaneRepairError.message;
+      line.textContent = batchError;
       if (!dismissedLeanPaneErrorKeys.has(dismissKey)) {
         panel.appendChild(makeLeanPaneErrorDismissible(line, {
           errorKey: dismissKey,
@@ -4941,14 +4955,14 @@
     }
     const controls = document.createElement("div");
     controls.className = "ol-lean-project-detail-actions";
-    // Stop is available while the batch is actively working (not paused, not
-    // finished, not already stopping): it halts further items and interrupts
-    // the one mid-run.
-    if (!batch.done && !batch.pausedOn && !batch.stopping) {
+    // A failed stop remains retryable while the batch's cancel flag prevents
+    // further items from starting.
+    if (!batch.done && !batch.pausedOn && (!batch.stopping || batch.cancelError || leanPaneRepairError?.itemKey === "batch")) {
       const stop = document.createElement("button");
       stop.type = "button";
       stop.className = "ol-lean-secondary-button ol-lean-stop-batch-button";
-      stop.textContent = "Stop";
+      stop.textContent = leanPaneBatchStoppingId === batch.batchId ? "Stopping…" : "Stop";
+      stop.disabled = leanPaneBatchStoppingId === batch.batchId;
       stop.addEventListener("click", () => { cancelRepairBatch(); });
       controls.appendChild(stop);
     }
@@ -5992,6 +6006,7 @@
     leanPaneChatLoading = false;
     leanPaneChatSending = false;
     leanPaneChatError = null;
+    leanPaneChatStopping = false;
     leanPaneChatOptimistic = [];
     leanPaneChatPollFailures = 0;
   }
@@ -6014,6 +6029,7 @@
     leanPaneChatPollFailures = 0;
     leanPaneChatLoading = true;
     leanPaneChatSending = false;
+    leanPaneChatStopping = false;
     ensureChatPanel();
     renderChatPanel();
     const input = leanPaneChatPanel?.querySelector(".ol-lean-chat-input");
@@ -6158,6 +6174,7 @@
         const wasRunning = leanPaneChatSending;
         leanPaneChatSending = false;
         // A finished chat run may have changed the item's artifact/status.
+        leanPaneChatStopping = false;
         if (wasRunning) refreshLeanPaneNow({ background: true }).catch(() => {});
         if (payload.leanCheckRuntimePolling) startChatPolling();
       }
@@ -6171,16 +6188,29 @@
   }
 
   async function stopChatRun() {
+    if (leanPaneChatStopping) return;
     const token = leanPaneChatToken;
+    const runId = leanPaneChatRunId;
+    const sessionId = leanPaneChatSessionId;
+    leanPaneChatStopping = true;
+    leanPaneChatError = null;
+    renderChatPanel();
     try {
       const baseUrl = await chatCompanionBaseUrl();
-      await companionFetch(`${baseUrl}/lean-pane/chat/interrupt`, {
+      const response = await companionFetch(`${baseUrl}/lean-pane/chat/interrupt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runId: leanPaneChatRunId, sessionId: leanPaneChatSessionId })
+        body: JSON.stringify({ runId, sessionId }),
+        signal: AbortSignal.timeout(10000)
       });
-    } catch {
-      // best-effort; the next poll reflects the actual run state
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.ok === false) throw new Error(payload.message || payload.error || `Could not stop Lea (HTTP ${response.status}). Try Stop again.`);
+    } catch (error) {
+      if (token !== leanPaneChatToken) return;
+      leanPaneChatStopping = false;
+      leanPaneChatError = error;
+      renderChatPanel();
+      return;
     }
     if (token === leanPaneChatToken) pollChatSession().catch(() => {});
   }
@@ -6270,7 +6300,11 @@
           transcript.appendChild(renderChatBubble(message));
         }
       }
-      if (leanPaneChatSending) transcript.appendChild(chatNotice("Lea is working…"));
+      if (leanPaneChatSending) {
+        const notice = chatNotice(leanPaneChatStopping ? "Stopping…" : "Lea is working…");
+        notice.setAttribute("role", "status");
+        transcript.appendChild(notice);
+      }
       // Self-repair: the last completed run's downstream impact (companion
       // Phase 1 post-run cascade) -- broken dependents + one repair action.
       for (const diagnostic of leanPaneChatResponse?.leanCheckDiagnostics || []) {
@@ -6292,6 +6326,7 @@
     if (leanPaneChatError) {
       const error = document.createElement("p");
       error.className = "ol-lean-chat-error";
+      error.setAttribute("role", "alert");
       error.textContent = normalizeErrorMessage(leanPaneChatError);
       panel.appendChild(makeLeanPaneErrorDismissible(error, {
         onDismiss: () => {
@@ -6319,11 +6354,12 @@
 
     const controls = document.createElement("div");
     controls.className = "ol-lean-chat-controls";
-    if (leanPaneView.chatRunActive(state)) {
+    if (leanPaneView.chatRunActive(state) || leanPaneChatStopping || (leanPaneChatSending && leanPaneChatError)) {
       const stop = document.createElement("button");
       stop.type = "button";
       stop.className = "ol-lean-secondary-button ol-lean-chat-stop";
-      stop.textContent = "Stop";
+      stop.textContent = leanPaneChatStopping ? "Stopping…" : "Stop";
+      stop.disabled = leanPaneChatStopping;
       stop.addEventListener("click", stopChatRun);
       controls.appendChild(stop);
     } else {

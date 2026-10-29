@@ -7,6 +7,7 @@ so existing callers (CLI, eval) keep working unchanged.
 """
 
 import contextvars
+from contextlib import closing
 import hashlib
 import json
 import threading
@@ -22,6 +23,7 @@ from . import condenser
 from .stall import StallDetector
 from . import diagnostics
 from .runctx import run_context
+from .cancellation import RunCancelled, check_cancelled
 from .prompt import compose_role_prompt, domain_cascade_hint, load_system_prompt
 from .providers import stream as _provider_stream, TextDelta, ToolCall, Done, _ToolMeta, Usage
 from . import safeverify
@@ -62,6 +64,7 @@ _PARALLEL_SAFE_TOOLS = frozenset({"read_file", "search_mathlib"})
 # silently retried after a crash.
 _checkpoint_hook = contextvars.ContextVar("lea_checkpoint_hook", default=None)
 _checkpoint_turn = contextvars.ContextVar("lea_checkpoint_turn", default=0)
+_cancelled_model = contextvars.ContextVar("lea_cancelled_model", default=None)
 
 
 def _record(event: str, payload: dict) -> None:
@@ -71,17 +74,29 @@ def _record(event: str, payload: dict) -> None:
 
 
 def stream(*args, **kwargs):
+    try:
+        check_cancelled()
+    except RunCancelled:
+        return
     invocation_id = uuid.uuid4().hex
     _record("invocation_start", {"id": invocation_id, "kind": "model", "name": "stream",
                                  "turn": _checkpoint_turn.get(), "input": {"model": args[0] if args else None}})
     completed = False
-    for item in _provider_stream(*args, **kwargs):
-        if isinstance(item, Done):
-            _record("invocation_result", {"id": invocation_id, "result": {"completed": True,
-                "input_tokens": item.usage.input_tokens, "output_tokens": item.usage.output_tokens,
-                "cost_usd": item.cost, "usage_details": item.usage_details, "raw_usage": item.raw_usage}})
-            completed = True
-        yield item
+    try:
+        with closing(_provider_stream(*args, **kwargs)) as response:
+            for item in response:
+                if isinstance(item, Done):
+                    _record("invocation_result", {"id": invocation_id, "result": {"completed": True,
+                        "input_tokens": item.usage.input_tokens, "output_tokens": item.usage.output_tokens,
+                        "cost_usd": item.cost, "usage_details": item.usage_details, "raw_usage": item.raw_usage}})
+                    completed = True
+                yield item
+    except RunCancelled:
+        state = _cancelled_model.get()
+        if state is not None and not completed:
+            state[0] = True
+        _record("invocation_result", {"id": invocation_id, "result": {"completed": completed, "cancelled": True}})
+        return
     if not completed:
         _record("invocation_result", {"id": invocation_id, "result": {"completed": True}})
 
@@ -538,12 +553,11 @@ def run_events(
     only asks and honors the answer. `gate=None` → no gating.
 
     **Interrupt (D18):** `should_stop` is an optional `() -> bool` the caller flips to
-    request a stop. It's checked at each turn boundary (one turn = one UI step), so the
-    stop is *cooperative and clean* — the current step's write is already committed and
-    the canvas is accurate — not a hard kill. On stop the loop yields a terminal
-    `Finished("interrupted", ...)` carrying the transcript so far (so a follow-up still
-    has a coherent base). An in-flight turn is not interrupted mid-flight; the stop
-    lands at the next turn boundary.
+    request a stop. It is checked before dispatch and while waiting on external
+    work. On stop the loop preserves observed progress and yields a terminal
+    `Finished("interrupted", ...)` carrying the transcript so far. Provider requests,
+    shell process groups, Lean checks and MCP requests also observe cancellation
+    while running; no further tool work is dispatched after Stop.
 
     Owns MCP lifecycle: starts configured servers (which register their tools)
     before the inner loop resolves the toolset, and stops them when the event
@@ -567,7 +581,13 @@ def run_events(
         # below) — only the connection is shared, so a warm Lean server survives the
         # run boundary instead of costing ~35s again on the next message.
         from .mcp import acquire
-        mcp_manager = acquire(config.mcp_servers)
+        try:
+            mcp_manager = acquire(config.mcp_servers)
+        except RunCancelled:
+            pop_scope(registry_scope)
+            yield Finished("interrupted", "Run stopped.", 0, session_id or "", config.model,
+                           Usage(), 0, {"messages": list(messages)})
+            return
         if mcp_manager is not None:
             mcp_manager.register_discovered()
         # v2.5 A3 — a server that failed to start used to be a stderr warning only, so the
@@ -621,6 +641,7 @@ def run_events(
     # ContextVars stay set through every tool call delegated to the inner loop.
     run_key = session_id or uuid.uuid4().hex[:12]
     checkpoint_token = _checkpoint_hook.set(checkpoint_callback)
+    cancelled_token = _cancelled_model.set([False])
     try:
         # `depth` (item 18) records this activation's nesting; `config` is stashed so
         # spawn_subagent can derive a child config. Both ride the ContextVars through
@@ -645,6 +666,7 @@ def run_events(
                 diagnostics.end_scope(diag_token)
                 subagents.end_results_scope(results_token)
     finally:
+        _cancelled_model.reset(cancelled_token)
         _checkpoint_hook.reset(checkpoint_token)
         # A8: do NOT stop the manager — the pool owns its lifetime, and stopping it here
         # is exactly what made every run pay the cold-start again. `pop_scope` drops this
@@ -805,6 +827,11 @@ def _run_events_inner(
             return True
         return False
 
+    def interrupted():
+        return Finished("interrupted", "Run stopped.", turn, session_id, model,
+                        total_usage, total_cost, transcript(turn),
+                        usage_status="partial" if (_cancelled_model.get() or [False])[0] else "final")
+
     def failed_gate():
         nonlocal reporting_stop
         if (yield from dependency_gate()):
@@ -824,6 +851,9 @@ def _run_events_inner(
     # prior assistant turn, not message count, stays correct even when the caller
     # prepends project context to a fresh run.)
     assistant_mode = bool(resume_state.get("assistant_mode")) if resume_state else False
+    if should_stop and should_stop():
+        yield interrupted()
+        return
     if resume_state and resume_state.get("stage") == "final_result":
         final = resume_state["final_result"]
         kind, detail = final['kind'], final['detail']
@@ -860,13 +890,10 @@ def _run_events_inner(
     if resume_state is None or resume_state.get("stage") == "before_intent":
         save_position("turn_boundary")
     while True:
-        # Cooperative interrupt (D18): the human asked to stop. `turn` is the count
-        # of completed turns, so the last step's write is already committed and the
-        # canvas is accurate — a clean stop, not a hard kill. The transcript so far
-        # rides out so a follow-up still has a coherent base.
+        # Stop before starting more work, retaining the transcript so a follow-up
+        # can use the progress already observed.
         if should_stop is not None and should_stop():
-            yield Finished("interrupted", "Run stopped at a turn boundary.",
-                           turn, session_id, model, total_usage, total_cost, transcript(turn))
+            yield interrupted()
             return
 
         if config.status_reporting and ((config.max_turns and turn >= config.max_turns)
@@ -888,8 +915,13 @@ def _run_events_inner(
             _record("invocation_start", {"id": compaction_id, "kind": "model",
                                          "name": "compaction", "turn": turn,
                                          "input": {"last_input_tokens": last_input_tokens}})
-            result = condenser.condense(messages, config, model=model,
-                                        last_input_tokens=last_input_tokens)
+            try:
+                result = condenser.condense(messages, config, model=model,
+                                            last_input_tokens=last_input_tokens)
+            except RunCancelled:
+                _cancelled_model.get()[0] = True
+                yield interrupted()
+                return
             _record("invocation_result", {"id": compaction_id,
                 "result": {"changed": result.changed, "raw_usage": result.usage.raw_usages,
                            "usage_details": result.usage.usage_details, "cost_usd": result.cost}})
@@ -904,6 +936,10 @@ def _run_events_inner(
                 # Reflect the condensed size so we don't immediately re-trigger next turn on
                 # the stale pre-compaction count; the next real `Done` refreshes it anyway.
                 last_input_tokens = result.after_tokens
+
+        if should_stop and should_stop():
+            yield interrupted()
+            return
 
         turn += 1
         _checkpoint_turn.set(turn)
@@ -937,6 +973,9 @@ def _run_events_inner(
                 summary, s_usage, s_cost = _summarize_on_max_turns(model, system, messages, config)
             except Exception:  # noqa: BLE001 — a terminal-path best effort, never fatal
                 summary, s_usage, s_cost = "", Usage(), 0.0
+            if should_stop and should_stop():
+                yield interrupted()
+                return
             total_usage.add(s_usage)
             total_cost += s_cost
             if s_usage.input_tokens or s_usage.output_tokens or s_cost or s_usage.usage_details:
@@ -1022,6 +1061,14 @@ def _run_events_inner(
 
             if current_text:
                 assistant_parts.append({"type": "text", "text": current_text})
+            if should_stop and should_stop():
+                # Discard unfinished tool calls; retain the visible partial response
+                # without leaving dangling calls in the next run's transcript.
+                partial = [p for p in assistant_parts if p.get("type") == "text"]
+                if partial:
+                    messages.append({"role": "assistant", "content": partial})
+                yield interrupted()
+                return
             if reasoning_items:
                 # Internal continuation state for the Responses API.  It is persisted
                 # with this exact assistant turn but never rendered as user-facing text.
@@ -1123,6 +1170,9 @@ def _run_events_inner(
                 messages.append({"role": "user", "content": [tool_result]})
                 save_position("model_complete", assistant_parts=assistant_parts, tool_calls=[],
                               completed_tools={-1: result})
+            if should_stop and should_stop():
+                yield interrupted()
+                return
             if proof_state.latest_proof_path and not proof_state.latest_proof_verified():
                 if config.prompt_variant == "interactive":
                     # Collaborator: the proof isn't actually done (errors, or still
@@ -1154,6 +1204,9 @@ def _run_events_inner(
             # are already reported through Lea Status and its description.
             result_kind = proof_state.selection.get("kind") or "proved"
             result_detail = None
+            if should_stop and should_stop():
+                yield interrupted()
+                return
             if not proof_state.latest_proof_verified():
                 yield Finished("assistant", final_text, turn, session_id, model,
                                total_usage, total_cost, transcript(turn),
@@ -1189,7 +1242,10 @@ def _run_events_inner(
             handler = tool_handlers.get(tc["name"])
             if handler:
                 try:
+                    check_cancelled()
                     r = handler(tc["args"])
+                except RunCancelled:
+                    r = "Error: tool cancelled because the run was stopped."
                 except Exception as e:  # noqa: BLE001 — a tool error is a result, not a crash
                     r = f"Error: tool '{tc['name']}' raised {type(e).__name__}: {e}"
                     diagnostics.report(
@@ -1243,6 +1299,10 @@ def _run_events_inner(
         for idx, tc in enumerate(tool_calls):
             tc["_index"] = idx
             if idx in results_by_idx:
+                continue
+            if should_stop and should_stop():
+                refused_idx.add(idx)
+                results_by_idx[idx] = "Error: tool cancelled because the run was stopped."
                 continue
             approved = True
             if gate is not None and gate(tc["name"], tc["args"]):
@@ -1334,8 +1394,7 @@ def _run_events_inner(
                     refused_idx.add(idx)
                     results_by_idx[idx] = "Error: tool deferred because the preceding material Lea Status update was rejected. Publish the finding successfully before continuing."
                     continue
-                if (config.status_reporting or config.project_library) and (reporting_stop or (should_stop and should_stop())):
-                    reporting_stop = reporting_stop or "interrupted"
+                if reporting_stop or (should_stop and should_stop()):
                     refused_idx.add(idx)
                     results_by_idx[idx] = "Error: tool canceled because the run was paused."
                     continue
@@ -1494,6 +1553,9 @@ def _run_events_inner(
         messages.append({"role": "user", "content": tool_results})
         save_position("turn_boundary")
         saved_material_rejection = False
+        if should_stop and should_stop():
+            yield interrupted()
+            return
         if reporting_stop:
             yield Finished(reporting_stop, "Formalization waiting for a canonical project dependency." if reporting_stop == "dependency_wait" else "Formalization paused; inspect the latest Lea Status for details.",
                            turn, session_id, model, total_usage, total_cost, transcript(turn))
