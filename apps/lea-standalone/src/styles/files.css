@@ -1,2 +1,126 @@
 /* files.css — owned by the "files" work package (docs/PLAN-ui-redesign.md).
-   Imported by its components; keep lea-v2.css untouched. */
+   Imported by its components; keep lea-v2.css untouched.
+
+   Tokens from lea-v2.css: --bg --panel --panel-2 --ink --ink-2 --muted --line
+   --line-2 --accent --green --amber. The ones below are missing there and are
+   defined under the package's own prefix (listed in the report). The status
+   hues match the plan: proved --green, sorry --amber, error #b4473b, running
+   #3b5fa8, unchecked outline #a9a9b2 — and every dot sits beside a label. */
+:root {
+  --files-error: #b4473b;
+  --files-running: #3b5fa8;
+  --files-running-ink: #2a4780;
+  --files-running-soft: #e8eefb;
+  --files-running-line: #c9d6f0;
+  --files-unchecked: #a9a9b2;
+  --files-sorry-ink: #8a5a00;
+  --files-hover: #efeff2;
+  --files-line-strong: #d4d4d8;
+  --files-shadow: 0 12px 32px rgba(24, 24, 27, 0.16);
+  --files-mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* ── Shared ─────────────────────────────────────────────────────────────── */
+.files-ico { flex: none; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.files-mono { font-family: var(--files-mono); }
+.files-kbd { font-family: var(--files-mono); font-size: 10.5px; line-height: 1.3; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; background: var(--panel); }
+.c-green { color: var(--green); }
+.c-red { color: var(--files-error); }
+.c-amber { color: var(--files-sorry-ink); }
+.c-blue { color: var(--files-running); }
+
+.files-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; display: inline-block; box-sizing: border-box; }
+.files-dot-proved { background: var(--green); }
+.files-dot-sorry { background: var(--amber); }
+.files-dot-error { background: var(--files-error); }
+.files-dot-running { background: var(--files-running); }
+.files-dot-unchecked { background: var(--panel); border: 1.5px solid var(--files-unchecked); }
+
+/* Portal menu (context menu, project switcher, breadcrumb folders) */
+.files-menu { position: fixed; z-index: 60; box-sizing: border-box; padding: 6px; background: var(--panel); border: 1px solid #e4e4e7; border-radius: 10px; box-shadow: var(--files-shadow); outline: none; max-height: calc(100vh - 16px); overflow: auto; font-size: 12.5px; color: var(--ink); }
+.files-menu-head { display: flex; align-items: center; gap: 6px; padding: 4px 10px 8px; font-size: 11.5px; color: var(--muted); }
+.files-menu-head .files-menu-count { margin-left: auto; }
+.files-mi-wrap { display: contents; }
+.files-mi { display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; color: var(--ink); background: none; border: none; padding: 7px 10px; border-radius: 6px; text-align: left; cursor: pointer; }
+.files-mi.is-active { background: var(--line-2); }
+.files-mi.is-disabled { color: var(--muted); cursor: default; opacity: 0.6; }
+.files-mi.is-danger { color: var(--files-error); }
+.files-mi.is-muted { color: var(--muted); }
+.files-mi.is-current { color: var(--ink); font-weight: 500; }
+.files-mi-icon { display: inline-flex; flex: none; }
+.files-mi-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; }
+.files-mi-hint { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.files-hr { height: 1px; background: var(--line); margin: 5px 4px; }
+.files-menu-foot { display: flex; align-items: center; gap: 10px; padding: 8px 10px 4px; margin-top: 4px; font-size: 10.5px; color: var(--muted); border-top: 1px solid var(--line); }
+.files-menu-foot .files-foot-right { margin-left: auto; }
+
+/* ── Files rail (frame 5) ───────────────────────────────────────────────── */
+.files-rail { width: 260px; flex: none; height: 100%; min-height: 0; position: relative; display: flex; flex-direction: column; background: var(--bg); border-right: 1px solid var(--line); font-size: 12.5px; color: var(--ink-2); }
+.files-rail-head { height: 40px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 6px 0 8px; }
+.files-project-btn { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font: inherit; font-size: 13px; font-weight: 600; color: var(--ink); background: none; border: none; padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+.files-project-btn:hover, .files-project-btn[aria-expanded="true"] { background: var(--line-2); }
+.files-project-btn .files-ico { color: var(--muted); }
+.files-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-rail-spacer { flex: 1; }
+.files-ibtn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--muted); cursor: pointer; }
+.files-ibtn:hover { background: var(--line-2); color: var(--ink); }
+.files-ibtn:disabled { opacity: 0.4; cursor: default; }
+.files-ibtn:focus-visible, .files-project-btn:focus-visible, .files-goto:focus-visible, .files-row:focus-visible, .path-crumb:focus-visible, .quick-open-prefix:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.files-goto-wrap { flex: none; padding: 0 10px 8px; }
+.files-goto { display: flex; align-items: center; gap: 6px; width: 100%; height: 30px; box-sizing: border-box; padding: 0 8px; font: inherit; font-size: 12.5px; color: var(--muted); text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; cursor: text; }
+.files-goto:hover { border-color: var(--files-line-strong); }
+.files-goto-text { flex: 1; min-width: 0; }
+
+.files-grp { flex: none; padding: 12px 12px 4px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.files-rows { flex: none; padding: 0 6px; max-height: 32vh; overflow: auto; }
+.files-tree { flex: 1; min-height: 0; overflow: auto; padding: 0 6px 6px; }
+.files-row { display: flex; align-items: center; gap: 7px; width: 100%; height: 26px; box-sizing: border-box; padding: 0 8px; font: inherit; font-size: 12.5px; color: var(--ink-2); white-space: nowrap; text-align: left; background: none; border: none; border-radius: 6px; cursor: pointer; }
+.files-row:hover, .files-row.is-context { background: var(--files-hover); }
+.files-row.is-active { background: var(--files-running-soft); color: var(--ink); font-weight: 500; }
+.files-row.is-muted { color: var(--muted); }
+.files-row .files-ico { color: var(--muted); }
+.files-row.is-muted .files-ico { color: #a1a1aa; }
+.files-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.files-row-name.files-mono { font-size: 12px; }
+.files-row-right { flex: none; font-family: var(--files-mono); font-size: 11px; color: var(--muted); }
+.files-row-right .c-red { color: var(--files-error); }
+
+.files-empty { padding: 6px 12px; font-size: 12px; color: var(--muted); }
+.files-err { color: var(--files-error); }
+.files-legend { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 14px 10px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--line); }
+.files-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+
+/* ── Breadcrumbs (frame 6) ──────────────────────────────────────────────── */
+.path-crumbs { display: flex; align-items: center; gap: 1px; min-width: 0; }
+.path-crumb { display: inline-flex; align-items: center; gap: 3px; padding: 2px 5px; font-family: var(--files-mono); font-size: 11.5px; color: var(--muted); white-space: nowrap; background: none; border: none; border-radius: 5px; cursor: pointer; }
+.path-crumb:hover, .path-crumb.is-open { background: var(--line-2); color: var(--ink); }
+.path-crumb.is-file { color: var(--ink); }
+.path-crumb.is-muted { color: var(--muted); cursor: default; }
+.path-crumb.is-muted:hover { background: none; }
+.path-sep { color: #b4b4bc; font-size: 12px; line-height: 1; }
+
+/* ── ⌘P palette (frame 7) ───────────────────────────────────────────────── */
+.quick-open-backdrop { position: fixed; inset: 0; z-index: 70; display: flex; align-items: flex-start; justify-content: center; padding-top: 56px; background: rgba(24, 24, 27, 0.18); }
+.quick-open { display: flex; flex-direction: column; width: 620px; max-width: calc(100vw - 32px); max-height: calc(100vh - 96px); overflow: hidden; background: var(--panel); border: 1px solid #e4e4e7; border-radius: 10px; box-shadow: var(--files-shadow); font-size: 12.5px; color: var(--ink); }
+.quick-open-head { flex: none; display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.quick-open-head .files-ico { color: var(--muted); }
+.quick-open-input { flex: 1; min-width: 0; font: inherit; font-size: 15px; color: var(--ink); background: transparent; border: none; outline: none; }
+.quick-open-prefixes { display: inline-flex; gap: 6px; }
+.quick-open-prefix { font-family: var(--files-mono); font-size: 10.5px; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; cursor: pointer; }
+.quick-open-prefix:hover, .quick-open-prefix.is-on { color: var(--ink); border-color: var(--files-line-strong); }
+.quick-open-body { flex: 1; min-height: 0; overflow: auto; padding: 6px; }
+.quick-open-grp { padding: 8px 10px 4px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.quick-open-hit { display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box; padding: 7px 10px; font: inherit; font-size: 12.5px; color: var(--ink); text-align: left; background: none; border: none; border-radius: 6px; cursor: pointer; }
+.quick-open-hit.is-active { background: var(--files-running-soft); }
+.quick-open-hit.is-disabled { color: var(--muted); cursor: default; }
+.quick-open-hit > .files-ico { color: var(--muted); }
+.quick-open-hit-main { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 1px; }
+.quick-open-hit-name { font-family: var(--files-mono); font-size: 12.5px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quick-open-hit-sub { font-family: var(--files-mono); font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quick-open-hit-right { flex: none; display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 11px; color: var(--muted); }
+.quick-open-empty { padding: 18px 12px; font-size: 12.5px; color: var(--muted); text-align: center; }
+.quick-open-foot { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px 14px 10px; font-size: 10.5px; color: var(--muted); border-top: 1px solid var(--line); }
+.quick-open-foot .files-foot-right { margin-left: auto; }
+.files-hl { color: var(--files-running-ink); font-weight: 600; text-decoration: underline; text-decoration-color: var(--files-running-line); text-underline-offset: 2px; }
+.files-kw { color: var(--files-running); }
