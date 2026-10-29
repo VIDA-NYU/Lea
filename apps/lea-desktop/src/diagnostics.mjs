@@ -118,12 +118,13 @@ function copyTail(source, target) {
   }
 }
 
-// The zip's entries are the staged files themselves (no wrapping folder):
-// ditto on macOS, Compress-Archive on Windows, zip elsewhere.
+// The zip's entries are the staged files themselves (no wrapping folder, no
+// __MACOSX resource forks): ditto on macOS, Compress-Archive on Windows, zip
+// elsewhere.
 async function zipDirectory(dir, zipPath) {
   fs.rmSync(zipPath, { force: true });
   if (process.platform === 'darwin') {
-    await execFileAsync('ditto', ['-c', '-k', '--sequesterRsrc', dir, zipPath]);
+    await execFileAsync('ditto', ['-c', '-k', '--norsrc', dir, zipPath]);
   } else if (process.platform === 'win32') {
     await execFileAsync('powershell.exe', ['-NoProfile', '-Command',
       `Compress-Archive -Path '${dir.replace(/'/g, "''")}\\*' -DestinationPath '${zipPath.replace(/'/g, "''")}'`]);

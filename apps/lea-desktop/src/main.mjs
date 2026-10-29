@@ -479,6 +479,16 @@ function maybeSmokeTest() {
         .catch((error) => log(`smoke notification failed: ${error.message}`));
     }, 2000);
   }
+  // LEA_DESKTOP_SMOKE_UPDATE_INSTALL=1 does what the update button does; with
+  // LEA_DESKTOP_FAKE_UPDATE=<v>:inapp that walks the renderer through
+  // downloading → ready. (With a download-only fake it would open the browser.)
+  if (process.env.LEA_DESKTOP_SMOKE_UPDATE_INSTALL) {
+    setTimeout(() => {
+      updater?.install()
+        .then(() => log(`smoke update install: ${updater.getState().state}`))
+        .catch((error) => log(`smoke update install failed: ${error.message}`));
+    }, 2500);
+  }
   if (view) setTimeout(() => navigate(view), Math.max(500, delay - 2000));
   setTimeout(async () => {
     try {
