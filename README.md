@@ -104,6 +104,29 @@ Overleaf job state persist on your machine under
 `apps/lea-standalone/{data,config,proofs,projects,overleaf-state}`. Stop with
 `Ctrl+C`; `docker compose down` and image updates preserve these directories.
 
+On macOS, Docker Desktop's shared filesystem can crash SQLite WAL readers during
+startup or restart. Use a Docker-managed Linux data volume with the override
+below. Stop **all native and Docker Lea processes** before importing an existing
+installation. From `apps/lea-standalone`, run:
+
+```sh
+docker compose down
+docker compose -f docker-compose.yml -f docker-compose.linux-data.yml run --rm import-data --source-stopped
+docker compose -f docker-compose.yml -f docker-compose.linux-data.yml up
+```
+
+The import leaves `./data` intact, verifies the copied SQLite database, and refuses
+to overwrite a nonempty volume. For a new installation, skip the import command.
+Keep `-f docker-compose.linux-data.yml` on every subsequent Compose command;
+the active data and shutdown exports now live in its `lea-data` volume. Switching
+back to the default Compose file would read the retained, older host directory.
+Keep the volume when upgrading or stopping the stack (`down` without `--volumes`).
+Proofs, projects, configuration and Overleaf files keep their existing mounts.
+
+For images built locally, also select `-f docker-compose.dev.yml` and set
+`LEA_DOCKER_IMPORT_IMAGE=leaui:local` for the import command. Already-built local
+images can be started with `up --no-build --pull never`.
+
 To use Overleaf, load `apps/overleaf-extension/extension` as an unpacked Chrome
 extension. Its default companion URL (`http://127.0.0.1:31245`) points to the
 running Docker stack; no separate local toolchain is required.

@@ -1,0 +1,24 @@
+# Docker Desktop's shared macOS filesystem can crash SQLite WAL readers.
+# Keep SQLite on the VM's Linux filesystem. Import existing data explicitly;
+# see README.md before selecting this override for an existing installation.
+services:
+  migrate:
+    volumes: [lea-data:/app/data]
+  lea:
+    volumes: [lea-data:/app/data]
+  worker:
+    volumes: [lea-data:/app/data]
+  import-data:
+    profiles: [maintenance]
+    image: ${LEA_DOCKER_IMPORT_IMAGE:-ghcr.io/vida-nyu/leaui:main}
+    pull_policy: never
+    network_mode: none
+    restart: "no"
+    entrypoint: [/app/adapter/.venv/bin/python, /app/scripts/import_docker_data.py]
+    command: []
+    volumes:
+      - ./data:/source-data:ro
+      - lea-data:/app/data
+
+volumes:
+  lea-data:

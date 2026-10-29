@@ -74,6 +74,7 @@ def images(api,worker,companion,require_native=False):
 class Stack:
     def __init__(self,home,bundle):
         self.home=home;self.bundle=bundle;self.created=[];self.names={};self.label='lea-release-'+uuid4().hex[:10]
+        self.data_volumes={}
         self.ownership_volume=self.label+'-ownership'
         docker('volume','create','--label','lea.stage8.release-fixture=true',self.ownership_volume)
         for name in ('data','config','proofs','projects','overleaf'):(home/name).mkdir(exist_ok=True)
@@ -81,9 +82,18 @@ class Stack:
             '-e','LEA_WORKSPACE_OWNERSHIP_DIR=/app/prover/workspace/.lea-runtime']
 
     def mounts(self,data='data'):
-        return [part for source,target in [(data,'/app/data'),('config','/app/config'),('proofs','/app/prover/workspace/proofs'),
+        return ['-v',self.data_mount(data)]+[part for source,target in [('config','/app/config'),('proofs','/app/prover/workspace/proofs'),
             ('projects','/app/prover/workspace/projects'),('overleaf','/app/apps/overleaf-extension/.overleaf-lean-stub'),
             ] for part in ('-v',f'{self.home/source}:{target}')]+['-v',self.ownership_volume+':/app/prover/workspace/.lea-runtime']
+
+    def data_mount(self,data='data'):
+        if self.bundle.get('data_storage')!='volume':return f'{self.home/data}:/app/data'
+        key=str(self.home/data)
+        if key not in self.data_volumes:
+            name=self.label+'-data-'+str(len(self.data_volumes))
+            docker('volume','create','--label','lea.stage8.release-fixture=true',name)
+            self.data_volumes[key]=name
+        return self.data_volumes[key]+':/app/data'
 
     def image(self,role):return self.bundle['roles'][role]['id']
 
@@ -112,7 +122,7 @@ class Stack:
         api=self.label+'-api';worker=self.label+'-worker';companion=self.label+'-companion'
         docker('run','-d','--pull=never','--name',api,'--network','bridge','--read-only','--cap-drop=ALL',
             '--security-opt=no-new-privileges:true','--tmpfs','/tmp','-e','LEA_ALLOWED_HOSTS=api','-e','LEA_SHARED_DATA_DIR=/app/data',
-            '-v',f'{self.home/"data"}:/app/data','-p','127.0.0.1::8001',self.image('api'),'api')
+            '-v',self.data_mount(),'-p','127.0.0.1::8001',self.image('api'),'api')
         self.created.append(api);self.names['api']=api;self.set_base()
         wait(lambda:request(self.base,'/api/health'))
         docker('run','-d','--pull=never','--name',worker,'--network','bridge','--link',api+':api',*self.env,
@@ -150,7 +160,9 @@ class Stack:
         try:
             self.stop()
             self.restore_ownership()
-        finally:docker('volume','rm',self.ownership_volume)
+        finally:
+            docker('volume','rm',self.ownership_volume)
+            for name in self.data_volumes.values():docker('volume','rm',name)
 
 
 @contextmanager
@@ -281,11 +293,13 @@ def main():
     parser.add_argument('--api-image');parser.add_argument('--worker-image');parser.add_argument('--companion-image')
     parser.add_argument('--require-native',action='store_true');parser.add_argument('--baseline',type=Path);parser.add_argument('--candidate',type=Path)
     parser.add_argument('--require-linux-executor',action='store_true')
+    parser.add_argument('--data-storage',choices=('bind','volume'),default='bind',help='Use Docker-managed SQLite storage when testing Docker Desktop on macOS.')
     parser.add_argument('--source');parser.add_argument('--output',type=Path,required=True);args=parser.parse_args()
     if args.mode=='qualify':
         if not all((args.api_image,args.worker_image,args.companion_image)):parser.error('All production role images are required')
         bundle=images(args.api_image,args.worker_image,args.companion_image,args.require_native)
         bundle['source']=args.source
+        bundle['data_storage']=args.data_storage
         if args.source:assert all(role['source']==args.source for role in bundle['roles'].values())
         result={**bundle,'source':args.source,'qualification':qualify(bundle,args.require_linux_executor)}
     else:
