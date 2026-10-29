@@ -57,6 +57,30 @@ def _context(tmp_path, monkeypatch, task="Prove True", max_spend_usd=None):
     return ctx, queue
 
 
+def test_turn_number_is_published_before_the_first_model_response(tmp_path, monkeypatch):
+    ctx, queue = _context(tmp_path, monkeypatch)
+    entered, release = Event(), Event()
+
+    def fake(config, messages, *, session_id=None, **kwargs):
+        yield TurnStarted(1)
+        entered.set()
+        assert release.wait(10)
+        yield Finished('interrupted', 'Stopped', 1, session_id, config.model, Usage(), 0, {})
+
+    monkeypatch.setattr(bridge, 'run_events', fake)
+    thread = Thread(target=bridge.run_lea, args=(ctx,))
+    thread.start()
+    try:
+        assert entered.wait(10)
+        events = _drain(queue)
+        assert any(event['type'] == 'status' and event['payload'].get('turn') == 1
+                   and event['payload'].get('status') == 'thinking' for event in events)
+    finally:
+        release.set()
+        thread.join(10)
+    assert not thread.is_alive()
+
+
 def _fake_run_events(events):
     """Build a fake run_events that writes a file into working_dir then replays
     `events` (a callable taking the absolute proof path, returning the sequence)."""

@@ -18,10 +18,14 @@ export async function commandFetch(fetchImpl,url,options={}) {
 
 // Browser counterpart of workspaceResult: each read has its own HTTP deadline;
 // waiting for accepted work never submits another query or cancels the worker.
+export function commandObservationDelay(reads = 0) {
+  return [150, 200, 250, 400, 1000][Math.min(reads, 4)];
+}
+
 export async function observeCommand(initial,read,{wait=ms=>new Promise(resolve=>setTimeout(resolve,ms)),onQueued=()=>{},timeoutMs=900000,clock=Date.now}={}) {
   if(initial?.workspace_command!==true)return initial;
   const deadline=clock()+timeoutMs;
-  let value=initial,notified=false;
+  let value=initial,notified=false,reads=0;
   for(;;) {
     const command=value.command;
     if(command.state==='succeeded')return command.result;
@@ -32,7 +36,9 @@ export async function observeCommand(initial,read,{wait=ms=>new Promise(resolve=
     }
     if(clock()>=deadline)throw Object.assign(new Error('The inventory request is still pending. Its database receipt is retained.'),{commandId:command.id});
     if(!notified){onQueued(command);notified=true;}
-    await wait(1000);
+    // Observe the common short operation promptly; long jobs keep the bounded
+    // one-second cadence rather than multiplying API reads during an outage.
+    await wait(commandObservationDelay(reads++));
     try{value=await read(command.id);}
     catch(error){if(error.status&&error.status<500&&error.status!==408)throw Object.assign(error,{commandId:command.id});}
   }

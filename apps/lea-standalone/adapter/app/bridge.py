@@ -2366,6 +2366,7 @@ def _run_lea(context: RunnerContext) -> None:
                 flush_narration()
                 current_turn = ev.turn
                 check_spend_cap()
+                emit(events, "status", {"status": "thinking", "message": "Lea is thinking…", "turn": current_turn})
 
             elif isinstance(ev, ToolCalled):
                 intent = flush_narration()

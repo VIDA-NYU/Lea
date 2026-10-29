@@ -19,7 +19,7 @@ export function redact(value) {
 export function openWorkerDatabase({filename,owner,epoch,baseUrl,leaRoot,fetchImpl=fetch}) {
   // Synchronous waits block every business loop in this process. Keep them short;
   // persistence retries asynchronously and ownership probes fail closed while busy.
-  const db=new DatabaseSync(filename);db.exec('pragma busy_timeout=500');
+  const db=new DatabaseSync(filename);db.exec('pragma busy_timeout=10');
   const context=new AsyncLocalStorage();
   let batch=randomUUID();db.function('lea_change_batch',()=>batch);
   function fence() {

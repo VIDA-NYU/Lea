@@ -149,6 +149,27 @@ test('a browser mutation retries with the original idempotency key after respons
   assert.equal(result,'original receipt');assert.equal(keys.length,2);assert.equal(keys[0],keys[1]);
 });
 
+test('browser receipts observe short operations without adding a one-second wait', async () => {
+  const waits = [], reads = [];
+  const result = await observeCommand({workspace_command:true,command:{id:'accepted',state:'queued'}}, async id => {
+    reads.push(id);
+    return {workspace_command:true,command:{id,state:'succeeded',result:{accepted:true}}};
+  }, {wait:async ms => waits.push(ms)});
+  assert.deepEqual(result,{accepted:true});
+  assert.deepEqual(reads,['accepted']);
+  assert.ok(waits[0] <= 150);
+});
+
+test('sub-second worker operations are observed during the first second', async () => {
+  let now = 0;
+  const receipt = {workspace_command:true,command:{id:'accepted',state:'queued'}};
+  const result = await observeCommand(receipt, async () => now < 500 ? receipt
+    : {workspace_command:true,command:{id:'accepted',state:'succeeded',result:'ready'}},
+  {clock:() => now,wait:async ms => {now += ms;}});
+  assert.equal(result,'ready');
+  assert.ok(now <= 600);
+});
+
 test('explicit review refresh renews the publisher even when identical source is cached', async () => {
   const calls = [];
   let sequence = 0;
@@ -220,7 +241,7 @@ test('a queued read exceeding 58 seconds observes its original receipt through t
     return now<59000?receipt:{workspace_command:true,command:{id,state:'succeeded',result:{statusCode:200,body:{items:[1,2,3]}}}};
   },{clock:()=>now,wait:async ms=>{now+=ms;},onQueued:()=>queued++});
   assert.deepEqual(result,{statusCode:200,body:{items:[1,2,3]}});
-  assert.equal(queued,1);assert.equal(reads,59);
+  assert.equal(queued,1);assert.ok(reads <= 65, 'long reads must retain bounded receipt polling');
 });
 
 test('a terminal query failure and an observation deadline preserve command identity',async()=>{

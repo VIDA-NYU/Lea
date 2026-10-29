@@ -18,6 +18,32 @@ SOURCE_PATHS={'/formalize','/formalize/all','/stub','/stub/all','/lean-pane/chat
     '/lean-pane/review/decision','/lean-pane/dependencies/retry'}
 
 
+def _stop_batch_run(conn, batch):
+    """Record cancellation from SQL associations without calling the worker."""
+    for entry in batch.get('items', []):
+        if entry.get('state') != 'running' or not entry.get('runJobId'):
+            continue
+        job = conn.execute('select * from companion_jobs where id=? and document_id=?',
+                           (entry['runJobId'], batch.get('overleafProjectId'))).fetchone()
+        if not job:
+            continue  # An in-flight admission is fenced by cancelRequested.
+        payload = json.loads(job['payload'])
+        if (payload.get('targetLabel') != entry.get('targetLabel')
+                or payload.get('targetKind', 'theorem') != entry.get('targetKind', 'theorem')):
+            continue
+        run_id = job['run_id']
+        child_id = payload.get('activeDependencyRunId')
+        if child_id and payload.get('activeDependencyOwned'):
+            shared = conn.execute('''select 1 from companion_jobs j, json_each(j.payload, '$.dependencies') d
+                where j.id!=? and json_extract(j.payload,'$.status')='in_progress'
+                and json_extract(case when d.type='object' then d.value else '{}' end,'$.owner_run_id')=?
+                limit 1''', (job['id'], child_id)).fetchone()
+            if not shared:
+                run_id = child_id
+        if run_id and conn.execute('select 1 from runs where id=?', (run_id,)).fetchone():
+            run_commands.stop(run_id)
+
+
 
 def admit(path,payload,key,method='POST'):
     if path not in QUERY_PATHS|ACTION_PATHS:raise HTTPException(404,'Unknown companion operation')
@@ -84,6 +110,7 @@ def admit(path,payload,key,method='POST'):
             if payload['batchId'] in batches:
                 batches[payload['batchId']]['cancelRequested']=True
                 conn.execute("update companion_documents set payload=?,revision=revision+1,updated_at=? where name='jobs.json.batches.json'",(json.dumps(batches),db.utc_now()))
+                _stop_batch_run(conn, batches[payload['batchId']])
     return {'workspace_command':True,'command':admitted}
 
 

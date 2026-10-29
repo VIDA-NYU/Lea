@@ -332,6 +332,7 @@
   let lastLeanPaneManifest = null;
   let deferredLeanPaneManifest = null;
   let lastLeanPaneManifestProjectId = "";
+  let lastLeanPaneInventory = null;
   let lastProjectIdentity = null;
   let lastLeanPaneFiles = null;
   let lastLeanPaneProjectId = "";
@@ -2451,10 +2452,13 @@
       // the complete inventory hydrates and re-renders in the background.
       deferArchiveFetch: !background
     });
+    const activePath = latestActiveTexPath || "";
+    const sourceCoverage = leanPaneSourceCoverage;
+    const inventoryKey = await leanPaneInventoryKey(projectId, activePath, sourceCoverage, files);
     const [payload] = await Promise.all([queuedCompanionQuery(baseUrl, "/lean-pane/manifest", {
         overleafProjectId: projectId,
-        activePath: latestActiveTexPath || "",
-        sourceCoverage: leanPaneSourceCoverage,
+        activePath,
+        sourceCoverage,
         files
     }, () => {
       entry.queued = true;
@@ -2468,6 +2472,7 @@
     }), refreshRepairBatchSnapshot({ baseUrl, projectId })]);
     if (!currentDisplayRequest(request) || request.view !== leanPaneMainView) return false;
     if (!acceptDisplayResponse(request, payload.namespaceRevision)) return false;
+    lastLeanPaneInventory = { key: inventoryKey, payload, generation: displayGeneration };
     // Runtime health changes independently of an inventory command. Read its
     // current SQL projection rather than replaying the command's older status.
     const runtimeSession = (payload.items || []).find(item => item.leaSessionId)?.leaSessionId;
@@ -2633,6 +2638,11 @@
     leanPaneRefreshFailures += 1;
     renderLeanPaneRefreshWarning();
     scheduleLeanPaneRefreshRetry();
+  }
+
+  async function leanPaneInventoryKey(projectId, activePath, coverage, files) {
+    return sha256(JSON.stringify([projectId, activePath, coverage,
+      files.map(file => [file.path, file.content]).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)]));
   }
 
   async function getLeanPaneProjectFiles({ projectId, forceFetch, deferArchiveFetch = false }) {
@@ -5111,6 +5121,30 @@
     return matches.length === 1 ? matches[0] : null;
   }
 
+  function findBatchQueueEntry(identity) {
+    if (identity.projectId !== extractOverleafProjectId()
+      || identity.batchId !== leanPaneRepairBatch?.batchId) return null;
+    const matches = (leanPaneRepairBatch.items || []).filter(entry =>
+      entry.targetLabel === identity.targetLabel && (entry.targetKind || "theorem") === identity.targetKind);
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  async function openBatchQueueChat(identity, item) {
+    if (item?.leaSessionId || item?.leaSessionUrl) return openLeaUiForPaneItem(item);
+    const entry = findBatchQueueEntry(identity);
+    if (!entry?.runJobId) throw new Error("No LeaChat session is available yet.");
+    const base = await chatCompanionBaseUrl();
+    // The SQL job association can arrive before the broad inventory projection.
+    // Reading it resolves an existing session and never admits new work.
+    const job = await targetBatchJson(`${base}/jobs/${encodeURIComponent(entry.runJobId)}`);
+    if (!findBatchQueueEntry(identity)) return;
+    if (job.overleafProjectId !== identity.projectId || job.targetLabel !== identity.targetLabel
+      || (job.targetKind || "theorem") !== identity.targetKind || !(job.leaSessionId || job.leaSessionUrl)) {
+      throw new Error("No LeaChat session is available yet. The run is still preparing its session.");
+    }
+    await openLeaUiForPaneItem(job);
+  }
+
   function batchQueueNavigationButton(key) {
     return [...(leanPaneBody?.querySelectorAll(".ol-lean-batch-queue-action") || [])]
       .find((button) => button.dataset.batchNavigationKey === key);
@@ -5124,8 +5158,9 @@
   function updateBatchQueueNavigationButton(button, identity, action, key) {
     if (!button) return;
     const item = findBatchQueuePaneItem(identity);
-    const unavailable = !item ? "This item is unavailable or ambiguous in the Lean pane."
-      : action === "lea-chat" && !(item.leaSessionId || item.leaSessionUrl)
+    const entry = findBatchQueueEntry(identity);
+    const unavailable = !item && (action === "lean-pane" || !entry?.runJobId) ? "This item is unavailable or ambiguous in the Lean pane."
+      : action === "lea-chat" && !(item?.leaSessionId || item?.leaSessionUrl || entry?.runJobId)
         ? "No LeaChat session is available yet." : "";
     const busy = leanPaneBatchNavigationBusy.has(key);
     button.disabled = Boolean(unavailable);
@@ -5175,7 +5210,7 @@
         if (button.disabled || leanPaneBatchNavigationBusy.has(key)
           || identity.batchId !== leanPaneRepairBatch?.batchId) return;
         const item = findBatchQueuePaneItem(identity);
-        if (!item) {
+        if (!item && action === "lean-pane") {
           setBatchQueueNavigationStatus(identity, `Could not find ${identity.targetLabel} uniquely in the Lean pane.`);
           updateBatchQueueNavigationButton(button, identity, action, key);
           return;
@@ -5189,7 +5224,7 @@
             setBatchQueueNavigationStatus(identity, `Opened ${identity.targetLabel} in the Lean pane.`);
           } else {
             setBatchQueueNavigationStatus(identity, "Opening Lea session…");
-            await openLeaUiForPaneItem(item);
+            await openBatchQueueChat(identity, item);
             setBatchQueueNavigationStatus(identity, `Opened ${identity.targetLabel} in LeaChat.`);
           }
         } catch (error) {
@@ -5948,8 +5983,10 @@
   // failed lookups must stay visible instead of navigating to an unrelated chat.
   async function openLeaUiForPaneItem(item) {
     if (item.leaSessionUrl || item.leaSessionId) {
-      const settings = await getSettings();
-      const link = getLeaSessionLink({ ...item, leaUiBaseUrl: settings.leaUiBaseUrl });
+      // A published absolute link already carries its UI origin. Do not hold
+      // navigation behind Chrome storage waking up after an extension reload.
+      const base = item.leaSessionUrl ? new URL(item.leaSessionUrl).origin : (await getSettings()).leaUiBaseUrl;
+      const link = getLeaSessionLink({ ...item, leaUiBaseUrl: base });
       await openLeaSession(link);
       return;
     }
@@ -7722,7 +7759,14 @@
         if (leanPaneSourceCoverage !== "complete") {
           throw Object.assign(new Error("Waiting for the complete project archive before queuing every target."), { status: 503 });
         }
-        const inventory = await queuedCompanionQuery(pending.baseUrl, "/lean-pane/manifest", {
+        const inventoryKey = await leanPaneInventoryKey(pending.projectId, pending.activePath || "", "complete", files);
+        const cached = lastLeanPaneInventory?.key === inventoryKey && lastLeanPaneInventory.generation === displayGeneration
+          ? lastLeanPaneInventory.payload : null;
+        // Reuse only a complete inventory of these exact fresh archive bytes.
+        // Worker admission still freezes the publications and checks current
+        // proof state. A partial or pending observation must be queried again.
+        const inventory = cached && cached.inventorySync?.state !== "pending"
+          && !leanPaneView.hasPendingPaneObservations(cached.items) ? cached : await queuedCompanionQuery(pending.baseUrl, "/lean-pane/manifest", {
           overleafProjectId: pending.projectId, activePath: pending.activePath,
           sourceCoverage: "complete", files
         });
@@ -7771,7 +7815,10 @@
           pending.message = command.state === "queued"
             ? "Queued in the database. Waiting for Lea to start the batch."
             : "Accepted by the database. Lea is preparing the batch.";
-          pending.timer = setTimeout(() => attemptTargetBatch(pending), 1000);
+          commandClient ||= import(chrome.runtime.getURL("commandClient.mjs"));
+          const { commandObservationDelay } = await commandClient;
+          pending.timer = setTimeout(() => attemptTargetBatch(pending), commandObservationDelay(pending.observations || 0));
+          pending.observations = (pending.observations || 0) + 1;
           return;
         }
         if (!command.result?.statusCode) throw new Error("The completed command has no result yet.");
@@ -8047,10 +8094,13 @@
       return null;
     }
 
-    const settings = await loadCompanionSettings({ requireLive: force, includeCatalog: !force });
+    const [settings, freshFiles] = await Promise.all([
+      loadCompanionSettings({ requireLive: force, includeCatalog: !force }),
+      freshArchive ? loadLeanPaneArchive(projectId) : null
+    ]);
     if (settings.leaTexMirrorEnabled === false) {
       if (freshArchive) {
-        lastLeanPaneFiles = await collectProjectTexFiles(projectId);
+        lastLeanPaneFiles = freshFiles.map(file => ({ ...file }));
         lastLeanPaneProjectId = projectId;
         leanPaneSourceCoverage = "complete";
       }
@@ -8109,7 +8159,7 @@
       // divergence self-heals without a zip per formalize.
       const needFetch = freshArchive || !cacheUsable || !activeKnown ||
         Date.now() - lastTexMirrorFullSyncAt > TEX_MIRROR_FULL_SYNC_INTERVAL_MS;
-      const files = needFetch
+      const files = freshFiles ? freshFiles.map(file => ({ ...file })) : needFetch
         ? await collectProjectTexFiles(projectId)
         : lastMirrorFiles.map((file) => ({ ...file }));
       // A forced formalize flush can arrive before the edit debounce. Even with a
@@ -9357,6 +9407,7 @@
 
   function handlePushEvent(type, data) {
     if (data?.overleafProjectId && data.overleafProjectId !== extractOverleafProjectId()) return;
+    if (["resync", "jobs-changed", "project-identity-changed"].includes(type)) lastLeanPaneInventory = null;
     if (type === "resync") {
       scheduleStatusRefresh();
       if (leanPane) scheduleLeanPaneRefresh();

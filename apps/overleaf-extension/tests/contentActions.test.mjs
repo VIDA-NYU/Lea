@@ -1889,6 +1889,7 @@ test("a queued inventory refresh survives the HTTP deadline and coalesces repeat
   await h.runTimersAt(10000);
   await h.runTimersAt(30000);
   assert.match(h.bodyText(), /taking longer than usual.*while the queued refresh completes/);
+  for (const delay of [150, 200, 250, 400]) await h.runTimersAt(delay);
   for (let i = 0; i < 12; i++) {
     h.clickButtonLabel("Refresh Lean pane");
     await h.runTimersAt(1000);
@@ -2006,7 +2007,7 @@ test("status refresh events share the accepted query instead of filling its work
   await h.runTimersAt(250);
   assert.equal(h.fetchCalls.filter(call => call.url.endsWith("/statuses")).length, before + 1);
   complete = true;
-  await h.runTimersAt(1000);
+  await h.runTimersAt(150);
   assert.equal(h.countSelector(".ol-lean-status-formalized"), 1);
 });
 
@@ -3575,8 +3576,9 @@ test('idle after Formalize All retains completed results through failed backgrou
     targetKind: 'theorem', targetLabel, targetText: 'A theorem.', coords: { left: 12, top: 18 + 30 * index }
   })) });
   h.clickPaneTrigger(); await flushPromises();
-  h.clickButtonText('Formalize all (2)'); await flushPromises();
-  assert.equal(phase.accepted, true);
+  await waitForHarness(() => h.hasButtonText('Formalize all (2)'), 'complete project inventory');
+  h.clickButtonText('Formalize all (2)');
+  await waitForHarness(() => phase.accepted, 'batch acceptance');
   for (let turn = 0; turn < 100 && !h.batchQueue()?.progress; turn++) await flushPromises();
   assert.ok(h.batchQueue()?.progress, 'Formalize All has settled its admission');
   for (const eventSource of EventSource.instances) eventSource.onopen?.();
@@ -3752,6 +3754,40 @@ test("queued items open their saved LeaChat session and enable new sessions afte
   assert.ok(!harness.fetchCalls.slice(before).some((call) => /\/(formalize|stub|lean-pane\/chat\/(send|session))$/.test(call.url)));
 });
 
+test("a queue's published session URL opens while Chrome storage is unavailable", async () => {
+  let stall = false;
+  const item = queuePaneItem("saved", { leaSessionUrl: "http://localhost:5173/?session=saved-session" });
+  const h = await startNavigationQueue([item], [{ targetKind: "theorem", targetLabel: "saved", state: "pending" }], {
+    syncStorageGet: defaults => stall ? new Promise(() => {}) : defaults
+  });
+  stall = true;
+  queueNavigationButton(h, "saved", "lea-chat").click();
+  await flushPromises();
+  const opened = h.runtimeMessages.find(message => message.type === "OPEN_LEA_SESSION");
+  assert.equal(new URL(opened.url).searchParams.get("session"), "saved-session");
+});
+
+for (const wrongIdentity of [false, true]) {
+  test(`queue chat reads its SQL job before inventory catches up (${wrongIdentity ? "mismatched" : "matching"} target)`, async () => {
+    const item = queuePaneItem("starting");
+    const harness = await startNavigationQueue([item], [{ targetKind: "theorem", targetLabel: "starting",
+      state: "running", runJobId: "starting-job" }], { fetchOverride: async url => {
+      if (url.endsWith("/jobs/starting-job")) return admissionResponse({
+        overleafProjectId: "project-1", targetKind: "theorem", targetLabel: wrongIdentity ? "other" : "starting",
+        leaSessionId: "started-session", leaSessionUrl: "http://localhost:5173/?session=started-session"
+      });
+    } });
+    const button = queueNavigationButton(harness, "starting", "lea-chat");
+    assert.equal(button.disabled, false);
+    button.click();
+    await flushPromises();
+    const opened = harness.runtimeMessages.filter(message => message.type === "OPEN_LEA_SESSION");
+    assert.equal(opened.length, wrongIdentity ? 0 : 1);
+    if (!wrongIdentity) assert.equal(new URL(opened[0].url).searchParams.get("session"), "started-session");
+    assert.ok(!harness.fetchCalls.some(call => call.url.endsWith("/lean-pane/chat/session")));
+  });
+}
+
 test("queue navigation resolves refreshed manifest items rather than captured item objects", async () => {
   let item = queuePaneItem("moving", { leaSessionId: "old-session" });
   const harness = await startNavigationQueue([item], [{ targetKind: "theorem", targetLabel: "moving", state: "running" }], {
@@ -3837,7 +3873,7 @@ test("queue session navigation never falls back to the Lea homepage when a sessi
   await flushPromises();
   assert.match(harness.bodyText(), /No LeaChat session is available yet/);
   assert.ok(!harness.runtimeMessages.some((message) => message.type === "OPEN_LEA_SESSION"));
-  assert.ok(harness.fetchCalls.some((call) => call.url.endsWith("/lean-pane/chat/session")));
+  assert.ok(!harness.fetchCalls.some((call) => call.url.endsWith("/lean-pane/chat/session")));
 });
 
 for (const outcome of ["formalized", "failed"]) {
@@ -4626,6 +4662,27 @@ test("a batch click is visible during source preparation, deduplicated, and pres
   assert.equal(h.document.body.querySelector(".ol-lean-project-tree"), selected);
 });
 
+for (const changedSource of [false, true]) test(`a batch ${changedSource ? "refreshes changed" : "reuses identical"} complete source inventory`, async () => {
+  const h = await batchAdmissionHarness();
+  h.clickButtonLabel("Refresh Lean pane");
+  await flushPromises();
+  await h.advanceTime(1500);
+  if (changedSource) {
+    const input = JSON.parse(h.fetchCalls.filter(call => call.url.endsWith("/lean-pane/manifest")).at(-1).options.body);
+    h.window.postMessage({ type: "OL_LEAN_TARGETS_VISIBLE", targets: [h.target], activePath: "main.tex",
+      activeTex: input.files.find(file => file.path === "main.tex").content + "\n% Changed before the click" }, "*");
+  }
+  const before = h.fetchCalls.length;
+  const archives = h.fetchCalls.filter(call => call.url.endsWith("/download/zip")).length;
+  h.clickButtonText("Formalize all (1)");
+  await waitForHarness(() => h.fetchCalls.some(call => call.url.endsWith("/formalize/all")), "batch admission");
+  const submitted = h.fetchCalls.findIndex(call => call.url.endsWith("/formalize/all"));
+  assert.equal(h.fetchCalls.slice(before, submitted).some(call => call.url.endsWith("/lean-pane/manifest")), changedSource,
+    "only an inventory of the exact current source bytes may bypass the queue");
+  assert.ok(h.fetchCalls.filter(call => call.url.endsWith("/download/zip")).length > archives,
+    "inventory reuse must still acquire fresh project source");
+});
+
 test("a displayed batch button retains its target set across a manifest refresh", async () => {
   let items = [queuePaneItem("queued_target")];
   const h = await batchAdmissionHarness({ manifest: () => ({ ok: true, items, diagnostics: [] }) });
@@ -4706,7 +4763,7 @@ test("a disconnected click retries then shows SQL acceptance while the worker is
   assert.equal(status.getAttribute("role"), "status");
   assert.equal(status.getAttribute("aria-live"), "polite");
   failRead = true;
-  await h.runTimersAt(1000);
+  await h.runTimersAt(150);
   assert.match(h.paneText(), /request is accepted.*Reconnecting/);
   failRead = false;
   complete = true;
@@ -4755,7 +4812,7 @@ test("batch admission updates preserve the user's Blueprint view", async () => {
   } });
   h.clickButtonText("Formalize all (1)");
   await flushPromises();
-  await h.runTimersAt(1000);
+  await h.runTimersAt(150);
   h.clickButtonText("Blueprint");
   await flushPromises();
   const blueprint = h.paneText();
@@ -5203,6 +5260,7 @@ function createContentHarness(statusInfo, theoremPatch = {}, options = {}) {
       storage: {
         sync: {
           async get(defaults) {
+            if (options.syncStorageGet) return options.syncStorageGet({ ...defaults, ...storageState });
             return { ...defaults, ...storageState };
           },
           async set(values) {

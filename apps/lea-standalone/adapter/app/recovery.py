@@ -373,6 +373,14 @@ class Recorder:
             raise CheckpointWriteError(f"Could not save {event}: {exc}") from exc
 
     def _write(self, event: str, payload: dict) -> None:
+        # Fingerprinting walks files, loads prompts and reads dependency metadata.
+        # Do that before taking SQLite's sole writer so Stop, heartbeats and
+        # observations can commit while a checkpoint is being prepared. Ownership
+        # and invocation authorization are still checked inside the transaction;
+        # the caller cannot execute its next effect until this commit succeeds.
+        encoded = _json(payload.get("result") if event == "invocation_result"
+                        else payload.get("input") if event == "invocation_start" else payload)
+        manifest = _json(self.manifest() if callable(self.manifest) else self.manifest) if event == "checkpoint" else None
         now = db.utc_now()
         with db.write() as conn:
             owner = conn.execute("select attempt_id, status from runs where id = ?", (self.run_id,)).fetchone()
@@ -382,7 +390,7 @@ class Recorder:
                 conn.execute("""insert into run_checkpoints(run_id, attempt_id, created_at,
                                 schema_version, payload, manifest) values (?, ?, ?, ?, ?, ?)""",
                              (self.run_id, self.attempt_id, now, SCHEMA_VERSION,
-                              _json(payload), _json(self.manifest() if callable(self.manifest) else self.manifest)))
+                              encoded, manifest))
                 conn.execute("update runs set checkpoint_at = ? where id = ?", (now, self.run_id))
                 conn.execute("""delete from run_checkpoints where run_id = ? and id not in
                                 (select id from run_checkpoints where run_id = ? order by id desc limit 2)""",
@@ -396,11 +404,11 @@ class Recorder:
                                 values (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                              (payload["id"], self.run_id, self.attempt_id, payload["kind"],
                               payload["name"], payload.get("turn", 0), payload.get("call_index"),
-                              _json(payload.get("input")), now))
+                              encoded, now))
             elif event == "invocation_result":
                 updated = conn.execute("""update run_invocations set result_json = ?, completed_at = ?
                                 where id = ? and run_id = ? and attempt_id = ? and completed_at is null""",
-                             (_json(payload.get("result")), now, payload["id"], self.run_id,
+                             (encoded, now, payload["id"], self.run_id,
                               self.attempt_id))
                 if updated.rowcount != 1:
                     raise RuntimeError("Invocation result has no matching pending action")
