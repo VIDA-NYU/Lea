@@ -47,6 +47,8 @@ export interface BlueprintProposal {
 export interface PendingSubmission {
   text: string;
   sessionId?: string;
+  /** submit (default): send it as a message · draft: only prefill the composer and focus it. */
+  mode?: 'submit' | 'draft';
 }
 
 interface WorkbenchState {

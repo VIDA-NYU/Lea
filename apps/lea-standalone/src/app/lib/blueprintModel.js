@@ -388,6 +388,51 @@ export function displayFile(node) {
   return node.file || suggestFileFromLean(node.lean) || null;
 }
 
+// ── Small display helpers ──────────────────────────────────────────────────
+
+/**
+ * "just now" · "12 s ago" · "5 min ago" · "3 h ago" · "2 d ago" · else the date.
+ * @param {string | null | undefined} iso
+ * @param {number} [now]   Date.now() by default
+ */
+export function relativeTime(iso, now = Date.now()) {
+  if (!iso) return '';
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return '';
+  const s = Math.max(0, Math.round((now - t) / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return `${s} s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.round(h / 24);
+  if (d < 14) return `${d} d ago`;
+  return new Date(t).toLocaleDateString();
+}
+
+const DECL_KEYWORDS = 'theorem|lemma|def|abbrev|instance|structure|inductive|class|opaque|axiom';
+
+/**
+ * 1-based line of the declaration named `lean` (last dotted component) in a Lean
+ * source, or null. Attributes and modifiers before the keyword are allowed.
+ * @param {string} content
+ * @param {string | null | undefined} lean
+ * @returns {number | null}
+ */
+export function findDeclLine(content, lean) {
+  if (!content || !lean) return null;
+  const short = lean.split('.').filter(Boolean).pop();
+  if (!short) return null;
+  const escaped = short.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(
+    `^\\s*(?:@\\[[^\\]]*\\]\\s*)?(?:(?:private|protected|noncomputable|unsafe|partial|scoped|local)\\s+)*(?:${DECL_KEYWORDS})\\s+(?:[\\w'.]+\\.)?${escaped}(?![\\w'])`,
+  );
+  const lines = content.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) if (re.test(lines[i])) return i + 1;
+  return null;
+}
+
 // ── Sessions bound to a node ───────────────────────────────────────────────
 
 /** Session title for a node session — names the node, as the sidebar shows it. */

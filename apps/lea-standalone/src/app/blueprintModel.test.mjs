@@ -24,6 +24,8 @@ import {
   draftingPrompt,
   nodeSessionTitle,
   nodeOriginKey,
+  relativeTime,
+  findDeclLine,
 } from './lib/blueprintModel.js';
 
 // The mockup's √2 graph as /api/projects/{id}/graph returns it (frame 9).
@@ -221,4 +223,38 @@ test('draftingPrompt names the project and the markdown format', () => {
 test('session naming helpers', () => {
   assert.equal(nodeSessionTitle('parity_descent'), 'Prove parity_descent');
   assert.equal(nodeOriginKey('parity_descent'), 'blueprint:parity_descent');
+});
+
+test('relativeTime buckets seconds, minutes, hours, days', () => {
+  const now = Date.parse('2026-10-29T12:00:00Z');
+  const at = (seconds) => new Date(now - seconds * 1000).toISOString();
+  assert.equal(relativeTime(at(2), now), 'just now');
+  assert.equal(relativeTime(at(12), now), '12 s ago');
+  assert.equal(relativeTime(at(5 * 60), now), '5 min ago');
+  assert.equal(relativeTime(at(3 * 3600), now), '3 h ago');
+  assert.equal(relativeTime(at(2 * 86400), now), '2 d ago');
+  assert.equal(relativeTime('', now), '');
+  assert.equal(relativeTime('nope', now), '');
+});
+
+test('findDeclLine locates the declaration by its short name', () => {
+  const src = [
+    'import Mathlib',
+    '',
+    'namespace Lea.Sqrt2',
+    '',
+    '/-- No coprime integers a, b satisfy a² = 2b². -/',
+    '@[simp] theorem parity_descent {a b : ℤ} (h : a ^ 2 = 2 * b ^ 2) : False := by',
+    '  sorry',
+    '',
+    'private lemma parity_descent_aux : True := trivial',
+    'end Lea.Sqrt2',
+  ].join('\n');
+  assert.equal(findDeclLine(src, 'Lea.Sqrt2.parity_descent'), 6);
+  assert.equal(findDeclLine(src, 'parity_descent_aux'), 9);
+  assert.equal(findDeclLine(src, 'Lea.Sqrt2.missing'), null);
+  assert.equal(findDeclLine('', 'x'), null);
+  assert.equal(findDeclLine(src, null), null);
+  // A qualified name in the source still matches on its last component.
+  assert.equal(findDeclLine('theorem Lea.Foo.bar : True := trivial', 'bar'), 1);
 });
