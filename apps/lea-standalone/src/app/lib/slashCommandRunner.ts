@@ -6,8 +6,10 @@
 
 import { useProofSession, type CompactionPayload } from '../stores/proofSession';
 import { useFactories } from '../stores/factories';
+import { BLUEPRINT_PATH, useWorkbench } from '../stores/workbench';
 import { compactSession, type ChatMessage } from './api';
-import { findSlashCommand } from './slashCommands.js';
+import { findSlashCommand, parseBlueprintArgs } from './slashCommands.js';
+import { openOrDraftBlueprint, proveNode, resolveProjectId, startReadySessions } from './blueprintActions';
 
 // A local, client-only compaction marker (kind='compaction'). Used for the in-flight
 // "Compacting…" card and the no-op notice — neither is persisted server-side, so both
@@ -26,6 +28,14 @@ function localCompaction(sessionId: string, id: string, payload: Partial<Compact
 export interface SlashRunContext {
   sessionId?: string;
   args: string;
+  /** The project the command applies to; defaults to the session's / the open project. */
+  projectId?: string;
+  /**
+   * Open a session in the chat (App's loadSession). Optional: `/blueprint prove`
+   * opens the session it started when this is wired; otherwise the session only
+   * appears in the sessions list.
+   */
+  openSession?: (sessionId: string) => void;
 }
 
 type Handler = (ctx: SlashRunContext) => Promise<void>;
@@ -64,6 +74,49 @@ const HANDLERS: Record<string, Handler> = {
       setMessages((cur) => cur.filter((m) => m.id !== pendingId));
       setError(err instanceof Error ? err.message : 'Failed to compact.');
     }
+  },
+
+  // Blueprint package (docs/PLAN-ui-redesign.md §3): `/blueprint` opens the blueprint in
+  // the canvas and drafts it when empty; `/blueprint next` starts one bound session per
+  // ready node; `/blueprint prove <node>` starts a session bound to that node. The work
+  // is in blueprintActions.ts; this handler only parses, resolves the project and
+  // reports. Errors go to the chat banner, outcomes to the blueprint view's notice.
+  blueprint: async ({ sessionId, args, projectId, openSession }) => {
+    const { setError } = useProofSession.getState();
+    const parsed = parseBlueprintArgs(args);
+    if ('error' in parsed) {
+      setError(parsed.error);
+      return;
+    }
+    const pid = resolveProjectId(sessionId, projectId);
+    if (!pid) {
+      setError('Open a project first — the blueprint belongs to a project.');
+      return;
+    }
+    const wb = useWorkbench.getState();
+    if (parsed.sub === 'open') {
+      await openOrDraftBlueprint(pid, { sessionId });
+      return;
+    }
+    if (parsed.sub === 'next') {
+      const r = await startReadySessions(pid);
+      wb.openFile(BLUEPRINT_PATH);
+      const n = r.started.length;
+      const parts: string[] = [];
+      if (n > 0) parts.push(`Started ${n} ${n === 1 ? 'session' : 'sessions'}: ${r.started.map((s) => s.nodeKey).join(', ')}`);
+      if (r.alreadyRunning.length) parts.push(`already running: ${r.alreadyRunning.join(', ')}`);
+      if (r.failed.length) parts.push(`could not start ${r.failed.map((f) => `${f.key} (${f.error})`).join('; ')}`);
+      if (r.nothingReady) parts.push('No node is ready: every unproved node waits on a dependency, or the blueprint is empty.');
+      useWorkbench.getState().setBlueprintNotice(parts.join(' · '));
+      if (r.failed.length && n === 0) setError(`Could not start a session: ${r.failed[0].error}`);
+      if (n === 1 && openSession) openSession(r.started[0].sessionId);
+      return;
+    }
+    const started = await proveNode(pid, parsed.node);
+    useWorkbench.getState().setBlueprintNotice(`Started a session bound to ${started.nodeKey}.`);
+    useWorkbench.getState().selectNode(started.nodeKey);
+    if (openSession) openSession(started.sessionId);
+    else wb.openFile(BLUEPRINT_PATH);
   },
 };
 
