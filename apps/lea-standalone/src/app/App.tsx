@@ -161,7 +161,7 @@ export default function App() {
     // Dock badge and finished-run notifications, derived from the session list
     // the sidebar already follows. The shell decides whether a notification is
     // shown (not while the window is in front).
-    let previous: Map<string, SessionSummary> | null = null;
+    let previous: ReturnType<typeof indexById> | null = null;
     let lastRunning = -1;
     const applySessions = (list: SessionSummary[]) => {
       const running = countRunning(list);

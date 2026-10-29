@@ -3,7 +3,7 @@ import { BarChart3, Bot, PanelLeftClose, Plug, Plus, Sparkles, Wrench } from 'lu
 import type { SessionSummary } from '../lib/api';
 import { useSessions } from '../stores/sessions';
 import { useProjects } from '../stores/projects';
-import { useDesktop } from '../stores/desktop';
+import { DesktopUpdateButton } from './shell/DesktopUpdateButton';
 
 // Left rail: brand, new-proof, (search stub), Projects group, date-grouped loose
 // chats, footer. The Projects group (v2.1 F1) lists projects; loose chats are the
@@ -222,45 +222,6 @@ export function Sidebar({
       </div>
     </aside>
   );
-}
-
-// Desktop shell only (apps/lea-desktop): one button that follows the updater.
-// "Update to x.y.z" downloads (or opens the download page for a build that
-// cannot install in place), "Restart to update" installs. Hidden in a browser
-// and when there is nothing to do.
-function DesktopUpdateButton() {
-  const update = useDesktop((s) => s.update);
-  if (!update) return null;
-  const bridge = window.leaDesktop;
-  const act = () => bridge?.installUpdate?.().catch(() => {});
-  switch (update.state) {
-    case 'available':
-      return (
-        <button className="desktop-update" onClick={act} title={update.message}>
-          {update.downloadOnly ? `Download Lea ${update.version}` : `Update to ${update.version}`}
-        </button>
-      );
-    case 'downloading':
-      return (
-        <span className="desktop-update busy" title={update.message}>
-          Downloading {update.version}… {update.percent}%
-        </span>
-      );
-    case 'ready':
-      return (
-        <button className="desktop-update ready" onClick={act} title={update.message}>
-          Restart to update
-        </button>
-      );
-    case 'error':
-      return (
-        <button className="desktop-update warn" onClick={act} title={update.message}>
-          Update failed · retry
-        </button>
-      );
-    default:
-      return null;
-  }
 }
 
 function dotClass(session: SessionSummary, runningSessionId?: string): string {

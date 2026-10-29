@@ -8,7 +8,10 @@ interface LeaDesktopUpdateState {
   percent: number;
   /** True when this build cannot install in place; the button opens the download instead. */
   downloadOnly: boolean;
+  /** What "download" opens: the DMG for this architecture, else the release page. */
   releaseUrl: string;
+  /** The release page ("What's new"). */
+  notesUrl?: string;
   message: string;
 }
 
@@ -20,6 +23,8 @@ interface LeaDesktopBridge {
   onNavigate(callback: (target: { view: string }) => void): () => void;
   /** Open an http(s) URL in the system browser. */
   openExternal(url: string): Promise<void>;
+  /** Show an absolute path in the Finder; false when it is not absolute or does not exist. */
+  revealPath?(path: string): Promise<boolean>;
   /** Help → Report a problem…: bundle logs and a redacted config into a zip. */
   reportProblem?(): Promise<string | null>;
   /** Update state changes; returns an unsubscribe. */
