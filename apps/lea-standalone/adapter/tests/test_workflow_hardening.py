@@ -4,6 +4,7 @@ Only theorem generation is scripted. Publication and admission run production
 commands, with an interrupted registry installation held across the next proof.
 """
 import json
+import select
 import subprocess
 import sqlite3
 import time
@@ -39,18 +40,33 @@ def test_node_lease_probe_distinguishes_actual_contention_from_lost_ownership(fi
       const db=openWorkerDatabase(x);let lost=0;
       const onLost=()=>lost++;
       assert.equal(probeWorkerLease(db.fence,onLost),false);assert.equal(lost,0);
-      await new Promise(r=>setTimeout(r,500));
-      assert.equal(probeWorkerLease(db.fence,onLost),!x.expired);
+      console.log('busy');
+      // Wait for the actual SQL lock release, independently of SQLite's
+      // synchronous busy timeout. A busy probe must never imply lost ownership.
+      const until=Date.now()+5000;let owned=false;
+      while(Date.now()<until) {
+        owned=probeWorkerLease(db.fence,onLost);
+        if(owned||lost)break;
+        await new Promise(r=>setTimeout(r,25));
+      }
+      assert.equal(owned,!x.expired);
       assert.equal(lost,x.expired?1:0);db.close();'''
-    def release():time.sleep(.8);holder.commit()
-    thread=Thread(target=release);thread.start()
+    child=subprocess.Popen(['node','--input-type=module','-e',script],
+                           stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     try:
-        result=subprocess.run(['node','--input-type=module','-e',script],input=json.dumps(dict(
+        child.stdin.write(json.dumps(dict(
             database=(companion/'databaseState.mjs').as_uri(),policy=(companion/'workflowPolicy.mjs').as_uri(),
-            filename=str(db.DB_PATH),owner='lease-worker',epoch=epoch,expired=expired)),
-            text=True,capture_output=True,timeout=10)
-        assert result.returncode==0,result.stderr
-    finally:thread.join(timeout=5);holder.close()
+            filename=str(db.DB_PATH),owner='lease-worker',epoch=epoch,expired=expired)))
+        child.stdin.close();child.stdin=None
+        ready,_,_=select.select([child.stdout],[],[],5)
+        assert ready,'Node did not reach its contention probe'
+        assert child.stdout.readline().strip()=='busy'
+        holder.commit()
+        _,errors=child.communicate(timeout=10)
+        assert child.returncode==0,errors
+    finally:
+        if child.poll() is None:child.kill();child.communicate(timeout=5)
+        holder.close()
 
 
 def test_job_publication_does_not_rewrite_or_notify_an_unchanged_project(fixture):
