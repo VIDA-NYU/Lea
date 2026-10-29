@@ -75,11 +75,12 @@ function Crumbs({ projectId, path }: { projectId: string; path: string }) {
     [dirForCrumb, last],
   );
 
+  const menuRef = useRef<OpenMenu | null>(null);
+  menuRef.current = menu;
   const closeMenu = useCallback(() => {
-    setMenu((current) => {
-      if (current) buttonRefs.current[current.index]?.focus();
-      return null;
-    });
+    const current = menuRef.current;
+    setMenu(null);
+    if (current) buttonRefs.current[current.index]?.focus();
   }, []);
 
   const newFileIn = async (dir: string) => {
