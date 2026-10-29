@@ -111,6 +111,7 @@ async function main() {
     if (/^https?:\/\//i.test(String(url))) return shell.openExternal(String(url));
     return undefined;
   });
+  ipcMain.handle('lea:reveal-path', (_event, target) => revealPath(target));
   ipcMain.handle('lea:show-logs', () => shell.openPath(logDir));
   ipcMain.handle('lea:quit', () => app.quit());
   ipcMain.handle('lea:report-problem', () => reportProblem());
@@ -242,7 +243,10 @@ function createWindow(initialUrl = null) {
   win.once('ready-to-show', () => win?.show());
   win.on('page-title-updated', (event) => event.preventDefault()); // keep "Lea"
   win.on('close', () => { if (win) saveWindowState(win.getBounds()); });
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => {
+    win = null;
+    setActivity({ running: 0 }); // nothing feeds the badge without a renderer
+  });
 
   // Anything that is not our own local UI opens in the system browser.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -305,6 +309,15 @@ function showNotification({ title, body, sessionId } = {}) {
   return true;
 }
 
+// Files rail → Reveal in Finder (and Explorer / the file manager elsewhere).
+// Only absolute paths that exist; the renderer gets a boolean back.
+function revealPath(target) {
+  const file = String(target ?? '');
+  if (!path.isAbsolute(file) || !fs.existsSync(file)) return false;
+  shell.showItemInFolder(file);
+  return true;
+}
+
 // Help → Report a problem…: logs, provisioning output, a redacted config and
 // the environment summary, zipped where the user chooses, then a pointer to a
 // prefilled GitHub issue.
@@ -336,7 +349,7 @@ async function reportProblem() {
     type: 'info',
     title: 'Report a problem',
     message: 'Diagnostics saved.',
-    detail: `${zipPath}\n\nThe bundle holds the app, backend and provisioning logs, a redacted copy of the config and the environment summary. Attach it to the issue.`,
+    detail: `${zipPath}\n\nThe bundle holds the app, backend and provisioning logs, a copy of the config with every secret redacted, the runtime state and an environment summary. It never includes your database or your proofs.\n\nAttach it to the issue; the issue form is prefilled with your version and system.`,
     buttons: ['Open a GitHub issue', 'Reveal in Finder', 'Done'],
     defaultId: 0,
     cancelId: 2,

@@ -1,22 +1,29 @@
 // "Report a problem": bundle what a maintainer needs to reproduce an issue into
 // one zip the user can attach to a GitHub issue. Everything secret-shaped in the
-// config is redacted before it is copied; the database and the workspace are
-// never included.
+// config is redacted before it is copied (src/redact.mjs); the database and the
+// workspace are never included.
 import { app } from 'electron';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { redactToml } from './redact.mjs';
 
 const execFileAsync = promisify(execFile);
 
 // Log files are appended across launches; keep only the tail of each.
 const LOG_TAIL_BYTES = 2 * 1024 * 1024;
-const SECRET_KEY = /key|token|secret|password|credential/i;
 
 export const ISSUES_URL = 'https://github.com/VIDA-NYU/Lea/issues/new';
 
+// Contents of the bundle:
+//   about.txt                  app, Electron, OS, layout, backend mode, /api/health
+//   logs/*.log                 tail of every log in ~/Library/Logs/Lea (app, adapter,
+//                              worker, companion, provisioning)
+//   state.json                 provisioning state (managed mode)
+//   lea.local.redacted.toml    the config with every secret replaced
+//   lean-toolchain, lake-manifest.json   what the workspace pins
 export async function writeDiagnostics({ layout, logDir, runtime, backend, zipPath }) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const stage = path.join(os.tmpdir(), `lea-diagnostics-${stamp}`);
@@ -111,31 +118,8 @@ function copyTail(source, target) {
   }
 }
 
-// Keep the structure of the config (which tables and keys are set) but never a
-// value that could be a credential. Everything under [environment] is treated as
-// secret since users put arbitrary variables there.
-export function redactToml(text) {
-  let table = '';
-  return text
-    .split('\n')
-    .map((line) => {
-      const header = line.match(/^\s*\[([^\]]+)\]/);
-      if (header) {
-        table = header[1].trim().toLowerCase();
-        return line;
-      }
-      const assignment = line.match(/^(\s*)([A-Za-z0-9_.-]+)(\s*=\s*)(.*)$/);
-      if (!assignment) return line;
-      const [, indent, key, eq, value] = assignment;
-      if (value.trim().startsWith('#') || value.trim() === '') return line;
-      if (table === 'environment' || table === 'keys' || SECRET_KEY.test(key)) {
-        return `${indent}${key}${eq}"<redacted>"`;
-      }
-      return line;
-    })
-    .join('\n');
-}
-
+// The zip's entries are the staged files themselves (no wrapping folder):
+// ditto on macOS, Compress-Archive on Windows, zip elsewhere.
 async function zipDirectory(dir, zipPath) {
   fs.rmSync(zipPath, { force: true });
   if (process.platform === 'darwin') {
