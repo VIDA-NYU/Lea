@@ -395,7 +395,9 @@ def is_context_message(message: dict) -> bool:
 
 # The user/agent-editable `.lea/*.md` docs exposed over GET/PUT (D25/D26). A fixed
 # whitelist so a doc name can never escape `.lea/` or address an arbitrary path.
-EDITABLE_DOCS = {"instructions.md", "memory.md", "blueprint.md"}
+# `blueprint.draft.md` is the reviewable draft a drafting run writes through the
+# blueprint tools (PLAN-blueprint-tools §2.2); it is never seeded.
+EDITABLE_DOCS = {"instructions.md", "memory.md", "blueprint.md", "blueprint.draft.md"}
 
 
 def read_doc(project: dict, proofs_root: Path, name: str) -> str:
@@ -440,8 +442,10 @@ def write_doc(project: dict, proofs_root: Path, name: str, content: str) -> str:
 
 def _seed_docs(title: str, namespace: str) -> dict[str, str]:
     """The three canonical ``.lea/*.md`` docs seeded into a fresh project. Plain
-    markdown with a format-reminder comment; agent + human co-author them after
-    (D25/D26/D28)."""
+    markdown; agent + human co-author them after (D25/D26/D28). The blueprint seed
+    is a canonical empty blueprint (:func:`blueprint.empty_document`): Lea fills it
+    through its blueprint tools, so it carries no format tutorial."""
+    from .blueprint import empty_document
     return {
         "instructions.md": (
             f"# Instructions — {title}\n\n"
@@ -453,21 +457,7 @@ def _seed_docs(title: str, namespace: str) -> dict[str, str]:
             "Durable facts, learnings, and preferences. Both you and Lea append here — "
             "what worked, what failed, witnesses to prefer, dead ends to avoid.\n"
         ),
-        "blueprint.md": (
-            f"# Blueprint — {title}\n\n"
-            "The proof decomposition — one `## ` section per node. Lea co-authors this "
-            "as it plans and formalizes, and you can edit it too. Each node has a short "
-            "header then a prose statement:\n\n"
-            "```\n"
-            "## continuous_sq\n"
-            "- kind: lemma                # definition | lemma | theorem\n"
-            f"- lean: `{namespace}.continuous_sq`   # the Lean decl, once it exists\n"
-            "- uses: tendsto_iff_eps      # keys of the nodes this one depends on\n"
-            "\n"
-            "The function x ↦ x² is continuous in the ε–δ sense.\n"
-            "```\n\n"
-            "Add your first node below.\n"
-        ),
+        "blueprint.md": empty_document(title),
     }
 
 

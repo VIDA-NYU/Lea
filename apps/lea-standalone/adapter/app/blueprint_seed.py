@@ -12,9 +12,10 @@ Design:
 - **Source of truth is the artifacts index** (``store.list_artifacts_for_scope``) — the
   decls the run finalizer recorded, i.e. "what you formalized". One node per artifact.
 - **Additive + idempotent.** A node is emitted only for an artifact not already
-  represented (matched by ``lean:`` FQN), and existing content is never modified or
-  removed. Safe to re-run after formalizing more theorems; never clobbers hand/agent
-  authoring done in the standalone UI.
+  represented (matched by ``lean:`` FQN), and existing nodes are never modified or
+  removed (the document is re-rendered canonically, :func:`blueprint.render`). Safe
+  to re-run after formalizing more theorems; never clobbers hand/agent authoring
+  done in the standalone UI.
 - **Edges use compiler-resolved constants**, including namespace and binder scope.
   Incomplete inspection leaves the blueprint unchanged and exposes diagnostics.
 
@@ -96,14 +97,11 @@ def _kind_for(keyword: str | None, artifact_kind: str | None) -> str:
     return "definition" if artifact_kind == "definition" else "lemma"
 
 
-def _render_block(node: dict) -> str:
-    """One ``## `` blueprint section for a synthesized node."""
-    lines = [f"## {node['key']}", f"- kind: {node['kind']}", f"- lean: `{node['lean']}`"]
-    if node["uses"]:
-        lines.append(f"- uses: {', '.join(node['uses'])}")
-    lines.append("")
-    lines.append(node["statement"])
-    return "\n".join(lines)
+def _node_block(candidate: dict) -> dict:
+    """A synthesized candidate as a parsed node block (rendered by :func:`blueprint.render`)."""
+    return {"type": "node", "key": candidate["key"], "kind": candidate["kind"],
+            "lean": candidate["lean"], "file": candidate.get("path") or None,
+            "uses": list(candidate["uses"]), "statement": candidate["statement"]}
 
 
 def _compiler_references(project: dict, repo, relative: str, *, required=()) -> dict[str, list[str]]:
@@ -216,15 +214,17 @@ def generate(project: dict, proofs_root) -> dict:
             complete = False
             warnings.append('Project source or Blueprint changed during inspection. Refresh and generate again.')
     if candidates and complete:
-        blocks = "\n\n".join(_render_block(c) for c in candidates)
-        # If the existing content ends inside an unclosed ``` fence (an odd number of
-        # fence lines), close it first — otherwise the appended `## ` sections land
-        # inside the fence, parse as inert, and get re-added on every run (breaking the
-        # idempotency guarantee). Balanced fences (the normal case) add nothing.
-        fences = sum(1 for line in existing_text.splitlines() if blueprint._FENCE_RE.match(line))
-        closer = "```\n\n" if fences % 2 == 1 else ""
-        new_text = f"{existing_text.rstrip()}\n\n{closer}{blocks}\n"
+        # Append through the canonical renderer: the whole document comes out in
+        # canonical form, and `render` closes a dangling ``` fence before the next
+        # section, so appended nodes never land inside a fence (which would parse as
+        # inert and re-add them on every run, breaking idempotency).
+        document = dict(parsed)
+        if not (document.get("preamble") or "").strip():
+            document["preamble"] = blueprint.parse(blueprint.empty_document(project["title"]))["preamble"]
+        document["blocks"] = [*parsed["blocks"], *(_node_block(c) for c in candidates)]
+        new_text = blueprint.render(document)
         project_service.write_doc(project, proofs_root, "blueprint.md", new_text)
+        store.note_blueprint_change(project["id"])
 
     return {
         "added": len(candidates) if complete else 0,

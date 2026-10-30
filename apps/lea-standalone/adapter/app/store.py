@@ -5050,3 +5050,21 @@ def _walk_dicts(value: Any) -> list[dict[str, Any]]:
 
     visit(value)
     return found
+
+
+def note_blueprint_change(project_id: str) -> None:
+    """Record a project-scoped domain change after a blueprint write.
+
+    A disk write (`.lea/blueprint.md` / `.lea/blueprint.draft.md`) touches no domain
+    table, so without this row the SQL views (`peripheral_views.input_revision`) would
+    keep serving the pre-write blueprint and graph (PLAN-blueprint-tools §2.9)."""
+    if not project_id:
+        return
+    with connect() as conn:
+        from .workspace_commands import authorize
+        authorize(conn)
+        conn.execute(
+            "insert into domain_changes (batch_id, entity_type, entity_id, action, project_id) "
+            "values (lea_change_batch(), 'blueprint', ?, 'update', ?)",
+            (project_id, project_id),
+        )

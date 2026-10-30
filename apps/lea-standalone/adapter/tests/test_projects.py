@@ -43,8 +43,13 @@ def test_provision_creates_repo_with_committed_seed_docs(tmp_path, monkeypatch):
     lea = repo / ".lea"
     for name in ("instructions.md", "memory.md", "blueprint.md"):
         assert (lea / name).is_file(), f"{name} should be seeded"
-    # The blueprint seed points the agent at the real namespace (example decl).
-    assert "Lea.Continuity.continuous_sq" in (lea / "blueprint.md").read_text()
+    # The blueprint seed is a canonical empty blueprint (PLAN-blueprint-tools §2.2):
+    # Lea fills it through its blueprint tools, so it carries no node or tutorial.
+    from app import blueprint
+    seed = (lea / "blueprint.md").read_text()
+    assert seed.startswith("# Blueprint — Continuity\n")
+    assert blueprint.render(blueprint.parse(seed)) == seed
+    assert blueprint.parse(seed)["nodes"] == []
 
     # The seeds are committed (not just on disk): the working tree is clean.
     status = subprocess.run(
