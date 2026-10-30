@@ -7,7 +7,6 @@ import { useSessions } from '../../stores/sessions';
 import { useProofSession } from '../../stores/proofSession';
 import { useModel } from '../../stores/model';
 import { useWorkbench } from '../../stores/workbench';
-import { findSlashCommand } from '../../lib/slashCommands.js';
 import {
   blueprintTally,
   projectRunning,
@@ -31,6 +30,7 @@ export function Home({
   onStartProject,
   onNewProject,
   onOpenSession,
+  startsWithBlueprint = false,
   sidebarCollapsed,
   onExpandSidebar,
 }: {
@@ -40,6 +40,8 @@ export function Home({
   onNewProject: () => void;
   /** Open a recent session in the workbench (falls back to its project when absent). */
   onOpenSession?: (sessionId: string) => void;
+  /** Whether onStartProject opens with `/blueprint` (App decides; the copy follows). */
+  startsWithBlueprint?: boolean;
   sidebarCollapsed?: boolean;
   onExpandSidebar?: () => void;
 }) {
@@ -84,7 +86,6 @@ export function Home({
     return Object.assign(merged, sessionNodeMap(null, nodeBindings));
   }, [graphs, nodeBindings]);
 
-  const blueprintCommand = Boolean(findSlashCommand('blueprint'));
   const previewTitle = draft.trim() ? projectTitleFromStatement(draft) : null;
 
   const submit = async () => {
@@ -122,7 +123,7 @@ export function Home({
           <p className="home-ask-title">What do you want to prove?</p>
           <p className="home-ask-sub">
             A statement becomes a project: its own folder, namespace and git history.
-            {blueprintCommand ? ' Lea drafts the blueprint first.' : ' Lea starts on it in a fresh session.'}
+            {startsWithBlueprint ? ' Lea drafts the blueprint first.' : ' Lea starts on it in a fresh session.'}
           </p>
           <div className={`home-composer ${starting ? 'is-busy' : ''}`}>
             <label htmlFor="home-composer" className="sh-visually-hidden">Theorem to prove</label>
@@ -155,7 +156,7 @@ export function Home({
               {model && <span className="home-composer-model">{model}</span>}
               <span className="sh-spacer" />
               <span className="home-composer-hint">
-                {blueprintCommand ? 'Starts with /blueprint' : 'Enter to start'}
+                {startsWithBlueprint ? 'Starts with /blueprint' : 'Enter to start'}
               </span>
               <button
                 className="home-composer-send"

@@ -23,12 +23,16 @@ export type View =
  */
 export function useLayout() {
   // Project first (docs/PLAN-ui-redesign.md): the launch screen is the default.
-  // A saved session id means the restore in App will reopen the workbench, so
-  // start there to avoid a Home → workbench flash on reload; App falls back to
-  // 'home' when nothing restores. (Key shared with App's SELECTED_SESSION_KEY.)
-  const [view, setView] = useState<View>(() =>
-    window.localStorage.getItem('lea:selectedSessionId') ? 'main' : 'home',
-  );
+  // A saved session id or a ?session= / ?formalization= link means the restore
+  // in App will reopen the workbench, so start there to avoid a Home → workbench
+  // flash on reload; App settles on 'home' when nothing restores. (The key is
+  // App's SELECTED_SESSION_KEY.)
+  const [view, setView] = useState<View>(() => {
+    const link = new URLSearchParams(window.location.search);
+    const restoring = window.localStorage.getItem('lea:selectedSessionId')
+      || link.has('session') || link.has('formalization');
+    return restoring ? 'main' : 'home';
+  });
   const [canvasCollapsed, setCanvasCollapsed] = useState(false);
   // Collapsible sidebar (M27) + draggable canvas width (M26), both remembered.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(

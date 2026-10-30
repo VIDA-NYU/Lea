@@ -66,6 +66,11 @@ import {
 
 const SELECTED_SESSION_KEY = 'lea:selectedSessionId';
 
+// Shell (docs/PLAN-ui-redesign.md): whether a project started from the launch
+// screen opens with `/blueprint` instead of the statement. See the
+// TODO(blueprint-package) in handleStartProject.
+const START_WITH_BLUEPRINT = false;
+
 // Views the desktop shell's menu may jump to without a selected session/project.
 const DESKTOP_MENU_VIEWS: ReadonlySet<string> = new Set(['main', 'stats', 'settings', 'projects-hub']);
 
@@ -238,9 +243,16 @@ export default function App() {
         },
       });
       // Project first: a restored session opens the workbench; nothing restored
-      // (and no project deep-link) lands on the launch screen.
-      if (useSessions.getState().selectedSessionId) setView('main');
-      else if (!useProjects.getState().selectedProjectId) setView('home');
+      // (and no project deep-link) lands on the launch screen. Only the two
+      // start views are settled, so a click made during the restore stands, and
+      // the raw setter leaves any project load the user started in flight.
+      const restored = Boolean(useSessions.getState().selectedSessionId);
+      const projectOpened = Boolean(useProjects.getState().selectedProjectId);
+      setLayoutView((current) => {
+        if (current !== 'home' && current !== 'main') return current;
+        if (restored) return 'main';
+        return projectOpened ? current : 'home';
+      });
     };
     if(restorationStarted.current)return;
     restorationStarted.current=true;
@@ -362,28 +374,55 @@ export default function App() {
     attachStream(run.run_id, run.session_id);
   };
 
-  // "What do you want to prove?": a statement becomes a project named from it,
-  // a session in that project, and the first run. Errors propagate so the
-  // launch screen can show them next to the composer.
+  // "What do you want to prove?": a statement becomes a project named from it
+  // (the statement itself is the description), a session in that project, and
+  // the first message, sent through the composer's own submit path
+  // (handleSubmit: slash commands, scope, idempotent admission). Errors before
+  // the workbench opens propagate so the launch screen shows them by its box.
+  const startingProject = useRef(false);
+  const queuedFirstMessage = useRef<{ sessionId: string; content: string } | null>(null);
   const handleStartProject = async (statement: string) => {
     const content = statement.trim();
-    if (!content || submitting.current) return;
+    if (!content || startingProject.current) return;
     setError(undefined);
-    submitting.current = true;
+    startingProject.current = true;
     try {
-      const project = await createAndOpenProject(projectTitleFromStatement(content));
-      if (!project) return;
+      const project = await createAndOpenProject(projectTitleFromStatement(content), content);
+      if (!project) return; // navigation moved on while the project was created
       const session = await createSessionInProject(project.id, project.title);
-      // TODO(blueprint-package): once `/blueprint` exists in lib/slashCommands.js,
-      // run it here as the first message (draft the decomposition before any
-      // proving) instead of submitting the bare statement.
-      await launchProjectRun(project, session.id, content, {
-        new_formalization: { display_title: content.slice(0, 120) },
-      });
+      await refreshSessions();
+      const detail = await loadSession(session.id);
+      if (!detail) return;
+      setView('main');
+      // TODO(blueprint-package): flip START_WITH_BLUEPRINT (top of this file)
+      // once `/blueprint` and the workbench `pendingSubmission` consumer are
+      // merged: the first message is then `/blueprint` (no arguments; it drafts
+      // the decomposition from the project's title and description, which hold
+      // the statement) instead of the bare statement.
+      const firstMessage = START_WITH_BLUEPRINT ? '/blueprint' : content;
+      // A fresh project has nothing to scope to: record the statement as a new
+      // formalization, as the legacy project window's start did.
+      if (!START_WITH_BLUEPRINT) setComposerScopeOverride('new');
+      queuedFirstMessage.current = { sessionId: session.id, content: firstMessage };
+      setDraft(firstMessage);
     } finally {
-      submitting.current = false;
+      startingProject.current = false;
     }
   };
+  // Send the queued first message once its session is selected and the
+  // composer holds it; drop it if the user went to another session first.
+  useEffect(() => {
+    const queued = queuedFirstMessage.current;
+    if (!queued || restoringContext) return;
+    if (selectedSessionId !== queued.sessionId) {
+      queuedFirstMessage.current = null;
+      return;
+    }
+    if (draft !== queued.content) return;
+    queuedFirstMessage.current = null;
+    void handleSubmit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSessionId, draft, restoringContext]);
 
   // "Prove" / "Prove the sorry" / "Retry" on the project home: a session bound
   // to the blueprint node whose first message names the node, its declaration,
@@ -583,7 +622,7 @@ export default function App() {
         setFormalizationScope(formalization.id);
         setCanvasCollapsed(false);
       } else if (formalization.project_id) {
-        if (await openProject(formalization.project_id)) setView('project');
+        if (await openProject(formalization.project_id)) setView('project-home');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to open formalization.');
@@ -863,10 +902,20 @@ export default function App() {
   // is shared by the workbench, the launch screen (`home`) and the project
   // overview (`project-home`); sessions open through handleOpenProjectSession,
   // project surfaces (blueprint, files) through openProjectSurface.
+  // There are no loose sessions: the workbench with nothing selected (Back from
+  // Settings, the desktop menu, a session that did not restore) is the launch
+  // screen. While restoring, or when it failed, the workbench keeps its notice.
+  // A project home with no project to show is the launch screen too.
+  const projectHomeId = currentProject?.id ?? selectedProjectId;
+  const shownView: View =
+    (view === 'main' && !selectedSessionId && !restoringContext && !restorationFailed)
+    || (view === 'project-home' && !projectHomeId && !currentProjectDeleted)
+      ? 'home'
+      : view;
   const sidebar = (
     <Sidebar
       runningSessionId={isRunning ? selectedSessionId : undefined}
-      activeView={view}
+      activeView={shownView}
       onSelectSession={handleOpenProjectSession}
       onNewProject={() => setNewProjectOpen(true)}
       onOpenHome={() => setView('home')}
@@ -896,14 +945,14 @@ export default function App() {
     </div>
   );
 
-  const projectHomeId = currentProject?.id ?? selectedProjectId;
-  if (view === 'home' || (view === 'project-home' && !projectHomeId && !currentProjectDeleted))
+  if (shownView === 'home')
     return shellFrame(
       <Home
         onOpenProject={openProjectHome}
         onStartProject={handleStartProject}
         onNewProject={() => setNewProjectOpen(true)}
         onOpenSession={handleOpenProjectSession}
+        startsWithBlueprint={START_WITH_BLUEPRINT}
         sidebarCollapsed={sidebarCollapsed}
         onExpandSidebar={() => setSidebarCollapsed(false)}
       />,
