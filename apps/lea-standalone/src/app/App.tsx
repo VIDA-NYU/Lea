@@ -71,10 +71,11 @@ import {
 
 const SELECTED_SESSION_KEY = 'lea:selectedSessionId';
 
-// Shell (docs/PLAN-ui-redesign.md): whether a project started from the launch
-// screen opens with `/blueprint` instead of the statement. See the
-// TODO(blueprint-package) in handleStartProject.
-const START_WITH_BLUEPRINT = false;
+// Blueprint first (docs/PLAN-ui-redesign.md): a project started from the launch
+// screen opens with `/blueprint`, which drafts the decomposition from the
+// project's title and description (the statement) before any proving. false
+// sends the statement itself as the first message instead.
+const START_WITH_BLUEPRINT = true;
 
 // Views the desktop shell's menu may jump to without a selected session/project.
 const DESKTOP_MENU_VIEWS: ReadonlySet<string> = new Set(['main', 'stats', 'settings', 'projects-hub']);
@@ -457,10 +458,13 @@ export default function App() {
       // Blueprint first: `/blueprint` (no arguments) drafts the decomposition
       // from the project's title and description, which hold the statement.
       const firstMessage = START_WITH_BLUEPRINT ? '/blueprint' : content;
-      // A fresh project has nothing to scope to: record the statement as a new
-      // formalization, as the legacy project window's start did.
-      if (!START_WITH_BLUEPRINT) setComposerScopeOverride('new');
-      useWorkbench.getState().setPendingSubmission({ text: firstMessage, sessionId: session.id });
+      // A fresh project has nothing to scope to: a bare statement is recorded as
+      // a new formalization, as the legacy project window's start did.
+      useWorkbench.getState().setPendingSubmission({
+        text: firstMessage,
+        sessionId: session.id,
+        ...(START_WITH_BLUEPRINT ? {} : { scope: 'new' }),
+      });
     } finally {
       startingProject.current = false;
     }
@@ -719,7 +723,7 @@ export default function App() {
   viewRef.current = view;
   useEffect(() => {
     if (!pendingSubmission || restoringContext) return;
-    const { text, sessionId, mode } = pendingSubmission;
+    const { text, sessionId, mode, scope } = pendingSubmission;
     useWorkbench.getState().setPendingSubmission(null);
     const showWorkbench = () => { if (viewRef.current !== 'main') setView('main'); };
     if (mode === 'draft') {
@@ -749,7 +753,9 @@ export default function App() {
         }
         if (!target) return;
         showWorkbench();
-        // Same batch: the effect below sees the draft and the queue together.
+        // Same batch: the effect below sees the draft, the scope and the queue
+        // together.
+        if (scope) setComposerScopeOverride(scope);
         setDraft(text);
         setQueuedSubmission({ sessionId: target, text });
       } catch (err) {

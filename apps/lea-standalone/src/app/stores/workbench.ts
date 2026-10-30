@@ -58,6 +58,12 @@ export interface PendingSubmission {
   sessionId?: string;
   /** submit (default): send it as a message · draft: only prefill the composer and focus it. */
   mode?: 'submit' | 'draft';
+  /**
+   * Pin the run's scope (the composer's scope override: 'project', 'new' or a
+   * formalization id) instead of inferring it from the text. A drafting prompt
+   * says "prove" and would otherwise be recorded as a new formalization.
+   */
+  scope?: string;
 }
 
 interface WorkbenchState {

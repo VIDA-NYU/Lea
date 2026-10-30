@@ -156,7 +156,9 @@ export async function openOrDraftBlueprint(projectId: string, options: { session
     draftingSessionId: options.sessionId,
     notes: seeded.warnings,
   });
-  useWorkbench.getState().setPendingSubmission({ text: draftingPrompt(project), sessionId: options.sessionId });
+  // Scope 'project': the drafting run writes .lea/blueprint.md, it is not a
+  // formalization (scope inference would read "prove" in the prompt as one).
+  useWorkbench.getState().setPendingSubmission({ text: draftingPrompt(project), sessionId: options.sessionId, scope: 'project' });
   return 'drafting-run';
 }
 
