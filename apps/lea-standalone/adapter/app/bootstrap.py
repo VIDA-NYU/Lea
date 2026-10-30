@@ -4,7 +4,7 @@ import os
 import stat
 from pathlib import Path
 from . import db
-SCHEMA='0051_idle_observation_renewal'
+SCHEMA='0052_blueprint_tools'
 MAX_INTAKE_ENTRIES=10000
 
 
