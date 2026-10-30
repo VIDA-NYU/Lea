@@ -7,6 +7,7 @@ import { submitWithRecovery, workspaceResult } from '../../../../../packages/lea
 import { RevisionConflictError } from './api';
 import type {
   BlueprintAcceptResult,
+  BlueprintAppliedNode,
   BlueprintDiscardResult,
   BlueprintRemoveResult,
   BlueprintUpsertNode,
@@ -67,6 +68,20 @@ async function blueprintWrite(path: string, method: 'POST' | 'PUT', body: Record
 
 const base = (projectId: string) => `/api/projects/${encodeURIComponent(projectId)}/blueprint`;
 
+/** `applied` entries per §2.2 are objects; a bare key is accepted too. */
+function appliedList(value: unknown): BlueprintAppliedNode[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((a: any) =>
+      typeof a === 'string'
+        ? { key: a, kind: null, lean: null, file: null, uses: [], status: 'planned' as const }
+        : a && typeof a.key === 'string'
+          ? { kind: null, lean: null, file: null, uses: [], status: 'planned' as const, ...a }
+          : null,
+    )
+    .filter((a): a is BlueprintAppliedNode => a !== null);
+}
+
 /**
  * POST /api/projects/{id}/blueprint/nodes — create or update nodes through the
  * store (`project.blueprint_upsert`). The system assigns `lean` and `file`;
@@ -79,7 +94,7 @@ export async function upsertBlueprintNodes(
 ): Promise<BlueprintUpsertResult> {
   const data = await blueprintWrite(`${base(projectId)}/nodes`, 'POST', options.draft ? { nodes, draft: true } : { nodes }, 'Failed to save the blueprint nodes');
   return {
-    applied: Array.isArray(data?.applied) ? data.applied : [],
+    applied: appliedList(data?.applied),
     rejected: Array.isArray(data?.rejected) ? data.rejected : [],
     ready: Array.isArray(data?.ready) ? data.ready : [],
     counts: data?.counts ?? { total: 0, proved: 0, ready: 0, stated: 0, failed: 0, planned: 0 },
@@ -110,7 +125,7 @@ export async function removeBlueprintNodes(
 export async function acceptBlueprintDraft(projectId: string, keys?: string[]): Promise<BlueprintAcceptResult> {
   const data = await blueprintWrite(`${base(projectId)}/draft/accept`, 'POST', keys ? { keys } : {}, 'Failed to accept the draft');
   return {
-    applied: Array.isArray(data?.applied) ? data.applied : [],
+    applied: appliedList(data?.applied),
     rejected: Array.isArray(data?.rejected) ? data.rejected : [],
     commit_sha: data?.commit_sha ?? null,
   };
