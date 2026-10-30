@@ -232,9 +232,11 @@ def intake(action):
         return route
     return decorate
 
-EDIT_ACTIONS = {'session.save', 'session.edit', 'project.save', 'project.instructions', 'project.memory', 'project.blueprint'}
+EDIT_ACTIONS = {'session.save', 'session.edit', 'project.save', 'project.instructions', 'project.memory', 'project.blueprint',
+                'project.blueprint_draft'}
 CHECK_ACTIONS = {'session.check','session.rebuild','session.verify'}
-DOC_PATHS = {'project.instructions': '.lea/instructions.md', 'project.memory': '.lea/memory.md', 'project.blueprint': '.lea/blueprint.md'}
+DOC_PATHS = {'project.instructions': '.lea/instructions.md', 'project.memory': '.lea/memory.md', 'project.blueprint': '.lea/blueprint.md',
+             'project.blueprint_draft': '.lea/blueprint.draft.md'}
 
 
 class EditRequest(BaseModel):

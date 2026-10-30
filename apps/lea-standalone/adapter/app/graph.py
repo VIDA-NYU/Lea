@@ -14,8 +14,13 @@ parsed nodes + `uses` edges and enriches each node with:
 
 Status values (→ node color in F7):
   ``planned`` (no decl yet) · ``stated`` (decl exists, has ``sorry`` / unchecked) ·
-  ``ready`` (not proved, but every dependency is proved) · ``proved`` (checks ok,
-  no ``sorry``) · ``failed`` (latest check errored).
+  ``ready`` (not proved, but every dependency is proved — vacuously for a leaf) ·
+  ``proved`` (checks ok, no ``sorry``) · ``failed`` (latest check errored).
+
+Each node also carries ``declared`` (its ``lean:`` name resolves to a declaration in
+the repo) and ``planned_file`` (the ``file:`` line, even when that file does not
+exist yet); ``file`` stays the *resolved* file. A ``lean:`` name that resolves to no
+declaration adds an ``unresolved_lean`` entry to the graph ``warnings``.
 
 Each node also carries a ``verified`` bool: True iff it is ``proved`` *and*
 SafeVerify (kernel replay + axiom audit) passed for its current state — the
@@ -122,8 +127,10 @@ def _base_status(lean: str | None, file: str | None, latest: dict | None, has_so
 
 def build_graph(project: dict, proofs_root: Path) -> dict:
     """Parse ``.lea/blueprint.md`` and enrich each node with derived status + session
-    attribution (D28/D29). Returns ``{"nodes": [...], "edges": [...]}`` where each node
-    is the parsed node plus ``status``, ``file``, ``sessions``, ``last_modified_by``."""
+    attribution (D28/D29). Returns ``{"nodes": [...], "edges": [...], "warnings": [...]}``
+    where each node is the parsed node plus ``status``, ``file`` (resolved),
+    ``planned_file``, ``declared``, ``resolved_lean``, ``verified``, ``sessions``,
+    ``last_modified_by``."""
     repo = project_repo_dir(project, proofs_root)
     warnings: list[dict] = []
     try:
@@ -186,9 +193,17 @@ def build_graph(project: dict, proofs_root: Path) -> dict:
         # for the session holding the current file state. Never True for stated/ready/etc.
         verified = status == "proved" and store.safe_verify_current_step(project["id"], latest)
 
+        if lean and resolved is None:
+            warnings.append({
+                "code": "unresolved_lean", "node": node["key"], "lean": lean,
+                "message": f"`{lean}` (node `{node['key']}`) is not declared in the project yet.",
+            })
+
         enriched.append({
             **node,
             "file": file,
+            "planned_file": node.get("file"),
+            "declared": resolved is not None,
             "resolved_lean": resolved,
             "status": status,
             "verified": verified,
@@ -196,9 +211,10 @@ def build_graph(project: dict, proofs_root: Path) -> dict:
             "last_modified_by": last_modified_by,
         })
 
-    # ``ready`` overlay (D28): a not-yet-proved node whose every dependency is proved.
+    # ``ready`` overlay (D28): a not-yet-proved node whose every dependency is proved,
+    # vacuously for a leaf (a node with no dependencies can be started right away).
     for node in enriched:
-        if node["status"] in ("planned", "stated") and node["uses"] and all(
+        if node["status"] in ("planned", "stated") and all(
             base.get(dep) == "proved" for dep in node["uses"]
         ):
             node["status"] = "ready"

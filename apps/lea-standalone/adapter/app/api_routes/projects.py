@@ -49,6 +49,32 @@ class FilePut(workspace_commands.EditRequest):
     path: str
     content: str
 
+class BlueprintNodeInput(BaseModel):
+    key: str
+    kind: str | None = None
+    statement: str | None = None
+    uses: list[str] | None = None
+    lean: str | None = None
+    file: str | None = None
+
+class BlueprintNodesUpsert(BaseModel):
+    idempotency_key: str | None = None
+    nodes: list[BlueprintNodeInput] = Field(min_length=1, max_length=100)
+    draft: bool = False
+
+class BlueprintNodesRemove(BaseModel):
+    idempotency_key: str | None = None
+    keys: list[str] = Field(min_length=1)
+    cascade: bool = False
+    draft: bool = False
+
+class BlueprintDraftAccept(BaseModel):
+    idempotency_key: str | None = None
+    keys: list[str] | None = None
+
+class BlueprintDraftDiscard(BaseModel):
+    idempotency_key: str | None = None
+
 class MirrorFile(BaseModel):
     path: str
     content: str
@@ -155,6 +181,31 @@ def get_blueprint(project_id: str) -> dict:
 @router.put('/api/projects/{project_id}/blueprint', status_code=202)
 @workspace_commands.intake('project.blueprint')
 def put_blueprint(project_id: str, request: DocUpdate) -> dict:
+    raise RuntimeError('An intake contract cannot execute')
+
+@router.put('/api/projects/{project_id}/blueprint/draft', status_code=202)
+@workspace_commands.intake('project.blueprint_draft')
+def put_blueprint_draft(project_id: str, request: DocUpdate) -> dict:
+    raise RuntimeError('An intake contract cannot execute')
+
+@router.post('/api/projects/{project_id}/blueprint/nodes', status_code=202)
+@workspace_commands.intake('project.blueprint_upsert')
+def upsert_blueprint_nodes(project_id: str, request: BlueprintNodesUpsert) -> dict:
+    raise RuntimeError('An intake contract cannot execute')
+
+@router.post('/api/projects/{project_id}/blueprint/nodes/remove', status_code=202)
+@workspace_commands.intake('project.blueprint_remove')
+def remove_blueprint_nodes(project_id: str, request: BlueprintNodesRemove) -> dict:
+    raise RuntimeError('An intake contract cannot execute')
+
+@router.post('/api/projects/{project_id}/blueprint/draft/accept', status_code=202)
+@workspace_commands.intake('project.blueprint_accept_draft')
+def accept_blueprint_draft(project_id: str, request: BlueprintDraftAccept = BlueprintDraftAccept()) -> dict:
+    raise RuntimeError('An intake contract cannot execute')
+
+@router.post('/api/projects/{project_id}/blueprint/draft/discard', status_code=202)
+@workspace_commands.intake('project.blueprint_discard_draft')
+def discard_blueprint_draft(project_id: str, request: BlueprintDraftDiscard = BlueprintDraftDiscard()) -> dict:
     raise RuntimeError('An intake contract cannot execute')
 
 @router.get('/api/projects/{project_id}/graph')
