@@ -24,6 +24,7 @@ import { useProjects } from '../stores/projects';
 import { useProofSession } from '../stores/proofSession';
 import { useWorkbench } from '../stores/workbench';
 import {
+  blueprintFoldSummary,
   blueprintTally,
   flattenTree,
   projectRunning,
@@ -41,6 +42,9 @@ import { StatusDot, nodeDotKind, sessionDotKind } from './shell/bits';
 import { DesktopUpdateButton } from './shell/DesktopUpdateButton';
 
 const NODE_ORDER: Record<string, number> = { ready: 1, stated: 2, failed: 3, planned: 4, proved: 5 };
+// Up to this many unproved nodes the list under "Blueprint" opens by itself;
+// above it, it folds to a summary row until the user expands it.
+const NODE_AUTO_EXPAND_MAX = 12;
 
 // Left rail, project first (mockup frames 11–12): brand, New project, search,
 // the Projects list sorted by activity. The open project expands to Overview,
@@ -111,6 +115,9 @@ export function Sidebar({
       : selectedSession?.project_id ?? selectedProjectId ?? undefined;
 
   const [treeCollapsed, setTreeCollapsed] = useState(false);
+  // Blueprint nodes under the project: null = automatic (open for a small
+  // blueprint, folded for a big one, see ProjectTree); a click pins it.
+  const [showNodes, setShowNodes] = useState<boolean | null>(null);
   const [showProved, setShowProved] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
   const [showUnfiled, setShowUnfiled] = useState(false);
@@ -118,6 +125,7 @@ export function Sidebar({
 
   useEffect(() => {
     setTreeCollapsed(false);
+    setShowNodes(null);
     setShowProved(false);
     setShowSessions(false);
   }, [openProjectId]);
@@ -240,6 +248,8 @@ export function Sidebar({
                   runningSessionId={runningSessionId}
                   selectedSessionId={activeView === 'main' ? selectedSessionId : undefined}
                   activeView={activeView}
+                  showNodes={showNodes}
+                  onToggleNodes={(open) => setShowNodes(open)}
                   showProved={showProved}
                   onToggleProved={() => setShowProved((v) => !v)}
                   showSessions={showSessions}
@@ -347,6 +357,8 @@ function ProjectTree({
   runningSessionId,
   selectedSessionId,
   activeView,
+  showNodes,
+  onToggleNodes,
   showProved,
   onToggleProved,
   showSessions,
@@ -366,6 +378,9 @@ function ProjectTree({
   /** The session open in the workbench: its node and row stay visible. */
   selectedSessionId?: string;
   activeView?: string;
+  /** null = automatic: open while the blueprint is small, folded once it grows. */
+  showNodes: boolean | null;
+  onToggleNodes: (open: boolean) => void;
   showProved: boolean;
   onToggleProved: () => void;
   showSessions: boolean;
@@ -403,6 +418,13 @@ function ProjectTree({
   const chatSessions = sessions.filter((s) => !nodeBySession[s.id]);
   // An open project chat (no node) shows in the Sessions list, opened for it.
   const sessionsOpen = showSessions || chatSessions.some((s) => s.id === selectedSessionId);
+  // A blueprint can hold hundreds of nodes: the list under "Blueprint" folds to
+  // one summary row once it is bigger than a screenful, unless the user pins
+  // it open. The node holding the open session stays visible either way.
+  const runningCount = orderedNodes.filter((n) => nodeIsRunning(n.key)).length;
+  const nodesOpen = showNodes ?? activeNodes.length <= NODE_AUTO_EXPAND_MAX;
+  const foldSummary = blueprintFoldSummary(tally, runningCount);
+  const selectedNode = selectedNodeKey ? orderedNodes.find((n) => n.key === selectedNodeKey) : undefined;
 
   const nodeRight = (node: GraphNode): string => {
     const bound = sessionsByNode[node.key] ?? [];
@@ -429,16 +451,53 @@ function ProjectTree({
         <LayoutGrid size={13} className="sb-ico" />
         <span className="sb-name">Overview</span>
       </button>
-      <button className="sb-row" style={{ paddingLeft: 24 }} onClick={() => onOpenBlueprint(project.id)}>
-        <Workflow size={13} className="sb-ico" />
-        <span className="sb-name">Blueprint</span>
-        {tally.total > 0 && (
-          <span className={`sb-right ${tally.proved > 0 ? 'is-proved' : ''}`}>
-            {tally.proved > 0 ? `${tally.proved} proved` : `${tally.total} planned`}
-          </span>
+      <div className="sb-row-wrap">
+        <button className="sb-row" style={{ paddingLeft: 24 }} onClick={() => onOpenBlueprint(project.id)}>
+          <Workflow size={13} className="sb-ico" />
+          <span className="sb-name">Blueprint</span>
+          {tally.total > 0 && (
+            <span className={`sb-right ${tally.proved > 0 ? 'is-proved' : ''}`}>
+              {tally.proved > 0 ? `${tally.proved} proved` : `${tally.total} planned`}
+            </span>
+          )}
+        </button>
+        {nodes.length > 0 && (
+          <button
+            className="sb-chev sb-chev-end"
+            onClick={() => onToggleNodes(!nodesOpen)}
+            aria-label={nodesOpen ? 'Collapse blueprint nodes' : 'Expand blueprint nodes'}
+            aria-expanded={nodesOpen}
+            title={nodesOpen ? 'Collapse the node list' : 'Expand the node list'}
+          >
+            {nodesOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </button>
         )}
-      </button>
-      {activeNodes.map((node) => (
+      </div>
+      {!nodesOpen && nodes.length > 0 && (
+        <>
+          <button
+            className="sb-row sb-row-summary"
+            style={{ paddingLeft: 38 }}
+            onClick={() => onToggleNodes(true)}
+            aria-expanded={false}
+            title="Show every node"
+          >
+            <span className="sb-name">{foldSummary}</span>
+            <ChevronRight size={11} />
+          </button>
+          {selectedNode && (
+            <div key={selectedNode.key}>
+              <button className="sb-row sb-row-node" style={{ paddingLeft: 38 }} onClick={() => openNode(selectedNode)} title={selectedNode.statement || selectedNode.key}>
+                <StatusDot kind={nodeIsRunning(selectedNode.key) ? 'running' : nodeDotKind(selectedNode.status)} />
+                <span className="sb-name sh-mono">{selectedNode.key}</span>
+                <span className={`sb-right ${nodeIsRunning(selectedNode.key) ? 'is-running' : ''}`}>{nodeRight(selectedNode)}</span>
+              </button>
+              {(sessionsByNode[selectedNode.key] ?? []).map((s) => renderSessionRow(s, 52))}
+            </div>
+          )}
+        </>
+      )}
+      {nodesOpen && activeNodes.map((node) => (
         <div key={node.key}>
           <button className="sb-row sb-row-node" style={{ paddingLeft: 38 }} onClick={() => openNode(node)} title={node.statement || node.key}>
             <StatusDot kind={nodeIsRunning(node.key) ? 'running' : nodeDotKind(node.status)} />
@@ -448,7 +507,7 @@ function ProjectTree({
           {(sessionsByNode[node.key] ?? []).map((s) => renderSessionRow(s, 52))}
         </div>
       ))}
-      {provedNodes.length > 0 && (
+      {nodesOpen && provedNodes.length > 0 && (
         <>
           <button className="sb-row sb-row-summary" style={{ paddingLeft: 38 }} onClick={onToggleProved} aria-expanded={showProved}>
             <span className="sb-name">{provedNodes.length} proved node{provedNodes.length === 1 ? '' : 's'}</span>

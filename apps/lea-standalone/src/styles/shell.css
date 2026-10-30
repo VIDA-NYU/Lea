@@ -263,3 +263,10 @@
 .desktop-update-pop-btn.is-quiet { border-color: transparent; color: var(--muted); }
 .desktop-update-pop-arrow { position: absolute; bottom: -7px; width: 12px; height: 12px; background: var(--panel);
   border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); transform: rotate(45deg); }
+
+/* A row with a trailing chevron that folds what sits under it (the Blueprint
+   row's node list). The row keeps its full click target; the chevron is its own
+   button so a row never nests a button. */
+.sb-row-wrap { display: flex; align-items: center; min-width: 0; }
+.sb-row-wrap .sb-row { flex: 1; min-width: 0; }
+.sb-chev-end { margin-left: 0; margin-right: 4px; }

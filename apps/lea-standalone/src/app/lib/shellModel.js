@@ -43,6 +43,23 @@ export function blueprintTally(nodes) {
 }
 
 /**
+ * One line for the folded node list under "Blueprint" in the sidebar: the
+ * node count, then what is worth knowing without expanding it (running,
+ * ready, sorry, error), each only when non-zero.
+ * @param {ReturnType<typeof blueprintTally>} tally
+ * @param {number} [running] nodes with a live session
+ */
+export function blueprintFoldSummary(tally, running = 0) {
+  const total = tally?.total ?? 0;
+  const parts = [`${total} node${total === 1 ? '' : 's'}`];
+  if (running > 0) parts.push(`${running} running`);
+  if (tally?.ready > 0) parts.push(`${tally.ready} ready`);
+  if (tally?.stated > 0) parts.push(`${tally.stated} sorry`);
+  if (tally?.failed > 0) parts.push(`${tally.failed} ${tally.failed === 1 ? 'error' : 'errors'}`);
+  return parts.join(' · ');
+}
+
+/**
  * The five-colour bar: one segment per non-empty status, in drawing order, with
  * a percentage width (one decimal). Empty for a project without a blueprint.
  * @param {ReturnType<typeof blueprintTally>} tally

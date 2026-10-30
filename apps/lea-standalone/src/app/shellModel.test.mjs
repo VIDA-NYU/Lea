@@ -240,3 +240,17 @@ test('settleRestoredView only settles the start views', () => {
   assert.equal(settleRestoredView('settings', { restored: false, projectOpened: false }), 'settings', 'a click during the restore stands');
   assert.equal(settleRestoredView('project-home', { restored: true, projectOpened: true }), 'project-home');
 });
+
+test('blueprintFoldSummary names only what is non-zero', async () => {
+  const { blueprintFoldSummary, blueprintTally } = await import('./lib/shellModel.js');
+  const nodes = [
+    { key: 'a', status: 'proved' },
+    { key: 'b', status: 'ready' },
+    { key: 'c', status: 'stated' },
+    { key: 'd', status: 'planned' },
+    { key: 'e', status: 'failed' },
+  ];
+  assert.equal(blueprintFoldSummary(blueprintTally(nodes), 2), '5 nodes · 2 running · 1 ready · 1 sorry · 1 error');
+  assert.equal(blueprintFoldSummary(blueprintTally([{ key: 'a', status: 'planned' }])), '1 node');
+  assert.equal(blueprintFoldSummary(blueprintTally([])), '0 nodes');
+});
