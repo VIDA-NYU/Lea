@@ -45,6 +45,7 @@ def create_session(
     parent_id: str | None = None,
     role: str | None = None,
     spawned_at_turn: int | None = None,
+    blueprint_node: str | None = None,
 ) -> dict:
     """Create a session. `origin` records providence ('ui' | 'overleaf'); for an
     Overleaf-spawned session `origin_url` is the canonical Overleaf document URL so
@@ -55,17 +56,22 @@ def create_session(
     coordinator that spawned it: a child is a real session excluded from the root list
     (`parent_id is null`), tagged with its `role` (subagent_type) and the coordinator
     `turn` it was delegated on. All three default to None, so a root session is
-    unchanged."""
+    unchanged.
+
+    `blueprint_node` binds the session to the blueprint node it proves (the node's
+    key, PLAN-blueprint-tools §2.10). The bridge names that node's declaration at run
+    start and tells the agent which node it is working on."""
     now = utc_now()
     session_id = str(uuid4())
     origin_value = (origin or "ui").strip() or "ui"
     with connect() as conn:
         conn.execute(
             "insert into sessions "
-            "(id, project_id, title, origin, origin_url, parent_id, role, spawned_at_turn, created_at, updated_at) "
-            "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(id, project_id, title, origin, origin_url, parent_id, role, spawned_at_turn, "
+            "blueprint_node, created_at, updated_at) "
+            "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (session_id, project_id, title[:120] or "Untitled theorem", origin_value, origin_url,
-             parent_id, role, spawned_at_turn, now, now),
+             parent_id, role, spawned_at_turn, (blueprint_node or "").strip() or None, now, now),
         )
         row = conn.execute("select * from sessions where id = ?", (session_id,)).fetchone()
     _bump_sessions_changed()
