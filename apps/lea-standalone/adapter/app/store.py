@@ -1320,6 +1320,7 @@ def delete_project_cascade(project_id: str) -> bool:
         if not conn.execute("select 1 from projects where id = ?", (project_id,)).fetchone():
             return False
         conn.execute("delete from project_library_invocations where run_id in (select id from runs where project_id=?)", (project_id,))
+        conn.execute("delete from blueprint_invocations where run_id in (select id from runs where project_id=?)", (project_id,))
         conn.execute("delete from project_dependency_attempts where dependency_id in (select id from project_dependencies where project_id=?)", (project_id,))
         for table in ("project_dependency_edges", "project_dependencies", "project_library_modules"):
             conn.execute(f"delete from {table} where project_id=?", (project_id,))

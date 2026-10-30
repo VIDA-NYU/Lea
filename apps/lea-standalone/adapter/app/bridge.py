@@ -81,6 +81,7 @@ from .gitstore import GitStore, GitStoreError
 from . import collation, formalizations as formalization_service, projects, roles_catalog, runbroker, runregistry, skills_catalog, store, subagent_overrides, uploads, recovery, runtime
 from .public_errors import redact
 from lea.usage import merge_details, legacy_details
+from lea.blueprint_tools import BlueprintAck, BlueprintRequested
 from . import project_coordination
 
 logger = logging.getLogger("lea-interface.bridge")
@@ -1710,6 +1711,21 @@ def _project_library_config(cfg, project, run):
                    tools=list(dict.fromkeys([*cfg.tools, *names])) if cfg.tools is not None else None)
 
 
+def _blueprint_tools_config(cfg, project, run):
+    """Every project run edits the blueprint through the host-mediated blueprint tools
+    (docs/PLAN-blueprint-tools.md §2.3); a drafting run gets only those and reads."""
+    if not project:
+        return cfg
+    from . import blueprint_host
+    names = list(blueprint_host.TOOL_NAMES)
+    cfg = replace(cfg, blueprint_tools=True, protected_paths=list(blueprint_host.PROTECTED_PATHS),
+                  extra_tools=list(dict.fromkeys([*cfg.extra_tools, *names])),
+                  tools=list(dict.fromkeys([*cfg.tools, *names])) if cfg.tools is not None else None)
+    if blueprint_host.is_draft(run):
+        cfg = replace(cfg, tools=["read_file", "search_mathlib", *names])
+    return cfg
+
+
 def _result_selection_config(cfg, target, run=None):
     """Allow a checked disproof to select a different declaration in ordinary runs."""
     if cfg.stub_generation or not target or not target.get('declaration_name'):
@@ -1759,6 +1775,7 @@ def validate_continuation_runtime(old: dict, config: LeaConfig, checkpoint_id: i
         cfg = _result_selection_config(cfg, store.get_formalization(old.get('focus_formalization_id')),
                                        {**old, 'resumes_run_id': old['id'], 'resume_checkpoint_id': checkpoint_id})
         cfg = _project_library_config(cfg, project, old)
+        cfg = _blueprint_tools_config(cfg, project, old)
         if paths:
             cfg = replace(cfg, skills=paths, skills_root=tempdir)
         specs = store.mcp_server_specs(project["id"] if project else None, old["session_id"])
@@ -2175,6 +2192,7 @@ def _run_lea(context: RunnerContext) -> None:
                           extra_tools=list(dict.fromkeys([*cfg.extra_tools, "update_lea_status"])),
                           tools=(list(dict.fromkeys([*cfg.tools, "update_lea_status"])) if cfg.tools is not None else None))
         cfg = _project_library_config(cfg, project, run_row)
+        cfg = _blueprint_tools_config(cfg, project, run_row)
         budget = json.loads(run_row.get("automation_budget_json") or "{}")
         if budget.get("max_cost_usd") is not None:
             cfg = replace(cfg, max_cost_usd=max(0, budget["max_cost_usd"] - budget.get("cost_used", 0)))
@@ -2289,6 +2307,17 @@ def _run_lea(context: RunnerContext) -> None:
                         emit(events, "project_dependency", result)
                 except (ValueError, OSError, TypeError, KeyError) as exc:
                     to_send = ProjectLibraryAck(error=str(exc))
+                continue
+            if isinstance(ev, BlueprintRequested):
+                from . import blueprint_host
+                try:
+                    result = blueprint_host.tool_request(run_id, ev.invocation_key, ev.tool, ev.arguments)
+                    to_send = BlueprintAck(result=result)
+                    update = blueprint_host.updated_event(run_id, session_id, ev.tool, result)
+                    if update:
+                        emit(events, "blueprint_updated", update)
+                except (ValueError, OSError, TypeError, KeyError, GitStoreError) as exc:
+                    to_send = BlueprintAck(error=str(exc))
                 continue
             if isinstance(ev, LeaStatusUpdateRequested):
                 from lea.status_reporting import attention
