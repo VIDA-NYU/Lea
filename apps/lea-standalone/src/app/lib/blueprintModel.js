@@ -660,6 +660,25 @@ export function draftGraph(draftNodes) {
   return { nodes, edges };
 }
 
+/**
+ * Where an agent drafting proposal stands, from what the page can observe:
+ * the drafting session's live run (sessions list), whether it was ever seen
+ * running, the run's status when this page streamed it, the number of draft
+ * nodes, and whether the draft was read after the run ended.
+ * - `drafting`: the run is live, or not seen ending yet.
+ * - `review`: the run ended and the draft has nodes.
+ * - `empty`: the run ended, a draft read after that has no nodes.
+ * @param {{ running: boolean, seenRunning: boolean, runStatus?: string | null, draftNodes: number, readAfterEnd: boolean }} s
+ * @returns {'drafting' | 'review' | 'empty'}
+ */
+export function draftingOutcome({ running, seenRunning, runStatus, draftNodes, readAfterEnd }) {
+  if (running || runStatus === 'running' || runStatus === 'pending') return 'drafting';
+  const ended = seenRunning || (!!runStatus && runStatus !== 'running' && runStatus !== 'pending');
+  if (!ended) return 'drafting';
+  if (draftNodes > 0) return 'review';
+  return readAfterEnd ? 'empty' : 'drafting';
+}
+
 // ── Stream events (docs/PLAN-blueprint-tools.md §2.4) ──────────────────────
 //
 //   blueprint_updated       { project_id, draft, applied, removed, run_id, session_id }

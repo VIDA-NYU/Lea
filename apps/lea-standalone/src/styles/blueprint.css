@@ -94,6 +94,7 @@
 .bpv-notice { display: flex; align-items: center; gap: 10px; padding: 7px 14px; font-size: 12.5px; color: var(--bpv-running-ink);
   background: var(--bpv-running-soft); border-bottom: 1px solid #c9d6f0; }
 .bpv-notice span { flex: 1; min-width: 0; }
+.bpv-notice.is-auto { background: var(--bg); color: var(--ink-2); border-bottom-color: var(--line); }
 .bpv-warnings { padding: 7px 14px; font-size: 12px; color: var(--bpv-stated-ink); background: var(--bpv-stated-soft);
   border-bottom: 1px solid #ecdcbb; }
 
@@ -285,6 +286,15 @@
 .bpv-card-file .bpv-mono { color: var(--ink-2); }
 .bpv-card-uses { font-size: 11px; color: var(--muted); }
 .bpv-card-uses .bpv-mono { color: var(--ink-2); }
+
+.bpv-declare-note { margin: 0; font-size: 12px; color: var(--muted); }
+
+/* Draft markdown editor (Edit markdown on a draft under review) */
+.bpv-draft-editor { display: flex; flex-direction: column; gap: 10px; min-height: 100%; }
+.bpv-draft-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: none; }
+.bpv-draft-editor .bpv-warnings { border: 1px solid #ecdcbb; border-radius: 8px; }
+.bpv-draft-editor .bpv-note { margin: 0; flex: none; }
+.bpv-draft-text { flex: 1; min-height: 360px; font-size: 12.5px; line-height: 1.5; resize: vertical; }
 
 /* Add node form */
 .bpv-form { display: flex; flex-direction: column; gap: 10px; padding-top: 6px; }

@@ -14,6 +14,7 @@ import {
   blueprintEventNotification,
   createAutoState,
   draftGraph,
+  draftingOutcome,
   stopAuto,
   unlockNoticeText,
 } from './lib/blueprintModel.js';
@@ -228,4 +229,15 @@ test('upNext marks the keys of the latest unlock, order unchanged', () => {
   ]);
   assert.deepEqual(upNext(nodes, {}, 6, new Set(['main'])).map((i) => i.unlocked), [true, false, false]);
   assert.ok(plain.every((i) => i.unlocked === false));
+});
+
+test('draftingOutcome: review once the drafting run ends with draft nodes', () => {
+  const base = { running: false, seenRunning: false, runStatus: null, draftNodes: 0, readAfterEnd: false };
+  assert.equal(draftingOutcome({ ...base, running: true, seenRunning: true, draftNodes: 3 }), 'drafting', 'still writing');
+  assert.equal(draftingOutcome({ ...base, draftNodes: 3 }), 'drafting', 'a stale session list: the run was never seen');
+  assert.equal(draftingOutcome({ ...base, seenRunning: true, draftNodes: 3 }), 'review');
+  assert.equal(draftingOutcome({ ...base, runStatus: 'proved', draftNodes: 2 }), 'review', 'the streamed run status ends it too');
+  assert.equal(draftingOutcome({ ...base, runStatus: 'running', seenRunning: true, draftNodes: 2 }), 'drafting');
+  assert.equal(draftingOutcome({ ...base, seenRunning: true }), 'drafting', 'wait for a draft read after the end');
+  assert.equal(draftingOutcome({ ...base, seenRunning: true, readAfterEnd: true }), 'empty');
 });

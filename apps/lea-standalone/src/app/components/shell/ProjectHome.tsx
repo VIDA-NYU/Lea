@@ -24,6 +24,7 @@ import { useProjects } from '../../stores/projects';
 import { useSessions } from '../../stores/sessions';
 import { useProofSession } from '../../stores/proofSession';
 import { useWorkbench } from '../../stores/workbench';
+import { effectiveNodeBindings } from '../../lib/blueprintModel.js';
 import {
   blueprintTally,
   countNotes,
@@ -104,6 +105,7 @@ export function ProjectHome({
   const isRunning = useProofSession((s) => s.isRunning);
   const refreshToken = useProofSession((s) => s.formalizationRefreshToken);
   const nodeBindings = useWorkbench((s) => s.nodeBindings);
+  const blueprintUnlock = useWorkbench((s) => s.blueprintUnlock);
   const graph = useProjectGraph(projectId);
   const tree = useProjectTree(projectId);
   const loadGraph = useProjectData((s) => s.loadGraph);
@@ -165,7 +167,11 @@ export function ProjectHome({
 
   const nodes = graph?.nodes ?? [];
   const tally = useMemo(() => blueprintTally(nodes), [nodes]);
-  const nodeBySession = useMemo(() => sessionNodeMap(graph, nodeBindings), [graph, nodeBindings]);
+  // Up next: a session's node is its `blueprint_node`, else the UI binding (older sessions).
+  const nodeBySession = useMemo(
+    () => sessionNodeMap(graph, effectiveNodeBindings(sessions, nodeBindings)),
+    [graph, sessions, nodeBindings],
+  );
   const sessionsByNode = useMemo(() => {
     const map: Record<string, Array<{ id: string; title: string; state: string }>> = {};
     for (const s of sessions) {
@@ -175,7 +181,9 @@ export function ProjectHome({
     }
     return map;
   }, [sessions, nodeBySession, runningSessionId]);
-  const nextItems = useMemo(() => upNext(nodes, sessionsByNode, 6), [nodes, sessionsByNode]);
+  // The keys of the latest `blueprint_unlocked` this page saw for the project get a badge.
+  const unlockedKeys = blueprintUnlock && (!blueprintUnlock.projectId || blueprintUnlock.projectId === projectId) ? blueprintUnlock.keys : null;
+  const nextItems = useMemo(() => upNext(nodes, sessionsByNode, 6, unlockedKeys), [nodes, sessionsByNode, unlockedKeys]);
   const runningCount = sessions.filter((s) => sessionState(s, runningSessionId) === 'running').length;
 
   const files = useMemo(() => {
@@ -332,6 +340,9 @@ export function ProjectHome({
                   <div key={node.key} className={`ph-next-row ${blocked ? 'is-blocked' : ''}`}>
                     <StatusDot kind={item.action === 'open' ? 'running' : nodeDotKind(node.status)} />
                     <span className="sh-mono ph-next-key" title={node.lean ?? undefined}>{node.key}</span>
+                    {item.unlocked && (
+                      <Pill kind="ready">unlocked</Pill>
+                    )}
                     <span className="ph-next-reason" title={item.reason}>{item.reason}</span>
                     {item.action === 'open' ? (
                       <button className="sh-btn sh-btn-pri sh-btn-sm" onClick={() => onOpenSession(item.sessionId as string)}>

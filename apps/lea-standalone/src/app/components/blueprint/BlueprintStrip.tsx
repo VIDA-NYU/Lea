@@ -1,6 +1,7 @@
 import '../../../styles/blueprint.css';
 import { GitBranch } from 'lucide-react';
 import { byKey, dependents } from '../../lib/blueprintModel.js';
+import { useSessions } from '../../stores/sessions';
 import { BLUEPRINT_PATH, useWorkbench } from '../../stores/workbench';
 import { StatusDot, toneOf } from './StatusDot';
 import { useProjectGraph } from './useProjectGraph';
@@ -8,9 +9,12 @@ import { useProjectGraph } from './useProjectGraph';
 // Work package "blueprint" (mockup frame 10). The strip above the editor for a
 // session bound to a node: Blueprint › node · uses … · unblocks …, each dep a
 // status pill that selects the node and opens the blueprint. Renders nothing for
-// an unbound session. Canvas mounts it above the editor.
+// an unbound session. Canvas mounts it above the editor. The binding is the
+// session's `blueprint_node`, else the UI binding (older sessions).
 export function BlueprintStrip({ projectId, sessionId }: { projectId: string | null; sessionId: string | undefined }) {
-  const nodeKey = useWorkbench((s) => (sessionId ? s.nodeBindings[sessionId] : undefined));
+  const served = useSessions((s) => (sessionId ? s.sessions.find((x) => x.id === sessionId)?.blueprint_node : undefined));
+  const local = useWorkbench((s) => (sessionId ? s.nodeBindings[sessionId] : undefined));
+  const nodeKey = served || local || undefined;
   const selectNode = useWorkbench((s) => s.selectNode);
   const openFile = useWorkbench((s) => s.openFile);
   const { graph } = useProjectGraph(projectId && nodeKey ? projectId : null);
