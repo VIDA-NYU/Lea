@@ -2160,7 +2160,17 @@ def _run_lea(context: RunnerContext) -> None:
         # blueprint + file inventory). Strip any stale copy from the replayed
         # transcript first, so exactly one — always current — leads the messages.
         # Loose runs: ctx is None and this is a no-op.
-        ctx = projects.compose_context_message(project, repo) if project else None
+        # A session bound to a blueprint node (§2.10) gets that node's declaration
+        # named first, so the context message can tell the agent what to declare.
+        blueprint_node = (session or {}).get("blueprint_node") if project else None
+        if blueprint_node:
+            from . import blueprint_reconcile
+            try:
+                blueprint_reconcile.bind_session_node(project, proofs_root, blueprint_node)
+            except Exception:
+                logger.exception("Could not name blueprint node %s for run %s", blueprint_node, run_id)
+        ctx = (projects.compose_context_message(project, repo, blueprint_node=blueprint_node)
+               if project else None)
         if ctx:
             prior = [m for m in prior if not projects.is_context_message(m)]
         focus_ctx = _formalization_context_message(focused_formalization)
@@ -2439,6 +2449,12 @@ def _run_lea(context: RunnerContext) -> None:
 
             elif isinstance(ev, CheckResult):
                 rel = _relativize(ev.path, repo)
+                # The blueprint as it stands before this verdict is recorded, so the
+                # reconciliation below reports what the check changed (§2.6).
+                blueprint_before = None
+                if project and ev.status == "ok":
+                    from . import blueprint_reconcile
+                    blueprint_before = blueprint_reconcile.snapshot(project, proofs_root)
                 formalization_id = _attributable_formalization(
                     rel, focus_formalization_id
                 )
@@ -2474,6 +2490,14 @@ def _run_lea(context: RunnerContext) -> None:
                     published = publish_owned(run_id, rel)
                     if published:
                         emit(events, "project_dependency", {"outcome": "published", "dependency": published})
+                    # The checked file is project state: commit it, then bring the
+                    # blueprint up to date (bind names, stream status changes, §2.6).
+                    _best_effort("checked file commit", run_id,
+                                 lambda: gs.commit_all(repo, f"agent lean_check ok: {rel}", paths=[rel]))
+                    for kind, payload in blueprint_reconcile.after_check(
+                            project, proofs_root, rel, before=blueprint_before,
+                            run_id=run_id, session_id=session_id):
+                        emit(events, kind, payload)
 
             elif isinstance(ev, UsageUpdated):
                 usage.add(current_turn, ev.input_tokens, ev.output_tokens, ev.cost, ev.usage_details)

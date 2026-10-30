@@ -41,6 +41,8 @@ class OverleafDefaultNameRequest(BaseModel):
 
 class SessionCreate(BaseModel):
     title: str | None = None
+    # The blueprint node this session proves (its key), PLAN-blueprint-tools §2.10.
+    blueprint_node: str | None = None
 
 class DocUpdate(workspace_commands.EditRequest):
     content: str
@@ -151,7 +153,7 @@ def create_session_in_project(project_id: str, request: SessionCreate) -> dict:
     if project is None:
         raise HTTPException(status_code=404, detail='Project not found')
     title = (request.title or '').strip() or 'Untitled theorem'
-    return store.create_session(title, project_id=project_id)
+    return store.create_session(title, project_id=project_id, blueprint_node=request.blueprint_node)
 
 @router.get('/api/projects/{project_id}/instructions')
 @peripheral_views.view('get_instructions')
