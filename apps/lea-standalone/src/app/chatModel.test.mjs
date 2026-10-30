@@ -345,8 +345,9 @@ test('composerStatus: settled states and the blueprint proposal', () => {
   assert.equal(done({ status: 'proved', proof: 'proved' }), 'Done · proved');
   assert.equal(done({ status: 'proved', proof: 'proved', resultKind: 'defined' }), 'Done · defined');
   assert.equal(done({ status: 'proved', proof: 'stubbed', sorries: 2 }), 'Done · 2 sorry');
-  assert.equal(done({ status: 'failed', proof: 'failed', errors: 1 }), 'Done · 1 error');
-  assert.equal(done({ status: 'failed', proof: 'failed' }), 'Done · check failed');
+  assert.equal(done({ status: 'answered', proof: 'failed', errors: 1 }), 'Done · 1 error');
+  assert.equal(done({ status: 'answered', proof: 'failed' }), 'Done · check failed');
+  assert.equal(done({ status: 'failed', proof: 'failed' }), 'Run failed');
   assert.equal(done({ status: 'failed' }), 'Run failed');
   assert.equal(done({ status: 'cancelled' }), 'Stopped');
   assert.equal(done({ status: 'cancelled', stopReason: 'timeout' }), 'Stopped · time limit');

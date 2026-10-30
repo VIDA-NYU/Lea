@@ -516,7 +516,9 @@ export function deriveToolCalls({
         c.exact = true;
         continue;
       }
-      if (c.approval && !c.approval.decision && c.approval.actionable !== false && live) {
+      // Waiting on the user does not depend on which run the UI thinks is live:
+      // a pending approval is actionable until the server says otherwise.
+      if (c.approval && !c.approval.decision && c.approval.actionable !== false) {
         c.state = 'waiting';
         continue;
       }
@@ -731,9 +733,9 @@ export function composerStatus({ live, pending = false, stopRequested = false, w
     return { tone: 'muted', label: stopReason === 'timeout' ? 'Stopped · time limit' : 'Stopped', since: null, stop: false };
   }
   if (status === 'max_turns') return { tone: 'error', label: 'Stopped · turn limit', since: null, stop: false };
+  if (status === 'failed') return { tone: 'error', label: 'Run failed', since: null, stop: false };
   if (status === 'disproved') return { tone: 'sorry', label: 'Done · disproved', since: null, stop: false };
   if (proof === 'failed') return { tone: 'error', label: `Done · ${errors ? plural(errors, 'error') : 'check failed'}`, since: null, stop: false };
-  if (status === 'failed') return { tone: 'error', label: 'Run failed', since: null, stop: false };
   if (status === 'proved' || status === 'success') {
     if (proof === 'stubbed') return { tone: 'sorry', label: `Done · ${sorries || 1} sorry`, since: null, stop: false };
     if (resultKind === 'defined' || proof === 'defined') return { tone: 'proved', label: 'Done · defined', since: null, stop: false };
