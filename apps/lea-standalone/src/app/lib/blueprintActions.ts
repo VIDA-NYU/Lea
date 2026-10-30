@@ -175,7 +175,8 @@ export async function openOrDraftBlueprint(
   const current = await getProjectBlueprint(projectId);
   if (current.draft) {
     const existing = useWorkbench.getState().blueprintProposal;
-    const stillDrafting = existing?.projectId === projectId && existing.source === 'agent' && existing.phase === 'drafting';
+    const stillDrafting =
+      existing?.projectId === projectId && existing.source === 'agent' && existing.phase === 'drafting' && !existing.error;
     if (!stillDrafting) useWorkbench.getState().setBlueprintProposal({ projectId, phase: 'review', source: 'agent' });
     return 'proposal';
   }
@@ -198,9 +199,13 @@ export async function openOrDraftBlueprint(
     return 'proposal';
   }
   const notes = seeded.warnings;
-  useWorkbench.getState().setBlueprintProposal({ projectId, phase: 'drafting', source: 'agent', draftingSessionId: options.sessionId, notes });
+  // Draft in the given session only when it belongs to this project (a session not
+  // listed yet is trusted); otherwise in a new project session.
+  const listed = options.sessionId ? useSessions.getState().sessions.find((x) => x.id === options.sessionId) : undefined;
+  const target = options.sessionId && (!listed || listed.project_id === projectId) ? options.sessionId : undefined;
+  useWorkbench.getState().setBlueprintProposal({ projectId, phase: 'drafting', source: 'agent', draftingSessionId: target, notes });
   try {
-    const sessionId = options.sessionId ?? (await createSessionInProject(projectId, DRAFTING_SESSION_TITLE)).id;
+    const sessionId = target ?? (await createSessionInProject(projectId, DRAFTING_SESSION_TITLE)).id;
     // Project scope: no focus_formalization_id / new_formalization — the run
     // drafts the plan, it is not a formalization.
     const run = await createRun(draftingPrompt(), sessionId, useModel.getState().model, {
@@ -219,7 +224,7 @@ export async function openOrDraftBlueprint(
     options.openSession?.(run.session_id);
   } catch (err) {
     useWorkbench.getState().setBlueprintProposal({
-      projectId, phase: 'drafting', source: 'agent', draftingSessionId: options.sessionId, notes, error: errorText(err),
+      projectId, phase: 'drafting', source: 'agent', draftingSessionId: target, notes, error: errorText(err),
     });
     throw err;
   }
@@ -316,10 +321,10 @@ export function handleBlueprintStreamEvent(type: string, payload: Record<string,
   useWorkbench.getState().applyBlueprintEvent(event);
   const notification = blueprintEventNotification(event);
   if (!notification || typeof window === 'undefined' || typeof document === 'undefined') return;
-  const notify = window.leaDesktop?.notify;
-  if (!notify) return;
+  const bridge = window.leaDesktop;
+  if (!bridge?.notify) return;
   if (!(document.hidden || !document.hasFocus())) return;
-  notify(notification).catch(() => {});
+  bridge.notify(notification).catch(() => {});
 }
 
 // ── /blueprint auto ────────────────────────────────────────────────────────
