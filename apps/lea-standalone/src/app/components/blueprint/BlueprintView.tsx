@@ -1,15 +1,18 @@
 import '../../../styles/blueprint.css';
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FileText, GitBranch, Plus, X } from 'lucide-react';
 import { getProjectBlueprint, type BlueprintWarning, type GraphNode } from '../../lib/api';
 import { openOrDraftBlueprint, startNodeSession } from '../../lib/blueprintActions';
 import { STATUS_TEXT, headerChip, runningNodeKeys, summaryLine } from '../../lib/blueprintModel.js';
+import type { ExportProject } from '../../lib/blueprintExport.js';
+import { useProjects } from '../../stores/projects';
 import { useProofSession } from '../../stores/proofSession';
 import { useSessions } from '../../stores/sessions';
 import { useWorkbench } from '../../stores/workbench';
 import { MarkdownDoc } from '../MarkdownDoc';
 import { AddNodeForm } from './AddNodeForm';
-import type { Grouping } from './BlueprintGraph';
+import type { BlueprintGraphHandle, Grouping } from './BlueprintGraph';
+import { DownloadMenu } from './DownloadMenu';
 import { NodeDetailPanel } from './NodeDetailPanel';
 import { ProposalPanel } from './ProposalPanel';
 import { StatusDot, StatusPill } from './StatusDot';
@@ -17,10 +20,12 @@ import { useProjectGraph } from './useProjectGraph';
 
 // Work package "blueprint" (mockup frames 8–9). The blueprint as a document in the
 // canvas: Graph (By level / By file lanes) and Markdown views, the proposal state
-// for a freshly drafted blueprint, and the node detail panel. Canvas mounts it
-// instead of the editor when useWorkbench().openPath is BLUEPRINT_PATH.
+// for a freshly drafted blueprint, the node detail panel and the Download menu.
+// Canvas mounts it instead of the editor when useWorkbench().openPath is
+// BLUEPRINT_PATH.
 
-// React Flow loads with the graph, not with the app.
+// React Flow (and html-to-image, which the graph imports on demand) load with the
+// graph, not with the app.
 const BlueprintGraph = lazy(() => import('./BlueprintGraph'));
 
 type View = 'graph' | 'markdown';
@@ -61,6 +66,17 @@ export function BlueprintView({
   const setNotice = useWorkbench((s) => s.setBlueprintNotice);
   const proposal = proposalAll?.projectId === projectId ? proposalAll : null;
   const drafting = proposal?.phase === 'drafting';
+  const projectMeta = useProjects((s) =>
+    s.currentProject?.id === projectId ? s.currentProject : s.projects.find((p) => p.id === projectId),
+  );
+  const exportProject: ExportProject = useMemo(
+    () =>
+      projectMeta
+        ? { id: projectId, slug: projectMeta.slug, title: projectMeta.title, namespace: projectMeta.namespace }
+        : { id: projectId },
+    [projectId, projectMeta],
+  );
+  const graphHandle = useRef<BlueprintGraphHandle | null>(null);
 
   // A live run in this project (or a drafting proposal) keeps the graph fresh.
   const projectLive = useMemo(
@@ -134,6 +150,13 @@ export function BlueprintView({
 
   const empty = !loading && !error && nodes.length === 0 && !proposal;
   const showAside = view === 'graph';
+  const graphShown = view === 'graph' && !!graph && nodes.length > 0;
+
+  const renderPng = useCallback(() => {
+    const handle = graphHandle.current;
+    return handle ? handle.toPng() : Promise.reject(new Error('Open the Graph view to export an image.'));
+  }, []);
+  const reportError = useCallback((message: string) => useProofSession.getState().setError(message), []);
 
   return (
     <section className="blueprint-view" aria-label="Blueprint">
@@ -161,6 +184,15 @@ export function BlueprintView({
         <button className="bpv-btn is-small" onClick={() => setAdding((v) => !v)} disabled={!!proposal} title="Append a node to the blueprint">
           <Plus size={13} /> Add node
         </button>
+        <DownloadMenu
+          projectId={projectId}
+          project={exportProject}
+          graph={graph}
+          hasMarkdown={doc.content.trim().length > 0 || nodes.length > 0}
+          pngReason={graphShown ? null : view !== 'graph' ? 'Switch to the Graph view to export an image' : 'The graph has no nodes'}
+          renderPng={renderPng}
+          onError={reportError}
+        />
       </div>
 
       {notice && (
@@ -223,6 +255,7 @@ export function BlueprintView({
                   runningKeys={runningKeys}
                   proposal={!!proposal}
                   onSelect={selectNode}
+                  handleRef={graphHandle}
                 />
               </Suspense>
             )}
