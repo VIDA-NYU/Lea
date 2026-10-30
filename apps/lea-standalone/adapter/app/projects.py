@@ -269,17 +269,36 @@ def _lean_inventory(repo: Path, limit: int = 100) -> str:
     )
 
 
-def compose_context_message(project: dict, repo: Path) -> dict | None:
+def _blueprint_context(project: dict, repo: Path, blueprint_node: str | None) -> str:
+    """The ``## Project Blueprint`` body (PLAN-blueprint-tools §2.7): counts, the bound
+    node and the tool instruction, never the file itself. A graph that cannot be
+    derived leaves only the instruction, so the run still starts."""
+    from . import blueprint_reconcile
+    depth = len((project.get("namespace") or "").split("."))
+    root = repo.parents[depth - 1] if 0 < depth <= len(repo.parents) else None
+    try:
+        if root is None or project_repo_dir(project, root) != repo:
+            raise ValueError(f"{repo} is not the repo of project {project.get('id')}")
+        return blueprint_reconcile.context_section(project, root, blueprint_node)
+    except Exception:
+        logger.exception("Could not summarise the blueprint of project %s", project.get("id"))
+        return blueprint_reconcile.TOOL_INSTRUCTION
+
+
+def compose_context_message(project: dict, repo: Path, blueprint_node: str | None = None) -> dict | None:
     """Assemble the project's standing context into ONE user message (D25): the
-    Instructions / Memory / Blueprint `.lea/*.md` docs + a file inventory, prepended
-    to the run's messages by the bridge. The prover stays project-agnostic — this is
-    pure adapter-side composition. Returns None when there's no project."""
+    Instructions / Memory `.lea/*.md` docs, a blueprint summary + a file inventory,
+    prepended to the run's messages by the bridge. The prover stays project-agnostic —
+    this is pure adapter-side composition. Returns None when there's no project.
+
+    ``blueprint_node`` is the key of the node the session proves (§2.10); the
+    blueprint summary then says which declaration to write and where."""
     if not project:
         return None
     namespace = project.get("namespace", "")
     instructions = _read_lea_doc(repo, "instructions.md") or "(none yet)"
     memory = _read_lea_doc(repo, "memory.md") or "(none yet)"
-    blueprint = _read_lea_doc(repo, "blueprint.md") or "(none yet)"
+    blueprint = _blueprint_context(project, repo, blueprint_node)
 
     files_dir = repo / ".lea" / "files"
     inventory = "(none)"
@@ -364,22 +383,7 @@ def compose_context_message(project: dict, repo: Path) -> dict | None:
         f"- an approach fails in a way worth not repeating.\n"
         f"Do this proactively, the moment it happens — don't wait to be asked, and "
         f"don't only mention it in chat. One short bullet per entry.\n\n"
-        f"## Project Blueprint (the decomposition)\n{blueprint}\n\n"
-        f"`.lea/blueprint.md` (in your working directory) is the project's living proof "
-        f"plan — the dependency graph of its definitions and lemmas. **Keeping it current "
-        f"is part of your job:** with `edit_file`, add a `## <key>` section the moment you "
-        f"plan a new lemma, and fill in its `lean:` name once you've formalized the decl. "
-        f"One section per node, header then a one-line statement:\n"
-        f"```\n"
-        f"## continuous_sq\n"
-        f"- kind: lemma            (definition | lemma | theorem)\n"
-        f"- lean: `{namespace}.continuous_sq`   (the decl once named; omit until then)\n"
-        f"- uses: helper_key, other_key   (keys of the nodes this one depends on)\n"
-        f"\n"
-        f"One-line statement in prose or LaTeX.\n"
-        f"```\n"
-        f"The `uses` lines are the edges that chain the proof — point them at the keys of "
-        f"sibling nodes you build on, and reuse nodes already proved.\n\n"
+        f"## Project Blueprint\n{blueprint}\n\n"
         f"## Project files\n{inventory}{overleaf_section}"
         + project_library.context(project, repo)
     )
