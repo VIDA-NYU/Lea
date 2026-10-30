@@ -124,6 +124,10 @@ export interface SessionSummary {
   /** Child sessions only: the task the coordinator delegated, recorded at spawn — so a
    *  RUNNING child is judgeable (it has no summary yet, and its title is three words). */
   task?: string | null;
+  /** The blueprint node this session proves (`sessions.blueprint_node`, PLAN-blueprint-tools
+   *  §2.10); null/absent for unbound and older sessions (the UI then falls back to its
+   *  localStorage bindings). */
+  blueprint_node?: string | null;
 }
 
 // ── Projects (v2.1) ───────────────────────────────────────────────────────────
@@ -415,6 +419,9 @@ export type BlueprintStatus = 'planned' | 'stated' | 'ready' | 'proved' | 'faile
 export interface BlueprintWarning {
   node: string | null;
   message: string;
+  /** Machine code (PLAN-blueprint-tools §2.1): invalid_key, unknown_header, unknown_kind,
+   *  missing_kind, duplicate_key, dangling_dependency, self_dependency, cycle, … */
+  code?: string;
 }
 
 // One session that committed a node's `lean:` file, newest first (D29).
@@ -435,6 +442,10 @@ export interface GraphNode {
   verified: boolean;          // proved AND SafeVerify-audited (audit-grade, above proved)
   sessions: GraphNodeSession[];
   last_modified_by: string | null;
+  /** `lean` resolves to a declaration in the repo (PLAN-blueprint-tools §2.5). */
+  declared?: boolean;
+  /** The node's `file:` line, even when that file does not exist yet; `file` stays the resolved file. */
+  planned_file?: string | null;
 }
 
 export interface GraphEdge {
@@ -442,9 +453,144 @@ export interface GraphEdge {
   to: string;                 // dependency node key
 }
 
+// A graph-level warning, e.g. `{ code: 'unresolved_lean', node }` for a node whose `lean`
+// resolves to no declaration (PLAN-blueprint-tools §2.5).
+export interface GraphWarning {
+  code: string;
+  node: string | null;
+  message?: string;
+}
+
 export interface ProjectGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  warnings?: GraphWarning[];
+}
+
+// ── Blueprint tools (PLAN-blueprint-tools §2.2–§2.5) ─────────────────────────
+export type BlueprintNodeKind = 'theorem' | 'lemma' | 'definition';
+
+/** A parsed node as GET /blueprint returns it (`nodes`, `draft.nodes`): canonical fields. */
+export interface BlueprintDocNode {
+  type?: 'node';
+  key: string;
+  kind: string | null;
+  lean: string | null;
+  file: string | null;
+  uses: string[];
+  statement: string;
+}
+
+/** `.lea/blueprint.draft.md`, written by a `blueprint_draft` run. */
+export interface BlueprintDraft {
+  content: string;
+  nodes: BlueprintDocNode[];
+  warnings: BlueprintWarning[];
+  /** Not in the contract yet: the draft file's revision, for PUT /blueprint/draft. */
+  file_revision?: string;
+}
+
+/** GET /api/projects/{id}/blueprint. */
+export interface ProjectBlueprint {
+  content: string;
+  warnings: BlueprintWarning[];
+  file_revision?: string;
+  /** Parsed live nodes (canonical fields). */
+  nodes: BlueprintDocNode[];
+  /** The pending draft, or null when there is none. */
+  draft: BlueprintDraft | null;
+}
+
+/** One node of POST /blueprint/nodes; absent fields keep their value (`uses` replaces). */
+export interface BlueprintUpsertNode {
+  key: string;
+  kind?: BlueprintNodeKind;
+  statement?: string;
+  uses?: string[];
+  lean?: string;
+  file?: string;
+}
+
+export interface BlueprintRejection {
+  key: string;
+  code: string;
+  message: string;
+}
+
+export interface BlueprintAppliedNode {
+  key: string;
+  kind: string | null;
+  lean: string | null;
+  file: string | null;
+  uses: string[];
+  status: BlueprintStatus;
+}
+
+export interface BlueprintCounts {
+  total: number;
+  proved: number;
+  ready: number;
+  stated: number;
+  failed: number;
+  planned: number;
+}
+
+/** store.upsert() result. */
+export interface BlueprintUpsertResult {
+  applied: BlueprintAppliedNode[];
+  rejected: BlueprintRejection[];
+  ready: string[];
+  counts: BlueprintCounts;
+  draft: boolean;
+  commit_sha: string | null;
+}
+
+/** store.remove() result. */
+export interface BlueprintRemoveResult {
+  removed: string[];
+  rejected: BlueprintRejection[];
+  commit_sha: string | null;
+}
+
+/** store.accept_draft() result. */
+export interface BlueprintAcceptResult {
+  applied: BlueprintAppliedNode[];
+  rejected: BlueprintRejection[];
+  commit_sha: string | null;
+}
+
+/** store.discard_draft() result. */
+export interface BlueprintDiscardResult {
+  discarded: boolean;
+}
+
+// Run-stream events (PLAN-blueprint-tools §2.4).
+export interface BlueprintUpdatedEvent {
+  project_id: string;
+  draft: boolean;
+  applied: string[];
+  removed: string[];
+  run_id: string;
+  session_id: string;
+}
+
+export interface BlueprintNodeChangedEvent {
+  project_id: string;
+  key: string;
+  from: BlueprintStatus;
+  to: BlueprintStatus;
+  lean: string | null;
+  file: string | null;
+  run_id: string;
+  session_id: string;
+}
+
+export interface BlueprintUnlockedEvent {
+  project_id: string;
+  keys: string[];
+  cause: string | null;
+  run_id: string;
+  session_id: string;
 }
 
 // ── Global search (v2.1 Slice 7, D41) ─────────────────────────────────────────

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { applyBlueprintEvent, type AutoState, type BlueprintUnlock } from '../lib/blueprintModel.js';
 
 /**
  * Workbench state shared between the redesign's work packages (see
@@ -7,7 +8,8 @@ import { create } from 'zustand';
  *
  *   files      → openPath, filesRailOpen, quickOpenOpen
  *   blueprint  → selectedNodeKey, nodeBindings, blueprintProposal,
- *                blueprintRefresh, blueprintNotice, pendingSubmission
+ *                blueprintRefresh, blueprintNotice, blueprintUnlock,
+ *                blueprintAuto, pendingSubmission
  *   canvas     → focusMode, drawerTab, pendingLine
  */
 
@@ -29,10 +31,13 @@ export interface PendingLine {
 
 /**
  * A freshly drafted blueprint awaiting review — the `/blueprint` proposal state
- * (blueprint package, mockup frame 8). The draft already sits in
- * `.lea/blueprint.md` (the adapter's generate command writes the file directly);
- * `phase: 'review'` tells BlueprintView to present it as a proposal with per-node
- * checkboxes and Accept / Edit markdown / Discard instead of as the saved graph.
+ * (blueprint package, mockup frame 8). `source: 'artifacts'`: the seeder wrote
+ * the nodes into `.lea/blueprint.md` directly. `source: 'agent'`: a
+ * `blueprint_draft` run writes `.lea/blueprint.draft.md` through the blueprint
+ * tools (GET /blueprint → `draft`); Accept merges the checked nodes into the
+ * live blueprint, Discard deletes the draft. `phase: 'review'` tells
+ * BlueprintView to present it with per-node checkboxes and Accept / Edit
+ * markdown / Discard instead of as the saved graph.
  */
 export interface BlueprintProposal {
   projectId: string;
@@ -42,6 +47,8 @@ export interface BlueprintProposal {
   source: 'artifacts' | 'agent';
   /** The session whose run is drafting (agent source); review starts once it settles. */
   draftingSessionId?: string;
+  /** The drafting run (purpose `blueprint_draft`), when this page started it. */
+  draftingRunId?: string;
   /** Advisory notes from the seeder. */
   notes?: string[];
   error?: string;
@@ -102,6 +109,21 @@ interface WorkbenchState {
   /** A one-line notice the blueprint view shows (e.g. "Started 2 sessions"); null = none. */
   blueprintNotice: string | null;
   setBlueprintNotice: (notice: string | null) => void;
+  /**
+   * The latest `blueprint_unlocked` this page saw (keys, cause, project, a `seq`
+   * that changes on every unlock); null until one arrives. Drives the "Prove
+   * next" notice button, the Up next "unlocked" badge and `/blueprint auto`.
+   */
+  blueprintUnlock: BlueprintUnlock | null;
+  /**
+   * Reduce one blueprint stream event (`blueprint_updated`,
+   * `blueprint_node_changed`, `blueprint_unlocked`; payload plus `type`) into
+   * blueprintRefresh / blueprintNotice / blueprintUnlock (blueprintModel.applyBlueprintEvent).
+   */
+  applyBlueprintEvent: (event: { type: string; [field: string]: unknown }) => void;
+  /** `/blueprint auto` while it runs (or after it stopped, with its stop reason); null = never ran. */
+  blueprintAuto: AutoState | null;
+  setBlueprintAuto: (auto: AutoState | null) => void;
   /** See PendingSubmission — consumed by App (integrator wiring). */
   pendingSubmission: PendingSubmission | null;
   setPendingSubmission: (submission: PendingSubmission | null) => void;
@@ -167,6 +189,28 @@ export const useWorkbench = create<WorkbenchState>((set) => ({
   bumpBlueprintRefresh: () => set((s) => ({ blueprintRefresh: s.blueprintRefresh + 1 })),
   blueprintNotice: null,
   setBlueprintNotice: (blueprintNotice) => set({ blueprintNotice }),
+  blueprintUnlock: null,
+  applyBlueprintEvent: (event) =>
+    set((s) => {
+      const next = applyBlueprintEvent(
+        {
+          refresh: s.blueprintRefresh,
+          notice: s.blueprintNotice,
+          nextKeys: s.blueprintUnlock?.keys ?? [],
+          unlock: s.blueprintUnlock,
+          proposal: s.blueprintProposal,
+        },
+        event,
+      );
+      return {
+        blueprintRefresh: next.refresh,
+        blueprintNotice: next.notice,
+        blueprintUnlock: next.unlock,
+        blueprintProposal: next.proposal as BlueprintProposal | null,
+      };
+    }),
+  blueprintAuto: null,
+  setBlueprintAuto: (blueprintAuto) => set({ blueprintAuto }),
   pendingSubmission: null,
   setPendingSubmission: (pendingSubmission) => set({ pendingSubmission }),
 
