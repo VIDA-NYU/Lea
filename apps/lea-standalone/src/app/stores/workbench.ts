@@ -71,6 +71,12 @@ interface WorkbenchState {
   /** File open in the canvas (repo-relative). null = the session's own proof. */
   openPath: string | null;
   openFile: (path: string | null) => void;
+  /**
+   * Bumped by every openFile() call, so a subscriber can tell "a document was
+   * opened" from other changes, re-opening the same path included (App
+   * un-collapses the canvas on it).
+   */
+  openRequest: number;
   filesRailOpen: boolean;
   setFilesRailOpen: (open: boolean) => void;
   toggleFilesRail: () => void;
@@ -132,7 +138,8 @@ function loadBindings(): Record<string, string> {
 
 export const useWorkbench = create<WorkbenchState>((set) => ({
   openPath: null,
-  openFile: (openPath) => set({ openPath }),
+  openFile: (openPath) => set((s) => ({ openPath, openRequest: s.openRequest + 1 })),
+  openRequest: 0,
   filesRailOpen: false,
   setFilesRailOpen: (filesRailOpen) => set({ filesRailOpen }),
   toggleFilesRail: () => set((s) => ({ filesRailOpen: !s.filesRailOpen })),

@@ -322,6 +322,13 @@ export default function App() {
     return detail;
   };
 
+  // Opening a document (the blueprint, a file from the rail, ⌘P, a node's
+  // file:line, the project home or the sidebar) shows the canvas if it was
+  // collapsed; the document would otherwise open out of sight.
+  useEffect(() => useWorkbench.subscribe((state, prev) => {
+    if (state.openRequest !== prev.openRequest && state.openPath) setCanvasCollapsed(false);
+  }), [setCanvasCollapsed]);
+
   // Files package: `> command` in ⌘P hands the composer its text (e.g.
   // "/compact "). It replaces the draft and focuses the composer; with a
   // session open, the workbench comes forward so the composer is visible.
@@ -551,6 +558,7 @@ export default function App() {
       const workbench = useWorkbench.getState();
       if (surface.path) workbench.openFile(surface.path);
       if (surface.rail) workbench.setFilesRailOpen(true);
+      if (surface.path || surface.rail) setCanvasCollapsed(false);
       setView('main');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
