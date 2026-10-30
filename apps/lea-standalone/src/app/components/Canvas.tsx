@@ -66,9 +66,6 @@ export interface CheckOutcome {
 
 type VerifyState = { status: SafeVerifyStatus; detail?: string | null; current?: boolean } | null;
 
-/** Class on <html> while focus mode is on; canvas.css collapses the chat with it. */
-export const FOCUS_CLASS = 'lea-focus';
-
 const NO_MARKS: LineMarks = {};
 
 function baseName(path: string): string {
@@ -562,15 +559,9 @@ export function Canvas({
         ? 'Opening editor…'
         : 'Go to the latest step to run lean_check';
 
-  // Focus mode (frame 4): a class on <html> lets canvas.css collapse the chat
-  // into nothing while the FocusRail inside the canvas stands in for it. App.tsx
-  // is not touched; the integrator may move the class onto .main-area.
-  useEffect(() => {
-    document.documentElement.classList.toggle(FOCUS_CLASS, focusMode);
-    return () => {
-      document.documentElement.classList.remove(FOCUS_CLASS);
-    };
-  }, [focusMode]);
+  // Focus mode (frame 4): App puts `focus` on .main-area from focusMode (the
+  // chat column leaves the grid, the sidebar hides); the FocusRail inside the
+  // canvas stands in for the chat.
   const [focusBaseline, setFocusBaseline] = useState(0);
   useEffect(() => {
     if (focusMode) setFocusBaseline(messageCount);

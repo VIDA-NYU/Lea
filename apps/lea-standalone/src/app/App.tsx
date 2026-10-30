@@ -153,6 +153,11 @@ export default function App() {
     setDragging,
     mainAreaRef,
   } = useLayout();
+  // Focus mode (canvas package, frame 4): the proof takes the width, the chat
+  // collapses into the canvas's FocusRail and the sidebar hides. Never with the
+  // canvas collapsed, which would leave nothing to focus on.
+  const focusMode = useWorkbench((s) => s.focusMode);
+  const focused = focusMode && !canvasCollapsed;
   const setView = (next: Parameters<typeof setLayoutView>[0]) => {
     useProjects.getState().invalidateNavigation();
     setLayoutView(next);
@@ -1227,13 +1232,15 @@ export default function App() {
         {searchOverlay}
           {skillsMcpPicker}
         {newProjectDialog}
-        <div className={`app ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+        <div className={`app ${sidebarCollapsed || focused ? 'sidebar-collapsed' : ''}`}>
           {sidebar}
 
           <div
             ref={mainAreaRef}
-            className={`main-area ${canvasCollapsed ? 'canvas-collapsed' : ''}`}
-            style={{ gridTemplateColumns: canvasCollapsed ? '1fr 0' : `minmax(0,1fr) ${canvasWidth}%` }}
+            className={`main-area ${canvasCollapsed ? 'canvas-collapsed' : ''} ${focused ? 'focus' : ''}`}
+            style={{
+              gridTemplateColumns: canvasCollapsed ? '1fr 0' : focused ? 'minmax(0,1fr)' : `minmax(0,1fr) ${canvasWidth}%`,
+            }}
           >
             <ChatThread
               title={title}
@@ -1299,7 +1306,7 @@ export default function App() {
               composerFocusSignal={composerFocus}
             />
 
-            {!canvasCollapsed && (
+            {!canvasCollapsed && !focused && (
               <div
                 className={`col-resizer ${dragging ? 'dragging' : ''}`}
                 style={{ right: `${canvasWidth}%` }}

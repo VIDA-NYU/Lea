@@ -273,18 +273,14 @@ button.cv-chip { cursor: pointer; }
 .cv-filebar-note { font-size: 12px; color: var(--cv-ink-3); }
 
 /* ── focus mode (mockup frame 4) ────────────────────────────────────────── */
-/* Canvas.tsx toggles `lea-focus` on <html>; the chat column leaves the grid and
-   the canvas takes the width (one column: a display:none item does not take a
-   track, so the canvas auto-places into the first one). The FocusRail inside
-   the canvas stands in for the chat and is the way back. The chat stays mounted
-   (CSS only), so its draft and scroll survive. Guarded by :not(.canvas-collapsed)
-   so hiding the canvas never leaves a blank screen. `!important` beats App's
-   inline grid-template-columns. The integrator may move the class onto
-   .main-area from App.tsx. */
-html.lea-focus .main-area:not(.canvas-collapsed) { grid-template-columns: minmax(0, 1fr) !important; }
-html.lea-focus .main-area:not(.canvas-collapsed) > .chat,
-html.lea-focus .main-area:not(.canvas-collapsed) > .col-resizer { display: none; }
-html.lea-focus .main-area:not(.canvas-collapsed) > .canvas { border-left: none; }
+/* App puts `focus` on .main-area while focusMode is on (never with the canvas
+   collapsed), gives it one grid column and hides the sidebar and the resizer.
+   The chat column leaves the grid (a display:none item does not take a track,
+   so the canvas auto-places into the first one) but stays mounted, so its
+   draft and scroll survive. The FocusRail inside the canvas stands in for the
+   chat and is the way back. */
+.main-area.focus > .chat { display: none; }
+.main-area.focus > .canvas { border-left: none; }
 .cv-focus-rail { width: 56px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 12px 0;
   background: var(--bg); border-right: 1px solid var(--line); }
 .cv-focus-title { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 11.5px; color: var(--cv-ink-3); font-weight: 500;

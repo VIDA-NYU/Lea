@@ -1,8 +1,8 @@
 import { IconChat, IconChevronRight } from './icons';
 
 // Focus mode (mockup frame 4): the chat collapses to this 56px rail at the left
-// edge of the canvas. The chat itself is hidden by `html.lea-focus` (canvas.css),
-// so its state survives; this rail is the way back.
+// edge of the canvas. The chat itself is hidden by `.main-area.focus` (App sets
+// the class; canvas.css), so its state survives; this rail is the way back.
 export function FocusRail({
   title,
   unread,
