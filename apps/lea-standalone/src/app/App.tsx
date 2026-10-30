@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatThread } from './components/ChatThread';
 import { Canvas, type CheckOutcome } from './components/Canvas';
+import type { ComposeDetail } from './components/canvas/composerBridge';
 import { StatsPage } from './components/StatsPage';
 import { SettingsPage } from './components/SettingsPage';
 import { ProjectWindow } from './components/ProjectWindow';
@@ -332,6 +333,20 @@ export default function App() {
     if (useSessions.getState().selectedSessionId && view !== 'main') setView('main');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingComposerText]);
+
+  // Canvas package: the empty state's Ask Lea / Paste Lean cards dispatch
+  // `lea:compose` (components/canvas/composerBridge.ts). The text is appended
+  // to the draft, the composer focused, and the event marked as taken.
+  useEffect(() => {
+    const onCompose = (event: Event) => {
+      const text = (event as CustomEvent<ComposeDetail>).detail?.text ?? '';
+      event.preventDefault();
+      if (text) setDraft((value) => (value.trim() ? `${value.replace(/\s+$/, '')}\n${text}` : text));
+      setComposerFocus((n) => n + 1);
+    };
+    window.addEventListener('lea:compose', onCompose);
+    return () => window.removeEventListener('lea:compose', onCompose);
+  }, []);
 
   // Redesign (shell): creating a project lands on its home; the legacy project
   // window stays reachable from that page's ⋯ menu (view 'project').

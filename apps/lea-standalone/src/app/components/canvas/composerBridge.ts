@@ -1,19 +1,13 @@
-// The canvas package may not edit ChatThread, so the empty-state cards reach the
-// composer through this bridge: a DOM event the integrator can subscribe to
-// (`lea:compose`, detail `{ text }`), plus a best-effort fallback that writes into
-// the composer's textarea through the native value setter so React sees the
-// change. Replace the fallback with a store field once ChatThread exposes one.
-export function composeInChat(text: string, { focus = true }: { focus?: boolean } = {}): boolean {
-  window.dispatchEvent(new CustomEvent('lea:compose', { detail: { text } }));
-  const el = document.querySelector<HTMLTextAreaElement>('.chat .composer textarea');
-  if (!el) return false;
-  if (text) {
-    const next = el.value.trim() ? `${el.value.replace(/\s+$/, '')}\n${text}` : text;
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-    if (setter) setter.call(el, next);
-    else el.value = next;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  }
-  if (focus) el.focus();
-  return true;
+// The canvas reaches the chat composer through a DOM event, `lea:compose` on
+// window with detail `{ text }`. App owns the composer draft and listens: it
+// appends the text to the draft (empty text only focuses the composer) and
+// calls preventDefault() to say the composer took it.
+export interface ComposeDetail {
+  text: string;
+}
+
+/** Returns false when nothing took the text (no composer mounted). */
+export function composeInChat(text: string): boolean {
+  const event = new CustomEvent<ComposeDetail>('lea:compose', { detail: { text }, cancelable: true });
+  return !window.dispatchEvent(event);
 }
