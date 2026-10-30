@@ -1,0 +1,12 @@
+{
+  "canonical": false,
+  "nodes": [
+    {"key": "a", "kind": "lemma", "lean": "Lea.V.a", "file": null, "uses": [], "statement_starts_with": "A backtick span followed by a file phrase"},
+    {"key": "b", "kind": "lemma", "lean": "Lea.V.b", "file": null, "uses": [], "statement_starts_with": "A bare name followed by a parenthetical."},
+    {"key": "c", "kind": "theorem", "lean": "Lea.V.c", "file": null, "uses": [], "statement_starts_with": "A backtick span followed by a comma"},
+    {"key": "d", "kind": "definition", "lean": null, "file": null, "uses": [], "statement_starts_with": "An empty lean value."},
+    {"key": "e", "kind": "lemma", "lean": "Lea.V.e", "file": "E.lean", "uses": [], "statement_starts_with": "A bare name with a trailing period"}
+  ],
+  "prose_sections": [],
+  "warnings": []
+}

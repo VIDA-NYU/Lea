@@ -1,0 +1,10 @@
+{
+  "canonical": true,
+  "nodes": [
+    {"key": "helper", "kind": "lemma", "lean": "Lea.Demo.helper", "file": "Helper.lean", "uses": [], "statement_starts_with": "A proved helper."},
+    {"key": "main", "kind": "theorem", "lean": "Lea.Demo.main", "file": "Main.lean", "uses": ["helper"], "statement_starts_with": "The main theorem, using the helper."},
+    {"key": "todo", "kind": "definition", "lean": null, "file": null, "uses": [], "statement_starts_with": "A planned definition with no Lean yet."}
+  ],
+  "prose_sections": [],
+  "warnings": []
+}

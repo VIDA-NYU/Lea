@@ -1,0 +1,8 @@
+{
+  "canonical": true,
+  "nodes": [
+    {"key": "real", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "```lean"}
+  ],
+  "prose_sections": [],
+  "warnings": []
+}

@@ -1,0 +1,17 @@
+{
+  "canonical": false,
+  "nodes": [
+    {"key": "dup", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "The first node named dup."},
+    {"key": "dup", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "The second node named dup."},
+    {"key": "nokind", "kind": null, "lean": null, "file": null, "uses": ["dup"], "statement_starts_with": "A node with no kind line."},
+    {"key": "badkind", "kind": "proposition", "lean": null, "file": null, "uses": [], "statement_starts_with": "A node whose kind is not"},
+    {"key": "Bad Key!", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "A node whose heading is not"}
+  ],
+  "prose_sections": [],
+  "warnings": [
+    {"code": "duplicate_key", "node": "dup"},
+    {"code": "missing_kind", "node": "nokind"},
+    {"code": "unknown_kind", "node": "badkind"},
+    {"code": "invalid_key", "node": "Bad Key!"}
+  ]
+}

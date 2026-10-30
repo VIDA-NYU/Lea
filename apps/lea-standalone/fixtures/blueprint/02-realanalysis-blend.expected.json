@@ -1,0 +1,27 @@
+{
+  "canonical": false,
+  "nodes": [
+    {"key": "sum_choose_pow_dvd_iff", "kind": "theorem", "lean": null, "file": null, "uses": ["even_imp_dvd", "odd_imp_not_dvd"], "statement_starts_with": "For every positive integer k, (n+1) divides"},
+    {"key": "even_imp_dvd", "kind": "theorem", "lean": null, "file": null, "uses": ["dvd_of_prime_pow_dvd", "prime_pow_dvd"], "statement_starts_with": "For even k and every m ≥ 2, m divides T(k,m)"},
+    {"key": "odd_imp_not_dvd", "kind": "theorem", "lean": null, "file": null, "uses": ["T_three", "three_not_dvd_two_add_two_pow"], "statement_starts_with": "For odd k the condition fails already at n = 2"},
+    {"key": "dvd_of_prime_pow_dvd", "kind": "lemma", "lean": null, "file": null, "uses": ["sumChoosePow"], "statement_starts_with": "If p ^ v_p(m) divides T(k,m) for every prime p dividing m"},
+    {"key": "prime_pow_dvd", "kind": "theorem", "lean": null, "file": null, "uses": ["sum_eq_unit_pow", "unit_one_add_delta", "binom_expand_one_add_delta", "delta_pow_sum_vanishes"], "statement_starts_with": "For a prime p, a ≥ 1, even k and any m with p^a ∣ m"},
+    {"key": "sum_eq_unit_pow", "kind": "lemma", "lean": null, "file": null, "uses": ["choose_eq_sign_prod", "sign_factor_pow_even"], "statement_starts_with": "For even k, T(k,m) = Σ_{i=0}^{m-1} u_i^k as rational numbers"},
+    {"key": "choose_eq_sign_prod", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "For 0 ≤ i ≤ m-1, C(m-1,i) = (-1)^i"},
+    {"key": "sign_factor_pow_even", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "If k is even and c^k = 1 then (c·u)^k = u^k"},
+    {"key": "unit_one_add_delta", "kind": "lemma", "lean": null, "file": null, "uses": ["delta_valuation"], "statement_starts_with": "For p prime with p^a ∣ m and i < m"},
+    {"key": "delta_valuation", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "Valuation estimate for the individual factors"},
+    {"key": "binom_expand_one_add_delta", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "Binomial expansion (1 + δ)^k"},
+    {"key": "delta_pow_sum_vanishes", "kind": "lemma", "lean": null, "file": null, "uses": ["delta_valuation", "block_cancellation"], "statement_starts_with": "For every ℓ ≥ 1 the sum Σ_{i=0}^{m-1} δ_i^ℓ"},
+    {"key": "block_cancellation", "kind": "lemma", "lean": null, "file": null, "uses": ["delta_periodicity"], "statement_starts_with": "The cancellation step: summing δ_i^ℓ"},
+    {"key": "delta_periodicity", "kind": "lemma", "lean": null, "file": null, "uses": ["delta_valuation"], "statement_starts_with": "HIGH RISK NODE: δ_i depends on i only"},
+    {"key": "T_three", "kind": "lemma", "lean": null, "file": null, "uses": ["sumChoosePow"], "statement_starts_with": "T(k,3) = 1^k + 2^k + 1^k = 2 + 2^k"},
+    {"key": "three_not_dvd_two_add_two_pow", "kind": "lemma", "lean": null, "file": null, "uses": ["two_pow_mod_three"], "statement_starts_with": "If k is odd then 2 + 2^k ≡ 2 + (-1)^k = 1 (mod 3)"},
+    {"key": "two_pow_mod_three", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "For every k, 2^k ≡ (-1)^k (mod 3)"},
+    {"key": "sumChoosePow", "kind": "definition", "lean": "Lea.RealAnalysis.sumChoosePow", "file": null, "uses": [], "statement_starts_with": "T(k,m) = Σ_{i ∈ Finset.range m} (m - 1).choose i ^ k"}
+  ],
+  "prose_sections": ["Goal"],
+  "warnings": [
+    {"code": "unknown_header", "node": "sumChoosePow"}
+  ]
+}

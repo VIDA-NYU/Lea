@@ -1,0 +1,14 @@
+{
+  "canonical": false,
+  "nodes": [
+    {"key": "root", "kind": "theorem", "lean": null, "file": null, "uses": ["a", "b", "c"], "statement_starts_with": "Backticks, stray spaces and commas"},
+    {"key": "a", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "A leaf marked with the word none."},
+    {"key": "b", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "A leaf marked with an em dash."},
+    {"key": "c", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "A leaf marked with a hyphen."},
+    {"key": "d", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "A leaf marked with n/a."},
+    {"key": "e", "kind": "lemma", "lean": null, "file": null, "uses": ["a", "b"], "statement_starts_with": "Two dependencies separated by whitespace only."},
+    {"key": "f", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "A leaf marked with a capitalised sentinel."}
+  ],
+  "prose_sections": [],
+  "warnings": []
+}

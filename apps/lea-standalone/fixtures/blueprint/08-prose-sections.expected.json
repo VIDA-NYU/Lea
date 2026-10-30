@@ -1,0 +1,9 @@
+{
+  "canonical": true,
+  "nodes": [
+    {"key": "a", "kind": "lemma", "lean": null, "file": null, "uses": [], "statement_starts_with": "The lemma."},
+    {"key": "b", "kind": "theorem", "lean": null, "file": null, "uses": ["a"], "statement_starts_with": "The theorem."}
+  ],
+  "prose_sections": ["Strategy", "Assembly"],
+  "warnings": []
+}

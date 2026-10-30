@@ -1,0 +1,16 @@
+{
+  "canonical": true,
+  "nodes": [
+    {"key": "a", "kind": "lemma", "lean": null, "file": null, "uses": ["b"], "statement_starts_with": "One half of a two-node cycle."},
+    {"key": "b", "kind": "lemma", "lean": null, "file": null, "uses": ["a"], "statement_starts_with": "The other half of the cycle."},
+    {"key": "c", "kind": "lemma", "lean": null, "file": null, "uses": ["ghost"], "statement_starts_with": "Depends on a key that is not a node."},
+    {"key": "d", "kind": "lemma", "lean": null, "file": null, "uses": ["d"], "statement_starts_with": "Depends on itself."}
+  ],
+  "prose_sections": [],
+  "warnings": [
+    {"code": "cycle", "node": "a"},
+    {"code": "cycle", "node": "b"},
+    {"code": "dangling_dependency", "node": "c"},
+    {"code": "self_dependency", "node": "d"}
+  ]
+}
