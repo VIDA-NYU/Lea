@@ -128,6 +128,10 @@ class BlueprintDraftAccept(BaseModel):
     keys: list[str] | None = None
 
 
+class BlueprintDraftDiscard(BaseModel):
+    idempotency_key: str | None = None
+
+
 class MirrorFile(BaseModel):
     path: str
     content: str
@@ -440,7 +444,7 @@ def remove_blueprint_nodes(project_id: str, request: BlueprintNodesRemove) -> di
 @router.post('/api/projects/{project_id}/blueprint/draft/accept', status_code=202)
 @workspace_commands.register('project.blueprint_accept_draft')
 @_guard_project(by_slug=False, write=True, metadata=False)
-def accept_blueprint_draft(project_id: str, request: BlueprintDraftAccept) -> dict:
+def accept_blueprint_draft(project_id: str, request: BlueprintDraftAccept = BlueprintDraftAccept()) -> dict:
     project = _require_project(project_id)
     if not blueprint_store.exists_draft(project, _proofs_root()):
         raise HTTPException(status_code=404, detail="There is no blueprint draft to accept.")
@@ -450,7 +454,8 @@ def accept_blueprint_draft(project_id: str, request: BlueprintDraftAccept) -> di
 @router.post('/api/projects/{project_id}/blueprint/draft/discard', status_code=202)
 @workspace_commands.register('project.blueprint_discard_draft')
 @_guard_project(by_slug=False, write=True, metadata=False)
-def discard_blueprint_draft(project_id: str) -> dict:
+def discard_blueprint_draft(project_id: str, request: BlueprintDraftDiscard = BlueprintDraftDiscard()) -> dict:
+    # The body is optional; it only carries the caller's idempotency key.
     project = _require_project(project_id)
     return blueprint_store.discard_draft(project, _proofs_root())
 

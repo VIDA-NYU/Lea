@@ -72,6 +72,9 @@ class BlueprintDraftAccept(BaseModel):
     idempotency_key: str | None = None
     keys: list[str] | None = None
 
+class BlueprintDraftDiscard(BaseModel):
+    idempotency_key: str | None = None
+
 class MirrorFile(BaseModel):
     path: str
     content: str
@@ -197,12 +200,12 @@ def remove_blueprint_nodes(project_id: str, request: BlueprintNodesRemove) -> di
 
 @router.post('/api/projects/{project_id}/blueprint/draft/accept', status_code=202)
 @workspace_commands.intake('project.blueprint_accept_draft')
-def accept_blueprint_draft(project_id: str, request: BlueprintDraftAccept) -> dict:
+def accept_blueprint_draft(project_id: str, request: BlueprintDraftAccept = BlueprintDraftAccept()) -> dict:
     raise RuntimeError('An intake contract cannot execute')
 
 @router.post('/api/projects/{project_id}/blueprint/draft/discard', status_code=202)
 @workspace_commands.intake('project.blueprint_discard_draft')
-def discard_blueprint_draft(project_id: str) -> dict:
+def discard_blueprint_draft(project_id: str, request: BlueprintDraftDiscard = BlueprintDraftDiscard()) -> dict:
     raise RuntimeError('An intake contract cannot execute')
 
 @router.get('/api/projects/{project_id}/graph')

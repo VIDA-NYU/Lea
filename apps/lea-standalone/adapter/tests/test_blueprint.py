@@ -142,11 +142,23 @@ def test_render_closes_a_dangling_fence_so_later_sections_stay_live():
 
 
 def test_render_keeps_a_headerless_node_a_node():
+    # Convention shared with the UI's serializeBlueprint: a node with no header
+    # fields (no kind, lean, file, uses) renders an empty `- kind:` line, so the
+    # next parse still reads it as a node instead of a prose section.
     # An empty `- lean:` is a recognised header, so `a` is a node with no fields.
     parsed = blueprint.parse("## a\n- lean:\n\nBody.\n")
     assert [n["key"] for n in parsed["nodes"]] == ["a"]
-    again = blueprint.parse(blueprint.render(parsed))
+    rendered = blueprint.render(parsed)
+    assert rendered == "## a\n- kind:\n\nBody.\n"
+    again = blueprint.parse(rendered)
     assert [n["key"] for n in again["nodes"]] == ["a"]
+    assert [(w["code"], w["node"]) for w in again["warnings"]] == [("missing_kind", "a")]
+    assert blueprint.render(again) == rendered
+
+    built = {"preamble": "", "blocks": [{"type": "node", "key": "b", "kind": None, "lean": None,
+                                         "file": None, "uses": [], "statement": ""}]}
+    assert blueprint.render(built) == "## b\n- kind:\n"
+    assert [b["type"] for b in blueprint.parse(blueprint.render(built))["blocks"]] == ["node"]
 
 
 def test_validate_clean_blueprint_has_no_warnings():

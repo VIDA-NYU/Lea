@@ -348,3 +348,50 @@ def test_command_writes_keep_human_saves_conflict_free(tmp_path, monkeypatch):
     assert [n["key"] for n in _live(repo)["nodes"]] == ["a", "b", "c"]
     with db.connect() as conn:
         assert conn.execute("select count(*) from workspace_effects where state='conflict'").fetchone()[0] == 0
+
+
+def test_public_write_routes_accept_optional_bodies_and_extra_fields(tmp_path, monkeypatch):
+    """The UI sends `idempotency_key` on every write and `draft_id` on the draft PUT;
+    discard posts `{}` (or nothing). Admission goes through the public contracts."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.api_routes import projects as public
+    from app.routes.projects import ProjectCreate
+    routes, proofs = _route_setup(tmp_path, monkeypatch)
+    project = routes.create_project.worker(ProjectCreate(title="Demo"))
+    pid = project["id"]
+    app = FastAPI()
+    app.include_router(public.router)
+    client = TestClient(app)
+
+    def run(response):
+        assert response.status_code == 202, response.text
+        done = _execute(response.json())
+        assert done["state"] == "succeeded", done
+        return done["result"]
+
+    result = run(client.post(f"/api/projects/{pid}/blueprint/nodes", json={
+        "nodes": [{"key": "a", "kind": "lemma", "extra": 1}], "draft": True,
+        "idempotency_key": "upsert-1", "draft_id": "ignored"}))
+    assert [a["key"] for a in result["applied"]] == ["a"]
+    revision = routes.get_blueprint.worker(pid)["draft"]["file_revision"]
+    assert revision
+    content = blueprint_store.load(project, proofs, draft=True)
+    run(client.put(f"/api/projects/{pid}/blueprint/draft", json={
+        "content": blueprint.render(content) + "\n## b\n- kind: lemma\n",
+        "file_revision": revision, "draft_id": "draft-1", "idempotency_key": "draft-put-1"}))
+    assert [n["key"] for n in blueprint_store.load(project, proofs, draft=True)["nodes"]] == ["a", "b"]
+
+    first = client.post(f"/api/projects/{pid}/blueprint/draft/discard", json={"idempotency_key": "discard-1"})
+    assert run(first) == {"discarded": True}
+    replay = client.post(f"/api/projects/{pid}/blueprint/draft/discard", json={"idempotency_key": "discard-1"})
+    assert replay.json()["command"]["id"] == first.json()["command"]["id"]
+    assert run(client.post(f"/api/projects/{pid}/blueprint/draft/discard")) == {"discarded": False}
+
+    run(client.post(f"/api/projects/{pid}/blueprint/nodes", json={
+        "nodes": [{"key": "c", "kind": "lemma"}], "draft": True, "idempotency_key": "upsert-2"}))
+    accepted = run(client.post(f"/api/projects/{pid}/blueprint/draft/accept", json={}))
+    assert [a["key"] for a in accepted["applied"]] == ["c"]
+    removed = run(client.post(f"/api/projects/{pid}/blueprint/nodes/remove", json={
+        "keys": ["c"], "idempotency_key": "remove-1", "draft_id": None}))
+    assert removed["removed"] == ["c"]
