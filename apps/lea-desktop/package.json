@@ -11,6 +11,7 @@
     "start:spawn": "LEA_DESKTOP_ATTACH=0 node scripts/launch.mjs",
     "start:managed": "LEA_DESKTOP_MODE=managed node scripts/launch.mjs",
     "smoke": "LEA_DESKTOP_SCREENSHOT=${LEA_DESKTOP_SCREENSHOT:-/tmp/lea-desktop-smoke.png} node scripts/launch.mjs",
+    "test": "node --test test/*.test.mjs",
     "icon": "python3 scripts/make-icon.py",
     "build:ui": "npm --prefix ../.. run build -w apps/lea-standalone",
     "build:backend": "node scripts/build-backend.mjs",

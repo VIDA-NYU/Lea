@@ -7,10 +7,17 @@ const DISCORD_URL = 'https://discord.gg/58ZWUXU8FM';
 const EXTENSION_GUIDE_URL = `${GITHUB_URL}/blob/main/apps/overleaf-extension/README.md`;
 const OVERLEAF_URL = 'https://www.overleaf.com/project';
 
-export function buildMenu({ navigate, getRuntime, getBackend, getLogDir, getDataDir, checkForUpdates }) {
+export function buildMenu({ navigate, getRuntime, getBackend, getLogDir, getDataDir, checkForUpdates, reportProblem, prefs }) {
   const isMac = process.platform === 'darwin';
   const settingsItem = { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => navigate('settings') };
   const updatesItem = { label: 'Check for Updates…', click: () => checkForUpdates?.() };
+  const notifyItem = {
+    label: 'Notify When a Run Finishes',
+    type: 'checkbox',
+    checked: prefs?.get('notifications') ?? true,
+    click: (item) => prefs?.set('notifications', item.checked),
+  };
+  const reportItem = { label: 'Report a Problem…', click: () => reportProblem?.() };
 
   const template = [
     ...(isMac ? [{
@@ -20,6 +27,7 @@ export function buildMenu({ navigate, getRuntime, getBackend, getLogDir, getData
         updatesItem,
         { type: 'separator' },
         settingsItem,
+        notifyItem,
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -35,7 +43,7 @@ export function buildMenu({ navigate, getRuntime, getBackend, getLogDir, getData
       submenu: [
         { label: 'Home', accelerator: 'CmdOrCtrl+Shift+H', click: () => navigate('main') },
         { type: 'separator' },
-        ...(isMac ? [{ role: 'close' }] : [settingsItem, { type: 'separator' }, { role: 'quit' }]),
+        ...(isMac ? [{ role: 'close' }] : [settingsItem, notifyItem, { type: 'separator' }, { role: 'quit' }]),
       ],
     },
     {
@@ -94,6 +102,7 @@ export function buildMenu({ navigate, getRuntime, getBackend, getLogDir, getData
         { label: 'Lea on GitHub', click: () => shell.openExternal(GITHUB_URL) },
         { label: 'Join the Discord', click: () => shell.openExternal(DISCORD_URL) },
         { type: 'separator' },
+        reportItem,
         ...(isMac ? [] : [updatesItem]),
         { label: 'Backend status…', click: () => showBackendStatus(getRuntime(), getBackend()) },
         { label: 'Show logs folder', click: () => { const dir = getLogDir(); if (dir) shell.openPath(dir); } },

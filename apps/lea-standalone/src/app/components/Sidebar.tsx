@@ -37,8 +37,7 @@ import {
 } from '../lib/shellModel.js';
 import { useProjectData } from './shell/projectData';
 import { StatusDot, nodeDotKind, sessionDotKind } from './shell/bits';
-// The desktop package's update button (docs/PLAN-ui-redesign.md): a stub on this
-// branch, replaced at integration. Mounted in the footer slot below.
+// The desktop package's update button (mockup frame 15), mounted in the footer.
 import { DesktopUpdateButton } from './shell/DesktopUpdateButton';
 
 const NODE_ORDER: Record<string, number> = { ready: 1, stated: 2, failed: 3, planned: 4, proved: 5 };
@@ -324,9 +323,8 @@ export function Sidebar({
 
       <div className="sb-foot">
         <span className="sb-foot-user">{userEmail || 'local'}</span>
-        {/* Desktop update button (package "desktop" replaces the stub): a direct
-            child of this flex row; it renders null in a browser and pushes
-            itself right with margin-left: auto. */}
+        {/* Desktop update button: a direct child of this flex row; it renders
+            null in a browser and pushes itself right with margin-left: auto. */}
         <DesktopUpdateButton />
         <button className="sh-ibtn sh-ibtn-sm" onClick={onOpenStats} title="Usage & statistics" aria-label="Usage & statistics">
           <BarChart3 size={14} strokeWidth={1.75} />

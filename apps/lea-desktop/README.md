@@ -50,6 +50,36 @@ The app runs the companion on `127.0.0.1:31245`, where the Chrome extension
 looks by default. **Overleaf → Install the Chrome extension…** has the steps.
 "Open in Lea" from Overleaf uses `lea://` links and focuses the app.
 
+### Notifications, Report a Problem, updates
+
+- **Notifications and the dock badge.** When a run finishes while the Lea
+  window is not in front, a system notification names the session and the
+  outcome (proof complete, Lean error, needs review, counterexample); clicking
+  it opens that session. The dock badge is the number of sessions with a live
+  run and clears at zero. **Lea → Notify When a Run Finishes** turns the
+  notifications off (`<app support>/preferences.json`). The UI derives both
+  from its session list; the app only decides whether to show them.
+- **Help → Report a Problem…** (also the splash page's button when startup
+  fails) saves a zip where you choose: the tail of every log in
+  `~/Library/Logs/Lea`, the provisioning log, `state.json`, the workspace's
+  `lean-toolchain` and `lake-manifest.json`, an environment summary and a copy
+  of `lea.local.toml` with every secret replaced by `"<redacted>"` (all of
+  `[keys]` and `[environment]`, any key with key/token/secret/password/
+  credential/auth in its name, commented-out keys, user:password in URLs). It
+  never includes the database or your proofs. The dialog then offers **Open a
+  GitHub issue** (prefilled with version and system; attach the zip), **Reveal
+  in Finder** and **Done**.
+- **Updates.** The app checks the `desktop-latest` release 15 s after launch
+  and every 6 h (or **Check for Updates…**). An update shows as one button in
+  the sidebar footer with a popover explaining the steps the first time:
+  **Update to x.y.z** downloads in the background, the button becomes
+  **Downloading… 43%**, then **Restart to update**; **Later** keeps the button,
+  **Skip this version** hides it for that version. A build that cannot update
+  in place — on macOS one whose signature is missing or ad-hoc, which is every
+  unsigned build — shows **Download Lea x.y.z** instead and opens the DMG for
+  your architecture; drag it to Applications. A failed background check stays
+  quiet; a failed download shows **Update failed · retry**.
+
 ## For developers
 
 ```sh
@@ -84,8 +114,11 @@ npm run dist:mac:x64 -w apps/lea-desktop
 `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` to notarize.
 `.github/workflows/desktop-release.yml` does both architectures on GitHub's
 macOS runners and, for a `desktop-v*` tag, publishes a release with the
-`latest-mac.yml` feed that `electron-updater` reads. Auto-update only works
-once builds are signed; unsigned apps log the failure and stay quiet.
+`latest-mac.yml` feed that `electron-updater` reads. In-place updates only
+work once builds are signed (`src/updater.mjs` runs `codesign -dv` on the
+bundle at launch); an unsigned or ad-hoc-signed app is download-only: its
+update button opens the DMG instead, and a feed that does not exist yet is
+logged and otherwise stays quiet.
 
 ### How the managed runtime works
 
@@ -121,15 +154,38 @@ LEA_DESKTOP_SCREENSHOT=/tmp/lea.png LEA_DESKTOP_SCREENSHOT_VIEW=settings npm sta
 
 Starts the app, waits for the UI (`LEA_DESKTOP_SCREENSHOT_DELAY_MS`, default
 6000), optionally drives a native-menu navigation, writes a PNG of the window
-and quits. Failures never block on a dialog in this mode.
+and quits. Failures never block on a dialog in this mode. Three more variables
+exercise the desktop features without a release or a human at the screen:
+
+| Variable | Effect |
+|---|---|
+| `LEA_DESKTOP_FAKE_UPDATE=0.2.0` | dev only: pretends 0.2.0 is available, download-only (what an unsigned build sees). `0.2.0:inapp` pretends the in-app flow and simulates the download when the button is clicked, so all four button states can be seen. |
+| `LEA_DESKTOP_SMOKE_REPORT=1` | writes the Report a Problem zip to the temp folder without the save dialog and logs `smoke diagnostics: <path>`. |
+| `LEA_DESKTOP_SMOKE_NOTIFY=1` | sends a notification through the page bridge and logs `smoke notification shown: <bool>` (`false` while the window is in front, which is the rule). |
+| `LEA_DESKTOP_SMOKE_UPDATE_INSTALL=1` | does what the update button does 2.5 s in; with `LEA_DESKTOP_FAKE_UPDATE=0.2.0:inapp` the button walks downloading → **Restart to update** before the screenshot. |
+
+The log is `~/Library/Logs/Lea/lea-desktop.log`. If a packaged Lea is already
+running, add `-- --user-data-dir=/some/dir` so the dev instance gets its own
+single-instance lock; if an adapter already answers on `:8001` the app attaches
+to it and serves either a Vite dev server on `:5173` (`npm run dev:web -w
+apps/lea-standalone`, so the UI is this checkout's) or that adapter's own build.
+
+```sh
+npm test -w apps/lea-desktop                 # node --test: config redaction
+```
 
 ### Files
 
-- `src/main.mjs` — lifecycle, window, deep links, updater, quit → backend stop.
+- `src/main.mjs` — lifecycle, window, deep links, notifications and dock
+  badge, Report a Problem, quit → backend stop.
 - `src/layout.mjs` — paths for dev (checkout) and managed (app support) modes.
 - `src/provision.mjs` — first-run / after-update provisioning with progress.
 - `src/backend.mjs` — attach-or-spawn; reuses the repo's supervisor modules.
-- `src/menu.mjs`, `src/preload.cjs`, `src/splash.html`, `src/updater.mjs`.
+- `src/updater.mjs` — electron-updater state machine, in-app vs download-only.
+- `src/diagnostics.mjs` — the Report a Problem zip; `src/redact.mjs` the pure
+  config redaction it uses (`test/redact.test.mjs`).
+- `src/prefs.mjs` — the shell's own preferences (`preferences.json`).
+- `src/menu.mjs`, `src/preload.cjs`, `src/splash.html`.
 - `scripts/build-backend.mjs`, `scripts/fetch-uv.mjs`, `scripts/launch.mjs`,
   `scripts/make-icon.py`.
 - `electron-builder.yml`, `build-resources/entitlements.mac.plist`.

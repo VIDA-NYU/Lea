@@ -2,13 +2,15 @@
 //
 // A native window around the Lea UI, with the backend provisioned, started and
 // stopped by the app. See README.md for the runtime layout and build steps.
-import { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, nativeTheme, shell } from 'electron';
+import { app, BrowserWindow, Menu, Notification, dialog, ipcMain, nativeImage, nativeTheme, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend.mjs';
+import { issueUrl, suggestedZipName, writeDiagnostics } from './diagnostics.mjs';
 import { devLayout, managedLayout } from './layout.mjs';
 import { buildMenu } from './menu.mjs';
+import { createPrefs } from './prefs.mjs';
 import { createProvisioner } from './provision.mjs';
 import { setupUpdater } from './updater.mjs';
 
@@ -34,6 +36,7 @@ let win = null;
 let backend = null;
 let provisioner = null;
 let updater = null;
+let prefs = null;
 let runtime = null; // { mode, apiUrl, uiUrl, companionUrl }
 let layout = null;
 let logDir = null;
@@ -108,15 +111,23 @@ async function main() {
     if (/^https?:\/\//i.test(String(url))) return shell.openExternal(String(url));
     return undefined;
   });
+  ipcMain.handle('lea:reveal-path', (_event, target) => revealPath(target));
   ipcMain.handle('lea:show-logs', () => shell.openPath(logDir));
   ipcMain.handle('lea:quit', () => app.quit());
+  ipcMain.handle('lea:report-problem', () => reportProblem());
+  ipcMain.handle('lea:update-state', () => updater?.getState() ?? null);
+  ipcMain.handle('lea:update-install', () => updater?.install());
+  ipcMain.handle('lea:update-check', () => updater?.check({ interactive: false }));
+  ipcMain.handle('lea:set-activity', (_event, activity) => setActivity(activity));
+  ipcMain.handle('lea:notify', (_event, notification) => showNotification(notification));
 
   const resolved = resolveLayout();
   layout = resolved.layout;
   log(`mode ${layout.mode}${layout.mode === 'managed' ? ` (${layout.userData})` : ''}`);
+  prefs = createPrefs(app.getPath('userData'), { log });
 
   createWindow();
-  updater = setupUpdater({ log });
+  updater = setupUpdater({ log, broadcast: (state) => win?.webContents.send('lea:update', state) });
   Menu.setApplicationMenu(buildMenu({
     navigate,
     getRuntime: () => runtime,
@@ -124,6 +135,8 @@ async function main() {
     getLogDir: () => logDir,
     getDataDir: () => (layout.mode === 'managed' ? layout.userData : layout.dataDir),
     checkForUpdates: () => updater.check({ interactive: true }),
+    reportProblem,
+    prefs,
   }));
 
   backend = createBackend({ layout, logDir, log, onStatus: sendStatus, onCrash });
@@ -230,7 +243,10 @@ function createWindow(initialUrl = null) {
   win.once('ready-to-show', () => win?.show());
   win.on('page-title-updated', (event) => event.preventDefault()); // keep "Lea"
   win.on('close', () => { if (win) saveWindowState(win.getBounds()); });
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => {
+    win = null;
+    setActivity({ running: 0 }); // nothing feeds the badge without a renderer
+  });
 
   // Anything that is not our own local UI opens in the system browser.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -266,6 +282,85 @@ function navigate(view) {
   log(`navigate → ${view}`);
   win?.webContents.send('lea:navigate', { view });
   focusWindow();
+}
+
+// ---- activity, notifications, diagnostics -------------------------------------
+
+// Dock badge = number of sessions with a live run (renderer-driven; the UI
+// already follows the sessions feed).
+function setActivity(activity) {
+  const running = Math.max(0, Number(activity?.running) || 0);
+  if (process.platform === 'darwin') app.dock?.setBadge(running > 0 ? String(running) : '');
+}
+
+// A run finished (or failed) while the user was elsewhere. The renderer decides
+// *what* happened; this decides *whether* to show it: never when the window is
+// in front, never when the user turned notifications off.
+function showNotification({ title, body, sessionId } = {}) {
+  if (!title || !prefs?.get('notifications') || !Notification.isSupported()) return false;
+  if (win && win.isVisible() && win.isFocused()) return false;
+  const notification = new Notification({ title: String(title), body: body ? String(body) : undefined });
+  notification.on('click', () => {
+    if (sessionId) handleDeepLink(`${PROTOCOL}://session/${encodeURIComponent(String(sessionId))}`);
+    else focusWindow();
+  });
+  notification.show();
+  log(`notification: ${title}${body ? ` — ${body}` : ''}`);
+  return true;
+}
+
+// Files rail → Reveal in Finder (and Explorer / the file manager elsewhere).
+// Only absolute paths that exist; the renderer gets a boolean back.
+function revealPath(target) {
+  const file = String(target ?? '');
+  if (!path.isAbsolute(file) || !fs.existsSync(file)) return false;
+  shell.showItemInFolder(file);
+  return true;
+}
+
+// Help → Report a problem…: logs, provisioning output, a redacted config and
+// the environment summary, zipped where the user chooses, then a pointer to a
+// prefilled GitHub issue.
+async function reportProblem() {
+  let zipPath;
+  if (SMOKE) {
+    zipPath = path.join(app.getPath('temp'), suggestedZipName());
+  } else {
+    const chosen = await dialog.showSaveDialog(win ?? undefined, {
+      title: 'Save diagnostics',
+      defaultPath: path.join(app.getPath('desktop'), suggestedZipName()),
+      filters: [{ name: 'Zip archive', extensions: ['zip'] }],
+    });
+    if (chosen.canceled || !chosen.filePath) return null;
+    zipPath = chosen.filePath;
+  }
+  try {
+    await writeDiagnostics({ layout, logDir, runtime, backend, zipPath });
+  } catch (error) {
+    log(`diagnostics failed: ${error.message}`);
+    if (!SMOKE) {
+      await dialog.showMessageBox(win ?? undefined, { type: 'error', title: 'Report a problem', message: 'Could not write the diagnostics bundle.', detail: error.message });
+    }
+    return null;
+  }
+  log(`diagnostics written to ${zipPath}`);
+  if (SMOKE) return zipPath;
+  const { response } = await dialog.showMessageBox(win ?? undefined, {
+    type: 'info',
+    title: 'Report a problem',
+    message: 'Diagnostics saved.',
+    detail: `${zipPath}\n\nThe bundle holds the app, backend and provisioning logs, a copy of the config with every secret redacted, the runtime state and an environment summary. It never includes your database or your proofs.\n\nAttach it to the issue; the issue form is prefilled with your version and system.`,
+    buttons: ['Open a GitHub issue', 'Reveal in Finder', 'Done'],
+    defaultId: 0,
+    cancelId: 2,
+  });
+  if (response === 0) {
+    shell.showItemInFolder(zipPath);
+    await shell.openExternal(issueUrl({ runtime }));
+  } else if (response === 1) {
+    shell.showItemInFolder(zipPath);
+  }
+  return zipPath;
 }
 
 // lea://session/<id> · lea://formalization/<id> · lea://settings · lea://stats ·
@@ -371,6 +466,29 @@ function maybeSmokeTest() {
   win.webContents.executeJavaScript('typeof window.leaDesktop + "/" + typeof window.leaDesktop?.onNavigate')
     .then((result) => log(`bridge in page: ${result}`))
     .catch((error) => log(`bridge check failed: ${error.message}`));
+  // LEA_DESKTOP_SMOKE_REPORT=1 writes a diagnostics bundle to the temp folder;
+  // LEA_DESKTOP_SMOKE_NOTIFY=1 sends a notification through the bridge (the
+  // shell declines it while the window is in front, which the log records).
+  if (process.env.LEA_DESKTOP_SMOKE_REPORT) {
+    setTimeout(() => reportProblem().then((file) => log(`smoke diagnostics: ${file}`)).catch((error) => log(`smoke diagnostics failed: ${error.message}`)), 1500);
+  }
+  if (process.env.LEA_DESKTOP_SMOKE_NOTIFY) {
+    setTimeout(() => {
+      win?.webContents.executeJavaScript('window.leaDesktop.notify({ title: "Lea smoke", body: "notification path" })')
+        .then((shown) => log(`smoke notification shown: ${shown}`))
+        .catch((error) => log(`smoke notification failed: ${error.message}`));
+    }, 2000);
+  }
+  // LEA_DESKTOP_SMOKE_UPDATE_INSTALL=1 does what the update button does; with
+  // LEA_DESKTOP_FAKE_UPDATE=<v>:inapp that walks the renderer through
+  // downloading → ready. (With a download-only fake it would open the browser.)
+  if (process.env.LEA_DESKTOP_SMOKE_UPDATE_INSTALL) {
+    setTimeout(() => {
+      updater?.install()
+        .then(() => log(`smoke update install: ${updater.getState().state}`))
+        .catch((error) => log(`smoke update install failed: ${error.message}`));
+    }, 2500);
+  }
   if (view) setTimeout(() => navigate(view), Math.max(500, delay - 2000));
   setTimeout(async () => {
     try {

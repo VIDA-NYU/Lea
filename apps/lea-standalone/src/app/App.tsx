@@ -32,6 +32,9 @@ import {
 import { useProofSession } from './stores/proofSession';
 import { useSessions } from './stores/sessions';
 import { useProjects } from './stores/projects';
+import { useDesktop } from './stores/desktop';
+import { countRunning, finishedRuns, indexById } from './lib/desktopActivity.js';
+import type { SessionSummary } from './lib/types';
 import { useModel } from './stores/model';
 import { useProofStream } from './hooks/useProofStream';
 import { useLayout, type View } from './hooks/useLayout';
@@ -157,9 +160,39 @@ export default function App() {
     if (!bridge) return undefined;
     document.documentElement.classList.add('lea-desktop');
     if (bridge.platform === 'darwin') document.documentElement.classList.add('lea-desktop-mac');
-    return bridge.onNavigate?.(({ view: next }) => {
+    const unsubscribeNavigate = bridge.onNavigate?.(({ view: next }) => {
       if (DESKTOP_MENU_VIEWS.has(next)) setView(next as View);
     });
+
+    // Auto-update state → the sidebar's update button (stores/desktop).
+    const setUpdate = useDesktop.getState().setUpdate;
+    bridge.getUpdateState?.().then((state) => state && setUpdate(state)).catch(() => {});
+    const unsubscribeUpdate = bridge.onUpdate?.((state) => setUpdate(state));
+
+    // Dock badge and finished-run notifications, derived from the session list
+    // the sidebar already follows. The shell decides whether a notification is
+    // shown (not while the window is in front).
+    let previous: ReturnType<typeof indexById> | null = null;
+    let lastRunning = -1;
+    const applySessions = (list: SessionSummary[]) => {
+      const running = countRunning(list);
+      if (running !== lastRunning) {
+        lastRunning = running;
+        bridge.setActivity?.({ running }).catch(() => {});
+      }
+      for (const finished of finishedRuns(previous, list)) bridge.notify?.(finished).catch(() => {});
+      previous = indexById(list);
+    };
+    applySessions(useSessions.getState().sessions);
+    const unsubscribeSessions = useSessions.subscribe((state, prior) => {
+      if (state.sessions !== prior.sessions) applySessions(state.sessions);
+    });
+
+    return () => {
+      unsubscribeNavigate?.();
+      unsubscribeUpdate?.();
+      unsubscribeSessions();
+    };
   }, []);
   // editedPath (M20 canvas-edit nudge) now lives in the proofSession store
   // (v2.0.1 R1a): App sets it; ChatThread reads it straight from the store.

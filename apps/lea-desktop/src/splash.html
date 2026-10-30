@@ -56,6 +56,7 @@
     <p class="note" id="note"></p>
     <div class="actions" id="actions">
       <button id="logs">Open logs</button>
+      <button id="report">Report a problem</button>
       <button id="quit">Quit</button>
     </div>
   </main>
@@ -109,6 +110,7 @@
       logBox.textContent = lines.join('\n');
     });
     document.getElementById('logs').onclick = () => window.leaDesktop?.showLogs?.();
+    document.getElementById('report').onclick = () => window.leaDesktop?.reportProblem?.();
     document.getElementById('quit').onclick = () => window.leaDesktop?.quit?.();
   </script>
 </body>
