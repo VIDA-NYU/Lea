@@ -100,7 +100,19 @@ const SECTION_TITLES: Record<Hit['section'], string> = {
   line: 'Go to line',
 };
 
-export function QuickOpen({ projectId }: { projectId: string | null }) {
+export function QuickOpen({
+  projectId,
+  onOpenProjectFile,
+}: {
+  projectId: string | null;
+  /**
+   * Open a file of another project (the "Other projects" hits). App passes one
+   * that switches to a session of that project first, since the canvas shows
+   * files of the selected session's project. Without it the hit opens the
+   * project and the file in place.
+   */
+  onOpenProjectFile?: (projectId: string, path: string) => void;
+}) {
   const open = useWorkbench((s) => s.quickOpenOpen);
   const setOpen = useWorkbench((s) => s.setQuickOpenOpen);
 
@@ -119,10 +131,18 @@ export function QuickOpen({ projectId }: { projectId: string | null }) {
 
   const close = useCallback(() => setOpen(false), [setOpen]);
   if (!open) return null;
-  return <Palette projectId={projectId} onClose={close} />;
+  return <Palette projectId={projectId} onClose={close} onOpenProjectFile={onOpenProjectFile} />;
 }
 
-function Palette({ projectId, onClose }: { projectId: string | null; onClose: () => void }) {
+function Palette({
+  projectId,
+  onClose,
+  onOpenProjectFile,
+}: {
+  projectId: string | null;
+  onClose: () => void;
+  onOpenProjectFile?: (projectId: string, path: string) => void;
+}) {
   const openPath = useWorkbench((s) => s.openPath);
   const openFile = useWorkbench((s) => s.openFile);
   const setFilesRailOpen = useWorkbench((s) => s.setFilesRailOpen);
@@ -265,6 +285,10 @@ function Palette({ projectId, onClose }: { projectId: string | null; onClose: ()
           sub: `${item.projectTitle} / ${item.path}`,
           title: `Open ${item.path} in ${item.projectTitle}`,
           run: async () => {
+            if (onOpenProjectFile) {
+              onOpenProjectFile(item.projectId, item.path);
+              return;
+            }
             await useProjects.getState().openProject(item.projectId);
             openFile(item.path);
             setFilesRailOpen(true);
@@ -273,7 +297,7 @@ function Palette({ projectId, onClose }: { projectId: string | null; onClose: ()
       }
     }
     return out;
-  }, [mode, term, orderedFiles, statuses, declarations, otherProjects, projects, openPath, openFile, setPendingComposerText, revealLine, setFilesRailOpen]);
+  }, [mode, term, orderedFiles, statuses, declarations, otherProjects, projects, openPath, openFile, setPendingComposerText, revealLine, setFilesRailOpen, onOpenProjectFile]);
 
   useEffect(() => {
     setActive(0);

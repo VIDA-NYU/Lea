@@ -1,5 +1,5 @@
 import { observeSessionList } from './lib/sessionObserver.mjs';
-import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatThread } from './components/ChatThread';
 import { Canvas, type CheckOutcome } from './components/Canvas';
@@ -324,9 +324,20 @@ export default function App() {
 
   // Opening a document (the blueprint, a file from the rail, ⌘P, a node's
   // file:line, the project home or the sidebar) shows the canvas if it was
-  // collapsed; the document would otherwise open out of sight.
+  // collapsed; the document would otherwise open out of sight. A document
+  // opened while the workbench is not showing (⌘P on Home, the project home,
+  // Settings…) brings the workbench forward on a session of ⌘P's project;
+  // openProjectSurface does that itself, so its own opens are skipped.
+  const shownViewRef = useRef<View>(view);
+  const quickOpenProjectRef = useRef<string | null>(null);
+  const surfaceOpening = useRef(false);
+  const openProjectSurfaceRef = useRef<((projectId: string, surface: { path?: string; rail?: boolean }) => Promise<void>) | null>(null);
   useEffect(() => useWorkbench.subscribe((state, prev) => {
-    if (state.openRequest !== prev.openRequest && state.openPath) setCanvasCollapsed(false);
+    if (state.openRequest === prev.openRequest || !state.openPath) return;
+    setCanvasCollapsed(false);
+    if (surfaceOpening.current || shownViewRef.current === 'main') return;
+    const projectId = quickOpenProjectRef.current;
+    if (projectId) void openProjectSurfaceRef.current?.(projectId, {});
   }), [setCanvasCollapsed]);
 
   // Files package: `> command` in ⌘P hands the composer its text (e.g.
@@ -551,6 +562,7 @@ export default function App() {
 
   const openProjectSurface = async (projectId: string, surface: { path?: string; rail?: boolean }) => {
     setError(undefined);
+    surfaceOpening.current = true;
     try {
       const project = currentProject?.id === projectId ? currentProject : await openProject(projectId);
       if (!project) return;
@@ -562,8 +574,15 @@ export default function App() {
       setView('main');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      surfaceOpening.current = false;
     }
   };
+  openProjectSurfaceRef.current = openProjectSurface;
+  // Stable, so ⌘P's hit list is not recomputed on every App render.
+  const openFileInProject = useCallback((projectId: string, path: string) => {
+    void openProjectSurfaceRef.current?.(projectId, { path, rail: true });
+  }, []);
 
   // Open a project's home (the redesign's Overview). The legacy project window
   // (view 'project') stays reachable from that page's ⋯ menu.
@@ -1045,6 +1064,14 @@ export default function App() {
     projectHomeId,
     projectDeleted: currentProjectDeleted,
   }) as View;
+  // ⌘P searches the project in front: the one whose home is showing, else the
+  // selected session's, else the project opened last.
+  const quickOpenProjectId =
+    (shownView === 'project-home' || shownView === 'project'
+      ? projectHomeId
+      : selectedSession?.project_id ?? projectHomeId) ?? null;
+  shownViewRef.current = shownView;
+  quickOpenProjectRef.current = quickOpenProjectId;
   const sidebar = (
     <Sidebar
       runningSessionId={isRunning ? selectedSessionId : undefined}
@@ -1078,227 +1105,243 @@ export default function App() {
     </div>
   );
 
-  if (shownView === 'home')
-    return shellFrame(
-      <Home
-        onOpenProject={openProjectHome}
-        onStartProject={handleStartProject}
-        onNewProject={() => setNewProjectOpen(true)}
-        onOpenSession={handleOpenProjectSession}
-        startsWithBlueprint={START_WITH_BLUEPRINT}
-        sidebarCollapsed={sidebarCollapsed}
-        onExpandSidebar={() => setSidebarCollapsed(false)}
-      />,
-    );
-  if ((view === 'project-home' || view === 'project') && currentProjectDeleted)
-    return <main className="p-8"><button onClick={() => { closeProject(); setView('home'); }}>Back to projects</button>
-      <h1>Project deleted</h1><p>This project is no longer available.</p></main>;
-  if (view === 'project-home' && projectHomeId)
-    return shellFrame(
-      <ProjectHome
-        projectId={projectHomeId}
-        onOpenSession={handleOpenProjectSession}
-        onNewSession={() => void handleNewProjectSession()}
-        onOpenBlueprint={() => void openProjectSurface(projectHomeId, { path: BLUEPRINT_PATH })}
-        onOpenFiles={(path) => void openProjectSurface(projectHomeId, { path, rail: true })}
-        onProveNode={handleProveNode}
-        onOpenLegacy={() => setView('project')}
-        onOpenHome={() => setView('home')}
-        sidebarCollapsed={sidebarCollapsed}
-        onExpandSidebar={() => setSidebarCollapsed(false)}
-      />,
-    );
-  // The pre-redesign project window, reachable from the project home's ⋯ menu
-  // ("Legacy project window") until the integrator removes it.
-  if (view === 'project' && currentProject)
-    return (
-      <>
-        {searchOverlay}
-        {skillsMcpPicker}
-        <ProjectWindow
-          project={currentProject}
-          onBack={() => setView('project-home')}
-          onStartProof={handleStartProjectProof}
-          onStartFormalization={handleStartProjectFormalization}
-          onOpenSession={handleOpenProjectSession}
-        />
-      </>
-    );
-  if (view === 'skills')
-    return (
-      <>
-        {searchOverlay}
-        {skillsMcpPicker}
-        <SkillFactory onBack={() => setView('main')} />
-      </>
-    );
-  if (view === 'subagents')
-    return (
-      <>
-        {searchOverlay}
-        {skillsMcpPicker}
-        <SubagentFactory onBack={() => setView('main')} />
-      </>
-    );
-  if (view === 'mcp')
-    return (
-      <>
-        {searchOverlay}
-        {skillsMcpPicker}
-        <McpFactory onBack={() => setView('main')} />
-      </>
-    );
-  if (view === 'tools')
-    return (
-      <>
-        {searchOverlay}
-        {skillsMcpPicker}
-        <ToolFactory onBack={() => setView('main')} />
-      </>
-    );
-  if (view === 'projects-hub')
-    return (
-      <>
-        {searchOverlay}
-        {skillsMcpPicker}
-        {newProjectDialog}
-        <ProjectsHub
-          onBack={() => setView('home')}
+  // The page for the current view. QuickOpen (⌘P) is mounted once beside it,
+  // below, so the palette works on every view.
+  const renderPage = (): ReactElement => {
+    if (shownView === 'home')
+      return shellFrame(
+        <Home
           onOpenProject={openProjectHome}
+          onStartProject={handleStartProject}
           onNewProject={() => setNewProjectOpen(true)}
-        />
-      </>
-    );
-  if (view === 'stats')
-    return (
-      <>
-        {searchOverlay}
-        {skillsMcpPicker}
-        <StatsPage onBack={() => setView('main')} />
-      </>
-    );
-  if (view === 'settings')
-    return (
-      <>
-        {searchOverlay}
-        {skillsMcpPicker}
-        <SettingsPage
-          onBack={() => {
-            setView('main');
-            // re-sync model + key state after the user may have added a key
-            useModel.getState().syncFromSettings();
-          }}
-        />
-      </>
-    );
-
-  return (
-    <div className="lea-app">
-      {searchOverlay}
-        {skillsMcpPicker}
-      {newProjectDialog}
-      <QuickOpen projectId={selectedSession?.project_id ?? null} />
-      <div className={`app ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
-        {sidebar}
-
-        <div
-          ref={mainAreaRef}
-          className={`main-area ${canvasCollapsed ? 'canvas-collapsed' : ''}`}
-          style={{ gridTemplateColumns: canvasCollapsed ? '1fr 0' : `minmax(0,1fr) ${canvasWidth}%` }}
-        >
-          <ChatThread
-            title={title}
-            sidebarCollapsed={sidebarCollapsed}
-            onExpandSidebar={() => setSidebarCollapsed(false)}
-            session={selectedSession}
-            onSelectSession={(id) => {
-              closeProject();
-              loadSession(id).catch((err) => setError(err instanceof Error ? err.message : String(err)));
-            }}
-            onSelectStep={selectStep}
-            onDecide={handleDecide}
-            onOpenSettings={() => setView('settings')}
-            onOpenLibrary={(focus) =>
-              setView(focus === 'subagents' ? 'subagents' : focus === 'skills' ? 'skills' : 'mcp')
-            }
-            draft={draft}
-            onDraftChange={setDraft}
-            onSubmit={() => handleSubmit()}
-            onSubmitGeneral={() => handleSubmit(true)}
-            submissionBusy={submissionBusy || restoringContext || restorationFailed}
-            restoringSession={restoringContext}
-            onRetryRestore={restorationFailed ? () => window.location.reload() : undefined}
-            sourceConnection={sourceConnection}
-            onInterrupt={handleInterrupt}
-            onResumeRun={async (runId, action = 'resume') => {
-              if (submitting.current || isRunning) return;
-              if (action === 'resume' && !window.confirm('The interrupted model request may already have incurred cost, or a tool may already have acted. Review the saved progress and current files before continuing. Resume in a new run?')) return;
-              submitting.current = true;
-              setSubmissionBusy(true);
-              try {
-                let result;
-                if (action === 'continue') {
-                  const targetId = useProofSession.getState().runFocusById[runId];
-                  if (!targetId) throw new Error('Select the Overleaf formalization before resuming.');
-                  const target = formalizations.find((item) => item.id === targetId);
-                  const viewedScope = useProofSession.getState().formalizationScope;
-                  const pinnedScope = useProofSession.getState().composerScopeOverride;
-                  setSourceConnection({ targetId, label: target?.declaration_name || target?.display_title || 'Overleaf formalization', state: 'preparing' });
-                  result = await submitCheckpoint.current({ runId, targetId,
-                    isCurrent: () => useSessions.getState().selectedSessionId === selectedSessionId
-                      && useProofSession.getState().formalizationScope === viewedScope
-                      && useProofSession.getState().composerScopeOverride === pinnedScope });
-                  if (useSessions.getState().selectedSessionId !== selectedSessionId) return;
-                  setSourceConnection({ targetId, label: target?.declaration_name || target?.display_title || 'Overleaf formalization', state: 'connected' });
-                } else result = await resumeInterruptedRun(runId);
-                if (useSessions.getState().selectedSessionId !== selectedSessionId) return;
-                await loadSession(result.session_id);
-                void refreshSessions().catch(() => {});
-              } catch (err) {
-                if (useSessions.getState().selectedSessionId === selectedSessionId) {
-                  setError(err instanceof Error ? err.message : String(err));
-                  setSourceConnection((value) => value ? { ...value, state: 'error' } : null);
-                }
-              } finally {
-                submitting.current = false;
-                setSubmissionBusy(false);
-              }
-            }}
-            canvasCollapsed={canvasCollapsed}
-            onToggleCanvas={() => setCanvasCollapsed((v) => !v)}
-            onRenameSession={handleRenameSession}
-            composerFocusSignal={composerFocus}
+          onOpenSession={handleOpenProjectSession}
+          startsWithBlueprint={START_WITH_BLUEPRINT}
+          sidebarCollapsed={sidebarCollapsed}
+          onExpandSidebar={() => setSidebarCollapsed(false)}
+        />,
+      );
+    if ((view === 'project-home' || view === 'project') && currentProjectDeleted)
+      return <main className="p-8"><button onClick={() => { closeProject(); setView('home'); }}>Back to projects</button>
+        <h1>Project deleted</h1><p>This project is no longer available.</p></main>;
+    if (view === 'project-home' && projectHomeId)
+      return shellFrame(
+        <ProjectHome
+          projectId={projectHomeId}
+          onOpenSession={handleOpenProjectSession}
+          onNewSession={() => void handleNewProjectSession()}
+          onOpenBlueprint={() => void openProjectSurface(projectHomeId, { path: BLUEPRINT_PATH })}
+          onOpenFiles={(path) => void openProjectSurface(projectHomeId, { path, rail: true })}
+          onProveNode={handleProveNode}
+          onOpenLegacy={() => setView('project')}
+          onOpenHome={() => setView('home')}
+          sidebarCollapsed={sidebarCollapsed}
+          onExpandSidebar={() => setSidebarCollapsed(false)}
+        />,
+      );
+    // The pre-redesign project window, reachable from the project home's ⋯ menu
+    // ("Legacy project window") until the integrator removes it.
+    if (view === 'project' && currentProject)
+      return (
+        <>
+          {searchOverlay}
+          {skillsMcpPicker}
+          <ProjectWindow
+            project={currentProject}
+            onBack={() => setView('project-home')}
+            onStartProof={handleStartProjectProof}
+            onStartFormalization={handleStartProjectFormalization}
+            onOpenSession={handleOpenProjectSession}
           />
+        </>
+      );
+    if (view === 'skills')
+      return (
+        <>
+          {searchOverlay}
+          {skillsMcpPicker}
+          <SkillFactory onBack={() => setView('main')} />
+        </>
+      );
+    if (view === 'subagents')
+      return (
+        <>
+          {searchOverlay}
+          {skillsMcpPicker}
+          <SubagentFactory onBack={() => setView('main')} />
+        </>
+      );
+    if (view === 'mcp')
+      return (
+        <>
+          {searchOverlay}
+          {skillsMcpPicker}
+          <McpFactory onBack={() => setView('main')} />
+        </>
+      );
+    if (view === 'tools')
+      return (
+        <>
+          {searchOverlay}
+          {skillsMcpPicker}
+          <ToolFactory onBack={() => setView('main')} />
+        </>
+      );
+    if (view === 'projects-hub')
+      return (
+        <>
+          {searchOverlay}
+          {skillsMcpPicker}
+          {newProjectDialog}
+          <ProjectsHub
+            onBack={() => setView('home')}
+            onOpenProject={openProjectHome}
+            onNewProject={() => setNewProjectOpen(true)}
+          />
+        </>
+      );
+    if (view === 'stats')
+      return (
+        <>
+          {searchOverlay}
+          {skillsMcpPicker}
+          <StatsPage onBack={() => setView('main')} />
+        </>
+      );
+    if (view === 'settings')
+      return (
+        <>
+          {searchOverlay}
+          {skillsMcpPicker}
+          <SettingsPage
+            onBack={() => {
+              setView('main');
+              // re-sync model + key state after the user may have added a key
+              useModel.getState().syncFromSettings();
+            }}
+          />
+        </>
+      );
 
-          {!canvasCollapsed && (
-            <div
-              className={`col-resizer ${dragging ? 'dragging' : ''}`}
-              style={{ right: `${canvasWidth}%` }}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                setDragging(true);
+    return (
+      <div className="lea-app">
+        {searchOverlay}
+          {skillsMcpPicker}
+        {newProjectDialog}
+        <div className={`app ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+          {sidebar}
+
+          <div
+            ref={mainAreaRef}
+            className={`main-area ${canvasCollapsed ? 'canvas-collapsed' : ''}`}
+            style={{ gridTemplateColumns: canvasCollapsed ? '1fr 0' : `minmax(0,1fr) ${canvasWidth}%` }}
+          >
+            <ChatThread
+              title={title}
+              sidebarCollapsed={sidebarCollapsed}
+              onExpandSidebar={() => setSidebarCollapsed(false)}
+              session={selectedSession}
+              onSelectSession={(id) => {
+                closeProject();
+                loadSession(id).catch((err) => setError(err instanceof Error ? err.message : String(err)));
               }}
-              title="Drag to resize"
+              onSelectStep={selectStep}
+              onDecide={handleDecide}
+              onOpenSettings={() => setView('settings')}
+              onOpenLibrary={(focus) =>
+                setView(focus === 'subagents' ? 'subagents' : focus === 'skills' ? 'skills' : 'mcp')
+              }
+              draft={draft}
+              onDraftChange={setDraft}
+              onSubmit={() => handleSubmit()}
+              onSubmitGeneral={() => handleSubmit(true)}
+              submissionBusy={submissionBusy || restoringContext || restorationFailed}
+              restoringSession={restoringContext}
+              onRetryRestore={restorationFailed ? () => window.location.reload() : undefined}
+              sourceConnection={sourceConnection}
+              onInterrupt={handleInterrupt}
+              onResumeRun={async (runId, action = 'resume') => {
+                if (submitting.current || isRunning) return;
+                if (action === 'resume' && !window.confirm('The interrupted model request may already have incurred cost, or a tool may already have acted. Review the saved progress and current files before continuing. Resume in a new run?')) return;
+                submitting.current = true;
+                setSubmissionBusy(true);
+                try {
+                  let result;
+                  if (action === 'continue') {
+                    const targetId = useProofSession.getState().runFocusById[runId];
+                    if (!targetId) throw new Error('Select the Overleaf formalization before resuming.');
+                    const target = formalizations.find((item) => item.id === targetId);
+                    const viewedScope = useProofSession.getState().formalizationScope;
+                    const pinnedScope = useProofSession.getState().composerScopeOverride;
+                    setSourceConnection({ targetId, label: target?.declaration_name || target?.display_title || 'Overleaf formalization', state: 'preparing' });
+                    result = await submitCheckpoint.current({ runId, targetId,
+                      isCurrent: () => useSessions.getState().selectedSessionId === selectedSessionId
+                        && useProofSession.getState().formalizationScope === viewedScope
+                        && useProofSession.getState().composerScopeOverride === pinnedScope });
+                    if (useSessions.getState().selectedSessionId !== selectedSessionId) return;
+                    setSourceConnection({ targetId, label: target?.declaration_name || target?.display_title || 'Overleaf formalization', state: 'connected' });
+                  } else result = await resumeInterruptedRun(runId);
+                  if (useSessions.getState().selectedSessionId !== selectedSessionId) return;
+                  await loadSession(result.session_id);
+                  void refreshSessions().catch(() => {});
+                } catch (err) {
+                  if (useSessions.getState().selectedSessionId === selectedSessionId) {
+                    setError(err instanceof Error ? err.message : String(err));
+                    setSourceConnection((value) => value ? { ...value, state: 'error' } : null);
+                  }
+                } finally {
+                  submitting.current = false;
+                  setSubmissionBusy(false);
+                }
+              }}
+              canvasCollapsed={canvasCollapsed}
+              onToggleCanvas={() => setCanvasCollapsed((v) => !v)}
+              onRenameSession={handleRenameSession}
+              composerFocusSignal={composerFocus}
             />
-          )}
 
-          <Canvas
-            key={`${selectedSessionId}:${formalizationScope}`}
-            captureSelection={captureSelection}
-            sessionId={selectedSessionId}
-            onClose={() => setCanvasCollapsed(true)}
-            onSaveAndCheck={handleSaveAndCheck}
-            onCheck={handleCheckPublished}
-            onVerify={handleVerify}
-            onOpenSession={(id) => {
-              closeProject();
-              loadSession(id).catch((err) =>
-                setError(err instanceof Error ? err.message : String(err)),
-              );
-            }}
-          />
+            {!canvasCollapsed && (
+              <div
+                className={`col-resizer ${dragging ? 'dragging' : ''}`}
+                style={{ right: `${canvasWidth}%` }}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  setDragging(true);
+                }}
+                title="Drag to resize"
+              />
+            )}
+
+            <Canvas
+              key={`${selectedSessionId}:${formalizationScope}`}
+              captureSelection={captureSelection}
+              sessionId={selectedSessionId}
+              onClose={() => setCanvasCollapsed(true)}
+              onSaveAndCheck={handleSaveAndCheck}
+              onCheck={handleCheckPublished}
+              onVerify={handleVerify}
+              onOpenSession={(id) => {
+                closeProject();
+                loadSession(id).catch((err) =>
+                  setError(err instanceof Error ? err.message : String(err)),
+                );
+              }}
+            />
+          </div>
         </div>
       </div>
-    </div>
+    );
+  };
+
+  return (
+    <>
+      {renderPage()}
+      {/* display: contents keeps .lea-app's font and tokens without a box. */}
+      <div className="lea-app" style={{ display: 'contents' }}>
+        <QuickOpen
+          projectId={quickOpenProjectId}
+          onOpenProjectFile={openFileInProject}
+        />
+      </div>
+    </>
   );
 }
