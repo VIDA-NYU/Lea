@@ -436,11 +436,11 @@ export default function App() {
 
   // "What do you want to prove?": a statement becomes a project named from it
   // (the statement itself is the description), a session in that project, and
-  // the first message, sent through the composer's own submit path
-  // (handleSubmit: slash commands, scope, idempotent admission). Errors before
-  // the workbench opens propagate so the launch screen shows them by its box.
+  // the first message, handed to the pendingSubmission consumer below so it
+  // goes through the composer's own submit path (handleSubmit: slash commands,
+  // scope, idempotent admission). Errors before the workbench opens propagate
+  // so the launch screen shows them by its box.
   const startingProject = useRef(false);
-  const queuedFirstMessage = useRef<{ sessionId: string; content: string } | null>(null);
   const handleStartProject = async (statement: string) => {
     const content = statement.trim();
     if (!content || startingProject.current) return;
@@ -454,35 +454,17 @@ export default function App() {
       const detail = await loadSession(session.id);
       if (!detail) return;
       setView('main');
-      // TODO(blueprint-package): flip START_WITH_BLUEPRINT (top of this file)
-      // once `/blueprint` and the workbench `pendingSubmission` consumer are
-      // merged: the first message is then `/blueprint` (no arguments; it drafts
-      // the decomposition from the project's title and description, which hold
-      // the statement) instead of the bare statement.
+      // Blueprint first: `/blueprint` (no arguments) drafts the decomposition
+      // from the project's title and description, which hold the statement.
       const firstMessage = START_WITH_BLUEPRINT ? '/blueprint' : content;
       // A fresh project has nothing to scope to: record the statement as a new
       // formalization, as the legacy project window's start did.
       if (!START_WITH_BLUEPRINT) setComposerScopeOverride('new');
-      queuedFirstMessage.current = { sessionId: session.id, content: firstMessage };
-      setDraft(firstMessage);
+      useWorkbench.getState().setPendingSubmission({ text: firstMessage, sessionId: session.id });
     } finally {
       startingProject.current = false;
     }
   };
-  // Send the queued first message once its session is selected and the
-  // composer holds it; drop it if the user went to another session first.
-  useEffect(() => {
-    const queued = queuedFirstMessage.current;
-    if (!queued || restoringContext) return;
-    if (selectedSessionId !== queued.sessionId) {
-      queuedFirstMessage.current = null;
-      return;
-    }
-    if (draft !== queued.content) return;
-    queuedFirstMessage.current = null;
-    void handleSubmit();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedSessionId, draft, restoringContext]);
 
   // "Prove" / "Prove the sorry" / "Retry" on the project home: a session bound
   // to the blueprint node whose first message names the node, its declaration,
@@ -725,7 +707,74 @@ export default function App() {
     window.localStorage.removeItem(SELECTED_SESSION_KEY);
   };
 
-  const handleSubmit = async (general = false) => {
+  // One "send this as if typed" mechanism: useWorkbench().pendingSubmission,
+  // set by the blueprint package (the /blueprint drafting prompt, Ask Lea on a
+  // node in draft mode) and by the launch box above (a new project's first
+  // message). The text goes into the composer; unless it is a draft it is then
+  // submitted through handleSubmit in `sessionId` (else the open session, else
+  // a session of the open project, created when it has none).
+  const pendingSubmission = useWorkbench((s) => s.pendingSubmission);
+  const [queuedSubmission, setQueuedSubmission] = useState<{ sessionId: string; text: string } | null>(null);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  useEffect(() => {
+    if (!pendingSubmission || restoringContext) return;
+    const { text, sessionId, mode } = pendingSubmission;
+    useWorkbench.getState().setPendingSubmission(null);
+    const showWorkbench = () => { if (viewRef.current !== 'main') setView('main'); };
+    if (mode === 'draft') {
+      setDraft(text);
+      setComposerFocus((n) => n + 1);
+      if (useSessions.getState().selectedSessionId) showWorkbench();
+      return;
+    }
+    void (async () => {
+      try {
+        let target = sessionId ?? useSessions.getState().selectedSessionId;
+        if (!target) {
+          const projects = useProjects.getState();
+          const projectId = projects.currentProject?.id ?? projects.selectedProjectId;
+          const project = projectId
+            ? (projects.currentProject?.id === projectId ? projects.currentProject : await openProject(projectId))
+            : null;
+          if (!project) {
+            setDraft(text);
+            setError('Open a project first: every session lives in a project.');
+            return;
+          }
+          await ensureProjectSession(project);
+          target = useSessions.getState().selectedSessionId;
+        } else if (target !== useSessions.getState().selectedSessionId) {
+          if (!await loadSession(target)) return;
+        }
+        if (!target) return;
+        showWorkbench();
+        // Same batch: the effect below sees the draft and the queue together.
+        setDraft(text);
+        setQueuedSubmission({ sessionId: target, text });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingSubmission, restoringContext]);
+  // Send the queued text once its session is selected and the composer holds
+  // it; if the user moved to another session or edited the text first, it
+  // stays a draft.
+  useEffect(() => {
+    if (!queuedSubmission || restoringContext) return;
+    setQueuedSubmission(null);
+    if (selectedSessionId !== queuedSubmission.sessionId || draft !== queuedSubmission.text) return;
+    void handleSubmit(false, 'queued');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queuedSubmission, selectedSessionId, draft, restoringContext]);
+
+  /**
+   * Submit the composer's draft. `origin` is 'queued' for text App put there
+   * itself (pendingSubmission): a file the user put in context is not
+   * attached to it.
+   */
+  const handleSubmit = async (general = false, origin: 'composer' | 'queued' = 'composer') => {
     const content = draft.trim();
     if (!content || restoringContext || isRunning || submitting.current) return;
     setError(undefined);
@@ -754,7 +803,7 @@ export default function App() {
 
     // Files package: a file in context rides along as a one-line header (see
     // composerContextHeader); the chip clears once the run is admitted.
-    const fileContext = useFiles.getState().composerContext;
+    const fileContext = origin === 'composer' ? useFiles.getState().composerContext : null;
     const message = fileContext ? `${composerContextHeader(fileContext)}\n\n${content}` : content;
 
     submitting.current = true;
