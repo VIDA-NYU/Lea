@@ -1,6 +1,6 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Download, LoaderCircle, PanelLeftOpen } from 'lucide-react';
-import { sessionExportUrl, downloadWorkspaceExport, interruptSubagent } from '../lib/api';
+import { sessionExportUrl, downloadWorkspaceExport } from '../lib/api';
 import type {
   ApprovalDecision,
   ApprovalRecord,
@@ -8,36 +8,52 @@ import type {
   CodeStep,
   Diagnostic,
   DiagnosticAction,
-  PendingApproval,
   SessionSummary,
-  StatusEvent,
   TimelineItem,
 } from '../lib/api';
 import { MarkdownMessage } from './MarkdownMessage';
 import { LeanCheckRuntimeStatus } from './LeanCheckRuntimeStatus';
-import { checkExecutionMessage } from '../lib/leanCheckRuntime.mjs';
 import { usageCostText, usageDetailText } from '../lib/usageDetails.mjs';
 import { ModelPicker } from './ModelPicker';
 import { OriginBadge } from './OriginBadge';
 import { NodeChip } from './blueprint/NodeChip';
-import { buildTimeline } from '../lib/timeline.mjs';
+import { buildTimeline, sortCodeSteps } from '../lib/timeline.mjs';
 import { matchSlashCommands } from '../lib/slashCommands.js';
 import {
   deriveCodeStepProofStatus,
   deriveRunCompletionStatus,
-  hasSorryLikeCheckDetail,
   latestCodeStep,
 } from '../lib/proofDisplay.mjs';
+import { sorryLines } from '../lib/canvasModel.js';
+import {
+  composerStatus,
+  deriveToolCalls,
+  errorCount,
+  previousStepByPath,
+  runClock,
+  type ToolCall,
+} from '../lib/chatModel.js';
 import { useProofSession, type CompactionPayload } from '../stores/proofSession';
 import { useModel } from '../stores/model';
 import { useSessions } from '../stores/sessions';
+import { useWorkbench } from '../stores/workbench';
 import { describeComposerContext, useFiles } from '../stores/files';
+import { ApprovalRow, StepRow, ToolCallRow } from './chat/ToolRow';
+import { SessionRows, subagentBadge } from './chat/SessionRows';
+import { DiagnosticCard } from './chat/DiagnosticCard';
+import { ComposerStatus, LeaAvatar, ThinkingRow, UserBubble } from './chat/LiveBits';
+import { ChatIcon } from './chat/icons';
 import '../../styles/files.css';
+import '../../styles/chat.css';
 
 type MergedNode =
   | { kind: 'message'; key: string; runId: string | null; seqKey: number; message: ChatMessage }
+  // A code snapshot no tool call claimed (your edit, a file a command changed).
   | { kind: 'code'; key: string; runId: string | null; seqKey: number; step: CodeStep; codeIndex: number }
+  // An approval no tool call claimed; claimed ones render inside their tool row.
   | { kind: 'approval'; key: string; runId: string | null; seqKey: number; approval: ApprovalRecord }
+  // One tool call, with whatever it produced (deriveToolCalls).
+  | { kind: 'tool'; key: string; runId: string | null; seqKey: number; call: ToolCall }
   | { kind: 'spawn'; key: string; runId: string | null; seqKey: number; child: SessionSummary }
   // v2.4: a failure, placed in the thread at the point it happened. Its `seq` is the
   // timeline id, so it lands next to the step that produced it — which is most of
@@ -235,6 +251,10 @@ export function ChatThread({
   const currentRunId = useProofSession((s) => s.currentRunId);
   const approvals = useProofSession((s) => s.approvals);
   const approvalBusy = useProofSession((s) => s.approvalBusy);
+  const subagentProgress = useProofSession((s) => s.subagentProgress);
+  const subagentQueued = useProofSession((s) => s.subagentQueued);
+  const subagentErrors = useProofSession((s) => s.subagentErrors);
+  const blueprintProposal = useWorkbench((s) => s.blueprintProposal);
   // Sub-agents (item 24): this session's children (the spawn node lists them) and, if
   // THIS session is a child, its parent (the provenance bar replaces the composer). Both
   // derive from the session list — the child rows arrive there via the subagent_finished
@@ -257,7 +277,7 @@ export function ChatThread({
   // v2.4 · every failure the backend reported, live + replayed on load. Split by
   // where each one BELONGS, so nothing is shown twice and nothing is dropped:
   //   degraded → the header strip (an ongoing condition, deduped by code)
-  //   child_id → the sub-agent row that owns it (rendered by SpawnGroup)
+  //   child_id → the sub-agent row that owns it (rendered by SessionRows)
   //   the rest → inline in the thread at its own seq
   const diagnostics = useProofSession((s) => s.diagnostics);
   const degradedDiagnostics = useMemo(() => {
@@ -304,29 +324,59 @@ export function ChatThread({
     if (autoScroll) requestAnimationFrame(scrollToBottom);
   }, [autoScroll, scrollToBottom, items, statusEvents, approvals, error]);
 
-  // tool chips for a step come from that turn's tool_call / lean_check status events.
-  const toolsByTurn = useMemo(() => {
-    const map = new Map<number, StatusEvent[]>();
-    for (const event of statusEvents) {
-      if (event.turn == null) continue;
-      if (event.status !== 'tool_call' && event.status !== 'lean_check') continue;
-      if (!map.has(event.turn)) map.set(event.turn, []);
-      map.get(event.turn)!.push(event);
-    }
+  // Tool rows. Every `tool_call` status the run reported, paired with what it
+  // produced — its lean_check verdict, its code snapshot, its approval (which
+  // carries the arguments) — so each call is one row. A write's intent narration
+  // stays prose above its row, as in the mockup; the row is the action.
+  const sortedSteps = useMemo(() => sortCodeSteps(codeSteps) as CodeStep[], [codeSteps]);
+  const codeIndexById = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const item of items) if (item.kind === 'code') map.set(item.step.id, item.codeIndex);
     return map;
-  }, [statusEvents]);
-
-  // M11: a write's intent narration is also stamped on its code step's summary.
-  // Fold it into the step card instead of showing it twice.
-  const foldedNarration = useMemo(() => {
-    const set = new Set<string>();
-    for (const item of items) {
-      if (item.kind === 'code' && item.step.summary) {
-        set.add(`${item.step.run_id || ''}|${item.step.summary.trim()}`);
-      }
-    }
-    return set;
   }, [items]);
+  const previousByStep = useMemo(
+    () => previousStepByPath(sortedSteps) as Map<string, CodeStep | null>,
+    [sortedSteps],
+  );
+  const liveRunId = isRunning ? currentRunId ?? null : null;
+  const derived = useMemo(
+    () => deriveToolCalls({ statusEvents, codeSteps: sortedSteps, approvals, messages, diagnostics, liveRunId, runStatusById }),
+    [statusEvents, sortedSteps, approvals, messages, diagnostics, liveRunId, runStatusById],
+  );
+  // Sub-agents render as their own session rows; the coordinator's spawn_subagent
+  // call would only say the same thing once they exist.
+  const hasChildren = childSessions.length > 0;
+  const toolCalls = useMemo(
+    () => (hasChildren ? derived.calls.filter((c) => c.name !== 'spawn_subagent') : derived.calls),
+    [derived, hasChildren],
+  );
+
+  // When the UI last saw each message's text grow. A streamed message's
+  // created_at is when it STARTED; this is what tells "text is flowing" from
+  // "the text stopped and the model is now writing a long tool call". A message
+  // first seen already written (a reload) keeps its server time.
+  const seenLength = useRef<Record<string, number>>({});
+  const seenGrowth = useRef<Record<string, number>>({});
+  const seenAt = useMemo(() => {
+    const now = Date.now();
+    for (const m of messages) {
+      const length = m.content?.length ?? 0;
+      const previous = seenLength.current[m.id];
+      seenLength.current[m.id] = length;
+      if (previous !== undefined && previous !== length) seenGrowth.current[m.id] = now;
+    }
+    return { ...seenGrowth.current };
+  }, [messages]);
+  // The fallback start of a live run: when this UI first saw it running.
+  const runSeen = useRef<Record<string, number>>({});
+  if (isRunning && currentRunId && runSeen.current[currentRunId] == null) runSeen.current[currentRunId] = Date.now();
+  const clock = useMemo(
+    () => runClock({
+      runId: currentRunId, calls: toolCalls, messages, codeSteps, statusEvents, approvals, seenAt,
+      fallbackStart: currentRunId ? runSeen.current[currentRunId] ?? null : null,
+    }),
+    [currentRunId, toolCalls, messages, codeSteps, statusEvents, approvals, seenAt],
+  );
 
   // Split the thread into contiguous per-run blocks (runs are sequential in seq
   // order). After a *finished* run that completed a checked artifact, we drop the
@@ -353,18 +403,23 @@ export function ChatThread({
         anchors.push({ seqKey, createdAt: parseTime(it.message.created_at), runId: it.message.run_id ?? null });
       } else {
         const seqKey = it.step.seq ?? Number.MAX_SAFE_INTEGER;
-        nodes.push({
-          kind: 'code',
-          key: it.key,
-          runId: it.step.run_id ?? null,
-          seqKey,
-          step: it.step,
-          codeIndex: it.codeIndex,
-        });
+        // A snapshot a tool call produced renders inside that call's row; it still
+        // anchors the calls that came after it.
+        if (!derived.pairedStepIds.has(it.step.id)) {
+          nodes.push({
+            kind: 'code',
+            key: it.key,
+            runId: it.step.run_id ?? null,
+            seqKey,
+            step: it.step,
+            codeIndex: it.codeIndex,
+          });
+        }
         anchors.push({ seqKey, createdAt: parseTime(it.step.created_at), runId: it.step.run_id ?? null });
       }
     }
     for (const a of approvals) {
+      if (derived.pairedApprovalIds.has(a.approval_id)) continue;
       nodes.push({
         kind: 'approval',
         key: `a:${a.run_id}:${a.approval_id}`,
@@ -386,6 +441,21 @@ export function ChatThread({
       }
       return best ?? { seqKey: Number.MAX_SAFE_INTEGER, runId: null };
     };
+    // Tool calls carry no seq, only the time they were issued: slot each in after
+    // the last row that predates it (+0.2, before any spawn box on the same row),
+    // in issue order. A call older than every row goes first.
+    toolCalls.forEach((call, i) => {
+      let seqKey = Number.MAX_SAFE_INTEGER;
+      if (call.calledAt != null) {
+        const anchor = anchorFor(call.calledAt);
+        seqKey = anchor.seqKey !== Number.MAX_SAFE_INTEGER
+          ? anchor.seqKey + 0.2 + i * 1e-6
+          : anchors.length && call.calledAt < anchors[0].createdAt
+            ? anchors[0].seqKey - 0.5 + i * 1e-6
+            : Number.MAX_SAFE_INTEGER;
+      }
+      nodes.push({ kind: 'tool', key: call.key, runId: call.runId, seqKey, call });
+    });
     childSessions.forEach((child, i) => {
       const t = parseTime(child.created_at);
       const anchor = t ? anchorFor(t) : { seqKey: Number.MAX_SAFE_INTEGER, runId: null };
@@ -421,7 +491,7 @@ export function ChatThread({
       else groups.push({ runId: node.runId, nodes: [node] });
     }
     return groups;
-  }, [items, approvals, childSessions, threadDiagnostics]);
+  }, [items, approvals, childSessions, threadDiagnostics, derived, toolCalls]);
 
   const latestProofStatus = useMemo(
     () => deriveCodeStepProofStatus(latestCodeStep(codeSteps)),
@@ -473,27 +543,71 @@ export function ChatThread({
       : latestStopReason === 'user_stop' ? '◼ stopped by user' : '◼ stopped' }
     : null;
 
-  // M18: show "Lea is thinking…" whenever a run is live and Lea isn't currently
-  // streaming text (the gap after submit + between turns while a tool runs) and
-  // we're not paused on an approval. The live bubble (live:true) means text is
-  // already flowing, so the indicator yields to it.
   const hasPendingApproval = approvals.some((a) => !a.decision && a.actionable !== false);
-  const thinking =
-    isRunning &&
-    !hasPendingApproval &&
-    !items.some((i) => i.kind === 'message' && i.message.live);
+  const runningChildren = isRunning
+    ? childSessions.filter((c) => !subagentErrors[c.id]
+      && (subagentQueued[c.id] || subagentProgress[c.id] || subagentBadge(c).running)).length
+    : 0;
 
-  // M17: the tool Lea is currently running (all tools), scoped to the active run
-  // so a prior run's last tool never leaks in. Drives the activity label.
-  const activity = useMemo(() => {
-    if (!thinking) return null;
-    for (let i = statusEvents.length - 1; i >= 0; i -= 1) {
-      const s = statusEvents[i];
-      if (currentRunId && s.run_id && s.run_id !== currentRunId) continue;
-      if (s.status === 'tool_call' || s.status === 'lean_check') return activityLabel(s);
-    }
-    return null;
-  }, [thinking, statusEvents, currentRunId]);
+  // Stop: the click registers at once ("Stopping…") and stays registered until
+  // the run settles; on reload the run row's stop request says the same thing.
+  const [stopSentFor, setStopSentFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (error) setStopSentFor(null); // the interrupt request itself failed
+  }, [error]);
+  const stopRequested = Boolean(
+    isRunning && currentRunId && (stopSentFor === currentRunId || runStopReasonById[currentRunId]),
+  );
+  const handleStop = () => {
+    if (currentRunId) setStopSentFor(currentRunId);
+    onInterrupt();
+  };
+
+  // The model's own turn, made visible: a live run with no text flowing, no tool
+  // in flight, nothing waiting on the user and no sub-agent working gets a
+  // "Thinking · 1m 23s" row from the last thing the run did. A streamed message
+  // that stops growing hands over to it after a few quiet seconds (the model is
+  // then usually writing a long tool call, which streams nothing).
+  const thinking =
+    isRunning && !hasPendingApproval && !clock.busy && runningChildren === 0;
+  const thinkingRow = thinking ? (
+    <ThinkingRow
+      key="thinking"
+      since={clock.streaming ? clock.streamingSince : clock.lastActivityAt}
+      quietMs={clock.streaming ? 3000 : 0}
+      label={runStatus === 'pending' ? 'Waiting to start' : 'Thinking'}
+    />
+  ) : null;
+
+  // The composer's status line.
+  const outcome = useMemo(() => {
+    const runId = latestRunId;
+    const status = (runId && runStatusById[runId]) || runStatus;
+    if (!status) return null;
+    const runSteps = runId ? sortedSteps.filter((s) => s.run_id === runId) : [];
+    const latest = runSteps.length ? runSteps[runSteps.length - 1] : null;
+    return {
+      status,
+      resultKind: runId ? runResultKindById[runId] : null,
+      stopReason: runId ? runStopReasonById[runId] : latestStopReason,
+      proof: latest ? deriveCodeStepProofStatus(latest) : null,
+      sorries: latest ? sorryLines(latest.code).length : 0,
+      errors: latest ? errorCount(latest.check_detail) : null,
+    };
+  }, [latestRunId, runStatusById, runStatus, sortedSteps, runResultKindById, runStopReasonById, latestStopReason]);
+  const status = composerStatus({
+    live: isRunning,
+    pending: runStatus === 'pending',
+    stopRequested,
+    waitingApproval: hasPendingApproval,
+    proposalInReview: Boolean(
+      blueprintProposal?.phase === 'review' && session?.project_id && blueprintProposal.projectId === session.project_id,
+    ),
+    turn: clock.turn,
+    startedAt: clock.startedAt,
+    subagentsRunning: runningChildren,
+    outcome,
+  });
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -502,8 +616,8 @@ export function ChatThread({
     }
   };
 
-  const renderNode = (node: MergedNode) => {
-    // Spawn nodes are rendered by coalesceUnits → <SpawnGroup>, never here.
+  const renderNode = (node: MergedNode): ReactNode => {
+    // Spawn nodes are rendered by coalesceUnits → <SessionRows>, never here.
     if (node.kind === 'spawn') return null;
     if (node.kind === 'diagnostic') {
       return (
@@ -511,13 +625,20 @@ export function ChatThread({
       );
     }
     if (node.kind === 'approval') {
+      return <ApprovalRow key={node.key} approval={node.approval} busy={approvalBusy} onDecide={onDecide} />;
+    }
+    if (node.kind === 'tool') {
+      const step = node.call.step as CodeStep | null;
       return (
-        <ApprovalCard
+        <ToolCallRow
           key={node.key}
-          approval={node.approval}
-          decision={node.approval.decision}
-          busy={approvalBusy}
+          call={node.call}
+          previousStep={step ? previousByStep.get(step.id) ?? null : null}
+          codeIndexById={codeIndexById}
+          activeCodeIndex={activeCodeIndex}
+          onSelectStep={onSelectStep}
           onDecide={onDecide}
+          approvalBusy={approvalBusy}
         />
       );
     }
@@ -527,55 +648,74 @@ export function ChatThread({
         return <CompactionMarker key={node.key} content={m.content} />;
       }
       if (m.role === 'user') {
-        return (
-          <div className="msg" key={node.key}>
-            <div className="role">
-              <span className="avatar you">Y</span> You
-            </div>
-            <div className="user-bubble">{m.content}</div>
-          </div>
-        );
+        return <UserBubble key={node.key} content={m.content} />;
       }
-      // Folded into its step card (M11) — don't render it as prose too.
-      if (foldedNarration.has(`${m.run_id || ''}|${m.content.trim()}`)) return null;
+      if (!m.content.trim()) return null;
       return (
-        <div className="msg assistant" key={node.key}>
-          <div className="role">
-            <span className="avatar lea">L</span> Lea
-          </div>
+        <div className="chat-prose" key={node.key}>
           <MarkdownMessage content={m.content} />
         </div>
       );
     }
-    const step = node.step;
-    const tools = step.turn != null ? toolsByTurn.get(step.turn) || [] : [];
     return (
-      <button
+      <StepRow
         key={node.key}
-        className={`step ${node.codeIndex === activeCodeIndex ? 'active' : ''}`}
-        onClick={() => onSelectStep(node.codeIndex)}
-      >
-        <div className="step-head">
-          <span className="step-num">{node.codeIndex + 1}</span>
-          <span className="step-title">{stepTitle(step)}</span>
-          <span className="step-jump">view snapshot →</span>
-        </div>
-        {(step.summary || tools.length > 0) && (
-          <div className="step-body">
-            {step.summary && <p>{step.summary}</p>}
-            {tools.length > 0 && (
-              <div className="step-tools">
-                <span className="tlabel">worked via</span>
-                {tools.map((t, i) => (
-                  <ToolChip key={i} event={t} />
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </button>
+        step={node.step}
+        previousStep={previousByStep.get(node.step.id) ?? null}
+        codeIndex={node.codeIndex}
+        active={node.codeIndex === activeCodeIndex}
+        onSelectStep={onSelectStep}
+      />
     );
   };
+
+  // Lea's output between two user messages is one block: the avatar once, then
+  // prose and tool rows in a column, as in the mockup. User bubbles and
+  // compaction markers stand on their own.
+  const renderBlocks = (units: RenderUnit[], tail: ReactNode[], keyPrefix: string) => {
+    const out: ReactNode[] = [];
+    let block: ReactNode[] = [];
+    let blockKey = '';
+    const flush = () => {
+      if (!block.length) return;
+      out.push(
+        <div className="chat-turn" key={`${keyPrefix}:${blockKey}`}>
+          <LeaAvatar />
+          <div className="chat-turn-col">{block}</div>
+        </div>,
+      );
+      block = [];
+    };
+    for (const unit of units) {
+      if (unit.kind === 'single' && unit.node.kind === 'message'
+        && (unit.node.message.role === 'user' || unit.node.message.kind === 'compaction')) {
+        flush();
+        const rendered = renderNode(unit.node);
+        if (rendered) out.push(rendered);
+        continue;
+      }
+      const rendered = unit.kind === 'spawn-group' ? (
+        <SessionRows
+          key={unit.key}
+          children={unit.children}
+          onSelectSession={onSelectSession}
+          diagnosticsByChild={childDiagnostics}
+        />
+      ) : renderNode(unit.node);
+      if (!rendered) continue;
+      if (!block.length) blockKey = unit.kind === 'single' ? unit.node.key : unit.key;
+      block.push(rendered);
+    }
+    for (const item of tail) {
+      if (!item) continue;
+      if (!block.length) blockKey = 'tail';
+      block.push(item);
+    }
+    flush();
+    return out;
+  };
+  const lastGroupRunId = runGroups.length ? runGroups[runGroups.length - 1].runId : undefined;
+  const thinkingInLastGroup = Boolean(thinkingRow && runGroups.length && lastGroupRunId === currentRunId);
 
   return (
     <main className="chat">
@@ -662,10 +802,12 @@ export function ChatThread({
             const isLastGroup = gi === runGroups.length - 1;
             const finished = !(isRunning && isLastGroup);
             const status = group.runId ? runStatusById[group.runId] : undefined;
-            const codeNodes = group.nodes.filter(
-              (n): n is Extract<MergedNode, { kind: 'code' }> => n.kind === 'code',
-            );
-            const codeStepList = codeNodes.map((n) => n.step);
+            // This run's snapshots, whether they render as their own rows or
+            // inside the tool row that produced them.
+            const codeStepList = group.runId
+              ? sortedSteps.filter((s) => s.run_id === group.runId)
+              : group.nodes.flatMap((n) =>
+                n.kind === 'code' ? [n.step] : n.kind === 'tool' && n.call.step ? [n.call.step as CodeStep] : []);
             const steps = codeStepList.length;
             const resultKind = group.runId ? runResultKindById[group.runId] : undefined;
             const focusId = group.runId ? runFocusById[group.runId] : undefined;
@@ -699,42 +841,23 @@ export function ChatThread({
                     )}
                   </div>
                 )}
-                {coalesceUnits(group.nodes).map((unit) =>
-                  unit.kind === 'spawn-group' ? (
-                    <SpawnGroup
-                      key={unit.key}
-                      children={unit.children}
-                      onSelectSession={onSelectSession}
-                      diagnosticsByChild={childDiagnostics}
-                    />
-                  ) : (
-                    renderNode(unit.node)
-                  ),
-                )}
                 {/* The 'proved' and 'failed/max_turns' banners are gone: both restated
                     what the header chip already says (✓ proved / ✕ unproved), so the
                     common outcomes ended every run with a badge saying what you could
                     already see. The remaining cards are kept because each carries
                     something the chip does NOT: a definition rather than a proof, a
                     counterexample, or a proof that compiles but still has a `sorry`. */}
-                {finished && completion === 'defined' && <DefinedCard steps={steps} session={session} />}
-                {finished && completion === 'disproved' && <DisprovedCard steps={steps} session={session} />}
-                {finished && completion === 'stubbed' && <StubCard steps={steps} session={session} />}
+                {renderBlocks(coalesceUnits(group.nodes), [
+                  finished && completion === 'defined' ? <DefinedCard key="defined" steps={steps} session={session} /> : null,
+                  finished && completion === 'disproved' ? <DisprovedCard key="disproved" steps={steps} session={session} /> : null,
+                  finished && completion === 'stubbed' ? <StubCard key="stubbed" steps={steps} session={session} /> : null,
+                  isLastGroup && thinkingInLastGroup ? thinkingRow : null,
+                ], group.runId ?? `g${gi}`)}
               </Fragment>
             );
           })}
 
-          {thinking && (
-            <div className="thinking">
-              <span className="avatar lea">L</span>
-              <span>{activity ? activity : 'Lea is thinking'}</span>
-              <span className="dots">
-                <i />
-                <i />
-                <i />
-              </span>
-            </div>
-          )}
+          {thinkingRow && !thinkingInLastGroup && renderBlocks([], [thinkingRow], 'thinking')}
 
           {reconnecting && (
             <div className="reconnect-chip">
@@ -928,10 +1051,18 @@ export function ChatThread({
             disabled={submissionBusy}
           />
           <div className="crow">
+            <ComposerStatus status={status} />
+            <span className="crow-gap" />
             <ComposerScopeChip session={session} />
             {isRunning ? (
-              <button className="send stop" onClick={onInterrupt} title="Stop the run">
-                ◼
+              <button
+                type="button"
+                className="chat-stop"
+                onClick={handleStop}
+                title={stopRequested ? 'Stop requested — Lea stops after the current step' : 'Stop the run'}
+              >
+                <ChatIcon name="stop" size={12} />
+                Stop
               </button>
             ) : (
               <button className="send" onClick={onSubmit} disabled={!draft.trim() || submissionBusy} title={submissionBusy ? 'Preparing your message' : 'Send'}>
@@ -1129,257 +1260,6 @@ function formalizationStatusClass(validity: string, activity: string): string {
   return 'idle';
 }
 
-// The spawn_subagent node in the chat timeline, interleaved at the point the
-// coordinator delegated (bug-fix). Groups the children spawned together; each child row
-// shows a one-line preview of its final output and expands in place to the whole thing
-// (or opens the full read-only child session).
-function SpawnGroup({
-  children,
-  onSelectSession,
-  diagnosticsByChild,
-}: {
-  children: SessionSummary[];
-  onSelectSession?: (id: string) => void;
-  diagnosticsByChild?: Map<string, Diagnostic[]>;
-}) {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [stopping, setStopping] = useState<Set<string>>(new Set());
-  // E1: ephemeral live state per running child, fed by `subagent_progress` SSE.
-  const progress = useProofSession((s) => s.subagentProgress);
-  // Sub-agents that could not run (API/config error, crash) → the real error message,
-  // surfaced as a red "failed" child instead of hidden behind the coordinator.
-  const errors = useProofSession((s) => s.subagentErrors);
-  // D4: spawned but still waiting for a concurrency slot — not yet exploring.
-  const queued = useProofSession((s) => s.subagentQueued);
-  // D3: ran, but stopped short (budget / stopped / no candidate). Distinct from
-  // `errors`, which means it never ran at all.
-  const stopNotices = useProofSession((s) => s.subagentStopNotices);
-  const toggle = (id: string) =>
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  const stop = (id: string) => {
-    setStopping((prev) => new Set(prev).add(id));
-    interruptSubagent(id).catch(() => {}); // 404 (already done) is fine; the row will settle on finish
-  };
-  return (
-    <details className="spawn" open>
-      <summary>
-        <span className="tool">spawn_subagent</span> × {children.length}
-        <span className="act">
-          {children.length} candidate{children.length === 1 ? '' : 's'}
-        </span>
-      </summary>
-      <div className="kids">
-        {children.map((child) => {
-          const error = errors[child.id];
-          const stopNotice = stopNotices[child.id];
-          const isQueued = Boolean(queued[child.id]);
-          const childDiags = diagnosticsByChild?.get(child.id) ?? [];
-          // A failed child (couldn't run) is a red "failed" — surfaced, not hidden.
-          // D4: one that hasn't cleared the concurrency semaphore is 'queued', not
-          // 'exploring' — it is doing nothing at all yet.
-          const badge = error
-            ? { dot: 'fail', cls: 'err', text: 'failed' }
-            // A muted dot, not the amber 'running' one: queued means nothing is
-            // happening yet, and the pulse would say otherwise.
-            : isQueued
-            ? { dot: 'idle', cls: 'wait', text: 'queued' }
-            : subagentBadge(child);
-          const isOpen = expanded.has(child.id);
-          const running = !error && !isQueued && badge.dot === 'run';
-          const live = progress[child.id];
-          // While running, the live feed IS the preview: the current tool, else the
-          // streaming narration, else the plain 'exploring…'. A failed child shows its
-          // error; else the durable final summary.
-          const liveLine = running
-            ? (live?.tool ? `running ${live.tool}…` : firstLine(live?.text) || 'exploring…')
-            : '';
-          const preview = isQueued
-            ? 'waiting for a free slot…'
-            : running
-            ? liveLine
-            : error
-            ? firstLine(error)
-            // D3: a child that stopped short leads with WHY, not with a summary that
-            // makes a truncated run look like a considered conclusion.
-            : stopNotice
-            ? `Stopped — ${stopNotice}`
-            : firstLine(child.final_summary);
-          return (
-            <div
-              className={`kid ${isOpen ? 'open' : ''} ${running ? 'running' : ''} ${error ? 'errored' : ''}`}
-              key={child.id}
-            >
-              <button className="kid-head" onClick={() => toggle(child.id)}>
-                <span className={`caret ${isOpen ? 'open' : ''}`}>▸</span>
-                <span className={`dot ${badge.dot}`} />
-                <span className="rtitle">{child.title}</span>
-                {child.role && <span className="role">{child.role.split('-')[0]}</span>}
-                {running && (
-                  <button
-                    className="kid-stop"
-                    disabled={stopping.has(child.id)}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      stop(child.id);
-                    }}
-                    title="Stop this sub-agent (the coordinator keeps running)"
-                  >
-                    {stopping.has(child.id) ? 'stopping…' : 'Stop'}
-                  </button>
-                )}
-                <span className={`verdict ${badge.cls}`}>{badge.text}</span>
-              </button>
-              {!isOpen && preview && (
-                <div className={`kid-preview ${error ? 'err' : ''}`}>{preview}</div>
-              )}
-              {isOpen && (
-                <div className="kid-body">
-                  {/* What the coordinator asked for. First, and shown for a RUNNING
-                      child too — a child with no output yet is only judgeable by its
-                      task, and "was this delegated correctly?" is a question worth
-                      answering while there is still time to stop it. */}
-                  {child.task && (
-                    <div className="kid-task">
-                      <div className="kid-task-label">Delegated task</div>
-                      <pre className="kid-task-text">{child.task}</pre>
-                    </div>
-                  )}
-                  {error ? (
-                    <div className="kid-error">
-                      <div className="kid-error-title">This sub-agent could not run</div>
-                      <pre className="kid-error-msg">{error}</pre>
-                    </div>
-                  ) : (
-                    <>
-                      {/* D3: why it stopped, ABOVE its output — the summary of a
-                          child that ran out of budget reads like a conclusion
-                          unless you know it was cut off. */}
-                      {stopNotice && (
-                        <div className="kid-stopped">This sub-agent {stopNotice}.</div>
-                      )}
-                      {child.final_summary ? (
-                        <MarkdownMessage content={child.final_summary} />
-                      ) : isQueued ? (
-                        <p className="kid-empty">Waiting for a free slot — not started yet.</p>
-                      ) : running ? (
-                        // "produced no final output" is a verdict, and it was wrong for
-                        // a child that simply hasn't finished. An unfinished run has no
-                        // output YET; saying it produced none reads as a result.
-                        <p className="kid-empty">Still working — no output yet.</p>
-                      ) : (
-                        <p className="kid-empty">This sub-agent produced no final output.</p>
-                      )}
-                    </>
-                  )}
-                  {/* Failures the child itself reported (a tool that raised inside
-                      it, a degraded capability). They are persisted against the
-                      child's own session; shown here so a failure inside a child
-                      isn't only discoverable by opening it. */}
-                  {childDiags.map((d) => (
-                    // No settings jump on a child's card: the child session is
-                    // read-only, and its failures are the coordinator's to act on.
-                    <DiagnosticCard key={`kd:${d.id ?? d.code}`} diagnostic={d} />
-                  ))}
-                  <button className="kid-open" onClick={() => onSelectSession?.(child.id)}>
-                    Open full session →
-                  </button>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </details>
-  );
-}
-
-// First non-empty line of a child's final output, trimmed for the collapsed preview.
-// v2.4 · one failure, rendered where it happened.
-//
-// The shape is deliberately uniform across every severity and every source (prover,
-// adapter, sub-agent): a user learning to read one of these has learned to read all
-// of them. `title` and `remedy` come from the adapter's code catalog, so the copy is
-// not whatever an exception happened to stringify to — and `remedy` is simply absent
-// when there is no honest advice to give, rather than padded with a guess.
-const DIAGNOSTIC_LABEL: Record<string, string> = {
-  fatal: 'Run failed',
-  step_error: 'Step failed',
-  degraded: 'Reduced capability',
-  notice: 'Notice',
-};
-
-function DiagnosticCard({
-  diagnostic,
-  onAction,
-}: {
-  diagnostic: Diagnostic;
-  // One handler for every offer on the card; the card doesn't decide where an action
-  // goes, it just reports which one was pressed.
-  onAction?: (action: DiagnosticAction) => void;
-}) {
-  const { severity, title, detail, remedy, actions, context, code } = diagnostic;
-  const message = code === 'lean.check_execution'
-    ? checkExecutionMessage(context?.execution, context?.check_status) || diagnostic.message
-    : diagnostic.message;
-  const anchor = context?.path || context?.tool;
-  return (
-    <div className={`diag diag-${severity}`} data-code={code}>
-      <div className="diag-head">
-        <span className="diag-sev">{DIAGNOSTIC_LABEL[severity] ?? 'Notice'}</span>
-        <span className="diag-title">{title}</span>
-        {anchor && <span className="diag-anchor">{anchor}</span>}
-      </div>
-      {message && message !== title && <pre className="diag-msg">{message}</pre>}
-      {/* The raw exception, folded away. Present for anyone who needs it, never the
-          first thing read — `BadRequestError: litellm.BadRequestError: …{json}` is
-          noise when the provider already said "your api key is invalid". */}
-      {detail && (
-        <details className="diag-detail">
-          <summary>Technical detail</summary>
-          <pre>{detail}</pre>
-        </details>
-      )}
-      {remedy && <div className="diag-remedy">{remedy}</div>}
-      {/* Where a failure has more than one plausible cause, offer every route rather
-          than picking one — an auth rejection cannot tell a wrong key from a model
-          belonging to another provider, and guessing sends people to fix the wrong
-          thing. */}
-      {actions && actions.length > 0 && onAction && (
-        <div className="diag-actions">
-          {actions.map((a) => (
-            <button
-              key={`${a.action}:${a.focus ?? ''}`}
-              className="diag-action"
-              onClick={() => onAction(a)}
-            >
-              {a.label}
-            </button>
-          ))}
-        </div>
-      )}
-      {diagnostic.persisted === false && (
-        // Honesty about our own failure: this one is on screen but was not written,
-        // so it will not survive a reload. Better to say so than to let someone
-        // trust a record that isn't there.
-        <div className="diag-unsaved">Not saved — this notice will disappear on reload.</div>
-      )}
-    </div>
-  );
-}
-
-function firstLine(text?: string | null): string {
-  if (!text) return '';
-  for (const line of text.split('\n')) {
-    const t = line.replace(/^[#>*\-\s]+/, '').trim();
-    if (t) return t.length > 140 ? `${t.slice(0, 140)}…` : t;
-  }
-  return '';
-}
-
 // A context-compaction marker (G1/G3), rendered inline from a `kind='compaction'` timeline
 // message. Manual (/compact) → an expandable Claude-Code-style card with the freed tokens
 // + the files still in the model's view; automatic (G1) → a quiet centered one-liner. Both
@@ -1469,27 +1349,6 @@ function CompactionMarker({ content }: { content: string }) {
   );
 }
 
-function ToolChip({ event }: { event: StatusEvent }) {
-  if (event.status === 'lean_check') {
-    const ok = event.check_status === 'ok';
-    const stubbed = ok && hasSorryLikeCheckDetail(event.check_detail);
-    return (
-      <span className="tool">
-        <span className="tname">lean_check</span>
-        <span className={`tstat ${stubbed ? 'stub' : ok ? 'ok' : 'err'}`}>
-          {stubbed ? '✓ 0 errors · sorry' : ok ? '✓ 0 errors' : '✗ errors'}
-        </span>
-      </span>
-    );
-  }
-  const name = (event.message || '').replace(/^Running\s+/, '') || 'tool';
-  return (
-    <span className="tool">
-      <span className="tname">{name}</span>
-    </span>
-  );
-}
-
 function DefinedCard({ steps, session }: { steps: number; session?: SessionSummary }) {
   return (
     <div className="final">
@@ -1538,130 +1397,6 @@ function StubCard({ steps, session }: { steps: number; session?: SessionSummary 
   );
 }
 
-function ApprovalCard({
-  approval,
-  decision,
-  busy,
-  onDecide,
-}: {
-  approval: ApprovalRecord;
-  decision?: string | null;
-  busy: boolean;
-  onDecide: (decision: ApprovalDecision) => void;
-}) {
-  const preview = approvalPreview(approval);
-  const resolved = !!decision || approval.actionable === false;
-  return (
-    <div className={`approval ${resolved ? 'resolved' : ''}`}>
-      <div className="ahead">
-        🛡{' '}
-        {resolved
-          ? decision ? decisionHeadline(decision, approval.tool_name) : `${approval.tool_name} — no longer pending`
-          : `Approve ${approval.tool_name}?`}
-      </div>
-      {preview && <div className="acode">{preview}</div>}
-      {resolved ? (
-        <span
-          className="resolved-tag"
-          style={decision === 'deny' ? { color: 'var(--red)' } : undefined}
-        >
-          {decision ? decisionTag(decision) : 'no longer pending'}
-        </span>
-      ) : (
-        <div className="actions">
-          <button className="btn accept" disabled={busy} onClick={() => onDecide('allow')}>
-            Allow once
-          </button>
-          <button className="btn session" disabled={busy} onClick={() => onDecide('always_session')}>
-            Always this session
-          </button>
-          <button className="btn reject" disabled={busy} onClick={() => onDecide('deny')}>
-            Deny
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function decisionHeadline(decision: string, tool: string): string {
-  if (decision === 'allow') return `Allowed ${tool} once`;
-  if (decision === 'always_session') return `Always allowing ${tool} this session`;
-  if (decision === 'deny') return `Denied ${tool}`;
-  return `${tool} — resolved`;
-}
-
-function decisionTag(decision: string): string {
-  if (decision === 'allow') return '✓ you allowed this once';
-  if (decision === 'always_session') return '✓ you allowed this for the session';
-  if (decision === 'deny') return '⛔ you denied this';
-  return 'resolved';
-}
-
-// Absolute proof paths are long and noisy. Show only what matters: the path
-// relative to the session repo (everything after `proofs/<session-id>/`).
-function shortPath(p: string): string {
-  const m = p.match(/[/\\]proofs[/\\][^/\\]+[/\\](.+)$/);
-  return m ? m[1].replace(/\\/g, '/') : p;
-}
-
-function approvalPreview(approval: PendingApproval): string {
-  const args = approval.args || {};
-  if (approval.tool_name === 'bash' && typeof args.command === 'string') return args.command;
-  const path = typeof args.path === 'string' ? shortPath(args.path) : '';
-  const content =
-    typeof args.content === 'string'
-      ? args.content
-      : typeof args.new_string === 'string'
-      ? args.new_string
-      : '';
-  if (path || content) return [path, content].filter(Boolean).join('\n\n');
-  return JSON.stringify(args, null, 2);
-}
-
-// Friendly "what Lea is doing" label for a tool_call / lean_check status event,
-// covering every tool (M17).
-const TOOL_ACTIVITY: Record<string, string> = {
-  search_mathlib: '🔍 Searching Mathlib',
-  bash: '💻 Running a shell command',
-  read_file: '📖 Reading a file',
-  write_file: '✎ Writing the proof',
-  edit_file: '✎ Editing the proof',
-  lean_check: '⚙ Checking with Lean',
-};
-
-function activityLabel(event: StatusEvent): string {
-  if (event.status === 'lean_check') return TOOL_ACTIVITY.lean_check;
-  const name = (event.message || '').replace(/^Running\s+/, '').trim();
-  return TOOL_ACTIVITY[name] || `⚙ Running ${name || 'a tool'}`;
-}
-
-function stepTitle(step: CodeStep): string {
-  // A short, generic label; the model's intent (step.summary) is the card body.
-  const file = step.path.split('/').pop() || step.path;
-  if (step.author === 'user') return `You edited ${file}`;
-  return `Wrote ${file}`;
-}
-
 function formatTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-}
-
-// The compiler's verdict on a sub-agent's candidate (item 24), for the spawn node's
-// dot + badge. The ranking that actually picks a winner is the adapter's job (item 25);
-// here we just report each child's own lean_check status.
-function subagentBadge(child: SessionSummary): { dot: string; cls: string; text: string } {
-  const ok =
-    child.latest_check_status === 'ok' ||
-    child.status === 'ok' ||
-    child.status === 'proved' ||
-    child.status === 'defined';
-  if (ok) return { dot: 'ok', cls: 'ok', text: 'compiles' };
-  if (child.status === 'error' || child.latest_check_status === 'error') {
-    return { dot: 'fail', cls: 'err', text: 'errors' };
-  }
-  if ((child.active_run_count ?? 0) > 0 || child.status === 'running') {
-    return { dot: 'run', cls: 'run', text: 'exploring…' };
-  }
-  return { dot: 'idle', cls: 'run', text: 'no candidate' };
 }
