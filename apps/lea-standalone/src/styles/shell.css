@@ -228,7 +228,6 @@
 .sb-spin { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--shell-running-soft); border-top-color: var(--shell-running); animation: sh-spin .8s linear infinite; flex: none; }
 
 .sb-foot { flex: none; padding: 8px 10px 8px 14px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; min-width: 0; }
-.sb-foot-user { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sb-foot-update { margin-left: auto; display: inline-flex; align-items: center; }
-.sb-foot-update:empty { display: none; }
-.sb-foot-update:empty + .sh-ibtn { margin-left: auto; }
+/* The user label takes the slack, so the icons sit right whether or not the
+   desktop update button (a direct child, margin-left: auto) renders. */
+.sb-foot-user { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

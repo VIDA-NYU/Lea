@@ -102,8 +102,14 @@ export function Sidebar({
   const loadTree = useProjectData((s) => s.loadTree);
 
   const selectedSession = sessions.find((s) => s.id === selectedSessionId);
-  // The open project: the one whose home is showing, else the selected session's.
-  const openProjectId = selectedProjectId ?? selectedSession?.project_id ?? undefined;
+  // The expanded project: none on the launch screen (frame 11 lists projects
+  // only); the project whose home is showing; otherwise the selected session's,
+  // so opening a session of another project (Recent sessions, search) follows it.
+  const openProjectId = activeView === 'home'
+    ? undefined
+    : activeView === 'project-home' || activeView === 'project'
+      ? selectedProjectId
+      : selectedSession?.project_id ?? selectedProjectId ?? undefined;
 
   const [treeCollapsed, setTreeCollapsed] = useState(false);
   const [showProved, setShowProved] = useState(false);
@@ -127,6 +133,8 @@ export function Sidebar({
 
   const sorted = useMemo<Project[]>(() => sortProjectsByActivity(projects, sessions), [projects, sessions]);
   const unfiled = useMemo<SessionSummary[]>(() => unfiledSessions(sessions), [sessions]);
+  // Collapsed unless the open session is one of them.
+  const unfiledOpen = showUnfiled || unfiled.some((s) => s.id === selectedSessionId);
 
   // Sub-agents of the selected session's tree root (item 24), unchanged from
   // before the redesign: children never appear as rows of their own.
@@ -211,8 +219,9 @@ export function Sidebar({
                   <span className="sb-chev sb-chev-placeholder" />
                 )}
                 <button
-                  className={`sb-row sb-row-project ${isOpen && activeView === 'project-home' ? 'is-active' : ''}`}
+                  className="sb-row sb-row-project"
                   onClick={() => onOpenProject(project.id)}
+                  aria-current={isOpen && activeView === 'project-home' ? 'page' : undefined}
                   title={project.title}
                 >
                   <Folder size={14} className="sb-ico" />
@@ -230,6 +239,7 @@ export function Sidebar({
                   sessions={projectSessions(sessions, project.id)}
                   nodeBindings={nodeBindings}
                   runningSessionId={runningSessionId}
+                  selectedSessionId={activeView === 'main' ? selectedSessionId : undefined}
                   activeView={activeView}
                   showProved={showProved}
                   onToggleProved={() => setShowProved((v) => !v)}
@@ -245,41 +255,8 @@ export function Sidebar({
           );
         })}
 
-        {unfiled.length > 0 && (
-          <div className="sb-group sb-unfiled">
-            <button className="sb-group-toggle" onClick={() => setShowUnfiled((v) => !v)} aria-expanded={showUnfiled}>
-              {showUnfiled ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              Unfiled
-              <span className="sb-count">{unfiled.length}</span>
-            </button>
-            {showUnfiled && unfiled.map((session) => renderSessionRow(session, 22))}
-          </div>
-        )}
-
-        <div className="sb-group">
-          <button className="sb-group-toggle" onClick={() => setShowLibrary((v) => !v)} aria-expanded={showLibrary}>
-            {showLibrary ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-            Library
-          </button>
-          {showLibrary && (
-            <>
-              <button className="sb-row" style={{ paddingLeft: 22 }} onClick={onOpenSkills}>
-                <Sparkles size={13} className="sb-ico" /><span className="sb-name">Skills</span>
-              </button>
-              <button className="sb-row" style={{ paddingLeft: 22 }} onClick={onOpenSubagents}>
-                <Bot size={13} className="sb-ico" /><span className="sb-name">Sub-agents</span>
-              </button>
-              <button className="sb-row" style={{ paddingLeft: 22 }} onClick={onOpenMcp}>
-                <Plug size={13} className="sb-ico" /><span className="sb-name">MCP servers</span>
-              </button>
-              <button className="sb-row" style={{ paddingLeft: 22 }} onClick={onOpenTools}>
-                <Wrench size={13} className="sb-ico" /><span className="sb-name">Tools</span>
-              </button>
-            </>
-          )}
-        </div>
-
-        {treeRoot && subagents.length > 0 && (
+        {/* The open session's sub-agents: workbench only. */}
+        {activeView === 'main' && treeRoot && subagents.length > 0 && (
           <div className="sb-group sb-subagents">
             <div className="sb-group-label">
               Sub-agents
@@ -308,14 +285,49 @@ export function Sidebar({
             })}
           </div>
         )}
+
+        <div className="sb-group">
+          <button className="sb-group-toggle" onClick={() => setShowLibrary((v) => !v)} aria-expanded={showLibrary}>
+            {showLibrary ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            Library
+          </button>
+          {showLibrary && (
+            <>
+              <button className="sb-row" style={{ paddingLeft: 22 }} onClick={onOpenSkills}>
+                <Sparkles size={13} className="sb-ico" /><span className="sb-name">Skills</span>
+              </button>
+              <button className="sb-row" style={{ paddingLeft: 22 }} onClick={onOpenSubagents}>
+                <Bot size={13} className="sb-ico" /><span className="sb-name">Sub-agents</span>
+              </button>
+              <button className="sb-row" style={{ paddingLeft: 22 }} onClick={onOpenMcp}>
+                <Plug size={13} className="sb-ico" /><span className="sb-name">MCP servers</span>
+              </button>
+              <button className="sb-row" style={{ paddingLeft: 22 }} onClick={onOpenTools}>
+                <Wrench size={13} className="sb-ico" /><span className="sb-name">Tools</span>
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* Legacy sessions without a project, last and collapsed: nothing is lost. */}
+        {unfiled.length > 0 && (
+          <div className="sb-group sb-unfiled">
+            <button className="sb-group-toggle" onClick={() => setShowUnfiled((v) => !v)} aria-expanded={unfiledOpen}>
+              {unfiledOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              Unfiled
+              <span className="sb-count">{unfiled.length}</span>
+            </button>
+            {unfiledOpen && unfiled.map((session) => renderSessionRow(session, 22))}
+          </div>
+        )}
       </div>
 
       <div className="sb-foot">
         <span className="sb-foot-user">{userEmail || 'local'}</span>
-        {/* Desktop update button slot (package "desktop" replaces the stub). */}
-        <span className="sb-foot-update">
-          <DesktopUpdateButton />
-        </span>
+        {/* Desktop update button (package "desktop" replaces the stub): a direct
+            child of this flex row; it renders null in a browser and pushes
+            itself right with margin-left: auto. */}
+        <DesktopUpdateButton />
         <button className="sh-ibtn sh-ibtn-sm" onClick={onOpenStats} title="Usage & statistics" aria-label="Usage & statistics">
           <BarChart3 size={14} strokeWidth={1.75} />
         </button>
@@ -335,6 +347,7 @@ function ProjectTree({
   sessions,
   nodeBindings,
   runningSessionId,
+  selectedSessionId,
   activeView,
   showProved,
   onToggleProved,
@@ -352,6 +365,8 @@ function ProjectTree({
   sessions: SessionSummary[];
   nodeBindings: Record<string, string>;
   runningSessionId?: string;
+  /** The session open in the workbench: its node and row stay visible. */
+  selectedSessionId?: string;
   activeView?: string;
   showProved: boolean;
   onToggleProved: () => void;
@@ -382,9 +397,14 @@ function ProjectTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [nodes, sessionsByNode, runningSessionId],
   );
-  const activeNodes = orderedNodes.filter((n) => n.status !== 'proved');
-  const provedNodes = orderedNodes.filter((n) => n.status === 'proved');
+  // Proved nodes fold into one summary row, except the one holding the open
+  // session (BlueprintSession frame: its row stays in view).
+  const selectedNodeKey = selectedSessionId ? nodeBySession[selectedSessionId] : undefined;
+  const activeNodes = orderedNodes.filter((n) => n.status !== 'proved' || n.key === selectedNodeKey);
+  const provedNodes = orderedNodes.filter((n) => n.status === 'proved' && n.key !== selectedNodeKey);
   const chatSessions = sessions.filter((s) => !nodeBySession[s.id]);
+  // An open project chat (no node) shows in the Sessions list, opened for it.
+  const sessionsOpen = showSessions || chatSessions.some((s) => s.id === selectedSessionId);
 
   const nodeRight = (node: GraphNode): string => {
     const bound = sessionsByNode[node.key] ?? [];
@@ -453,12 +473,12 @@ function ProjectTree({
         <span className="sb-name">Files</span>
         {typeof fileCount === 'number' && <span className="sb-right">{fileCount}</span>}
       </button>
-      <button className="sb-row" style={{ paddingLeft: 24 }} onClick={onToggleSessions} aria-expanded={showSessions}>
+      <button className="sb-row" style={{ paddingLeft: 24 }} onClick={onToggleSessions} aria-expanded={sessionsOpen}>
         <MessageSquare size={12} className="sb-ico" />
         <span className="sb-name">Sessions</span>
         <span className="sb-right">{sessions.length}</span>
       </button>
-      {showSessions && (
+      {sessionsOpen && (
         sessions.length === 0
           ? <div className="sb-empty" style={{ paddingLeft: 38 }}>No sessions yet.</div>
           : sessions.map((s) => renderSessionRow(s, 38, nodeBySession[s.id] ? undefined : chatSessions.includes(s) ? 'project chat' : undefined))
