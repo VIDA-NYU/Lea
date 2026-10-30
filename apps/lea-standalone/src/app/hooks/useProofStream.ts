@@ -16,6 +16,7 @@ import { useSessions } from '../stores/sessions';
 import { sortCodeSteps } from '../lib/timeline.mjs';
 import { mainFileIndex } from '../lib/canvasFiles.mjs';
 import { restoreFormalizationSelection } from '../lib/formalizations.mjs';
+import { handleBlueprintStreamEvent } from '../lib/blueprintActions';
 
 // SSE reattach backoff (v2.3 item 14). A browser EventSource cannot read an HTTP
 // status — a 409 (server at capacity / a run driven elsewhere) surfaces only as
@@ -814,6 +815,24 @@ export function useProofStream() {
         /* ignore a malformed payload */
       }
     });
+
+    // Blueprint tools (docs/PLAN-blueprint-tools.md §2.4): the blueprint or its
+    // draft was written, a node changed status, nodes became ready. Each goes
+    // through blueprintModel.applyBlueprintEvent into the workbench store
+    // (refresh, notice, latest unlock); an unlock also notifies the desktop
+    // shell while the window is in the background.
+    const blueprintEvent = (type: string) => (event: Event) => {
+      const data = (event as MessageEvent).data;
+      if (!data) return;
+      try {
+        handleBlueprintStreamEvent(type, JSON.parse(data));
+      } catch {
+        /* a malformed blueprint event must not take down the stream */
+      }
+    };
+    listen('blueprint_updated', blueprintEvent('blueprint_updated'));
+    listen('blueprint_node_changed', blueprintEvent('blueprint_node_changed'));
+    listen('blueprint_unlocked', blueprintEvent('blueprint_unlocked'));
 
     listen('done', (event) => {
       sawDone = true;
