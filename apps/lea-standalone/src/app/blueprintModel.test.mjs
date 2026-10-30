@@ -24,6 +24,9 @@ import {
   displayFile,
   bindingPrompt,
   draftingPrompt,
+  DRAFTING_PROMPT,
+  effectiveNodeBindings,
+  sessionNodeKey,
   nodeSessionTitle,
   nodeOriginKey,
   relativeTime,
@@ -52,16 +55,18 @@ test('statusCounts tallies every status plus verified and no-file nodes', () => 
   assert.equal(statusCounts([]).total, 0);
 });
 
-test('isReady treats a leaf planned/stated node as ready, a blocked one as not', () => {
+test('isReady and readyNodes read the adapter status only (leaves are ready server-side)', () => {
   const index = byKey(nodes);
-  assert.equal(isReady(index.get('rational_sq_form'), index), true, 'leaf stated node');
-  assert.equal(isReady(index.get('sqrt_two_irrational'), index), false, 'waits on unproved deps');
-  assert.equal(isReady(index.get('even_of_sq_even'), index), false, 'already proved');
-  assert.equal(isReady(index.get('parity_descent'), index), false, 'failed is not ready');
-  assert.equal(isReady({ key: 'x', uses: ['a'], status: 'ready' }, index), true, 'adapter ready wins');
-  assert.deepEqual(readyNodes(nodes).map((n) => n.key), ['rational_sq_form', 'sq_parity']);
+  assert.equal(isReady(index.get('rational_sq_form'), index), false, 'a stated leaf is not ready until the adapter says so');
+  assert.equal(isReady({ key: 'leaf', uses: [], status: 'ready' }), true);
+  assert.equal(isReady({ key: 'x', uses: ['a'], status: 'ready' }, index), true);
+  assert.equal(isReady({ key: 'p', uses: [], status: 'planned' }), false);
+  assert.equal(isReady({ key: 'q', uses: [], status: 'proved' }), false);
+  assert.equal(isReady({ key: 'r', uses: [] }), false, 'no status is not ready');
+  assert.deepEqual(readyNodes(nodes), []);
+  const withReady = nodes.map((n) => (n.key === 'sq_parity' || n.key === 'rational_sq_form' ? { ...n, status: 'ready' } : n));
+  assert.deepEqual(readyNodes(withReady).map((n) => n.key), ['rational_sq_form', 'sq_parity'], 'graph order');
 });
-
 test('dependents and otherBlockers power the Unblocks list', () => {
   assert.deepEqual(dependents(nodes, 'parity_descent').map((n) => n.key), ['sqrt_two_irrational']);
   assert.deepEqual(dependents(nodes, 'sq_parity').map((n) => n.key), ['parity_descent']);
@@ -116,6 +121,32 @@ test('runningNodeKeys marks nodes with a live bound or committing session', () =
   assert.deepEqual([...runningNodeKeys(nodes, sessions.map((s) => ({ ...s, active_run_count: 0 })), bindings)], []);
 });
 
+test('session.blueprint_node wins over the localStorage bindings, which fill in for older sessions', () => {
+  const served = [
+    { id: 's-new', title: 'Prove sq_parity', updated_at: '2026-10-30T10:00:00Z', active_run_count: 1, blueprint_node: 'sq_parity' },
+    // The server binding overrides a stale UI binding of the same session.
+    { id: 's-descent', title: 'Descent step', updated_at: '2026-10-29T14:10:00Z', active_run_count: 1, blueprint_node: 'sqrt_two_irrational' },
+    // null (an older session): the UI binding stands.
+    { id: 's-rational', title: 'Rational form', updated_at: '2026-10-29T14:12:00Z', active_run_count: 0, blueprint_node: null },
+  ];
+  assert.deepEqual(effectiveNodeBindings(served, bindings), {
+    's-descent': 'sqrt_two_irrational',
+    's-rational': 'rational_sq_form',
+    's-new': 'sq_parity',
+  });
+  assert.equal(sessionNodeKey('s-new', served, {}), 'sq_parity');
+  assert.equal(sessionNodeKey('s-rational', served, bindings), 'rational_sq_form');
+  assert.equal(sessionNodeKey('s-none', served, bindings), null);
+  assert.equal(sessionNodeKey(undefined, served, bindings), null);
+  assert.deepEqual([...runningNodeKeys(nodes, served, bindings)].sort(), ['parity_descent', 'sq_parity', 'sqrt_two_irrational'],
+    'parity_descent through its committing session, the others through blueprint_node');
+  const rows = nodeSessions(nodes[5], served, bindings);
+  assert.deepEqual(rows.map((r) => [r.session_id, r.running, r.bound]), [['s-new', true, true]]);
+  assert.deepEqual(nodeSessions(nodes[1], served, bindings).map((r) => [r.session_id, r.bound]), [
+    ['s-descent', false],
+    ['s-root', false],
+  ], 's-descent now belongs to another node; it still committed parity_descent');
+});
 test('parseBlueprintMarkdown mirrors the adapter parser, fence-aware, with file', () => {
   const md = [
     'Intro prose before any node.',
@@ -295,32 +326,17 @@ test('firstLine, suggestFileFromLean and displayFile', () => {
   assert.equal(displayFile({ file: null, lean: null }), null);
 });
 
-test('bindingPrompt states the node, the file and every dependency status', () => {
-  const p = bindingPrompt(nodes[1], nodes);
-  assert.match(p, /^Prove the blueprint node `parity_descent` \(lemma\)/);
-  assert.match(p, /Statement: No coprime a, b satisfy a² = 2b²\./);
-  assert.match(p, /Lean name: Lea\.Sqrt2\.parity_descent/);
-  assert.match(p, /Target file: Lea\/Sqrt2\/Descent\.lean/);
-  assert.match(p, /- even_of_sq_even — proved \(Lea\/Sqrt2\/Parity\.lean\)/);
-  assert.match(p, /- sq_parity — stated with sorry \(Lea\/Sqrt2\/Lemmas\.lean\): use it as a hypothesis/);
-  const top = bindingPrompt(nodes[0], nodes);
-  assert.match(top, /Target file: not written yet/);
-  assert.match(top, /- parity_descent — failed to check/);
-  const leaf = bindingPrompt(nodes[5], nodes);
-  assert.match(leaf, /Dependencies: none — this node is a leaf\./);
-  const missing = bindingPrompt({ key: 'z', uses: ['ghost'], statement: 'Z.' }, nodes);
-  assert.match(missing, /- ghost — not in the blueprint/);
+test('bindingPrompt only names the node (the server supplies the context)', () => {
+  assert.equal(bindingPrompt(nodes[1], nodes), 'Prove the blueprint node `parity_descent`.');
+  assert.equal(bindingPrompt({ key: 'z' }), 'Prove the blueprint node `z`.');
 });
-
-test('draftingPrompt names the project and the markdown format', () => {
-  const p = draftingPrompt({ title: 'Sqrt2', description: 'Prove √2 is irrational.' });
-  assert.match(p, /write it to \.lea\/blueprint\.md/);
-  assert.match(p, /Project: Sqrt2/);
-  assert.match(p, /Goal: Prove √2 is irrational\./);
-  assert.match(p, /## node_key/);
-  assert.doesNotMatch(draftingPrompt({}), /Project:/);
+test('draftingPrompt is the blueprint_upsert instruction, verbatim', () => {
+  const expected =
+    'Draft the proof blueprint for this project. Decompose the goal into nodes and call blueprint_upsert once with every node: key, kind, a one or two sentence statement, and uses. Put the main theorem first and its lemmas below it. Do not prove anything and do not write files. Then stop and summarise the nodes.';
+  assert.equal(draftingPrompt(), expected);
+  assert.equal(draftingPrompt({ title: 'Sqrt2', description: 'Prove √2 is irrational.' }), expected);
+  assert.equal(DRAFTING_PROMPT, expected);
 });
-
 test('session naming helpers', () => {
   assert.equal(nodeSessionTitle('parity_descent'), 'Prove parity_descent');
   assert.equal(nodeOriginKey('parity_descent'), 'blueprint:parity_descent');
