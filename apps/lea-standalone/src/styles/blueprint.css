@@ -27,6 +27,13 @@
   --bpv-ready: #3b5fa8;
   --bpv-ready-ink: #2a4780;
   --bpv-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  /* graph (React Flow): edges, selection ring, lanes, minimap, background dots */
+  --bpv-edge: #c4c4cc;
+  --bpv-edge-active: var(--bpv-running);
+  --bpv-ring: rgba(59, 95, 168, .42);
+  --bpv-lane-line: #e4e4e7;
+  --bpv-mm-lane: var(--line-2);
+  --bpv-flow-dots: #e2e2e6;
 }
 
 .bpv-mono { font-family: var(--bpv-mono); }
@@ -40,8 +47,8 @@
 .bpv-dot.is-failed { background: var(--bpv-failed); }
 .bpv-dot.is-stated { background: var(--bpv-stated); }
 .bpv-dot.is-running { background: var(--bpv-running); }
-.bpv-dot.is-planned { background: #fff; border: 1.5px solid var(--bpv-planned); }
-.bpv-dot.is-ready { background: #fff; border: 2px solid var(--bpv-ready); }
+.bpv-dot.is-planned { background: var(--panel); border: 1.5px solid var(--bpv-planned); }
+.bpv-dot.is-ready { background: var(--panel); border: 2px solid var(--bpv-ready); }
 
 .bpv-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 500; border-radius: 999px;
   padding: 2px 8px; white-space: nowrap; border: 1px solid transparent; line-height: 1.4; }
@@ -50,7 +57,7 @@
 .bpv-pill.is-stated { color: var(--bpv-stated-ink); background: var(--bpv-stated-soft); }
 .bpv-pill.is-running { color: var(--bpv-running-ink); background: var(--bpv-running-soft); }
 .bpv-pill.is-planned { color: var(--bpv-planned-ink); background: var(--bpv-planned-soft); }
-.bpv-pill.is-ready { color: var(--bpv-ready-ink); background: #fff; border-color: var(--bpv-ready); }
+.bpv-pill.is-ready { color: var(--bpv-ready-ink); background: var(--panel); border-color: var(--bpv-ready); }
 .bpv-pill.is-button { font: inherit; font-size: 11px; font-weight: 500; cursor: pointer; font-family: var(--bpv-mono); }
 .bpv-pill.is-button:hover { filter: brightness(0.96); }
 .bpv-chip { font-size: 12px; padding: 4px 11px; }
@@ -91,14 +98,31 @@
   border-bottom: 1px solid #ecdcbb; }
 
 .bpv-body { flex: 1; min-height: 0; display: flex; }
-.bpv-canvas { flex: 1; min-width: 0; overflow: auto; padding: 16px 12px 8px; display: flex; flex-direction: column; gap: 8px; }
-.bpv-svg { display: block; width: 100%; height: auto; }
+/* The graph column: the flow takes every pixel left over by the legend. */
+.bpv-canvas { flex: 1; min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; background: var(--panel); }
 .bpv-msg { color: var(--muted); font-size: 13px; padding: 24px; }
 .bpv-msg.is-error { color: var(--bpv-failed-ink); }
 
-.bpv-legend { list-style: none; margin: 0; padding: 4px 4px 0; display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px;
-  color: var(--muted); }
+.bpv-legend { flex: none; list-style: none; margin: 0; padding: 8px 14px; display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px;
+  color: var(--muted); border-top: 1px solid var(--line-2); background: var(--panel); }
 .bpv-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.bpv-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0);
+  white-space: nowrap; border: 0; }
+
+/* Download menu */
+.bpv-menu-wrap { position: relative; display: inline-flex; }
+.bpv-caret { margin-left: -2px; color: var(--muted); }
+.bpv-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; min-width: 230px; padding: 4px; display: flex;
+  flex-direction: column; gap: 1px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(24, 24, 27, .10), 0 1px 2px rgba(24, 24, 27, .06); }
+.bpv-menu-item { font: inherit; font-size: 12.5px; display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px;
+  border: none; border-radius: 7px; background: none; color: var(--ink); cursor: pointer; text-align: left; }
+.bpv-menu-item svg { flex: none; color: var(--ink-2); }
+.bpv-menu-item:hover:not(:disabled), .bpv-menu-item:focus-visible { background: var(--panel-2); outline: none; }
+.bpv-menu-item:disabled { opacity: .5; cursor: default; }
+.bpv-menu-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.bpv-menu-hint { font-size: 11px; color: var(--muted); font-family: var(--bpv-mono); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
 
 .bpv-foot { flex: none; min-height: 36px; display: flex; align-items: center; gap: 18px; padding: 6px 16px; border-top: 1px solid var(--line);
   background: var(--bg); font-size: 12px; color: var(--muted); }
@@ -113,35 +137,96 @@
 .bpv-empty-state p { margin: 0 0 14px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
 .bpv-empty-actions { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; }
 
-/* ── SVG: lanes, edges, nodes ───────────────────────────────────────────── */
-.bpv-lane rect { fill: var(--bg); stroke: #e4e4e7; stroke-width: 1; }
-.bpv-lane.is-dashed rect { stroke-dasharray: 6 4; }
-.bpv-lane-label { font-family: var(--bpv-mono); font-size: 10.5px; fill: var(--muted); }
-.bpv-lane.is-dashed .bpv-lane-label { fill: #8a8a93; font-style: italic; }
-.bpv-lane-count { font-size: 10px; fill: #8a8a93; }
+/* ── Graph: React Flow canvas, lanes, edges, node cards ─────────────────
+   React Flow's own stylesheet is imported by BlueprintGraph.tsx (lazy chunk, so it
+   may load after this file). Its look is set through its --xy-* variables on the
+   wrapper, which win regardless of load order, and through rules scoped under
+   .bpv-flow, which outrank its single-class selectors. Every surface uses the app
+   tokens (--panel, --bg, --line, --ink, --muted), so a dark token set carries over. */
+.bpv-flow { position: relative; flex: 1; min-height: 260px; outline: none;
+  --xy-background-color: var(--panel);
+  --xy-edge-stroke: var(--bpv-edge);
+  --xy-edge-stroke-width: 1.5;
+  --xy-edge-stroke-selected: var(--bpv-edge-active);
+  --xy-controls-button-background-color: var(--panel);
+  --xy-controls-button-background-color-hover: var(--panel-2);
+  --xy-controls-button-color: var(--ink-2);
+  --xy-controls-button-color-hover: var(--ink);
+  --xy-controls-button-border-color: var(--line);
+  --xy-controls-box-shadow: 0 1px 2px rgba(24, 24, 27, .06);
+  --xy-minimap-background-color: var(--bg);
+  --xy-minimap-mask-background-color: rgba(127, 127, 140, .07);
+  --xy-minimap-mask-stroke-color: var(--line);
+  --xy-minimap-node-background-color: var(--line);
+  --xy-attribution-background-color: transparent; }
+.bpv-flow > .react-flow { position: absolute; inset: 0; }
+.bpv-flow:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.bpv-flow .react-flow__viewport { transition: opacity .12s ease; }
+.bpv-flow:not(.is-ready) .react-flow__viewport { opacity: 0; }
+.bpv-flow-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
 
-.bpv-edge { fill: none; stroke: #c4c4cc; stroke-width: 1.5; }
-.bpv-arrowhead { fill: #c4c4cc; }
+.bpv-flow .react-flow__controls { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.bpv-flow .react-flow__controls-button { width: 28px; height: 28px; }
+.bpv-flow .react-flow__minimap { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.bpv-flow .react-flow__attribution { opacity: .6; }
+.bpv-flow .react-flow__attribution a { color: var(--muted); }
 
-.bpv-node { cursor: pointer; outline: none; }
-.bpv-node-box { stroke-width: 1.5; fill: #fff; stroke: var(--bpv-planned); transition: filter .1s ease; }
-.bpv-node:hover .bpv-node-box { filter: brightness(0.97); }
-.bpv-node:focus-visible .bpv-node-box { stroke-width: 2.5; }
-.bpv-node.is-planned .bpv-node-box { stroke-dasharray: 5 4; }
-.bpv-node.is-proposal .bpv-node-box { fill: #fff; stroke: var(--bpv-planned); stroke-dasharray: 5 4; }
-.bpv-node.is-ready .bpv-node-box { fill: #fff; stroke: var(--bpv-ready); }
-.bpv-node.is-stated .bpv-node-box { fill: var(--bpv-stated-soft); stroke: var(--bpv-stated); }
-.bpv-node.is-proved .bpv-node-box { fill: var(--bpv-proved-soft); stroke: var(--bpv-proved); }
-.bpv-node.is-failed .bpv-node-box { fill: var(--bpv-failed-soft); stroke: var(--bpv-failed); }
-.bpv-node-ring { fill: none; stroke: var(--ink); stroke-opacity: .28; stroke-width: 2; }
-.bpv-node-key { text-anchor: middle; font-family: var(--bpv-mono); font-size: 11.5px; font-weight: 500; fill: var(--ink); pointer-events: none; }
-.bpv-node-sub { text-anchor: middle; font-size: 10px; fill: var(--muted); pointer-events: none; }
-.bpv-node.is-ready .bpv-node-sub { fill: var(--bpv-ready-ink); }
-.bpv-node.is-stated .bpv-node-sub { fill: var(--bpv-stated-ink); }
-.bpv-node.is-proved .bpv-node-sub { fill: var(--bpv-proved-ink); }
-.bpv-node.is-failed .bpv-node-sub { fill: var(--bpv-failed-ink); }
-.bpv-node.is-proposal .bpv-node-sub { fill: var(--muted); }
-.bpv-node-badge { fill: var(--bpv-running); stroke: #fff; stroke-width: 2; }
+/* Edges are drawn, never hit: a click on one falls through to the pane. */
+.bpv-flow .react-flow__edge { pointer-events: none; }
+.bpv-flow .react-flow__edge.bpv-edge .react-flow__edge-path { stroke: var(--bpv-edge); stroke-width: 1.5; }
+.bpv-flow .react-flow__edge.bpv-edge.is-active .react-flow__edge-path { stroke: var(--bpv-edge-active); stroke-width: 2; }
+.bpv-arrowhead { fill: var(--bpv-edge); }
+.bpv-arrowhead.is-active { fill: var(--bpv-edge-active); }
+/* While the PNG is captured: no selection ring, focus ring or highlighted edges. */
+.bpv-flow.is-exporting .bpv-fnode.is-selected,
+.bpv-flow.is-exporting .react-flow__node:focus-visible > .bpv-fnode { box-shadow: none; }
+.bpv-flow.is-exporting .react-flow__edge.bpv-edge.is-active .react-flow__edge-path { stroke: var(--bpv-edge); stroke-width: 1.5; }
+.bpv-flow.is-exporting .bpv-arrowhead.is-active { fill: var(--bpv-edge); }
+
+/* By-file lanes (background nodes) */
+.bpv-flane { width: 100%; height: 100%; box-sizing: border-box; border: 1px solid var(--bpv-lane-line); border-radius: 12px;
+  background: var(--bg); }
+.bpv-flane.is-dashed { border-style: dashed; }
+.bpv-flane-head { height: 20px; box-sizing: border-box; padding: 5px 12px 0; display: flex; align-items: baseline;
+  justify-content: space-between; gap: 8px; line-height: 13px; }
+.bpv-flane-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--bpv-mono);
+  font-size: 10.5px; color: var(--muted); pointer-events: auto; }
+.bpv-flane.is-dashed .bpv-flane-label { font-style: italic; }
+.bpv-flane-count { flex: none; font-size: 10px; color: var(--muted); opacity: .85; }
+
+/* Node cards */
+.bpv-flow .react-flow__node-blueprintNode { cursor: pointer; }
+.bpv-fnode { position: relative; width: 100%; height: 100%; box-sizing: border-box; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 2px; padding: 4px 10px; text-align: center; color: var(--ink);
+  background: var(--panel); border: 1.5px solid var(--bpv-planned); border-radius: 10px;
+  transition: filter .1s ease; }
+.bpv-fnode.has-file { gap: 1px; padding-top: 3px; padding-bottom: 3px; }
+.react-flow__node:hover > .bpv-fnode { filter: brightness(.97); }
+.bpv-fnode.is-planned { border-style: dashed; }
+.bpv-fnode.is-ready { border-color: var(--bpv-ready); }
+.bpv-fnode.is-stated { background: var(--bpv-stated-soft); border-color: var(--bpv-stated); }
+.bpv-fnode.is-proved { background: var(--bpv-proved-soft); border-color: var(--bpv-proved); }
+.bpv-fnode.is-failed { background: var(--bpv-failed-soft); border-color: var(--bpv-failed); }
+.bpv-fnode.is-proposal { background: var(--panel); border-color: var(--bpv-planned); border-style: dashed; }
+.bpv-fnode.is-selected { box-shadow: 0 0 0 3px var(--panel), 0 0 0 5px var(--bpv-ring); }
+.bpv-flow .react-flow__node:focus-visible > .bpv-fnode { box-shadow: 0 0 0 3px var(--panel), 0 0 0 5px var(--accent); }
+.bpv-fnode-key { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--bpv-mono);
+  font-size: 11.5px; font-weight: 500; line-height: 14px; color: var(--ink); }
+.bpv-fnode-sub { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; font-size: 10px; line-height: 13px;
+  color: var(--muted); }
+.bpv-fnode-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bpv-fnode.is-ready .bpv-fnode-sub { color: var(--bpv-ready-ink); }
+.bpv-fnode.is-stated .bpv-fnode-sub { color: var(--bpv-stated-ink); }
+.bpv-fnode.is-proved .bpv-fnode-sub { color: var(--bpv-proved-ink); }
+.bpv-fnode.is-failed .bpv-fnode-sub { color: var(--bpv-failed-ink); }
+.bpv-fnode.is-proposal .bpv-fnode-sub { color: var(--muted); }
+.bpv-fnode-file { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--bpv-mono);
+  font-size: 9.5px; line-height: 11px; color: var(--muted); }
+.bpv-fnode-badge { position: absolute; top: -5px; right: -5px; width: 12px; height: 12px; box-sizing: border-box; border-radius: 50%;
+  background: var(--bpv-running); border: 2px solid var(--panel); }
+/* Connection points only: invisible, inert. */
+.bpv-flow .react-flow__handle.bpv-fhandle { width: 1px; height: 1px; min-width: 0; min-height: 0; border: 0; background: transparent;
+  opacity: 0; pointer-events: none; }
 
 /* ── Aside: detail panel, proposal, add node ────────────────────────────── */
 .bpv-aside { width: 340px; flex: none; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--bg);
@@ -232,5 +317,5 @@
 .node-chip.is-proved { color: var(--bpv-proved-ink); border-color: #c9e4d3; background: var(--bpv-proved-soft); }
 .node-chip.is-failed { color: var(--bpv-failed-ink); border-color: #f0cfca; background: var(--bpv-failed-soft); }
 .node-chip.is-stated { color: var(--bpv-stated-ink); border-color: #ecdcbb; background: var(--bpv-stated-soft); }
-.node-chip.is-ready { color: var(--bpv-ready-ink); border-color: var(--bpv-ready); background: #fff; }
+.node-chip.is-ready { color: var(--bpv-ready-ink); border-color: var(--bpv-ready); background: var(--panel); }
 .node-chip.is-planned { color: var(--ink-2); }
