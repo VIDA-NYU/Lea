@@ -7,7 +7,7 @@ import { create } from 'zustand';
  *
  *   files      → openPath, filesRailOpen, quickOpenOpen
  *   blueprint  → selectedNodeKey, nodeBindings
- *   canvas     → focusMode, drawerTab
+ *   canvas     → focusMode, drawerTab, pendingLine
  */
 
 /** Repo-relative path of the project blueprint; opening it shows the graph. */
@@ -17,6 +17,14 @@ export const BLUEPRINT_PATH = '.lea/blueprint.md';
 export type FileStatus = 'proved' | 'sorry' | 'error' | 'unchecked' | 'running';
 
 export type DrawerTab = 'goals' | 'problems' | 'verify';
+
+/** A line the canvas should reveal once the document at `path` is shown. */
+export interface PendingLine {
+  /** Repo-relative path; null = whatever document the canvas shows. */
+  path: string | null;
+  /** 1-based line. */
+  line: number;
+}
 
 interface WorkbenchState {
   // ── files ──────────────────────────────────────────────────────────────
@@ -45,6 +53,17 @@ interface WorkbenchState {
   setFocusMode: (on: boolean) => void;
   drawerTab: DrawerTab;
   setDrawerTab: (tab: DrawerTab) => void;
+  /**
+   * Reveal-line contract (canvas slice). Whoever opens a file at a position
+   * (QuickOpen declarations, a blueprint node's file:line, a Problems link from
+   * elsewhere) calls `openFile(path)` and then `revealLine(line, path)`. The
+   * canvas scrolls to the line, puts the cursor on it once that document is
+   * ready, and clears the request. A request for another document waits; it
+   * is dropped when a different file is opened.
+   */
+  pendingLine: PendingLine | null;
+  revealLine: (line: number, path?: string | null) => void;
+  clearPendingLine: () => void;
 }
 
 const BINDINGS_KEY = 'lea:nodeBindings';
@@ -88,4 +107,7 @@ export const useWorkbench = create<WorkbenchState>((set) => ({
   setFocusMode: (focusMode) => set({ focusMode }),
   drawerTab: 'goals',
   setDrawerTab: (drawerTab) => set({ drawerTab }),
+  pendingLine: null,
+  revealLine: (line, path = null) => set({ pendingLine: { path, line } }),
+  clearPendingLine: () => set({ pendingLine: null }),
 }));
