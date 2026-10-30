@@ -791,6 +791,8 @@ export default function App() {
         const dispatch = await runSlashCommand(parsed.name, {
           sessionId: selectedSessionId,
           args: parsed.args,
+          projectId: selectedSession?.project_id ?? undefined,
+          openSession: handleOpenProjectSession,
         });
         if (!dispatch.handled) {
           setError(`Unknown command: /${parsed.name}`);
