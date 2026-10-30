@@ -64,15 +64,20 @@ def create_session(
     now = utc_now()
     session_id = str(uuid4())
     origin_value = (origin or "ui").strip() or "ui"
+    blueprint_node = (blueprint_node or "").strip() or None
     with connect() as conn:
         conn.execute(
             "insert into sessions "
-            "(id, project_id, title, origin, origin_url, parent_id, role, spawned_at_turn, "
-            "blueprint_node, created_at, updated_at) "
-            "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(id, project_id, title, origin, origin_url, parent_id, role, spawned_at_turn, created_at, updated_at) "
+            "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (session_id, project_id, title[:120] or "Untitled theorem", origin_value, origin_url,
-             parent_id, role, spawned_at_turn, (blueprint_node or "").strip() or None, now, now),
+             parent_id, role, spawned_at_turn, now, now),
         )
+        if blueprint_node:
+            # Only a bound session names the column, so the insert above stays valid on
+            # the pre-0052 schemas migration tests seed legacy rows into.
+            conn.execute("update sessions set blueprint_node = ? where id = ?",
+                         (blueprint_node, session_id))
         row = conn.execute("select * from sessions where id = ?", (session_id,)).fetchone()
     _bump_sessions_changed()
     return row_to_dict(row)
