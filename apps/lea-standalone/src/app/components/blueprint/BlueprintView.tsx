@@ -1,5 +1,5 @@
 import '../../../styles/blueprint.css';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { FileText, GitBranch, Plus, X } from 'lucide-react';
 import { getProjectBlueprint, type BlueprintWarning, type GraphNode } from '../../lib/api';
 import { openOrDraftBlueprint, startNodeSession } from '../../lib/blueprintActions';
@@ -9,7 +9,7 @@ import { useSessions } from '../../stores/sessions';
 import { useWorkbench } from '../../stores/workbench';
 import { MarkdownDoc } from '../MarkdownDoc';
 import { AddNodeForm } from './AddNodeForm';
-import { BlueprintGraphSvg, type Grouping } from './BlueprintGraphSvg';
+import type { Grouping } from './BlueprintGraph';
 import { NodeDetailPanel } from './NodeDetailPanel';
 import { ProposalPanel } from './ProposalPanel';
 import { StatusDot, StatusPill } from './StatusDot';
@@ -19,6 +19,9 @@ import { useProjectGraph } from './useProjectGraph';
 // canvas: Graph (By level / By file lanes) and Markdown views, the proposal state
 // for a freshly drafted blueprint, and the node detail panel. Canvas mounts it
 // instead of the editor when useWorkbench().openPath is BLUEPRINT_PATH.
+
+// React Flow loads with the graph, not with the app.
+const BlueprintGraph = lazy(() => import('./BlueprintGraph'));
 
 type View = 'graph' | 'markdown';
 
@@ -212,14 +215,16 @@ export function BlueprintView({
               </div>
             )}
             {graph && nodes.length > 0 && (
-              <BlueprintGraphSvg
-                graph={graph}
-                grouping={grouping}
-                selectedKey={selectedKey}
-                runningKeys={runningKeys}
-                proposal={!!proposal}
-                onSelect={selectNode}
-              />
+              <Suspense fallback={<div className="bpv-msg">Loading graph…</div>}>
+                <BlueprintGraph
+                  graph={graph}
+                  grouping={grouping}
+                  selectedKey={selectedKey}
+                  runningKeys={runningKeys}
+                  proposal={!!proposal}
+                  onSelect={selectNode}
+                />
+              </Suspense>
             )}
             {graph && nodes.length > 0 && (
               <ul className="bpv-legend" aria-label="Legend">
