@@ -54,7 +54,40 @@ export const SLASH_COMMANDS = [
     kind: 'action',
     aliases: ['servers'],
   },
+  {
+    name: 'blueprint',
+    description: 'Open the blueprint (draft one if empty); `next` starts a session per ready node; `prove <node>` binds a session to a node',
+    kind: 'action',
+    argumentHint: '[next | prove <node>]',
+  },
 ];
+
+/**
+ * The `/blueprint` sub-command grammar, parsed from the args after the name:
+ *   ``            → { sub: 'open' }            open the blueprint, draft it if empty
+ *   `next`        → { sub: 'next' }            one session per ready node
+ *   `prove <key>` → { sub: 'prove', node }     a session bound to that node
+ *   `prove`       → { sub: 'prove', error }    missing node
+ *   anything else → { sub: 'unknown', error }
+ * Sub-command names are case-insensitive; the node key keeps its case.
+ * @param {string} args
+ * @returns {{ sub: 'open' } | { sub: 'next' } | { sub: 'prove', node: string } | { sub: 'prove' | 'unknown', error: string }}
+ */
+export function parseBlueprintArgs(args) {
+  const trimmed = (args || '').trim();
+  if (!trimmed) return { sub: 'open' };
+  const m = trimmed.match(/^(\S+)\s*([\s\S]*)$/);
+  const sub = (m ? m[1] : trimmed).toLowerCase();
+  const rest = m ? m[2].trim() : '';
+  if (sub === 'next') return { sub: 'next' };
+  if (sub === 'prove') {
+    const node = rest.replace(/^`|`$/g, '').trim();
+    if (!node) return { sub: 'prove', error: 'Name the node: /blueprint prove <node>' };
+    if (/\s/.test(node)) return { sub: 'prove', error: `A node key has no spaces: /blueprint prove ${node.split(/\s+/)[0]}` };
+    return { sub: 'prove', node };
+  }
+  return { sub: 'unknown', error: `Unknown blueprint command "${sub}". Use /blueprint, /blueprint next, or /blueprint prove <node>.` };
+}
 
 /**
  * Look up a command by name or alias.

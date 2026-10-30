@@ -6,7 +6,8 @@ import { create } from 'zustand';
  * through this store; App.tsx stays thin.
  *
  *   files      → openPath, filesRailOpen, quickOpenOpen
- *   blueprint  → selectedNodeKey, nodeBindings
+ *   blueprint  → selectedNodeKey, nodeBindings, blueprintProposal,
+ *                blueprintRefresh, blueprintNotice, pendingSubmission
  *   canvas     → focusMode, drawerTab, pendingLine
  */
 
@@ -24,6 +25,39 @@ export interface PendingLine {
   path: string | null;
   /** 1-based line. */
   line: number;
+}
+
+/**
+ * A freshly drafted blueprint awaiting review — the `/blueprint` proposal state
+ * (blueprint package, mockup frame 8). The draft already sits in
+ * `.lea/blueprint.md` (the adapter's generate command writes the file directly);
+ * `phase: 'review'` tells BlueprintView to present it as a proposal with per-node
+ * checkboxes and Accept / Edit markdown / Discard instead of as the saved graph.
+ */
+export interface BlueprintProposal {
+  projectId: string;
+  /** drafting: the seeder or a drafting run is in flight · review: awaiting Accept / Discard. */
+  phase: 'drafting' | 'review';
+  /** Where the draft comes from: the artifact seeder (`/blueprint/generate`) or an agent run. */
+  source: 'artifacts' | 'agent';
+  /** The session whose run is drafting (agent source); review starts once it settles. */
+  draftingSessionId?: string;
+  /** Advisory notes from the seeder. */
+  notes?: string[];
+  error?: string;
+}
+
+/**
+ * A composer submission a slash command wants App to send through its normal
+ * submit path (the runner cannot reach the composer or the run stream). The
+ * integrator wires it: when set, App submits `text` in `sessionId` (or the open
+ * session) exactly as if typed, then clears it.
+ */
+export interface PendingSubmission {
+  text: string;
+  sessionId?: string;
+  /** submit (default): send it as a message · draft: only prefill the composer and focus it. */
+  mode?: 'submit' | 'draft';
 }
 
 interface WorkbenchState {
@@ -47,6 +81,18 @@ interface WorkbenchState {
    */
   nodeBindings: Record<string, string>;
   bindSessionToNode: (sessionId: string, nodeKey: string | null) => void;
+  /** The `/blueprint` proposal under review, or null when the blueprint is the saved one. */
+  blueprintProposal: BlueprintProposal | null;
+  setBlueprintProposal: (proposal: BlueprintProposal | null) => void;
+  /** Bumped after anything writes the blueprint or starts a node session; graph readers refetch. */
+  blueprintRefresh: number;
+  bumpBlueprintRefresh: () => void;
+  /** A one-line notice the blueprint view shows (e.g. "Started 2 sessions"); null = none. */
+  blueprintNotice: string | null;
+  setBlueprintNotice: (notice: string | null) => void;
+  /** See PendingSubmission — consumed by App (integrator wiring). */
+  pendingSubmission: PendingSubmission | null;
+  setPendingSubmission: (submission: PendingSubmission | null) => void;
 
   // ── canvas ─────────────────────────────────────────────────────────────
   focusMode: boolean;
@@ -102,6 +148,14 @@ export const useWorkbench = create<WorkbenchState>((set) => ({
       }
       return { nodeBindings };
     }),
+  blueprintProposal: null,
+  setBlueprintProposal: (blueprintProposal) => set({ blueprintProposal }),
+  blueprintRefresh: 0,
+  bumpBlueprintRefresh: () => set((s) => ({ blueprintRefresh: s.blueprintRefresh + 1 })),
+  blueprintNotice: null,
+  setBlueprintNotice: (blueprintNotice) => set({ blueprintNotice }),
+  pendingSubmission: null,
+  setPendingSubmission: (pendingSubmission) => set({ pendingSubmission }),
 
   focusMode: false,
   setFocusMode: (focusMode) => set({ focusMode }),

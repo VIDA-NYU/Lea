@@ -118,3 +118,164 @@ export function computeLayout(graph) {
 export function truncate(text, max = 22) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
+
+// ── By-file lanes (UI redesign, mockup frame 9) ────────────────────────────
+//
+// The "By file" grouping keeps the layered rows of `computeLayout` (foundations at
+// the bottom, theorems on top) but reorders each row so nodes that live in the same
+// `.lean` file sit side by side, and draws a lane around every such group: a rounded
+// rectangle with the file name and node count in a header strip. Nodes without a
+// resolved file (planned nodes) share a dashed "no file yet" lane. One lane per
+// (file, row): a file that spans levels gets one lane segment per level.
+//
+// `computeLayout` is deliberately untouched (the Overleaf extension mirrors its
+// source byte for byte); the level computation is duplicated in `computeLevels`.
+
+export const LANE_PAD = 12; // node edge → lane edge (sides and bottom)
+export const LANE_HEAD = 20; // header strip above the nodes (file name, count)
+export const LANE_GAP = 24; // between two lanes in one row
+export const LANE_V_GAP = 56; // between lane rows
+export const NO_FILE_LANE = 'no file yet';
+
+/**
+ * Longest-dependency-path level per node (cycle-guarded). Same rule as
+ * `computeLayout`: edge `from → to` means `from` depends on `to`, so `to` is deeper.
+ * @template {{ key: string, uses: string[] }} T
+ * @param {{ nodes: T[] }} graph
+ * @returns {Map<string, number>}
+ */
+export function computeLevels(graph) {
+  const keys = new Set(graph.nodes.map((n) => n.key));
+  /** @type {Map<string, string[]>} */
+  const deps = new Map();
+  for (const n of graph.nodes) deps.set(n.key, (n.uses ?? []).filter((u) => keys.has(u)));
+  /** @type {Map<string, number>} */
+  const level = new Map();
+  /** @type {Set<string>} */
+  const visiting = new Set();
+  /** @param {string} key @returns {number} */
+  const levelOf = (key) => {
+    if (level.has(key)) return level.get(key);
+    if (visiting.has(key)) return 0;
+    visiting.add(key);
+    let lv = 0;
+    for (const d of deps.get(key) ?? []) lv = Math.max(lv, levelOf(d) + 1);
+    visiting.delete(key);
+    level.set(key, lv);
+    return lv;
+  };
+  for (const n of graph.nodes) levelOf(n.key);
+  return level;
+}
+
+/**
+ * @typedef {Object} Lane
+ * @property {string | null} file     repo-relative file, or null for the dashed lane
+ * @property {string} label           file name or NO_FILE_LANE
+ * @property {boolean} dashed         true for the "no file yet" lane
+ * @property {number} level           the row (0 = foundations)
+ * @property {number} x
+ * @property {number} y
+ * @property {number} width
+ * @property {number} height
+ * @property {string[]} keys          nodes inside, left to right
+ */
+
+/**
+ * Layered layout with a lane per (file, row). Returns the same `placed` / `width` /
+ * `height` / `order` shape as `computeLayout` plus `lanes`, so a consumer draws the
+ * lanes first, then edges and nodes exactly as before.
+ * @template {{ key: string, uses: string[], file?: string | null }} T
+ * @param {{ nodes: T[] }} graph
+ * @param {{ fileOf?: (node: T) => string | null }} [options]
+ * @returns {{ placed: Map<string, { node: T, x: number, y: number }>, lanes: Lane[], width: number, height: number, order: string[] }}
+ */
+export function computeFileLaneLayout(graph, options = {}) {
+  const fileOf = options.fileOf ?? ((n) => n.file ?? null);
+  const level = computeLevels(graph);
+  const maxLevel = graph.nodes.reduce((m, n) => Math.max(m, level.get(n.key) ?? 0), 0);
+
+  /** @type {Map<number, T[]>} */
+  const byLevel = new Map();
+  for (const n of graph.nodes) {
+    const lv = level.get(n.key) ?? 0;
+    (byLevel.get(lv) ?? byLevel.set(lv, []).get(lv)).push(n);
+  }
+
+  // Global file order: first appearance scanning from the top row down, so a file
+  // keeps roughly the same column across rows. The "no file yet" lane always goes last.
+  /** @type {string[]} */
+  const fileOrder = [];
+  for (let lv = maxLevel; lv >= 0; lv--) {
+    for (const n of byLevel.get(lv) ?? []) {
+      const f = fileOf(n);
+      if (f != null && !fileOrder.includes(f)) fileOrder.push(f);
+    }
+  }
+  /** @param {string | null} f */
+  const rank = (f) => (f == null ? fileOrder.length : fileOrder.indexOf(f));
+
+  /** @param {number} count */
+  const groupWidth = (count) => count * NODE_W + (count - 1) * H_GAP + LANE_PAD * 2;
+  const laneHeight = LANE_HEAD + LANE_PAD * 2 + NODE_H;
+
+  /** @type {Map<number, { file: string | null, nodes: T[] }[]>} */
+  const rows = new Map();
+  let maxRowWidth = NODE_W + LANE_PAD * 2;
+  for (const [lv, nodes] of byLevel) {
+    /** @type {Map<string | null, T[]>} */
+    const groups = new Map();
+    for (const n of nodes) {
+      const f = fileOf(n);
+      (groups.get(f) ?? groups.set(f, []).get(f)).push(n);
+    }
+    const ordered = [...groups.entries()]
+      .map(([file, members]) => ({ file, nodes: members }))
+      .sort((a, b) => rank(a.file) - rank(b.file));
+    rows.set(lv, ordered);
+    const rowWidth =
+      ordered.reduce((w, g) => w + groupWidth(g.nodes.length), 0) + (ordered.length - 1) * LANE_GAP;
+    maxRowWidth = Math.max(maxRowWidth, rowWidth);
+  }
+
+  const width = maxRowWidth + PAD * 2;
+  const rowCount = maxLevel + 1;
+  const height = PAD * 2 + rowCount * laneHeight + (rowCount - 1) * LANE_V_GAP;
+
+  /** @type {Map<string, { node: T, x: number, y: number }>} */
+  const placed = new Map();
+  /** @type {Lane[]} */
+  const lanes = [];
+  /** @type {string[]} */
+  const order = [];
+  for (let lv = maxLevel; lv >= 0; lv--) {
+    const ordered = rows.get(lv) ?? [];
+    const rowWidth =
+      ordered.reduce((w, g) => w + groupWidth(g.nodes.length), 0) + (ordered.length - 1) * LANE_GAP;
+    let x = (width - rowWidth) / 2;
+    const laneY = PAD + (maxLevel - lv) * (laneHeight + LANE_V_GAP);
+    const nodeY = laneY + LANE_HEAD + LANE_PAD;
+    for (const g of ordered) {
+      const w = groupWidth(g.nodes.length);
+      const keys = [];
+      g.nodes.forEach((node, i) => {
+        placed.set(node.key, { node, x: x + LANE_PAD + i * (NODE_W + H_GAP), y: nodeY });
+        order.push(node.key);
+        keys.push(node.key);
+      });
+      lanes.push({
+        file: g.file,
+        label: g.file ?? NO_FILE_LANE,
+        dashed: g.file == null,
+        level: lv,
+        x,
+        y: laneY,
+        width: w,
+        height: laneHeight,
+        keys,
+      });
+      x += w + LANE_GAP;
+    }
+  }
+  return { placed, lanes, width, height, order };
+}
