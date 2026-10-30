@@ -63,11 +63,13 @@ def test_status_derivation_covers_all_kinds(tmp_path, monkeypatch):
     nodes = _nodes_by_key(graph.build_graph(project, proofs))
     assert nodes["helper"]["status"] == "proved"
     assert nodes["main"]["status"] == "failed"
-    assert nodes["sketch"]["status"] == "stated"
+    # sketch: stated (sorry in its decl span), and a leaf, so the ready overlay
+    # applies: every one of its (zero) dependencies is proved (PLAN-blueprint-tools §2.8).
+    assert nodes["sketch"]["status"] == "ready"
     # todo: no decl in code, but its only dep (helper) is proved → ready.
     assert nodes["todo"]["status"] == "ready"
-    # orphan: no `lean:` at all → planned.
-    assert nodes["orphan"]["status"] == "planned"
+    # orphan: no `lean:` at all → planned, and a leaf → ready.
+    assert nodes["orphan"]["status"] == "ready"
 
 
 def test_planned_when_decl_absent_and_no_ready_without_proved_deps(tmp_path, monkeypatch):
@@ -75,7 +77,8 @@ def test_planned_when_decl_absent_and_no_ready_without_proved_deps(tmp_path, mon
     # No code_steps at all: helper exists on disk but is unchecked → stated, not proved;
     # so todo (uses helper) is NOT ready, and main (uses helper) is stated too.
     nodes = _nodes_by_key(graph.build_graph(project, proofs))
-    assert nodes["helper"]["status"] == "stated"   # decl present on disk, never checked
+    # helper: decl present on disk, never checked → stated; a leaf → ready (§2.8).
+    assert nodes["helper"]["status"] == "ready"
     assert nodes["main"]["status"] == "stated"     # decl present, unchecked, no sorry
     # `todo` names a decl no file declares → planned; and helper isn't proved, so the
     # ready overlay does NOT fire.
@@ -122,7 +125,8 @@ def test_verified_true_when_safeverify_ok(tmp_path, monkeypatch):
     assert nodes["helper"]["status"] == "proved"
     assert nodes["helper"]["verified"] is True
     # A non-proved node is never verified, even though no verdict applies to it.
-    assert nodes["sketch"]["status"] == "stated"
+    # (sketch is stated with a sorry; a leaf, so the overlay makes it ready, §2.8.)
+    assert nodes["sketch"]["status"] == "ready"
     assert nodes["sketch"]["verified"] is False
     assert nodes["orphan"]["verified"] is False
 
@@ -205,13 +209,17 @@ def test_qualified_names_never_fall_back_and_short_names_must_be_unique(tmp_path
         '## missing\n- kind: lemma\n- lean: Missing.Namespace.helper\n\n'
         '## legacy\n- kind: lemma\n- lean: helper\n')
     nodes = _nodes_by_key(graph.build_graph(project, proofs))
-    assert nodes['missing']['status'] == 'planned'
+    # Unresolved (planned) leaf → ready under the leaf rule (§2.8); never resolved.
+    assert nodes['missing']['status'] == 'ready'
     assert nodes['missing']['file'] is None
+    assert nodes['missing']['declared'] is False
     assert nodes['legacy']['status'] == 'proved'
     assert nodes['legacy']['resolved_lean'] == 'Lea.Demo.helper'
     (repo / 'Other.lean').write_text('namespace Other\nlemma helper : True := trivial\nend Other\n')
     nodes = _nodes_by_key(graph.build_graph(project, proofs))
-    assert nodes['legacy']['status'] == 'planned'
+    # Ambiguous short name → unresolved (planned), a leaf → ready (§2.8).
+    assert nodes['legacy']['status'] == 'ready'
+    assert nodes['legacy']['resolved_lean'] is None
     (repo / 'Duplicate.lean').write_text((repo / 'helper.lean').read_text())
     names, _ = graph._scan_lean_decls(repo)
     assert graph._resolve_file('Lea.Demo.helper', names) is None
@@ -221,7 +229,8 @@ def test_recorded_check_for_different_bytes_cannot_certify_a_graph_node(tmp_path
     project, proofs = _setup_demo(tmp_path, monkeypatch)
     sid = store.create_session('different bytes', project_id=project['id'])['id']
     store.add_code_step(sid, None, 'helper.lean', content='theorem unrelated : True := trivial', check_status='ok')
-    assert _nodes_by_key(graph.build_graph(project, proofs))['helper']['status'] == 'stated'
+    # Not proved: stated, and a leaf, so ready under §2.8 — never proved.
+    assert _nodes_by_key(graph.build_graph(project, proofs))['helper']['status'] == 'ready'
 
 
 # This module mocks compiler behavior; bind those mock verdicts to their inputs.
