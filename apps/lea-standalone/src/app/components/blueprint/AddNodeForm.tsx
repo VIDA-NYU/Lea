@@ -1,10 +1,13 @@
 import { useState } from 'react';
-import { getProjectDocSnapshot, putProjectDoc, type ProjectGraph } from '../../lib/api';
-import { appendNodeMarkdown, isValidNodeKey } from '../../lib/blueprintModel.js';
+import type { ProjectGraph } from '../../lib/api';
+import { upsertBlueprintNodes } from '../../lib/blueprintApi';
+import { isValidNodeKey } from '../../lib/blueprintModel.js';
 import { useWorkbench } from '../../stores/workbench';
 
-// "Add node": appends a `## key` section (kind, uses, statement) to
-// .lea/blueprint.md through putProjectDoc. Lives in the aside while open.
+// "Add node": creates a node (key, kind, statement, uses) through the blueprint
+// store (POST /blueprint/nodes, docs/PLAN-blueprint-tools.md §2.5). The system
+// validates it, assigns its Lean name and file, renders .lea/blueprint.md and
+// commits. Lives in the aside while open.
 
 export function AddNodeForm({ projectId, graph, onClose }: { projectId: string; graph: ProjectGraph | null; onClose: () => void }) {
   const [key, setKey] = useState('');
@@ -20,7 +23,7 @@ export function AddNodeForm({ projectId, graph, onClose }: { projectId: string; 
   const keyProblem = !trimmed
     ? null
     : !isValidNodeKey(trimmed)
-      ? 'Use letters, digits and underscores, starting with a letter.'
+      ? 'Use letters, digits, underscores and primes, starting with a letter or underscore (at most 64). The key is the declaration\'s short name.'
       : existing.has(trimmed)
         ? 'A node with this key already exists.'
         : null;
@@ -30,11 +33,16 @@ export function AddNodeForm({ projectId, graph, onClose }: { projectId: string; 
     setBusy(true);
     setError(null);
     try {
-      const snapshot = await getProjectDocSnapshot(projectId, 'blueprint');
-      const next = appendNodeMarkdown(snapshot.content, { key: trimmed, kind, lean: null, uses, file: null, statement: statement.trim() });
-      await putProjectDoc(projectId, 'blueprint', next, snapshot.file_revision);
+      const text = statement.trim();
+      const result = await upsertBlueprintNodes(projectId, [{ key: trimmed, kind, uses, ...(text ? { statement: text } : {}) }]);
+      const rejected = result.rejected.find((r) => r.key === trimmed) ?? result.rejected[0];
+      if (rejected) throw new Error(rejected.message || `The node was rejected (${rejected.code}).`);
+      const applied = result.applied.find((a) => a.key === trimmed);
       bump();
       selectNode(trimmed);
+      if (applied?.lean) {
+        useWorkbench.getState().setBlueprintNotice(`Added ${trimmed}: declare it as ${applied.lean}${applied.file ? ` in ${applied.file}` : ''}.`);
+      }
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -47,7 +55,7 @@ export function AddNodeForm({ projectId, graph, onClose }: { projectId: string; 
     <aside className="bpv-aside" aria-label="Add node">
       <div className="bpv-aside-head">
         <span className="bpv-aside-title">Add node</span>
-        <span className="bpv-aside-sub">appends a section to .lea/blueprint.md</span>
+        <span className="bpv-aside-sub">the system assigns its Lean name and file</span>
       </div>
       <form
         className="bpv-aside-body bpv-form"

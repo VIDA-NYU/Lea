@@ -30,6 +30,7 @@ import type {
   SubagentProfile,
   SubagentSettings,
   BlueprintWarning,
+  ProjectBlueprint,
   TreeEntry,
   SearchResult,
   Formalization,
@@ -126,6 +127,8 @@ export async function createRun(
     source_context_ref?: string;
     idempotency_key?: string;
     artifact_operation?: 'reformalize';
+    /** Run purpose (server whitelist); `blueprint_draft` routes blueprint writes to the draft. */
+    purpose?: string;
   },
   onQueued?: (operation: { session_id: string; reformalization_id: string }) => void,
   stillSelected?: () => boolean,
@@ -378,15 +381,19 @@ export interface ProjectSession {
   project_id: string | null;
   created_at: string;
   updated_at: string;
+  /** The blueprint node the session is bound to (PLAN-blueprint-tools §2.10). */
+  blueprint_node?: string | null;
 }
 
 // Create a session that lives inside the project (D23). The run started for it
-// resolves the shared project repo + namespace server-side.
-export async function createSessionInProject(projectId: string, title?: string): Promise<ProjectSession> {
+// resolves the shared project repo + namespace server-side. `blueprintNode` binds
+// the session to a blueprint node (`blueprint_node`); the server then supplies the
+// node's context to its runs.
+export async function createSessionInProject(projectId: string, title?: string, blueprintNode?: string | null): Promise<ProjectSession> {
   const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify(blueprintNode ? { title, blueprint_node: blueprintNode } : { title }),
   });
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Failed to create session: ${response.statusText}`));
@@ -476,15 +483,30 @@ export async function putProjectDoc(
 // these two add the blueprint-specific extras: structural `warnings` (advisory) and
 // the parsed-and-derived dependency `graph` (node status + session attribution).
 
-export async function getProjectBlueprint(
-  projectId: string,
-): Promise<{ content: string; warnings: BlueprintWarning[] }> {
+// GET also carries the parsed live `nodes` and the pending `draft` ({content, nodes,
+// warnings} or null) — PLAN-blueprint-tools §2.5. Older payloads without them read as
+// no nodes and no draft.
+export async function getProjectBlueprint(projectId: string): Promise<ProjectBlueprint> {
   const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/blueprint`);
   if (!response.ok) {
     throw new Error(await detailMessage(response, `Failed to load blueprint: ${response.statusText}`));
   }
   const data = await readWorkspaceResponse(response);
-  return { content: typeof data.content === 'string' ? data.content : '', warnings: data.warnings ?? [] };
+  const draft = data.draft && typeof data.draft === 'object' ? data.draft : null;
+  return {
+    content: typeof data.content === 'string' ? data.content : '',
+    warnings: Array.isArray(data.warnings) ? data.warnings : [],
+    file_revision: typeof data.file_revision === 'string' ? data.file_revision : undefined,
+    nodes: Array.isArray(data.nodes) ? data.nodes : [],
+    draft: draft
+      ? {
+        content: typeof draft.content === 'string' ? draft.content : '',
+        nodes: Array.isArray(draft.nodes) ? draft.nodes : [],
+        warnings: Array.isArray(draft.warnings) ? draft.warnings : [],
+        file_revision: typeof draft.file_revision === 'string' ? draft.file_revision : undefined,
+      }
+      : null,
+  };
 }
 
 export async function getProjectGraph(projectId: string): Promise<ProjectGraph> {
@@ -493,7 +515,11 @@ export async function getProjectGraph(projectId: string): Promise<ProjectGraph> 
     throw new Error(await detailMessage(response, `Failed to load graph: ${response.statusText}`));
   }
   const data = await readWorkspaceResponse(response);
-  return { nodes: Array.isArray(data.nodes) ? data.nodes : [], edges: Array.isArray(data.edges) ? data.edges : [] };
+  return {
+    nodes: Array.isArray(data.nodes) ? data.nodes : [],
+    edges: Array.isArray(data.edges) ? data.edges : [],
+    ...(Array.isArray(data.warnings) ? { warnings: data.warnings } : {}),
+  };
 }
 
 // ── Filesystem tab: tree / read / edit / export the project repo (Slice 6, D34) ─

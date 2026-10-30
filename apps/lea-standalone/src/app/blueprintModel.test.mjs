@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
 
 import {
   statusCounts,
@@ -16,12 +17,16 @@ import {
   parseBlueprintMarkdown,
   serializeBlueprint,
   appendNodeMarkdown,
+  extractNameValue,
   isValidNodeKey,
   firstLine,
   suggestFileFromLean,
   displayFile,
   bindingPrompt,
   draftingPrompt,
+  DRAFTING_PROMPT,
+  effectiveNodeBindings,
+  sessionNodeKey,
   nodeSessionTitle,
   nodeOriginKey,
   relativeTime,
@@ -50,16 +55,18 @@ test('statusCounts tallies every status plus verified and no-file nodes', () => 
   assert.equal(statusCounts([]).total, 0);
 });
 
-test('isReady treats a leaf planned/stated node as ready, a blocked one as not', () => {
+test('isReady and readyNodes read the adapter status only (leaves are ready server-side)', () => {
   const index = byKey(nodes);
-  assert.equal(isReady(index.get('rational_sq_form'), index), true, 'leaf stated node');
-  assert.equal(isReady(index.get('sqrt_two_irrational'), index), false, 'waits on unproved deps');
-  assert.equal(isReady(index.get('even_of_sq_even'), index), false, 'already proved');
-  assert.equal(isReady(index.get('parity_descent'), index), false, 'failed is not ready');
-  assert.equal(isReady({ key: 'x', uses: ['a'], status: 'ready' }, index), true, 'adapter ready wins');
-  assert.deepEqual(readyNodes(nodes).map((n) => n.key), ['rational_sq_form', 'sq_parity']);
+  assert.equal(isReady(index.get('rational_sq_form'), index), false, 'a stated leaf is not ready until the adapter says so');
+  assert.equal(isReady({ key: 'leaf', uses: [], status: 'ready' }), true);
+  assert.equal(isReady({ key: 'x', uses: ['a'], status: 'ready' }, index), true);
+  assert.equal(isReady({ key: 'p', uses: [], status: 'planned' }), false);
+  assert.equal(isReady({ key: 'q', uses: [], status: 'proved' }), false);
+  assert.equal(isReady({ key: 'r', uses: [] }), false, 'no status is not ready');
+  assert.deepEqual(readyNodes(nodes), []);
+  const withReady = nodes.map((n) => (n.key === 'sq_parity' || n.key === 'rational_sq_form' ? { ...n, status: 'ready' } : n));
+  assert.deepEqual(readyNodes(withReady).map((n) => n.key), ['rational_sq_form', 'sq_parity'], 'graph order');
 });
-
 test('dependents and otherBlockers power the Unblocks list', () => {
   assert.deepEqual(dependents(nodes, 'parity_descent').map((n) => n.key), ['sqrt_two_irrational']);
   assert.deepEqual(dependents(nodes, 'sq_parity').map((n) => n.key), ['parity_descent']);
@@ -114,7 +121,33 @@ test('runningNodeKeys marks nodes with a live bound or committing session', () =
   assert.deepEqual([...runningNodeKeys(nodes, sessions.map((s) => ({ ...s, active_run_count: 0 })), bindings)], []);
 });
 
-test('parseBlueprintMarkdown mirrors the adapter parser, fence-aware, with optional file', () => {
+test('session.blueprint_node wins over the localStorage bindings, which fill in for older sessions', () => {
+  const served = [
+    { id: 's-new', title: 'Prove sq_parity', updated_at: '2026-10-30T10:00:00Z', active_run_count: 1, blueprint_node: 'sq_parity' },
+    // The server binding overrides a stale UI binding of the same session.
+    { id: 's-descent', title: 'Descent step', updated_at: '2026-10-29T14:10:00Z', active_run_count: 1, blueprint_node: 'sqrt_two_irrational' },
+    // null (an older session): the UI binding stands.
+    { id: 's-rational', title: 'Rational form', updated_at: '2026-10-29T14:12:00Z', active_run_count: 0, blueprint_node: null },
+  ];
+  assert.deepEqual(effectiveNodeBindings(served, bindings), {
+    's-descent': 'sqrt_two_irrational',
+    's-rational': 'rational_sq_form',
+    's-new': 'sq_parity',
+  });
+  assert.equal(sessionNodeKey('s-new', served, {}), 'sq_parity');
+  assert.equal(sessionNodeKey('s-rational', served, bindings), 'rational_sq_form');
+  assert.equal(sessionNodeKey('s-none', served, bindings), null);
+  assert.equal(sessionNodeKey(undefined, served, bindings), null);
+  assert.deepEqual([...runningNodeKeys(nodes, served, bindings)].sort(), ['parity_descent', 'sq_parity', 'sqrt_two_irrational'],
+    'parity_descent through its committing session, the others through blueprint_node');
+  const rows = nodeSessions(nodes[5], served, bindings);
+  assert.deepEqual(rows.map((r) => [r.session_id, r.running, r.bound]), [['s-new', true, true]]);
+  assert.deepEqual(nodeSessions(nodes[1], served, bindings).map((r) => [r.session_id, r.bound]), [
+    ['s-descent', false],
+    ['s-root', false],
+  ], 's-descent now belongs to another node; it still committed parity_descent');
+});
+test('parseBlueprintMarkdown mirrors the adapter parser, fence-aware, with file', () => {
   const md = [
     'Intro prose before any node.',
     '',
@@ -137,35 +170,132 @@ test('parseBlueprintMarkdown mirrors the adapter parser, fence-aware, with optio
     'No coprime a, b satisfy a² = 2b².',
     'Second line.',
   ].join('\n');
-  const { nodes: parsed, preamble } = parseBlueprintMarkdown(md);
+  const { nodes: parsed, preamble, blocks } = parseBlueprintMarkdown(md);
   assert.equal(parsed.length, 2);
   assert.ok(preamble.startsWith('Intro prose'));
+  assert.match(preamble, /## not_a_node/, 'a fenced heading stays preamble text');
   assert.deepEqual(parsed[0], {
-    key: 'sqrt_two_irrational', kind: 'theorem', lean: null, uses: ['parity_descent', 'rational_sq_form'], file: null,
+    type: 'node', key: 'sqrt_two_irrational', kind: 'theorem', lean: null, uses: ['parity_descent', 'rational_sq_form'], file: null,
     statement: 'Irrational (Real.sqrt 2).',
   });
   assert.deepEqual(parsed[1], {
-    key: 'parity_descent', kind: 'lemma', lean: 'Lea.Sqrt2.parity_descent', uses: ['even_of_sq_even', 'sq_parity'],
+    type: 'node', key: 'parity_descent', kind: 'lemma', lean: 'Lea.Sqrt2.parity_descent', uses: ['even_of_sq_even', 'sq_parity'],
     file: 'Lea/Sqrt2/Descent.lean', statement: 'No coprime a, b satisfy a² = 2b².\nSecond line.',
   });
-  assert.deepEqual(parseBlueprintMarkdown('').nodes, []);
+  assert.deepEqual(blocks, parsed);
+  assert.deepEqual(parseBlueprintMarkdown(''), { nodes: [], preamble: '', blocks: [] });
 });
 
-test('serializeBlueprint round-trips through the parser and drops unchecked nodes', () => {
-  const { nodes: parsed } = parseBlueprintMarkdown(serializeBlueprint([
+test('parseBlueprintMarkdown: prose sections are blocks, not nodes; unknown headers are dropped', () => {
+  const md = [
+    '# Blueprint — Demo',
+    '',
+    '## Goal',
+    '',
+    'Prove the theorem.',
+    '',
+    '## Notes',
+    '- author: Lea',
+    '',
+    '## main',
+    '- status: PROVED',
+    '- kind: theorem',
+    '- lean: `Lea.Demo.main` — file `Lea/Demo/Main.lean`',
+    '- uses: none',
+    '',
+    '- `aux` is proved alongside it.',
+  ].join('\n');
+  const { nodes: parsed, blocks, preamble } = parseBlueprintMarkdown(md);
+  assert.equal(preamble, '# Blueprint — Demo');
+  assert.deepEqual(blocks.map((b) => [b.type, b.type === 'prose' ? b.heading : b.key]), [
+    ['prose', 'Goal'],
+    ['prose', 'Notes'],
+    ['node', 'main'],
+  ]);
+  assert.equal(blocks[0].body, 'Prove the theorem.');
+  assert.equal(blocks[1].body, '- author: Lea', 'a header block with no recognised key is prose');
+  assert.deepEqual(parsed.map((n) => [n.key, n.kind, n.lean, n.file, n.uses]), [['main', 'theorem', 'Lea.Demo.main', null, []]]);
+  assert.equal(parsed[0].statement, '- `aux` is proved alongside it.', 'a `- word:` line after the header block is prose');
+});
+
+test('uses sentinels mean empty only as a single token that is not a node key', () => {
+  const md = '## a\n- kind: lemma\n- uses: none\n\n## b\n- kind: lemma\n- uses: None, a\n\n## c\n- kind: lemma\n- uses: nothing\n\n## nothing\n- kind: lemma\n';
+  const byK = Object.fromEntries(parseBlueprintMarkdown(md).nodes.map((n) => [n.key, n.uses]));
+  assert.deepEqual(byK.a, []);
+  assert.deepEqual(byK.b, ['None', 'a'], 'a sentinel next to other tokens is kept');
+  assert.deepEqual(byK.c, ['nothing'], 'a node named like the sentinel makes it a real dependency');
+});
+
+test('extractNameValue: first backtick span, else the first token without trailing punctuation', () => {
+  assert.equal(extractNameValue('`Lea.V.a` — file `A.lean`'), 'Lea.V.a');
+  assert.equal(extractNameValue('Lea.V.b (the declaration)'), 'Lea.V.b');
+  assert.equal(extractNameValue('Lea.V.e.'), 'Lea.V.e');
+  assert.equal(extractNameValue('Lea.V.f);'), 'Lea.V.f');
+  assert.equal(extractNameValue(''), null);
+  assert.equal(extractNameValue('  '), null);
+});
+
+test('serializeBlueprint is canonical: header order, backticked lean and file, one trailing newline', () => {
+  const text = serializeBlueprint([
     { key: 'a', kind: 'lemma', lean: 'Lea.A.a', uses: [], file: 'Lea/A.lean', statement: 'A holds.' },
     { key: 'b', kind: 'theorem', lean: null, uses: ['a'], file: null, statement: 'B follows from A.' },
-  ]));
-  assert.deepEqual(parsed.map((n) => n.key), ['a', 'b']);
-  assert.equal(parsed[0].lean, 'Lea.A.a');
-  assert.equal(parsed[0].file, null, 'file is not written unless asked (the adapter would read it as prose)');
-  assert.deepEqual(parsed[1].uses, ['a']);
-  assert.equal(parsed[1].statement, 'B follows from A.');
+  ], { preamble: '# Blueprint — A' });
+  assert.equal(text, [
+    '# Blueprint — A',
+    '',
+    '## a',
+    '- kind: lemma',
+    '- lean: `Lea.A.a`',
+    '- file: `Lea/A.lean`',
+    '',
+    'A holds.',
+    '',
+    '## b',
+    '- kind: theorem',
+    '- uses: a',
+    '',
+    'B follows from A.',
+    '',
+  ].join('\n'));
+  const { nodes: parsed } = parseBlueprintMarkdown(text);
+  assert.equal(parsed[0].file, 'Lea/A.lean', 'file is always written when present');
   assert.equal(serializeBlueprint([]), '');
-  const withFile = serializeBlueprint([{ key: 'a', kind: 'lemma', lean: null, uses: [], file: 'Lea/A.lean', statement: '' }], { withFile: true });
-  assert.match(withFile, /- file: Lea\/A\.lean/);
-  const withHead = serializeBlueprint([{ key: 'a', kind: null, lean: null, uses: [], file: null, statement: 's' }], { preamble: '# Plan' });
-  assert.ok(withHead.startsWith('# Plan\n\n## a'));
+  // A node with no header line keeps an empty kind line, so it reads back as a node.
+  const bare = serializeBlueprint([{ key: 'x', kind: null, lean: null, uses: [], file: null, statement: 'X.' }]);
+  assert.equal(bare, '## x\n- kind:\n\nX.\n');
+  assert.deepEqual(parseBlueprintMarkdown(bare).nodes.map((n) => [n.key, n.kind]), [['x', null]]);
+});
+
+test('serializeBlueprint keeps prose sections in place when given the parsed blocks', () => {
+  const md = '# T\n\n## Strategy\n\nFirst a.\n\n## a\n- kind: lemma\n\nA.\n\n## Assembly\n\nThen b.\n\n## b\n- kind: theorem\n- uses: a\n\nB.\n';
+  const parsed = parseBlueprintMarkdown(md);
+  assert.equal(serializeBlueprint(parsed.nodes, { preamble: parsed.preamble, prose: parsed.blocks }), md);
+  // Unchecked nodes drop out; prose stays.
+  const onlyB = serializeBlueprint(parsed.nodes.filter((n) => n.key === 'b'), { preamble: parsed.preamble, prose: parsed.blocks });
+  assert.equal(onlyB, '# T\n\n## Strategy\n\nFirst a.\n\n## Assembly\n\nThen b.\n\n## b\n- kind: theorem\n- uses: a\n\nB.\n');
+  // Prose sections alone render before the nodes.
+  const proseFirst = serializeBlueprint([parsed.nodes[0]], { prose: [{ heading: 'Goal', body: 'G.' }] });
+  assert.equal(proseFirst, '## Goal\n\nG.\n\n## a\n- kind: lemma\n\nA.\n');
+});
+
+test('every fixture renders idempotently; canonical fixtures render byte for byte', () => {
+  const dir = new URL('../../fixtures/blueprint/', import.meta.url);
+  const names = readdirSync(dir).filter((n) => n.endsWith('.md') && n !== 'README.md').sort();
+  assert.ok(names.length >= 8);
+  for (const name of names) {
+    const text = readFileSync(new URL(name, dir), 'utf8');
+    const expected = JSON.parse(readFileSync(new URL(name.replace(/\.md$/, '.expected.json'), dir), 'utf8'));
+    const render = (t) => {
+      const p = parseBlueprintMarkdown(t);
+      return serializeBlueprint(p.nodes, { preamble: p.preamble, prose: p.blocks });
+    };
+    const once = render(text);
+    assert.equal(render(once), once, `${name}: idempotent`);
+    assert.ok(once.endsWith('\n') && !once.endsWith('\n\n'), `${name}: one trailing newline`);
+    if (expected.canonical) assert.equal(once, text, `${name}: canonical`);
+    const prose = parseBlueprintMarkdown(text).blocks.filter((b) => b.type === 'prose').map((b) => b.heading);
+    assert.deepEqual(prose, expected.prose_sections, `${name}: prose sections`);
+  }
 });
 
 test('appendNodeMarkdown adds a section after the existing content', () => {
@@ -177,6 +307,8 @@ test('appendNodeMarkdown adds a section after the existing content', () => {
 
 test('isValidNodeKey accepts identifiers only', () => {
   assert.equal(isValidNodeKey('parity_descent'), true);
+  assert.equal(isValidNodeKey('x'.repeat(64)), true);
+  assert.equal(isValidNodeKey('x'.repeat(65)), false, 'at most 64 characters');
   assert.equal(isValidNodeKey("lemma'"), true);
   assert.equal(isValidNodeKey('two words'), false);
   assert.equal(isValidNodeKey('1abc'), false);
@@ -194,32 +326,17 @@ test('firstLine, suggestFileFromLean and displayFile', () => {
   assert.equal(displayFile({ file: null, lean: null }), null);
 });
 
-test('bindingPrompt states the node, the file and every dependency status', () => {
-  const p = bindingPrompt(nodes[1], nodes);
-  assert.match(p, /^Prove the blueprint node `parity_descent` \(lemma\)/);
-  assert.match(p, /Statement: No coprime a, b satisfy a² = 2b²\./);
-  assert.match(p, /Lean name: Lea\.Sqrt2\.parity_descent/);
-  assert.match(p, /Target file: Lea\/Sqrt2\/Descent\.lean/);
-  assert.match(p, /- even_of_sq_even — proved \(Lea\/Sqrt2\/Parity\.lean\)/);
-  assert.match(p, /- sq_parity — stated with sorry \(Lea\/Sqrt2\/Lemmas\.lean\): use it as a hypothesis/);
-  const top = bindingPrompt(nodes[0], nodes);
-  assert.match(top, /Target file: not written yet/);
-  assert.match(top, /- parity_descent — failed to check/);
-  const leaf = bindingPrompt(nodes[5], nodes);
-  assert.match(leaf, /Dependencies: none — this node is a leaf\./);
-  const missing = bindingPrompt({ key: 'z', uses: ['ghost'], statement: 'Z.' }, nodes);
-  assert.match(missing, /- ghost — not in the blueprint/);
+test('bindingPrompt only names the node (the server supplies the context)', () => {
+  assert.equal(bindingPrompt(nodes[1], nodes), 'Prove the blueprint node `parity_descent`.');
+  assert.equal(bindingPrompt({ key: 'z' }), 'Prove the blueprint node `z`.');
 });
-
-test('draftingPrompt names the project and the markdown format', () => {
-  const p = draftingPrompt({ title: 'Sqrt2', description: 'Prove √2 is irrational.' });
-  assert.match(p, /write it to \.lea\/blueprint\.md/);
-  assert.match(p, /Project: Sqrt2/);
-  assert.match(p, /Goal: Prove √2 is irrational\./);
-  assert.match(p, /## node_key/);
-  assert.doesNotMatch(draftingPrompt({}), /Project:/);
+test('draftingPrompt is the blueprint_upsert instruction, verbatim', () => {
+  const expected =
+    'Draft the proof blueprint for this project. Decompose the goal into nodes and call blueprint_upsert once with every node: key, kind, a one or two sentence statement, and uses. Put the main theorem first and its lemmas below it. Do not prove anything and do not write files. Then stop and summarise the nodes.';
+  assert.equal(draftingPrompt(), expected);
+  assert.equal(draftingPrompt({ title: 'Sqrt2', description: 'Prove √2 is irrational.' }), expected);
+  assert.equal(DRAFTING_PROMPT, expected);
 });
-
 test('session naming helpers', () => {
   assert.equal(nodeSessionTitle('parity_descent'), 'Prove parity_descent');
   assert.equal(nodeOriginKey('parity_descent'), 'blueprint:parity_descent');

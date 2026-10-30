@@ -81,6 +81,9 @@ export function NodeDetailPanel({
   const lastTouched = node.sessions[0]?.last_at;
   const canProve = !running && node.status !== 'proved';
   const ready = isReady(node, index);
+  // The system assigned a name the repo does not declare yet (graph `declared === false`).
+  const undeclared = node.declared === false && !!node.lean;
+  const plannedFile = node.planned_file ?? null;
 
   const askLea = () => {
     const statement = node.statement ? ` — ${node.statement.trim().split('\n')[0]}` : '';
@@ -96,12 +99,28 @@ export function NodeDetailPanel({
           {running && <StatusPill tone="running">session running</StatusPill>}
         </div>
         {node.statement ? <p className="bpv-detail-stmt">{node.statement}</p> : <p className="bpv-detail-stmt is-muted">No statement yet.</p>}
+        {undeclared && (
+          <p className="bpv-note bpv-declare-note">
+            <span>
+              to declare as <code>{node.lean}</code>
+              {plannedFile ? (
+                <>
+                  {' '}
+                  in <code>{plannedFile}</code>
+                </>
+              ) : null}
+            </span>
+          </p>
+        )}
 
         <dl className="bpv-kv">
           <dt>kind</dt>
           <dd>{node.kind ?? '—'}</dd>
           <dt>lean</dt>
-          <dd className="bpv-mono">{node.lean ?? <span className="is-muted">not named yet</span>}</dd>
+          <dd className="bpv-mono">
+            {node.lean ?? <span className="is-muted">not named yet</span>}
+            {undeclared && <span className="is-muted"> · not declared yet</span>}
+          </dd>
           <dt>file</dt>
           <dd>
             {node.file ? (
@@ -110,6 +129,10 @@ export function NodeDetailPanel({
                 {typeof line === 'number' ? `:${line}` : ''}
                 <ArrowRight size={12} />
               </button>
+            ) : plannedFile ? (
+              <span className="bpv-mono">
+                {plannedFile} <span className="is-muted">· planned</span>
+              </span>
             ) : (
               <span className="is-muted">no file yet</span>
             )}

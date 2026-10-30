@@ -9,7 +9,16 @@ import { useFactories } from '../stores/factories';
 import { BLUEPRINT_PATH, useWorkbench } from '../stores/workbench';
 import { compactSession, type ChatMessage } from './api';
 import { findSlashCommand, parseBlueprintArgs } from './slashCommands.js';
-import { openOrDraftBlueprint, proveNode, resolveProjectId, startReadySessions } from './blueprintActions';
+import {
+  blueprintAutoActive,
+  openOrDraftBlueprint,
+  proveNode,
+  readySessionsNotice,
+  resolveProjectId,
+  startBlueprintAuto,
+  startReadySessions,
+  stopBlueprintAuto,
+} from './blueprintActions';
 
 // A local, client-only compaction marker (kind='compaction'). Used for the in-flight
 // "Compacting…" card and the no-op notice — neither is persisted server-side, so both
@@ -76,16 +85,25 @@ const HANDLERS: Record<string, Handler> = {
     }
   },
 
-  // Blueprint package (docs/PLAN-ui-redesign.md §3): `/blueprint` opens the blueprint in
-  // the canvas and drafts it when empty; `/blueprint next` starts one bound session per
-  // ready node; `/blueprint prove <node>` starts a session bound to that node. The work
-  // is in blueprintActions.ts; this handler only parses, resolves the project and
-  // reports. Errors go to the chat banner, outcomes to the blueprint view's notice.
+  // Blueprint package (docs/PLAN-ui-redesign.md §3, docs/PLAN-blueprint-tools.md §3 P4):
+  // `/blueprint` opens the blueprint in the canvas and drafts it when empty (a
+  // `blueprint_draft` run); `/blueprint next` starts one bound session per ready node;
+  // `/blueprint auto` does that now and after every unlock (capped), `/blueprint stop`
+  // ends it; `/blueprint prove <node>` starts a session bound to that node. The work is
+  // in blueprintActions.ts; this handler only parses, resolves the project and reports.
+  // Errors go to the chat banner, outcomes to the blueprint view's notice.
   blueprint: async ({ sessionId, args, projectId, openSession }) => {
     const { setError } = useProofSession.getState();
     const parsed = parseBlueprintArgs(args);
     if ('error' in parsed) {
       setError(parsed.error);
+      return;
+    }
+    if (parsed.sub === 'stop') {
+      const wasActive = blueprintAutoActive();
+      stopBlueprintAuto();
+      useWorkbench.getState().openFile(BLUEPRINT_PATH);
+      if (!wasActive) useWorkbench.getState().setBlueprintNotice('Auto is not running.');
       return;
     }
     const pid = resolveProjectId(sessionId, projectId);
@@ -95,21 +113,21 @@ const HANDLERS: Record<string, Handler> = {
     }
     const wb = useWorkbench.getState();
     if (parsed.sub === 'open') {
-      await openOrDraftBlueprint(pid, { sessionId });
+      await openOrDraftBlueprint(pid, { sessionId, openSession });
       return;
     }
     if (parsed.sub === 'next') {
       const r = await startReadySessions(pid);
       wb.openFile(BLUEPRINT_PATH);
       const n = r.started.length;
-      const parts: string[] = [];
-      if (n > 0) parts.push(`Started ${n} ${n === 1 ? 'session' : 'sessions'}: ${r.started.map((s) => s.nodeKey).join(', ')}`);
-      if (r.alreadyRunning.length) parts.push(`already running: ${r.alreadyRunning.join(', ')}`);
-      if (r.failed.length) parts.push(`could not start ${r.failed.map((f) => `${f.key} (${f.error})`).join('; ')}`);
-      if (r.nothingReady) parts.push('No node is ready: every unproved node waits on a dependency, or the blueprint is empty.');
-      useWorkbench.getState().setBlueprintNotice(parts.join(' · '));
+      useWorkbench.getState().setBlueprintNotice(readySessionsNotice(r));
       if (r.failed.length && n === 0) setError(`Could not start a session: ${r.failed[0].error}`);
       if (n === 1 && openSession) openSession(r.started[0].sessionId);
+      return;
+    }
+    if (parsed.sub === 'auto') {
+      wb.openFile(BLUEPRINT_PATH);
+      await startBlueprintAuto(pid);
       return;
     }
     const started = await proveNode(pid, parsed.node);

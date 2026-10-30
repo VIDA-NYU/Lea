@@ -298,12 +298,17 @@ const UP_NEXT_PRIORITY = { open: 0, prove: 1, 'prove-sorry': 2, retry: 3, blocke
  * first. A node whose bound session is running → "Open session"; ready → Prove;
  * stated (sorry) → Prove the sorry; failed → Retry; planned → blocked with the
  * reason (unproved dependencies, or no statement yet). Proved nodes are done.
+ * Each item carries `unlocked: true` when its key is among `unlocked` (the
+ * keys of the latest `blueprint_unlocked` event this page saw), for a badge;
+ * the order does not change.
  * @param {Array<any>} nodes graph nodes
  * @param {Record<string, Array<{id:string, title:string, state:string}>>} sessionsByNode
  * @param {number} [limit]
+ * @param {Iterable<string> | null} [unlocked]
  */
-export function upNext(nodes, sessionsByNode, limit = 6) {
+export function upNext(nodes, sessionsByNode, limit = 6, unlocked = null) {
   const byKey = new Map((nodes || []).map((node) => [node.key, node]));
+  const fresh = new Set(unlocked || []);
   const items = [];
   for (const node of nodes || []) {
     if (!node || node.status === 'proved') continue;
@@ -329,7 +334,8 @@ export function upNext(nodes, sessionsByNode, limit = 6) {
   }
   return items
     .sort((a, b) => UP_NEXT_PRIORITY[a.action] - UP_NEXT_PRIORITY[b.action])
-    .slice(0, limit);
+    .slice(0, limit)
+    .map((item) => ({ ...item, unlocked: fresh.has(item.node.key) }));
 }
 
 const FILE_STATUS_RANK = { error: 0, sorry: 1, ready: 2, planned: 3, proved: 4 };
