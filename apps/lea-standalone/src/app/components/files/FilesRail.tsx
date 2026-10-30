@@ -176,14 +176,17 @@ export function FilesRail({ projectId }: { projectId: string }) {
       },
     ];
     if (desktop) {
-      // TODO(desktop): the bridge needs `revealPath(absolutePath)` (shell.showItemInFolder)
-      // and the repo root for the project; `openExternal` takes http(s) URLs only.
+      // TODO(api): the desktop bridge has window.leaDesktop.revealPath(absolutePath)
+      // (shell.showItemInFolder; absolute, existing paths only), but the UI knows
+      // repo-relative paths only: Project.repo_path is relative to the adapter's
+      // proofs root ("proofs/Lea/Foo"). Needs `repo_dir` (the absolute repo
+      // directory) on ProjectDetail; then reveal `${repo_dir}/${path}`.
       items.push({
         key: 'reveal',
         separatorBefore: true,
         label: desktop.platform === 'darwin' ? 'Reveal in Finder' : 'Reveal in file manager',
         disabled: true,
-        title: 'Needs window.leaDesktop.revealPath(path) in the desktop bridge.',
+        title: "Not available yet: Lea's API gives repo-relative paths only, and revealing needs the project's absolute folder.",
       });
     }
     items.push(
