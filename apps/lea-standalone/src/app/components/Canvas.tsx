@@ -1,23 +1,60 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import '../../styles/canvas.css';
 import {
   getCurrentFormalization,
-  type CodeStep,
+  putProjectFile,
   type SafeVerifyStatus,
   type EditorDraftBase,
   type FileWriteResult,
 } from '../lib/api';
-import { LiveEditor } from './LiveEditor';
+import { LiveEditor, type EditorStatus, type LiveDiagnostic, type LiveEditorHandle, type SaveState } from './LiveEditor';
 import { ReformalizationDraft } from './ReformalizationDraft';
-import { diffForStep } from '../lib/codeDiff';
-import { ensureHighlighter, highlightToLines, isHighlighterReady } from '../lib/leanHighlight.mjs';
+import { diffForStep, type DiffRow } from '../lib/codeDiff';
 import { deriveCodeStepProofStatus } from '../lib/proofDisplay.mjs';
 import { sortCodeSteps } from '../lib/timeline.mjs';
 import { distinctFiles, latestIndexForPath, mainFilePath } from '../lib/canvasFiles.mjs';
-import { useProofSession } from '../stores/proofSession';
+import { formalizationCanvasSteps, stepsForFormalization } from '../lib/formalizations.mjs';
 import {
-  formalizationCanvasSteps,
-  stepsForFormalization,
-} from '../lib/formalizations.mjs';
+  caretLine,
+  changedLines,
+  chipTab,
+  deriveStatusChip,
+  drawerSummary,
+  editorNote,
+  errorLines,
+  formatSeconds,
+  goalHeadline,
+  latestCheckTiming,
+  parseLeanProblems,
+  problemsForStep,
+  revealTarget,
+  samePath,
+  sorryLines,
+  stepDelta,
+  stepLabel,
+  theoremName,
+  timelineDots,
+  verifyAvailability,
+  withSorryWarnings,
+} from '../lib/canvasModel.js';
+import { useProofSession } from '../stores/proofSession';
+import { useSessions } from '../stores/sessions';
+import { useProjects } from '../stores/projects';
+import { BLUEPRINT_PATH, useWorkbench } from '../stores/workbench';
+import { FilesRail } from './files/FilesRail';
+import { PathCrumbs } from './files/PathCrumbs';
+import { BlueprintView } from './blueprint/BlueprintView';
+import { BlueprintStrip } from './blueprint/BlueprintStrip';
+import { CanvasHeader, type MenuItem, type StatusChip } from './canvas/CanvasHeader';
+import { TimelineStrip, type TimelineDot } from './canvas/TimelineStrip';
+import { StepView, plainRows, type LineMarks, type StepViewHandle } from './canvas/StepView';
+import { CanvasDrawer, DrawerPlaceholder, type Problem } from './canvas/CanvasDrawer';
+import { CanvasEmpty } from './canvas/CanvasEmpty';
+import { FocusRail } from './canvas/FocusRail';
+import { FileSelect } from './canvas/FileSelect';
+import { RevisionNotices } from './canvas/RevisionNotices';
+import { ProjectFileView, type ProjectFileState } from './canvas/ProjectFileView';
+import { composeInChat } from './canvas/composerBridge';
 
 export interface CheckOutcome {
   status: string;
@@ -27,10 +64,29 @@ export interface CheckOutcome {
   check_stale_reason?: string | null;
 }
 
-// The right-hand canvas: navigable, syntax-highlighted Lean snapshots with a
-// per-step verdict, plus direct editing → lean_check and SafeVerify on the
-// latest snapshot. Network calls are delegated to the parent (which owns the
-// session id + state) via onSaveAndCheck / onVerify.
+type VerifyState = { status: SafeVerifyStatus; detail?: string | null; current?: boolean } | null;
+
+/** Class on <html> while focus mode is on; canvas.css collapses the chat with it. */
+export const FOCUS_CLASS = 'lea-focus';
+
+const NO_MARKS: LineMarks = {};
+
+function baseName(path: string): string {
+  return path.split('/').pop() || path;
+}
+
+// The right-hand canvas (docs/PLAN-ui-redesign.md §3 "canvas"): one surface for
+// the proof. A header (name over crumbs, one status chip, lean_check, SafeVerify,
+// more, hide), a timeline strip over the session's code steps, the editor, and a
+// Goals / Problems / Verify drawer.
+//
+// The editor is always the editor: Monaco (LiveEditor) holds the latest snapshot
+// of the followed file, read-only and following Lea while a run is live, editable
+// otherwise. Scrubbing the timeline to an older step shows that snapshot read-only
+// (StepView) while Monaco stays mounted behind it, so a draft survives a look back.
+// Project files and the blueprint are documents in the same surface
+// (useWorkbench().openPath). Network calls are delegated to the parent, which owns
+// the session id + state, via onSaveAndCheck / onCheck / onVerify.
 export function Canvas({
   sessionId,
   onClose,
@@ -40,8 +96,8 @@ export function Canvas({
   onOpenSession,
   captureSelection,
 }: {
-  // Present once the session is persisted; the Live editor needs it for the
-  // queued editor requests. Absent on a brand-new, unsaved session.
+  // Present once the session is persisted; the editor needs it for the queued
+  // editor requests. Absent on a brand-new, unsaved session.
   sessionId?: string;
   captureSelection: () => () => boolean;
   onClose: () => void;
@@ -55,23 +111,42 @@ export function Canvas({
   onVerify: (path?: string) => Promise<CheckOutcome>;
   onOpenSession?: (sessionId: string) => void;
 }) {
-  // v2.2: History = the Shiki snapshot stepper (unchanged); Live = the lean4monaco
-  // editor with real goals/hover/diagnostics (D66). Live needs a persisted session
-  // and at least one file to open.
-  const [mode, setMode] = useState<'history' | 'live'>('history');
-  // R1b/R1c: canvas state (verdict, snapshots, stepper position, run-active flag)
-  // comes straight from the store now — no props from App.
+  // ── stores ────────────────────────────────────────────────────────────────
+  const session = useSessions((s) => (sessionId ? s.sessions.find((x) => x.id === sessionId) : undefined));
+  // With project first every session has one; until then a missing project
+  // means no rail, no crumbs, no blueprint.
+  const projectId = session?.project_id ?? null;
+  const project = useProjects((s) => (projectId ? s.projects.find((p) => p.id === projectId) : undefined));
   const sessionPersistedVerify = useProofSession((s) => s.safeVerify);
   const isRunning = useProofSession((s) => s.isRunning);
   const rawSteps = useProofSession((s) => s.codeSteps);
   const allCodeSteps = useMemo(() => sortCodeSteps(rawSteps), [rawSteps]);
   const scope = useProofSession((s) => s.formalizationScope);
-  const formalizations = useProofSession(s => s.formalizations);
+  const formalizations = useProofSession((s) => s.formalizations);
   const revisionMode = useProofSession((s) => s.canvasRevisionMode);
   const setRevisionMode = useProofSession((s) => s.setCanvasRevisionMode);
   const currentSnapshot = useProofSession((s) => s.currentFormalizationSnapshot);
   const setCurrentSnapshot = useProofSession((s) => s.setCurrentFormalizationSnapshot);
   const refreshToken = useProofSession((s) => s.formalizationRefreshToken);
+  const statusEvents = useProofSession((s) => s.statusEvents);
+  const manualCheckSessionId = useProofSession((s) => s.manualCheckSessionId);
+  const goalSurface = useProofSession((s) => s.goalSurface);
+  const setVerifySurface = useProofSession((s) => s.setVerifySurface);
+  const setGlobalIndex = useProofSession((s) => s.setCodeIndex);
+  const messageCount = useProofSession((s) => s.messages.length);
+  const openPath = useWorkbench((s) => s.openPath);
+  const openFile = useWorkbench((s) => s.openFile);
+  const filesRailOpen = useWorkbench((s) => s.filesRailOpen);
+  const toggleFilesRail = useWorkbench((s) => s.toggleFilesRail);
+  const setFilesRailOpen = useWorkbench((s) => s.setFilesRailOpen);
+  const focusMode = useWorkbench((s) => s.focusMode);
+  const setFocusMode = useWorkbench((s) => s.setFocusMode);
+  const drawerTab = useWorkbench((s) => s.drawerTab);
+  const setDrawerTab = useWorkbench((s) => s.setDrawerTab);
+  const pendingLine = useWorkbench((s) => s.pendingLine);
+  const clearPendingLine = useWorkbench((s) => s.clearPendingLine);
+
+  // ── formalization scope / revision (unchanged behaviour) ──────────────────
   const snapshotContext = useRef('');
   const [currentLoading, setCurrentLoading] = useState(false);
   const [currentError, setCurrentError] = useState<string | null>(null);
@@ -95,9 +170,7 @@ export function Canvas({
         if (!cancelled) setCurrentSnapshot(snapshot);
       })
       .catch((err) => {
-        if (!cancelled) {
-          setCurrentError(err instanceof Error ? err.message : String(err));
-        }
+        if (!cancelled) setCurrentError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
         if (!cancelled) setCurrentLoading(false);
@@ -107,459 +180,734 @@ export function Canvas({
     };
   }, [scope, scoped, sessionId, refreshToken, setCurrentSnapshot]);
 
-  const persistedVerify = scoped
-    ? (
-        currentSnapshot?.formalization_id === scope
-        && currentSnapshot.safe_verify?.current
-          ? {
-              status: currentSnapshot.safe_verify.status,
-              detail: currentSnapshot.safe_verify.detail,
-              current: true,
-            }
-          : null
-      )
+  const persistedVerify: VerifyState = scoped
+    ? currentSnapshot?.formalization_id === scope && currentSnapshot.safe_verify?.current
+      ? { status: currentSnapshot.safe_verify.status, detail: currentSnapshot.safe_verify.detail, current: true }
+      : null
     : sessionPersistedVerify;
   const historicalSteps = useMemo(
-    () => scoped ? stepsForFormalization(allCodeSteps, scope) : allCodeSteps,
+    () => (scoped ? stepsForFormalization(allCodeSteps, scope) : allCodeSteps),
     [allCodeSteps, scope, scoped],
   );
   const showingCurrent = Boolean(scoped && revisionMode === 'current');
   const codeSteps = useMemo(
-    () => scoped
-      ? formalizationCanvasSteps({
-          mode: revisionMode,
-          formalizationId: scope,
-          snapshot: currentSnapshot,
-          historicalSteps,
-        })
-      : historicalSteps,
+    () =>
+      scoped
+        ? formalizationCanvasSteps({ mode: revisionMode, formalizationId: scope, snapshot: currentSnapshot, historicalSteps })
+        : historicalSteps,
     [currentSnapshot, historicalSteps, revisionMode, scope, scoped],
   );
-  const globalIndex = useProofSession((s) => s.codeIndex);
-  const setGlobalIndex = useProofSession((s) => s.setCodeIndex);
-  const [currentFile, setCurrentFile] = useState<{ context: string; path: string } | null>(null);
-  const fileContext = JSON.stringify([sessionId, scope]);
-  const selectedCurrentPath = currentFile?.context === fileContext
-    ? currentFile.path
-    : codeSteps[0]?.path;
-  const total = codeSteps.length;
-  const selectedId = allCodeSteps[globalIndex]?.id;
-  const selectedScopedIndex = historicalSteps.findIndex((item) => item.id === selectedId);
-  const safeIndex = showingCurrent
-    ? codeSteps.findIndex((item) => item.path === selectedCurrentPath)
-    : selectedScopedIndex >= 0
-      ? selectedScopedIndex
-      : Math.max(0, total - 1);
-  useEffect(() => {
-    if (showingCurrent && selectedCurrentPath && currentFile?.context !== fileContext) {
-      setCurrentFile({ context: fileContext, path: selectedCurrentPath });
-    }
-  }, [currentFile, fileContext, selectedCurrentPath, showingCurrent]);
-  const onIndexChange = (nextIndex: number) => {
-    const bounded = Math.min(Math.max(nextIndex, 0), Math.max(total - 1, 0));
-    if (showingCurrent) {
-      if (codeSteps[bounded]) setCurrentFile({ context: fileContext, path: codeSteps[bounded].path });
-      return;
-    }
-    const id = codeSteps[bounded]?.id;
-    const nextGlobal = allCodeSteps.findIndex((item) => item.id === id);
-    if (nextGlobal >= 0) setGlobalIndex(nextGlobal);
-  };
-  const step = codeSteps[safeIndex];
 
-  // Require a file to open an editor, but retain an already-mounted draft when a
-  // background publication removes its file. Explicit navigation can leave it.
-  const retainDraft = mode === 'live' && showingCurrent && !!selectedCurrentPath;
-  const canLive = !!sessionId && (total > 0 || retainDraft) && (!scoped || showingCurrent);
-  useEffect(() => {
-    if (!canLive && mode === 'live') setMode('history');
-  }, [canLive, mode]);
-
-  // File model (#10): a session can touch several files (a main proof + throwaway
-  // `scratch` probes). `shownPath` is the file currently in view; `isFileCurrent` is
-  // true when the shown step is the newest snapshot OF THAT FILE — so Edit / Run
-  // SafeVerify / the verdict stay available on the main proof even when a scratch
-  // write is the newest step overall (the old `isLatest === total-1` hid them).
-  const shownPath = step?.path || (showingCurrent ? selectedCurrentPath : undefined);
+  // ── documents: which file, which step ─────────────────────────────────────
+  // openPath (files package) picks a document: the blueprint, a file this
+  // session touched (shown in the session editor with its timeline), or any
+  // other project file (ProjectFileView). null = the session's own proof.
   const files = useMemo(() => distinctFiles(codeSteps), [codeSteps]);
-  const mainPath = useMemo(
-    () => showingCurrent
-      ? (
-          currentSnapshot?.files.find((file) => file.role === 'primary')?.path
-          || mainFilePath(codeSteps)
-        )
-      : mainFilePath(codeSteps),
+  const mainPath: string | null = useMemo(
+    () =>
+      showingCurrent
+        ? currentSnapshot?.files.find((file) => file.role === 'primary')?.path || mainFilePath(codeSteps)
+        : mainFilePath(codeSteps),
     [codeSteps, currentSnapshot, showingCurrent],
   );
-  const isFileCurrent = !!step && (
-    showingCurrent || safeIndex === latestIndexForPath(codeSteps, shownPath)
+  const total = codeSteps.length;
+  const blueprintOpen = !!projectId && openPath === BLUEPRINT_PATH;
+  const openSessionPath: string | null =
+    projectId && openPath && !blueprintOpen ? files.find((f) => samePath(f.path, openPath))?.path ?? null : null;
+  const fileOpen = !!projectId && !!openPath && !blueprintOpen && !openSessionPath;
+
+  // The canvas follows the latest snapshot of the followed file unless the user
+  // pinned an older step from the timeline (or a chat chip). Following keeps
+  // Monaco mounted across the user's own saves and tracks Lea's edits live.
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+  const [filePick, setFilePick] = useState<string | null>(null);
+  // In the current-revision view a picked file that vanished stays picked, so
+  // its notice shows and a mounted draft is kept (pre-redesign behaviour).
+  const followPath: string | null =
+    openSessionPath ?? (filePick && (showingCurrent || files.some((f) => f.path === filePick)) ? filePick : mainPath);
+  const followIndex = followPath ? latestIndexForPath(codeSteps, followPath) : -1;
+  const pinnedIndex = pinnedId ? codeSteps.findIndex((s) => s.id === pinnedId) : -1;
+  const following = pinnedIndex < 0;
+  const safeIndex = following ? followIndex : pinnedIndex;
+  const step = safeIndex >= 0 ? codeSteps[safeIndex] : undefined;
+  const followStep = followIndex >= 0 ? codeSteps[followIndex] : undefined;
+  const shownPath: string | undefined = step?.path ?? followPath ?? undefined;
+  const isFileCurrent = !!step && (showingCurrent || safeIndex === latestIndexForPath(codeSteps, shownPath));
+  const isNewest = safeIndex >= 0 && safeIndex === total - 1;
+
+  // openFile() calls the canvas makes itself must not reset the pin; the rail /
+  // QuickOpen opening a document shows that document's latest snapshot.
+  const selfOpenRef = useRef(false);
+  const openDocument = useCallback(
+    (path: string | null) => {
+      if (useWorkbench.getState().openPath === path) return;
+      selfOpenRef.current = true;
+      openFile(path);
+    },
+    [openFile],
   );
-  const pickFile = (path: string) => onIndexChange(latestIndexForPath(codeSteps, path));
+  useEffect(() => {
+    const pending = useWorkbench.getState().pendingLine;
+    if (pending?.path && openPath && !samePath(pending.path, openPath)) clearPendingLine();
+    if (selfOpenRef.current) {
+      selfOpenRef.current = false;
+      return;
+    }
+    setPinnedId(null);
+  }, [openPath, clearPendingLine]);
 
+  // Landing on a file's latest step follows that file; landing on an older step
+  // pins it and leaves the followed file (and its mounted editor) alone, so a
+  // look back never costs the draft.
+  const go = useCallback(
+    (next: number) => {
+      const bounded = Math.min(Math.max(next, 0), Math.max(total - 1, 0));
+      const target = codeSteps[bounded];
+      if (!target) return;
+      if (bounded !== latestIndexForPath(codeSteps, target.path)) {
+        setPinnedId(target.id);
+        return;
+      }
+      setFilePick(target.path);
+      setPinnedId(null);
+      const open = useWorkbench.getState().openPath;
+      if (open && !samePath(open, target.path)) openDocument(null);
+    },
+    [codeSteps, openDocument, total],
+  );
+  const pickFile = (path: string) => {
+    setFilePick(path);
+    setPinnedId(null);
+    if (openPath && !samePath(openPath, path)) openDocument(null);
+  };
+
+  // Keep the store's codeIndex on the shown snapshot (chat chips highlight it)
+  // and follow a selection made elsewhere (a chat chip → App.selectStep). A store
+  // change counts as a selection only when codeIndex moves on its own: re-indexing
+  // after new steps (useProofStream.replaceCodeSteps) keeps the same step id.
+  const knownIdRef = useRef<string | null>(null);
+  const selfWriteRef = useRef(false);
+  const [adoptId, setAdoptId] = useState<string | null>(null);
+  useEffect(
+    () =>
+      useProofSession.subscribe((state, prev) => {
+        if (selfWriteRef.current || state.codeIndex === prev.codeIndex || state.codeSteps !== prev.codeSteps) return;
+        const id = sortCodeSteps(state.codeSteps)[state.codeIndex]?.id ?? null;
+        if (!id || id === knownIdRef.current) return;
+        knownIdRef.current = id;
+        setAdoptId(id);
+      }),
+    [],
+  );
+  useEffect(() => {
+    if (!adoptId) return;
+    setAdoptId(null);
+    const i = codeSteps.findIndex((s) => s.id === adoptId);
+    if (i >= 0) go(i);
+  }, [adoptId, codeSteps, go]);
+  useEffect(() => {
+    if (!step) return;
+    const g = allCodeSteps.findIndex((s) => s.id === step.id);
+    if (g < 0) return;
+    knownIdRef.current = step.id;
+    if (g !== useProofSession.getState().codeIndex) {
+      selfWriteRef.current = true;
+      try {
+        setGlobalIndex(g);
+      } finally {
+        selfWriteRef.current = false;
+      }
+    }
+  }, [step, allCodeSteps, setGlobalIndex]);
+
+  // ── the editor (Monaco on the followed file's latest snapshot) ────────────
+  const liveAllowed = !!sessionId && (!scoped || showingCurrent);
+  const liveKeyFor = liveAllowed && followPath ? `${sessionId}:${followPath}:${scoped ? scope : ''}` : null;
+  const [mountedLiveKey, setMountedLiveKey] = useState<string | null>(null);
+  // Retain a mounted draft when a background publication removes its file.
+  const liveWanted = !!liveKeyFor && (!!followStep || (showingCurrent && mountedLiveKey === liveKeyFor));
+  const liveKey = liveWanted ? liveKeyFor : null;
+  useEffect(() => {
+    if (liveKey) setMountedLiveKey(liveKey);
+  }, [liveKey]);
+  const liveVisible = liveWanted && following;
+  const liveRef = useRef<LiveEditorHandle>(null);
+  const stepViewRef = useRef<StepViewHandle>(null);
+  const fileViewRef = useRef<StepViewHandle>(null);
+  // Status is keyed to the editor that reported it, so the previous file's
+  // "ready" never stands in for a freshly mounted editor.
+  const [liveStatusFor, setLiveStatus] = useState<{ key: string | null; status: EditorStatus; error: string | null }>({
+    key: null,
+    status: 'loading',
+    error: null,
+  });
+  const liveStatus =
+    liveStatusFor.key === liveKey ? liveStatusFor : { key: liveKey, status: 'loading' as EditorStatus, error: null };
+  const [saveState, setSaveState] = useState<SaveState>({ state: 'clean', detail: '' });
+  const [analysis, setAnalysis] = useState('pending');
+  const [goals, setGoals] = useState<string | null>(null);
+  const [liveDiags, setLiveDiags] = useState<LiveDiagnostic[] | null>(null);
+  const [liveValue, setLiveValue] = useState<string | null>(null);
+  const [goalNote, setGoalNote] = useState<string | null>(null);
+  useEffect(() => {
+    setSaveState({ state: 'clean', detail: '' });
+    setAnalysis('pending');
+    setGoals(null);
+    setLiveDiags(null);
+    setLiveValue(null);
+    setGoalNote(null);
+  }, [liveKey]);
+  const onLiveStatus = useCallback(
+    (status: EditorStatus, error?: string | null) => setLiveStatus({ key: liveKey, status, error: error ?? null }),
+    [liveKey],
+  );
+  const liveReady = liveWanted && liveStatus.status === 'ready';
+  const liveFailed = liveWanted && liveStatus.status === 'error';
+  /** Monaco is what the user sees. */
+  const showLive = liveVisible && liveReady;
+  const liveDirty = showLive && (saveState.state === 'dirty' || saveState.state === 'saving');
+
+  // ── rows, problems, line marks ────────────────────────────────────────────
+  const rows: DiffRow[] = useMemo(() => {
+    if (!step) return [];
+    if (showingCurrent) return plainRows(step.code);
+    // unchanged/added/removed against this file's previous snapshot; the view
+    // shows the non-removed rows, the removed ones only feed the delta.
+    return diffForStep(codeSteps, safeIndex);
+  }, [codeSteps, safeIndex, showingCurrent, step]);
+  const visibleRows = useMemo(() => rows.filter((r) => r.kind !== 'removed'), [rows]);
+  const delta = useMemo(() => stepDelta(rows), [rows]);
+  const stepProblems: Problem[] = useMemo(() => problemsForStep(step), [step]);
+  const stepSorries: number[] = useMemo(() => sorryLines(step?.code ?? ''), [step?.code]);
+  const sorries: number[] = useMemo(
+    () => (showLive && liveValue != null ? sorryLines(liveValue) : stepSorries),
+    [showLive, liveValue, stepSorries],
+  );
+  // Live LSP diagnostics once the editor's analysis is in (paused while a run
+  // holds the lock); otherwise the persisted lean_check verdict of the step.
+  const useLiveDiags = showLive && !isRunning && analysis === 'available' && !!liveDiags;
+  const problems: Problem[] = useMemo(() => {
+    const base: Problem[] = useLiveDiags && liveDiags ? liveDiags : liveDirty ? [] : stepProblems;
+    return withSorryWarnings(base, sorries, shownPath ?? null);
+  }, [useLiveDiags, liveDiags, liveDirty, shownPath, sorries, stepProblems]);
+  const errLines: number[] = useMemo(() => errorLines(problems), [problems]);
+  const caret =
+    isRunning && following && isNewest && step?.author === 'agent' && !showingCurrent ? caretLine(rows) : null;
+  const marks: LineMarks = useMemo(
+    () => ({
+      changed: liveDirty || showingCurrent ? [] : changedLines(rows),
+      errors: errLines,
+      errorAt: useLiveDiags
+        ? []
+        : problems
+            .filter((p) => p.severity === 'error' && p.line != null)
+            .map((p) => ({ line: p.line as number, column: p.column })),
+      sorries,
+      caret,
+      caretLabel: 'Lea · editing',
+    }),
+    [caret, errLines, liveDirty, problems, rows, showingCurrent, sorries, useLiveDiags],
+  );
+
+  // ── SafeVerify ────────────────────────────────────────────────────────────
   const [busy, setBusy] = useState(false);
-  const [verify, setVerify] = useState<{ status: SafeVerifyStatus; detail?: string | null; current?: boolean } | null>(null);
-
-  // Reset the transient SafeVerify result when the shown step changes.
+  const [verify, setVerify] = useState<VerifyState>(null);
+  // A transient result belongs to the step it ran on; a fresh edit makes it stale.
   useEffect(() => {
     setVerify(null);
   }, [safeIndex, step?.id]);
-
-  const rows = useMemo(() => {
-    if (!step) return [];
-    if (showingCurrent) {
-      return String(step.code).split('\n').map((line: string, index: number) => ({
-        kind: 'unchanged',
-        line,
-        newLineNumber: index + 1,
-      }));
-    }
-    // diffForStep returns unchanged/added/removed; the current file is the
-    // non-removed rows, with 'added' lines tinted green like the mockup.
-    return diffForStep(codeSteps, safeIndex).filter((r: any) => r.kind !== 'removed');
-  }, [codeSteps, safeIndex, showingCurrent, step]);
-
-  // Lean highlighting via Shiki (#11). The highlighter loads async once per session;
-  // `hlReady` flips true when it's in, triggering a re-highlight. `tokenLines` is the
-  // whole snapshot tokenized (so multi-line /- -/ block comments highlight correctly),
-  // indexed by source line; a row picks its tokens by its new-file line number. Null
-  // (still loading / no code) → the rows fall back to plain text, never blank.
-  const [hlReady, setHlReady] = useState(isHighlighterReady());
   useEffect(() => {
-    if (hlReady) return;
-    let cancelled = false;
-    ensureHighlighter()
-      .then(() => !cancelled && setHlReady(true))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [hlReady]);
-  const tokenLines = useMemo(
-    () => (hlReady && step?.code ? highlightToLines(step.code) : null),
-    [hlReady, step?.code],
-  );
-
+    if (liveDirty) setVerify(null);
+  }, [liveDirty]);
   const verifyGeneration = useRef(0);
-  useEffect(() => { verifyGeneration.current += 1; setBusy(false); }, [shownPath, step?.id]);
+  useEffect(() => {
+    verifyGeneration.current += 1;
+    setBusy(false);
+  }, [shownPath, step?.id]);
   const runVerify = async () => {
     const owned = captureSelection();
     const generation = verifyGeneration.current;
     const current = () => owned() && generation === verifyGeneration.current;
     setBusy(true);
     setVerify({ status: 'running' });
+    setVerifySurface(null); // clear any prior box while this run is in flight
     try {
       const result = await onVerify(shownPath);
       if (!current()) return;
-      setVerify({ status: result.status as SafeVerifyStatus, detail: result.detail, current: result.current });
+      const next = { status: result.status as SafeVerifyStatus, detail: result.detail, current: result.current };
+      setVerify(next);
+      // Also surface it above the composer (collapse / send-to-Lea "fix it").
+      setVerifySurface({ status: next.status, detail: next.detail ?? null, current: next.current });
     } catch (err) {
       if (!current()) return;
-      setVerify({ status: 'error', detail: err instanceof Error ? err.message : String(err) });
+      const detail = err instanceof Error ? err.message : String(err);
+      setVerify({ status: 'error', detail });
+      setVerifySurface({ status: 'error', detail });
     } finally {
       if (current()) setBusy(false);
     }
   };
 
   const proofStatus = deriveCodeStepProofStatus(step, { historical: !isFileCurrent });
-  const verdict = proofStatus === 'proved'
-    ? { cls: 'ok', text: '✓ compiles' }
-    : proofStatus === 'defined'
-    ? { cls: 'ok', text: '✓ definition' }
-    : proofStatus === 'checked'
-    ? { cls: 'ok', text: '✓ checked' }
-    : proofStatus === 'stubbed'
-    ? { cls: 'stub', text: '○ checked stub' }
-    : proofStatus === 'failed'
-    ? { cls: 'err', text: '✗ errors' }
-    : { cls: 'idle', text: step?.check_stale_reason ? '○ recheck required' : '○ not checked' };
-
-  // Live result (this session) wins; otherwise fall back to the persisted verdict
-  // when viewing the shown file's current snapshot, so a reload still shows
-  // SafeVerify ✓ (M24) — and it stays on the main proof, not a later scratch.
+  // Live result (this session) wins; otherwise the persisted verdict when viewing
+  // the shown file's current snapshot, so a reload still shows SafeVerify ✓.
   const liveVerify = verify?.status === 'ok' && (verify.current !== true || step?.check_current !== true) ? null : verify;
-  const shownVerify = liveVerify ?? (isFileCurrent && persistedVerify?.current === true ? persistedVerify : null);
-  const conversationBehind = Boolean(
-    showingCurrent
-    && currentSnapshot?.conversation
-    && currentSnapshot.conversation.files.length > 0
-    && !currentSnapshot.conversation.is_current,
+  const shownVerify: VerifyState = liveVerify ?? (isFileCurrent && persistedVerify?.current === true ? persistedVerify : null);
+  const availability = verifyAvailability({
+    hasStep: !!step,
+    latest: isFileCurrent,
+    running: isRunning,
+    busy,
+    draftPending: liveVisible && (liveStatus.status === 'loading' || liveDirty),
+    proof: proofStatus,
+  });
+
+  // ── status chip, timeline, drawer ─────────────────────────────────────────
+  const checking =
+    following &&
+    ((!!manualCheckSessionId && manualCheckSessionId === sessionId) ||
+      (showLive && (saveState.state === 'saving' || (saveState.state === 'saved' && /^checking/.test(saveState.detail)))));
+  const chip: StatusChip = useMemo(
+    () =>
+      deriveStatusChip({
+        step,
+        historical: !isFileCurrent,
+        running: isRunning && following,
+        checking,
+        dirty: liveDirty,
+        verify: shownVerify,
+        problems,
+        sorries,
+      }),
+    [checking, following, isFileCurrent, isRunning, liveDirty, problems, shownVerify, sorries, step],
   );
-  const updater = currentSnapshot?.last_updated_session;
+  const dots: TimelineDot[] = useMemo(() => timelineDots(codeSteps, safeIndex), [codeSteps, safeIndex]);
+  const label = showingCurrent
+    ? { head: 'Current project version', tail: shownPath ? baseName(shownPath) : '' }
+    : stepLabel({ index: safeIndex, total, step, latest: isNewest });
+  const ring =
+    chip.kind === 'running'
+      ? 'running'
+      : chip.kind === 'error'
+        ? 'error'
+        : chip.kind === 'proved' || chip.kind === 'verified'
+          ? 'proved'
+          : chip.kind === 'sorry'
+            ? 'sorry'
+            : 'neutral';
+  const note = editorNote({
+    following,
+    step,
+    previous: safeIndex > 0 ? codeSteps[safeIndex - 1] : undefined,
+    previousIndex: safeIndex - 1,
+    live: liveVisible ? liveStatus.status : 'none',
+    liveError: liveStatus.error,
+    running: isRunning,
+    save: saveState,
+    hasSession: !!sessionId,
+  });
+
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const timing = useMemo(
+    () => (following && !showingCurrent ? latestCheckTiming(statusEvents) : null),
+    [following, showingCurrent, statusEvents],
+  );
+  const liveGoals = showLive && !isRunning;
+  const goalsText = liveGoals ? goals : goalSurface?.rendered ?? null;
+  const summary = drawerSummary({ goal: goalHeadline(goalsText), chip, errors: errLines.length, sorries: sorries.length });
+  const meta =
+    drawerTab === 'verify' && drawerOpen && shownVerify
+      ? `SafeVerify · step ${safeIndex + 1}`
+      : timing
+        ? `lean_check · ${formatSeconds(timing.ms)}${timing.backend === 'cold' ? ' · cold' : ''}`
+        : null;
+  const jumpToLine = (line: number) => {
+    if (showLive) liveRef.current?.jumpToLine(line);
+    else stepViewRef.current?.jumpToLine(line);
+  };
+  const onChipClick = () => {
+    setDrawerOpen(true);
+    setDrawerTab(chipTab(chip));
+    if (chip.line) jumpToLine(chip.line);
+  };
+  const askAboutGoal = async () => {
+    setGoalNote(null);
+    const result = await liveRef.current?.askAboutGoal();
+    if (result) setGoalNote(result);
+  };
+  const goalsHint = liveVisible && !liveReady
+    ? liveFailed
+      ? 'Editor unavailable — goals need the live editor.'
+      : 'Opening editor…'
+    : showLive && isRunning
+      ? 'Goals appear once Lea finishes this run.'
+      : showLive
+        ? 'Click inside a proof to inspect its goals.'
+        : !sessionId
+          ? 'Goals appear once the session has a file.'
+          : 'Go to the latest step to inspect goals live.';
+
+  // ── header actions ────────────────────────────────────────────────────────
+  const canCheck = showLive && !isRunning && !!onCheck;
+  const checkTitle = canCheck
+    ? liveDirty
+      ? 'Save and run lean_check'
+      : 'Run lean_check on the saved file'
+    : isRunning
+      ? 'Wait for Lea to finish'
+      : liveVisible && liveStatus.status === 'loading'
+        ? 'Opening editor…'
+        : 'Go to the latest step to run lean_check';
+
+  // Focus mode (frame 4): a class on <html> lets canvas.css collapse the chat
+  // into nothing while the FocusRail inside the canvas stands in for it. App.tsx
+  // is not touched; the integrator may move the class onto .main-area.
+  useEffect(() => {
+    document.documentElement.classList.toggle(FOCUS_CLASS, focusMode);
+    return () => {
+      document.documentElement.classList.remove(FOCUS_CLASS);
+    };
+  }, [focusMode]);
+  const [focusBaseline, setFocusBaseline] = useState(0);
+  useEffect(() => {
+    if (focusMode) setFocusBaseline(messageCount);
+    // Only the moment focus turns on sets the baseline.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusMode]);
+  const unread = focusMode ? Math.max(0, messageCount - focusBaseline) : 0;
+  const handleClose = () => {
+    if (focusMode) setFocusMode(false);
+    onClose();
+  };
+
+  // ── project file / blueprint documents ────────────────────────────────────
+  const [fileStateAny, setFileState] = useState<ProjectFileState | null>(null);
+  const onFileState = useCallback((s: ProjectFileState) => setFileState(s), []);
+  // Only the open file's own report counts (the view reports its path).
+  const fileState = fileOpen && fileStateAny && fileStateAny.path === openPath ? fileStateAny : null;
+  const fileProblems: Problem[] = useMemo(
+    () =>
+      fileOpen && fileState?.lean
+        ? withSorryWarnings(parseLeanProblems(fileState.check?.detail), fileState.sorries, openPath)
+        : [],
+    [fileOpen, fileState, openPath],
+  );
+  const fileChip: StatusChip = !fileState || fileState.loading || !fileState.lean
+    ? { kind: 'idle', label: '', line: null }
+    : fileState.editing
+      ? { kind: 'unchecked', label: 'Editing…', line: null }
+      : fileState.saving
+        ? { kind: 'running', label: 'Checking…', line: null }
+        : fileState.check
+          ? deriveStatusChip({
+              step: {
+                check_status: fileState.check.status,
+                check_current: true,
+                check_detail: fileState.check.detail,
+                code: fileState.content,
+                path: openPath,
+              },
+              problems: fileProblems,
+              sorries: fileState.sorries,
+            })
+          : { kind: 'unchecked', label: 'Not checked', line: null };
+
+  // ── reveal-line contract (useWorkbench().pendingLine) ─────────────────────
+  const docPath: string | null = fileOpen ? openPath : blueprintOpen ? null : shownPath ?? null;
+  const docReady = fileOpen
+    ? !!fileState && !fileState.loading && !fileState.error
+    : !blueprintOpen && !!step && (!liveVisible || liveReady || liveFailed);
+  const unmountedRef = useRef(false);
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+    };
+  }, []);
+  useEffect(() => {
+    if (!pendingLine || !docReady) return;
+    const line = revealTarget(pendingLine, docPath);
+    if (line == null) return;
+    clearPendingLine();
+    // Next frame: Monaco may have just become visible and not laid out yet.
+    window.requestAnimationFrame(() => {
+      if (unmountedRef.current) return;
+      if (fileOpen) fileViewRef.current?.jumpToLine(line);
+      else if (showLive) liveRef.current?.jumpToLine(line);
+      else stepViewRef.current?.jumpToLine(line);
+    });
+  }, [pendingLine, docReady, docPath, fileOpen, showLive, clearPendingLine]);
+
+  // ── empty state actions ───────────────────────────────────────────────────
+  const [notice, setNotice] = useState<string | null>(null);
+  const handleAskLea = () => {
+    if (focusMode) setFocusMode(false);
+    if (!composeInChat('')) setNotice('Type your theorem in the chat on the left.');
+  };
+  const handleOpenProjectFile = () => {
+    setFilesRailOpen(true);
+    if (!projectId) setNotice('This session is not in a project yet. Open a session from a project to browse its files.');
+  };
+  const handlePasteLean = (code: string) => {
+    if (focusMode) setFocusMode(false);
+    const text = `Continue this Lean proof:\n\n\`\`\`lean\n${code}\n\`\`\``;
+    if (!composeInChat(text)) setNotice('Paste the code into the chat on the left.');
+  };
+  const namespace = project?.namespace?.trim() || '';
+  const newFileDefault = namespace ? `${namespace.split('.').join('/')}/Untitled.lean` : 'Untitled.lean';
+  const handleNewFile = async (path: string): Promise<string | null> => {
+    if (!projectId) return 'Start a session in a project to create files.';
+    const template = /\.lean$/i.test(path)
+      ? `import Mathlib\n\n${namespace ? `namespace ${namespace}\n\n\n\nend ${namespace}\n` : ''}`
+      : '';
+    try {
+      await putProjectFile(projectId, path, template);
+      openFile(path);
+      setFilesRailOpen(true);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  };
+
+  // ── render ────────────────────────────────────────────────────────────────
+  const name = fileOpen
+    ? fileState?.name ?? baseName(openPath as string)
+    : blueprintOpen
+      ? 'Blueprint'
+      : step
+        ? theoremName(step.code, shownPath)
+        : null;
+  const crumbPath = fileOpen || blueprintOpen ? openPath : shownPath ?? null;
+  const crumbs = projectId ? (
+    <PathCrumbs projectId={projectId} path={crumbPath} />
+  ) : (
+    <span className="cv-crumb-fallback mono">{crumbPath ?? 'proofs / —'}</span>
+  );
+  const filePicker =
+    !fileOpen && !blueprintOpen && files.length > 1 ? (
+      <FileSelect files={files} current={shownPath} mainPath={mainPath} onPick={pickFile} />
+    ) : undefined;
+  const menu: MenuItem[] = [
+    { label: focusMode ? 'Exit focus mode' : 'Focus mode', onSelect: () => setFocusMode(!focusMode) },
+    ...(showLive ? [{ label: 'Reload published file', onSelect: () => void liveRef.current?.reload() }] : []),
+    ...(!following && shownPath
+      ? [{ label: 'Go to the latest step of this file', onSelect: () => go(latestIndexForPath(codeSteps, shownPath)) }]
+      : []),
+    ...(scoped
+      ? [
+          revisionMode === 'historical'
+            ? { label: 'View current project version', onSelect: () => setRevisionMode('current') }
+            : {
+                label: "View this conversation's version",
+                onSelect: () => setRevisionMode('historical'),
+                disabled: historicalSteps.length === 0,
+              },
+        ]
+      : []),
+    ...(currentSnapshot?.last_updated_session?.id &&
+    currentSnapshot.last_updated_session.id !== sessionId &&
+    onOpenSession
+      ? [
+          {
+            label: 'Open updating conversation',
+            onSelect: () => onOpenSession(currentSnapshot.last_updated_session!.id),
+          },
+        ]
+      : []),
+    ...(crumbPath ? [{ label: 'Copy file path', onSelect: () => void navigator.clipboard?.writeText(crumbPath) }] : []),
+    ...(openPath && projectId ? [{ label: 'Back to the proof', onSelect: () => openFile(null) }] : []),
+  ];
+
+  const verifyNote = shownVerify && step ? `step ${safeIndex + 1}${shownVerify.current === false ? ' · recheck required' : ''}` : null;
+  const showEmpty = !step && !currentLoading && !liveWanted;
+  const missingFile = showingCurrent && !!shownPath && !step && !currentLoading;
 
   return (
-    <section className="canvas">
-      <div className="canvas-head">
-        {files.length > 1 ? (
-          <FileSelect files={files} current={shownPath} mainPath={mainPath} onPick={pickFile} />
-        ) : (
-          <span className="file">{shownPath || 'no file yet'}</span>
-        )}
-        <span className="head-spacer" />
-        {canLive && (
-          <div className="cv-mode" role="tablist" aria-label="Canvas mode">
-            <button
-              className={`cv-mode-btn ${mode === 'history' ? 'active' : ''}`}
-              onClick={() => setMode('history')}
-              title="Review the agent's proof snapshots step by step"
-            >
-              History
-            </button>
-            <button
-              className={`cv-mode-btn ${mode === 'live' ? 'active' : ''}`}
-              onClick={() => setMode('live')}
-              title="Edit the proof with live Lean feedback (goals, hover, errors on every keystroke)"
-            >
-              Edit
-            </button>
-          </div>
-        )}
-        <button className="x" onClick={onClose} title="Hide canvas">
-          ✕
-        </button>
-      </div>
-
-      {scoped && revisionMode === 'historical' && (
-        <div className="revision-notice historical">
-          <span>
-            Historical snapshot from this conversation — not necessarily the current project version.
-          </span>
-          <button type="button" onClick={() => setRevisionMode('current')}>
-            View current
-          </button>
-        </div>
-      )}
-      {conversationBehind && (
-        <div className="revision-notice">
-          <span>
-            Updated in <strong>{updater?.title || 'another conversation'}</strong>
-            {currentSnapshot?.last_updated_at
-              ? ` on ${formatRevisionDate(currentSnapshot.last_updated_at)}`
-              : ''}. This conversation last worked on an earlier revision.
-          </span>
-          <div className="revision-actions">
-            <button type="button" onClick={() => setRevisionMode('historical')}>
-              View this conversation&apos;s version
-            </button>
-            {updater?.id && updater.id !== sessionId && onOpenSession && (
-              <button type="button" onClick={() => onOpenSession(updater.id)}>
-                Open updating conversation
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-      {scoped && showingCurrent && currentLoading && !step && (
-        <div className="revision-loading">Loading current project version…</div>
-      )}
-      {showingCurrent && shownPath && !step && !currentLoading && (
-        <div className="revision-notice">The selected file is unavailable in the current revision.</div>
-      )}
-      {scoped && showingCurrent && currentError && (
-        <div className="revision-notice error">
-          <span>{currentError}</span>
-          {historicalSteps.length > 0 && (
-            <button type="button" onClick={() => setRevisionMode('historical')}>
-              View this conversation&apos;s version
-            </button>
-          )}
-        </div>
-      )}
-
-      <ReformalizationDraft formalization={formalizations.find(item => item.id === scope)} refresh={refreshToken} />
-      {mode === 'live' && sessionId ? (
-        <LiveEditor
-          sessionId={sessionId}
-          path={shownPath}
-          formalizationId={scoped ? scope : undefined}
-          captureSelection={captureSelection}
-          locked={isRunning}
-          onSave={onSaveAndCheck}
-          onCheck={onCheck}
-          onVerify={onVerify}
+    <section className={`canvas cv ${focusMode ? 'focus' : ''}`} aria-label="Proof canvas">
+      {focusMode && <FocusRail title={session?.title} unread={unread} onExit={() => setFocusMode(false)} />}
+      <div className="cv-surface">
+        <CanvasHeader
+          railAvailable={!!projectId}
+          railOpen={filesRailOpen}
+          onToggleRail={toggleFilesRail}
+          name={name}
+          crumbs={crumbs}
+          filePicker={filePicker}
+          chip={fileOpen ? fileChip : blueprintOpen ? { kind: 'idle', label: '', line: null } : chip}
+          onChipClick={fileOpen ? () => setDrawerOpen(true) : blueprintOpen ? undefined : onChipClick}
+          check={{
+            enabled: canCheck && !fileOpen && !blueprintOpen,
+            title: fileOpen ? 'Saving a project file runs lean_check' : checkTitle,
+            onRun: () => void liveRef.current?.check(),
+          }}
+          verify={{
+            enabled: availability.canRun && !fileOpen && !blueprintOpen,
+            busy,
+            title: fileOpen || blueprintOpen ? 'SafeVerify runs on session proofs' : availability.reason,
+            again: !!shownVerify && shownVerify.status !== 'running',
+            onRun: () => void runVerify(),
+          }}
+          menu={menu}
+          onClose={handleClose}
         />
-      ) : (
-        <>
-      {total > 0 && (
-        <div className="stepper">
-          <button className="nav" onClick={() => onIndexChange(safeIndex - 1)} disabled={safeIndex === 0}>
-            ‹
-          </button>
-          <button
-            className="nav"
-            onClick={() => onIndexChange(safeIndex + 1)}
-            disabled={safeIndex === total - 1}
-          >
-            ›
-          </button>
-          <span className="label">
-            {showingCurrent
-              ? 'Current project version'
-              : `Step ${safeIndex + 1} of ${total}`}
-            {step?.turn ? <span className="stepname"> · turn {step.turn}</span> : null}
-            {step?.author === 'user' ? <span className="stepname"> · your edit</span> : null}
-          </span>
-          <span className="spacer" />
-          <span className={`verdict ${verdict.cls}`} title={step?.projection?.observed_at ? `Workspace observed at ${step.projection.observed_at}; observation expires at ${step.projection.expires_at}.` : undefined}>{verdict.text}</span>
-        </div>
-      )}
-
-      {!step ? (
-        <div className="canvas-empty">
-          {scoped
-            ? 'This formalization has no attributed Lean file yet.'
-            : 'Lean code will appear here as Lea edits files.'}
-        </div>
-      ) : (
-        <div className="code-wrap">
-          <pre className="code">
-            {rows.map((row: any, i: number) => (
-              <div key={i} className={`ln ${row.kind === 'added' ? 'add' : ''}`}>
-                <span className="gut">{row.newLineNumber ?? ''}</span>
-                <span className="src">
-                  {renderLineTokens(tokenLines, row)}
-                  {row.line === '' ? ' ' : ''}
-                </span>
-              </div>
-            ))}
-          </pre>
-        </div>
-      )}
-
-      <div className="canvas-foot">
-        {proofStatus === 'proved' || proofStatus === 'defined' || proofStatus === 'checked' ? (
-          <span className="badge compile">✓ lean_check: 0 errors</span>
-        ) : proofStatus === 'stubbed' ? (
-          <span className="badge stub">✓ lean_check: 0 errors · contains sorry</span>
-        ) : step?.check_status === 'error' ? (
-          <span className="err-detail">{step.check_detail || 'lean_check: errors'}</span>
-        ) : (
-          <span className="badge idle">○ not checked yet</span>
-        )}
-
-        {shownVerify ? (
-          shownVerify.status === 'running' ? (
-            <span className="badge idle">🛡 SafeVerify…</span>
-          ) : shownVerify.status === 'ok' ? (
-            <span className="badge sv">🛡 SafeVerify ✓</span>
-          ) : (
-            // rejected / error / unavailable: show the badge AND the detail inline.
-            // The detail is *why* it failed (kernel-audit output, axiom violation,
-            // build issue) — it must be visible, not hidden in a hover tooltip.
-            <span className="sv-fail">
-              <span className="badge bad">🛡 SafeVerify {shownVerify.status}</span>
-              {shownVerify.detail && (
-                <span className="err-detail">{shownVerify.detail}</span>
+        <div className="cv-row">
+          {projectId && filesRailOpen && <FilesRail projectId={projectId} />}
+          <div className="cv-main">
+            {projectId && !blueprintOpen && <BlueprintStrip projectId={projectId} sessionId={sessionId} />}
+            {blueprintOpen && (
+              <BlueprintView projectId={projectId as string} onOpenSession={onOpenSession ?? (() => {})} />
+            )}
+            {fileOpen && (
+              <>
+                <ProjectFileView
+                  key={openPath as string}
+                  ref={fileViewRef}
+                  projectId={projectId as string}
+                  path={openPath as string}
+                  onState={onFileState}
+                  onBack={() => openFile(null)}
+                />
+                <CanvasDrawer
+                  open={drawerOpen}
+                  onToggle={() => setDrawerOpen((o) => !o)}
+                  tab={drawerTab}
+                  onTab={setDrawerTab}
+                  summary={drawerSummary({
+                    chip: fileChip,
+                    errors: errorLines(fileProblems).length,
+                    sorries: fileState?.sorries.length ?? 0,
+                  })}
+                  meta={fileState?.check ? 'lean_check on save' : null}
+                  problems={fileProblems}
+                  onJump={(line) => fileViewRef.current?.jumpToLine(line)}
+                  goals={{ text: null, hint: 'Goals are available for files a session works on.', canAsk: false, onAsk: () => {} }}
+                  verify={{
+                    result: null,
+                    canRun: false,
+                    busy: false,
+                    onRun: () => {},
+                    disabledReason: 'SafeVerify runs on session proofs.',
+                  }}
+                />
+              </>
+            )}
+            {/* The session's own document. Parked (hidden, still mounted) while a
+                project file or the blueprint is open, so the editor keeps its
+                draft, undo and connection. */}
+            <div className={`cv-doc ${fileOpen || blueprintOpen ? 'parked' : ''}`}>
+              <RevisionNotices
+                scoped={scoped}
+                revisionMode={revisionMode}
+                setRevisionMode={setRevisionMode}
+                snapshot={currentSnapshot}
+                sessionId={sessionId}
+                hasHistory={historicalSteps.length > 0}
+                missingFile={missingFile}
+                error={currentError}
+                onOpenSession={onOpenSession}
+              />
+              {notice && (
+                <div className="revision-notice" role="status">
+                  <span>{notice}</span>
+                  <button type="button" onClick={() => setNotice(null)}>
+                    Dismiss
+                  </button>
+                </div>
               )}
-            </span>
-          )
-        ) : (
-          step &&
-          isFileCurrent &&
-          !isRunning &&
-          proofStatus === 'proved' && (
-            <button className="cv-btn" onClick={runVerify} disabled={busy}>
-              🛡 Run SafeVerify
-            </button>
-          )
-        )}
+
+              <ReformalizationDraft formalization={formalizations.find((item) => item.id === scope)} refresh={refreshToken} />
+
+              {showEmpty ? (
+                <>
+                  <CanvasEmpty
+                    scoped={scoped}
+                    onAskLea={handleAskLea}
+                    onOpenProjectFile={handleOpenProjectFile}
+                    onPasteLean={handlePasteLean}
+                    onNewFile={handleNewFile}
+                    newFileDefault={newFileDefault}
+                    newFileDisabledReason={projectId ? null : 'Start a session in a project to create files'}
+                  />
+                  <DrawerPlaceholder note="Nothing to check yet" />
+                </>
+              ) : (
+                <>
+                  {total > 0 && (
+                    <TimelineStrip
+                      dots={dots}
+                      index={safeIndex}
+                      total={total}
+                      head={label.head}
+                      tail={label.tail}
+                      delta={showingCurrent ? null : delta}
+                      ring={ring}
+                      note={note}
+                      onPrev={() => go(safeIndex - 1)}
+                      onNext={() => go(safeIndex + 1)}
+                      onPick={go}
+                    />
+                  )}
+                  <div className="cv-editor">
+                    {liveKey && sessionId && (
+                      <div className={`cv-live-host ${showLive ? 'ready' : ''} ${liveVisible ? '' : 'parked'}`}>
+                        <LiveEditor
+                          key={liveKey}
+                          ref={liveRef}
+                          sessionId={sessionId}
+                          path={followPath ?? undefined}
+                          formalizationId={scoped ? scope : undefined}
+                          captureSelection={captureSelection}
+                          locked={isRunning}
+                          onSave={onSaveAndCheck}
+                          onCheck={onCheck}
+                          followKey={followStep?.id}
+                          marks={liveVisible ? marks : NO_MARKS}
+                          onStatus={onLiveStatus}
+                          onSaveState={setSaveState}
+                          onAnalysis={setAnalysis}
+                          onGoals={setGoals}
+                          onDiagnostics={setLiveDiags}
+                          onContentChange={setLiveValue}
+                        />
+                      </div>
+                    )}
+                    {step && !showLive && (
+                      <StepView
+                        ref={stepViewRef}
+                        code={step.code}
+                        rows={visibleRows}
+                        marks={marks}
+                        dim={liveVisible && liveStatus.status === 'loading'}
+                      />
+                    )}
+                    {!step && currentLoading && <div className="cv-note">Loading current project version…</div>}
+                  </div>
+                  <CanvasDrawer
+                    open={drawerOpen}
+                    onToggle={() => setDrawerOpen((o) => !o)}
+                    tab={drawerTab}
+                    onTab={setDrawerTab}
+                    summary={summary}
+                    meta={meta}
+                    problems={problems}
+                    onJump={jumpToLine}
+                    goals={{ text: goalsText, hint: goalsHint, canAsk: liveGoals, onAsk: () => void askAboutGoal(), note: goalNote }}
+                    verify={{
+                      result: shownVerify,
+                      canRun: availability.canRun,
+                      busy,
+                      onRun: () => void runVerify(),
+                      disabledReason: availability.canRun ? null : availability.reason,
+                      note: verifyNote,
+                    }}
+                  />
+                </>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
-        </>
-      )}
     </section>
   );
-}
-
-type FileMeta = { path: string; isScratch: boolean; latestIndex: number; count: number };
-
-function formatRevisionDate(value: string): string {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: parsed.getFullYear() === new Date().getFullYear() ? undefined : 'numeric',
-  });
-}
-
-function baseName(path: string): string {
-  return path.split('/').pop() || path;
-}
-
-// The canvas file selector (#10): pick which file the canvas shows + which file
-// SafeVerify/lean_check act on. Main (non-scratch) files first, then a dimmed
-// "scratch" group. Picking a file jumps the stepper to that file's latest snapshot.
-function FileSelect({
-  files,
-  current,
-  mainPath,
-  onPick,
-}: {
-  files: FileMeta[];
-  current?: string;
-  mainPath: string | null;
-  onPick: (path: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  // Non-scratch first, each group most-recently-touched first.
-  const sorted = [...files].sort(
-    (a, b) => Number(a.isScratch) - Number(b.isScratch) || b.latestIndex - a.latestIndex,
-  );
-  const mains = sorted.filter((f) => !f.isScratch);
-  const scratch = sorted.filter((f) => f.isScratch);
-  const pick = (path: string) => {
-    onPick(path);
-    setOpen(false);
-  };
-  const row = (f: FileMeta) => (
-    <button
-      key={f.path}
-      className={`cv-file-row ${f.path === current ? 'active' : ''} ${f.isScratch ? 'scratch' : ''}`}
-      onClick={() => pick(f.path)}
-      title={f.path}
-    >
-      <span className="cv-file-dot" />
-      <span className="cv-file-row-name">{baseName(f.path)}</span>
-      {f.path === mainPath && <span className="cv-file-tag">main</span>}
-    </button>
-  );
-  return (
-    <div className="cv-file-select">
-      <button className="cv-file-btn" onClick={() => setOpen((o) => !o)} title={current}>
-        📄 <span className="cv-file-name">{current ? baseName(current) : 'no file'}</span>
-        <span className="cv-file-caret">▾</span>
-      </button>
-      {open && (
-        <>
-          <div className="cv-file-backdrop" onClick={() => setOpen(false)} />
-          <div className="cv-file-menu">
-            {mains.map(row)}
-            {scratch.length > 0 && <div className="cv-file-group">scratch</div>}
-            {scratch.map(row)}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-// Render one diff row's source using its Shiki tokens (colors inline from the
-// theme). Tokens are keyed by the row's new-file line number, so this stays aligned
-// with the gutter. Falls back to the raw line text while the highlighter loads or if
-// a line has no tokens. Shiki fontStyle is a bitmask (Italic=1, Bold=2, Underline=4).
-function renderLineTokens(tokenLines: any[] | null, row: any) {
-  const toks =
-    tokenLines && row.newLineNumber != null ? tokenLines[row.newLineNumber - 1] : null;
-  if (!toks) return row.line;
-  return toks.map((t: any, j: number) => (
-    <span
-      key={j}
-      style={{
-        color: t.color,
-        fontStyle: t.fontStyle & 1 ? 'italic' : undefined,
-        fontWeight: t.fontStyle & 2 ? 600 : undefined,
-        textDecoration: t.fontStyle & 4 ? 'underline' : undefined,
-      }}
-    >
-      {t.content}
-    </span>
-  ));
 }
