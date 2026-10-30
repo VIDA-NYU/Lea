@@ -241,18 +241,24 @@ export function runningNodeKeys(nodes, sessions, nodeBindings) {
 
 // ── Markdown round-trip (mirrors adapter/app/blueprint.py) ─────────────────
 //
-// One `## key` section per node; `- kind:` / `- lean:` / `- uses:` header lines;
-// everything else under the heading is the statement. Fence-aware so a ```-fenced
-// example never spawns a node. The UI also understands an optional `- file:` line
-// (the proposal's suggested file); the adapter does not read it yet, so the
-// serialiser only writes it when asked (`withFile: true`).
+// The format is docs/PLAN-blueprint-tools.md §2.1; the shared oracle is
+// fixtures/blueprint (README there). A `## ` section is a node iff its header
+// block (the consecutive `- word: value` lines right after the heading, blank
+// lines before the first one skipped) has at least one of kind/lean/file/uses;
+// otherwise it is a prose section, kept verbatim and in place. Unknown header
+// keys inside a node's header block are dropped. Text before the first `## ` is
+// the preamble. Lines inside a ``` fence are inert. The JS parser does not
+// validate (warnings are the adapter's job).
 
 const HEADING_RE = /^##\s+(.+?)\s*$/;
-const HEADER_RE = /^\s*-\s*(kind|lean|uses|file)\s*:\s*(.*?)\s*$/i;
+const HEADER_LINE_RE = /^\s*-\s*([A-Za-z][\w-]*)\s*:\s*(.*?)\s*$/;
 const FENCE_RE = /^\s*```/;
+const RECOGNISED_HEADERS = new Set(['kind', 'lean', 'file', 'uses']);
+const USES_SENTINELS = new Set(['none', '-', '—', '–', 'n/a', 'nothing']);
 
 /**
  * @typedef {Object} BlueprintMdNode
+ * @property {'node'} [type]
  * @property {string} key
  * @property {string | null} kind
  * @property {string | null} lean
@@ -262,74 +268,187 @@ const FENCE_RE = /^\s*```/;
  */
 
 /**
- * @param {string} text
- * @returns {{ nodes: BlueprintMdNode[], preamble: string }}
+ * @typedef {Object} BlueprintProse
+ * @property {'prose'} type
+ * @property {string} heading
+ * @property {string} body
  */
-export function parseBlueprintMarkdown(text) {
-  /** @type {BlueprintMdNode[]} */
-  const nodes = [];
-  /** @type {BlueprintMdNode | null} */
-  let current = null;
-  /** @type {string[]} */
-  let body = [];
-  /** @type {string[]} */
-  const preamble = [];
-  let inFence = false;
-  const flush = () => {
-    if (current) current.statement = body.join('\n').trim();
-  };
-  for (const line of (text || '').split(/\r?\n/)) {
-    if (FENCE_RE.test(line)) {
-      inFence = !inFence;
-      if (current) body.push(line);
-      else preamble.push(line);
-      continue;
-    }
-    if (!inFence) {
-      const heading = line.match(HEADING_RE);
-      if (heading) {
-        flush();
-        current = { key: heading[1].trim(), kind: null, lean: null, uses: [], file: null, statement: '' };
-        body = [];
-        nodes.push(current);
-        continue;
-      }
-      const header = current ? line.match(HEADER_RE) : null;
-      if (header && current) {
-        const name = header[1].toLowerCase();
-        const value = header[2];
-        if (name === 'kind') current.kind = value.trim().toLowerCase() || null;
-        else if (name === 'lean') current.lean = value.trim().replace(/^`|`$/g, '').trim() || null;
-        else if (name === 'file') current.file = value.trim().replace(/^`|`$/g, '').trim() || null;
-        else if (name === 'uses') current.uses = value.split(',').map((p) => p.trim()).filter(Boolean);
-        continue;
-      }
-    }
-    if (current) body.push(line);
-    else preamble.push(line);
-  }
-  flush();
-  return { nodes, preamble: preamble.join('\n').trim() };
+
+/** @typedef {BlueprintMdNode | BlueprintProse} BlueprintBlock */
+
+/** Lines with the leading and trailing blank lines removed, joined. */
+function trimBlankLines(lines) {
+  let start = 0;
+  let end = lines.length;
+  while (start < end && !lines[start].trim()) start += 1;
+  while (end > start && !lines[end - 1].trim()) end -= 1;
+  return lines.slice(start, end).join('\n');
 }
 
 /**
+ * `lean:` / `file:` value: the first backtick span if any, else the first
+ * whitespace token with trailing `,;:.)` stripped. Empty → null.
+ * @param {string} value
+ * @returns {string | null}
+ */
+export function extractNameValue(value) {
+  const text = (value || '').trim();
+  if (!text) return null;
+  const span = text.match(/`([^`]*)`/);
+  if (span) return span[1].trim() || null;
+  const token = text.split(/\s+/)[0].replace(/[,;:.)]+$/, '');
+  return token || null;
+}
+
+/**
+ * `uses:` tokens: split on commas and whitespace, backticks stripped. The empty
+ * sentinels are resolved later, once every node key is known.
+ * @param {string} value
+ * @returns {string[]}
+ */
+function usesTokens(value) {
+  return (value || '')
+    .split(/[\s,]+/)
+    .map((t) => t.replace(/`/g, '').trim())
+    .filter(Boolean);
+}
+
+/**
+ * Parse `.lea/blueprint.md` (or the draft) into nodes, prose sections and the
+ * preamble, the way the adapter does.
+ * @param {string} text
+ * @returns {{ nodes: BlueprintMdNode[], preamble: string, blocks: BlueprintBlock[] }}
+ */
+export function parseBlueprintMarkdown(text) {
+  const lines = (text || '').split(/\r?\n/);
+  /** @type {string[]} */
+  const preamble = [];
+  /** @type {{ heading: string, lines: string[] }[]} */
+  const sections = [];
+  let inFence = false;
+  for (const line of lines) {
+    if (FENCE_RE.test(line)) {
+      inFence = !inFence;
+    } else if (!inFence) {
+      const heading = line.match(HEADING_RE);
+      if (heading) {
+        sections.push({ heading: heading[1].trim(), lines: [] });
+        continue;
+      }
+    }
+    if (sections.length) sections[sections.length - 1].lines.push(line);
+    else preamble.push(line);
+  }
+
+  /** @type {BlueprintBlock[]} */
+  const blocks = [];
+  /** @type {BlueprintMdNode[]} */
+  const nodes = [];
+  /** @type {Map<BlueprintMdNode, string[]>} */
+  const rawUses = new Map();
+  for (const section of sections) {
+    let i = 0;
+    while (i < section.lines.length && !section.lines[i].trim()) i += 1;
+    /** @type {[string, string][]} */
+    const headers = [];
+    let j = i;
+    for (; j < section.lines.length; j += 1) {
+      const line = section.lines[j];
+      if (FENCE_RE.test(line)) break;
+      const m = line.match(HEADER_LINE_RE);
+      if (!m) break;
+      headers.push([m[1].toLowerCase(), m[2]]);
+    }
+    if (!headers.some(([name]) => RECOGNISED_HEADERS.has(name))) {
+      blocks.push({ type: 'prose', heading: section.heading, body: trimBlankLines(section.lines) });
+      continue;
+    }
+    /** @type {BlueprintMdNode} */
+    const node = { type: 'node', key: section.heading, kind: null, lean: null, file: null, uses: [], statement: '' };
+    for (const [name, value] of headers) {
+      if (name === 'kind') node.kind = value.trim().toLowerCase() || null;
+      else if (name === 'lean') node.lean = extractNameValue(value);
+      else if (name === 'file') node.file = extractNameValue(value);
+      else if (name === 'uses') rawUses.set(node, usesTokens(value));
+    }
+    node.statement = trimBlankLines(section.lines.slice(j));
+    blocks.push(node);
+    nodes.push(node);
+  }
+
+  const keys = new Set(nodes.map((n) => n.key));
+  for (const [node, tokens] of rawUses) {
+    const sentinel = tokens.length === 1 && USES_SENTINELS.has(tokens[0].toLowerCase()) && !keys.has(tokens[0]);
+    node.uses = sentinel ? [] : tokens;
+  }
+  return { nodes, preamble: trimBlankLines(preamble), blocks };
+}
+
+/**
+ * One node in canonical form: heading, then `kind`, `lean`, `file`, `uses` (each
+ * only when known), a blank line and the statement. A node with no header at
+ * all keeps an empty `- kind:` line so it still reads back as a node.
+ * @param {BlueprintMdNode} n
+ */
+function renderNode(n) {
+  const lines = [`## ${n.key}`];
+  if (n.kind) lines.push(`- kind: ${n.kind}`);
+  if (n.lean) lines.push(`- lean: \`${n.lean}\``);
+  if (n.file) lines.push(`- file: \`${n.file}\``);
+  if (n.uses && n.uses.length) lines.push(`- uses: ${n.uses.join(', ')}`);
+  if (lines.length === 1) lines.push('- kind:');
+  const statement = trimBlankLines((n.statement || '').split(/\r?\n/));
+  if (statement) lines.push('', statement);
+  return lines.join('\n');
+}
+
+/** @param {{ heading: string, body?: string }} p */
+function renderProse(p) {
+  const body = trimBlankLines((p.body || '').split(/\r?\n/));
+  return body ? `## ${p.heading}\n\n${body}` : `## ${p.heading}`;
+}
+
+/**
+ * Canonical rendering (§2.1): the preamble, then one block per node or prose
+ * section, one blank line between blocks, exactly one trailing newline. `file`
+ * is always written when present.
+ *
+ * `prose` keeps the prose sections. Pass the parsed `blocks` to keep every
+ * prose section in its place between the nodes (nodes are matched by key; a
+ * node of `nodes` missing from the blocks is appended, a node block missing
+ * from `nodes` is dropped). A list of prose sections only is rendered before
+ * the nodes.
  * @param {BlueprintMdNode[]} nodes
- * @param {{ preamble?: string, withFile?: boolean }} [options]
+ * @param {{ preamble?: string, prose?: Array<BlueprintBlock | { heading: string, body: string }> }} [options]
  * @returns {string}
  */
 export function serializeBlueprint(nodes, options = {}) {
-  const blocks = (nodes || []).map((n) => {
-    const lines = [`## ${n.key}`];
-    if (n.kind) lines.push(`- kind: ${n.kind}`);
-    if (n.lean) lines.push(`- lean: \`${n.lean}\``);
-    if (n.uses && n.uses.length) lines.push(`- uses: ${n.uses.join(', ')}`);
-    if (options.withFile && n.file) lines.push(`- file: ${n.file}`);
-    if (n.statement) lines.push('', n.statement.trim());
-    return lines.join('\n');
-  });
-  const head = (options.preamble || '').trim();
-  const out = (head ? [head, ...blocks] : blocks).join('\n\n');
-  return out ? `${out}\n` : '';
+  const list = nodes || [];
+  const layout = options.prose || [];
+  const isNodeBlock = (b) => /** @type {any} */ (b).type === 'node';
+  /** @type {string[]} */
+  const out = [];
+  const head = trimBlankLines((options.preamble || '').split(/\r?\n/));
+  if (head) out.push(head);
+  if (layout.some(isNodeBlock)) {
+    const pending = [...list];
+    for (const block of layout) {
+      if (!isNodeBlock(block)) {
+        out.push(renderProse(/** @type {BlueprintProse} */ (block)));
+        continue;
+      }
+      const at = pending.findIndex((n) => n.key === /** @type {BlueprintMdNode} */ (block).key);
+      if (at < 0) continue;
+      out.push(renderNode(pending[at]));
+      pending.splice(at, 1);
+    }
+    for (const n of pending) out.push(renderNode(n));
+  } else {
+    for (const p of layout) out.push(renderProse(/** @type {BlueprintProse} */ (p)));
+    for (const n of list) out.push(renderNode(n));
+  }
+  const text = out.join('\n\n');
+  return text ? `${text}\n` : '';
 }
 
 /**
@@ -344,9 +463,10 @@ export function appendNodeMarkdown(existing, node) {
   return head ? `${head}\n\n${block}` : block;
 }
 
-/** A node key as the markdown and Lean both accept it: letters, digits, `_`, `'`. */
+/** A node key as §2.1 accepts it: `^[A-Za-z_][A-Za-z0-9_']*$`, at most 64 characters. */
 export function isValidNodeKey(key) {
-  return /^[A-Za-z_][\w']*$/.test((key || '').trim());
+  const k = (key || '').trim();
+  return k.length <= 64 && /^[A-Za-z_][A-Za-z0-9_']*$/.test(k);
 }
 
 /**

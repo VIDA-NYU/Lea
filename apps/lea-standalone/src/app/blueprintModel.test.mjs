@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
 
 import {
   statusCounts,
@@ -16,6 +17,7 @@ import {
   parseBlueprintMarkdown,
   serializeBlueprint,
   appendNodeMarkdown,
+  extractNameValue,
   isValidNodeKey,
   firstLine,
   suggestFileFromLean,
@@ -114,7 +116,7 @@ test('runningNodeKeys marks nodes with a live bound or committing session', () =
   assert.deepEqual([...runningNodeKeys(nodes, sessions.map((s) => ({ ...s, active_run_count: 0 })), bindings)], []);
 });
 
-test('parseBlueprintMarkdown mirrors the adapter parser, fence-aware, with optional file', () => {
+test('parseBlueprintMarkdown mirrors the adapter parser, fence-aware, with file', () => {
   const md = [
     'Intro prose before any node.',
     '',
@@ -137,35 +139,132 @@ test('parseBlueprintMarkdown mirrors the adapter parser, fence-aware, with optio
     'No coprime a, b satisfy a² = 2b².',
     'Second line.',
   ].join('\n');
-  const { nodes: parsed, preamble } = parseBlueprintMarkdown(md);
+  const { nodes: parsed, preamble, blocks } = parseBlueprintMarkdown(md);
   assert.equal(parsed.length, 2);
   assert.ok(preamble.startsWith('Intro prose'));
+  assert.match(preamble, /## not_a_node/, 'a fenced heading stays preamble text');
   assert.deepEqual(parsed[0], {
-    key: 'sqrt_two_irrational', kind: 'theorem', lean: null, uses: ['parity_descent', 'rational_sq_form'], file: null,
+    type: 'node', key: 'sqrt_two_irrational', kind: 'theorem', lean: null, uses: ['parity_descent', 'rational_sq_form'], file: null,
     statement: 'Irrational (Real.sqrt 2).',
   });
   assert.deepEqual(parsed[1], {
-    key: 'parity_descent', kind: 'lemma', lean: 'Lea.Sqrt2.parity_descent', uses: ['even_of_sq_even', 'sq_parity'],
+    type: 'node', key: 'parity_descent', kind: 'lemma', lean: 'Lea.Sqrt2.parity_descent', uses: ['even_of_sq_even', 'sq_parity'],
     file: 'Lea/Sqrt2/Descent.lean', statement: 'No coprime a, b satisfy a² = 2b².\nSecond line.',
   });
-  assert.deepEqual(parseBlueprintMarkdown('').nodes, []);
+  assert.deepEqual(blocks, parsed);
+  assert.deepEqual(parseBlueprintMarkdown(''), { nodes: [], preamble: '', blocks: [] });
 });
 
-test('serializeBlueprint round-trips through the parser and drops unchecked nodes', () => {
-  const { nodes: parsed } = parseBlueprintMarkdown(serializeBlueprint([
+test('parseBlueprintMarkdown: prose sections are blocks, not nodes; unknown headers are dropped', () => {
+  const md = [
+    '# Blueprint — Demo',
+    '',
+    '## Goal',
+    '',
+    'Prove the theorem.',
+    '',
+    '## Notes',
+    '- author: Lea',
+    '',
+    '## main',
+    '- status: PROVED',
+    '- kind: theorem',
+    '- lean: `Lea.Demo.main` — file `Lea/Demo/Main.lean`',
+    '- uses: none',
+    '',
+    '- `aux` is proved alongside it.',
+  ].join('\n');
+  const { nodes: parsed, blocks, preamble } = parseBlueprintMarkdown(md);
+  assert.equal(preamble, '# Blueprint — Demo');
+  assert.deepEqual(blocks.map((b) => [b.type, b.type === 'prose' ? b.heading : b.key]), [
+    ['prose', 'Goal'],
+    ['prose', 'Notes'],
+    ['node', 'main'],
+  ]);
+  assert.equal(blocks[0].body, 'Prove the theorem.');
+  assert.equal(blocks[1].body, '- author: Lea', 'a header block with no recognised key is prose');
+  assert.deepEqual(parsed.map((n) => [n.key, n.kind, n.lean, n.file, n.uses]), [['main', 'theorem', 'Lea.Demo.main', null, []]]);
+  assert.equal(parsed[0].statement, '- `aux` is proved alongside it.', 'a `- word:` line after the header block is prose');
+});
+
+test('uses sentinels mean empty only as a single token that is not a node key', () => {
+  const md = '## a\n- kind: lemma\n- uses: none\n\n## b\n- kind: lemma\n- uses: None, a\n\n## c\n- kind: lemma\n- uses: nothing\n\n## nothing\n- kind: lemma\n';
+  const byK = Object.fromEntries(parseBlueprintMarkdown(md).nodes.map((n) => [n.key, n.uses]));
+  assert.deepEqual(byK.a, []);
+  assert.deepEqual(byK.b, ['None', 'a'], 'a sentinel next to other tokens is kept');
+  assert.deepEqual(byK.c, ['nothing'], 'a node named like the sentinel makes it a real dependency');
+});
+
+test('extractNameValue: first backtick span, else the first token without trailing punctuation', () => {
+  assert.equal(extractNameValue('`Lea.V.a` — file `A.lean`'), 'Lea.V.a');
+  assert.equal(extractNameValue('Lea.V.b (the declaration)'), 'Lea.V.b');
+  assert.equal(extractNameValue('Lea.V.e.'), 'Lea.V.e');
+  assert.equal(extractNameValue('Lea.V.f);'), 'Lea.V.f');
+  assert.equal(extractNameValue(''), null);
+  assert.equal(extractNameValue('  '), null);
+});
+
+test('serializeBlueprint is canonical: header order, backticked lean and file, one trailing newline', () => {
+  const text = serializeBlueprint([
     { key: 'a', kind: 'lemma', lean: 'Lea.A.a', uses: [], file: 'Lea/A.lean', statement: 'A holds.' },
     { key: 'b', kind: 'theorem', lean: null, uses: ['a'], file: null, statement: 'B follows from A.' },
-  ]));
-  assert.deepEqual(parsed.map((n) => n.key), ['a', 'b']);
-  assert.equal(parsed[0].lean, 'Lea.A.a');
-  assert.equal(parsed[0].file, null, 'file is not written unless asked (the adapter would read it as prose)');
-  assert.deepEqual(parsed[1].uses, ['a']);
-  assert.equal(parsed[1].statement, 'B follows from A.');
+  ], { preamble: '# Blueprint — A' });
+  assert.equal(text, [
+    '# Blueprint — A',
+    '',
+    '## a',
+    '- kind: lemma',
+    '- lean: `Lea.A.a`',
+    '- file: `Lea/A.lean`',
+    '',
+    'A holds.',
+    '',
+    '## b',
+    '- kind: theorem',
+    '- uses: a',
+    '',
+    'B follows from A.',
+    '',
+  ].join('\n'));
+  const { nodes: parsed } = parseBlueprintMarkdown(text);
+  assert.equal(parsed[0].file, 'Lea/A.lean', 'file is always written when present');
   assert.equal(serializeBlueprint([]), '');
-  const withFile = serializeBlueprint([{ key: 'a', kind: 'lemma', lean: null, uses: [], file: 'Lea/A.lean', statement: '' }], { withFile: true });
-  assert.match(withFile, /- file: Lea\/A\.lean/);
-  const withHead = serializeBlueprint([{ key: 'a', kind: null, lean: null, uses: [], file: null, statement: 's' }], { preamble: '# Plan' });
-  assert.ok(withHead.startsWith('# Plan\n\n## a'));
+  // A node with no header line keeps an empty kind line, so it reads back as a node.
+  const bare = serializeBlueprint([{ key: 'x', kind: null, lean: null, uses: [], file: null, statement: 'X.' }]);
+  assert.equal(bare, '## x\n- kind:\n\nX.\n');
+  assert.deepEqual(parseBlueprintMarkdown(bare).nodes.map((n) => [n.key, n.kind]), [['x', null]]);
+});
+
+test('serializeBlueprint keeps prose sections in place when given the parsed blocks', () => {
+  const md = '# T\n\n## Strategy\n\nFirst a.\n\n## a\n- kind: lemma\n\nA.\n\n## Assembly\n\nThen b.\n\n## b\n- kind: theorem\n- uses: a\n\nB.\n';
+  const parsed = parseBlueprintMarkdown(md);
+  assert.equal(serializeBlueprint(parsed.nodes, { preamble: parsed.preamble, prose: parsed.blocks }), md);
+  // Unchecked nodes drop out; prose stays.
+  const onlyB = serializeBlueprint(parsed.nodes.filter((n) => n.key === 'b'), { preamble: parsed.preamble, prose: parsed.blocks });
+  assert.equal(onlyB, '# T\n\n## Strategy\n\nFirst a.\n\n## Assembly\n\nThen b.\n\n## b\n- kind: theorem\n- uses: a\n\nB.\n');
+  // Prose sections alone render before the nodes.
+  const proseFirst = serializeBlueprint([parsed.nodes[0]], { prose: [{ heading: 'Goal', body: 'G.' }] });
+  assert.equal(proseFirst, '## Goal\n\nG.\n\n## a\n- kind: lemma\n\nA.\n');
+});
+
+test('every fixture renders idempotently; canonical fixtures render byte for byte', () => {
+  const dir = new URL('../../fixtures/blueprint/', import.meta.url);
+  const names = readdirSync(dir).filter((n) => n.endsWith('.md') && n !== 'README.md').sort();
+  assert.ok(names.length >= 8);
+  for (const name of names) {
+    const text = readFileSync(new URL(name, dir), 'utf8');
+    const expected = JSON.parse(readFileSync(new URL(name.replace(/\.md$/, '.expected.json'), dir), 'utf8'));
+    const render = (t) => {
+      const p = parseBlueprintMarkdown(t);
+      return serializeBlueprint(p.nodes, { preamble: p.preamble, prose: p.blocks });
+    };
+    const once = render(text);
+    assert.equal(render(once), once, `${name}: idempotent`);
+    assert.ok(once.endsWith('\n') && !once.endsWith('\n\n'), `${name}: one trailing newline`);
+    if (expected.canonical) assert.equal(once, text, `${name}: canonical`);
+    const prose = parseBlueprintMarkdown(text).blocks.filter((b) => b.type === 'prose').map((b) => b.heading);
+    assert.deepEqual(prose, expected.prose_sections, `${name}: prose sections`);
+  }
 });
 
 test('appendNodeMarkdown adds a section after the existing content', () => {
@@ -177,6 +276,8 @@ test('appendNodeMarkdown adds a section after the existing content', () => {
 
 test('isValidNodeKey accepts identifiers only', () => {
   assert.equal(isValidNodeKey('parity_descent'), true);
+  assert.equal(isValidNodeKey('x'.repeat(64)), true);
+  assert.equal(isValidNodeKey('x'.repeat(65)), false, 'at most 64 characters');
   assert.equal(isValidNodeKey("lemma'"), true);
   assert.equal(isValidNodeKey('two words'), false);
   assert.equal(isValidNodeKey('1abc'), false);
