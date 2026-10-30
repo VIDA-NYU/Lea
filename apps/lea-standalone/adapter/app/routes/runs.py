@@ -336,8 +336,11 @@ def create_run(request: RunRequest) -> dict:
 
     autonomous = request.autonomous or (permission_tier() == "none")
     purpose = str(request.purpose or "general").strip().lower()
-    if purpose not in {"general", "overleaf_solver", "overleaf_continuation", "overleaf_stub", "project_dependency"}:
+    if purpose not in {"general", "overleaf_solver", "overleaf_continuation", "overleaf_stub", "project_dependency",
+                       "blueprint_draft"}:
         raise HTTPException(status_code=422, detail="Unsupported run purpose")
+    if purpose == "blueprint_draft" and not project_id:
+        raise HTTPException(status_code=422, detail="Blueprint drafting requires a project")
     if request.lea_status_version is not None and request.lea_status_version != 1:
         raise HTTPException(status_code=422, detail="Unsupported Lea Status contract")
     if purpose in {"overleaf_solver", "overleaf_continuation", "overleaf_stub"}:
@@ -564,7 +567,7 @@ def resume_run(run_id: str, request: ResumeRequest) -> dict:
         session_origin="ui", session_origin_url=None, model=old.get("model") or load_config().model,
         provider=old.get("provider"), max_turns=remaining, autonomous=bool(old.get("autonomous")),
         focus_formalization_id=old.get("focus_formalization_id"),
-        focus_source_hash=old.get("focus_source_hash"), purpose="overleaf_stub" if old.get("purpose") == "overleaf_stub" else "project_dependency" if old.get("dependency_id") else "overleaf_continuation" if old_context else "general",
+        focus_source_hash=old.get("focus_source_hash"), purpose=old["purpose"] if old.get("purpose") in {"overleaf_stub", "blueprint_draft"} else "project_dependency" if old.get("dependency_id") else "overleaf_continuation" if old_context else "general",
         dependency_id=old.get("dependency_id"),
         automation_budget=worker_budget,
         source_bundle=old_context.get("source_bundle") if old_context else None,

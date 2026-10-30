@@ -251,8 +251,10 @@ def create_run(request: RunRequest) -> dict:
             raise HTTPException(409, detail={'error': 'reformalization_required', 'message': 'Update the companion to use the isolated reformalization operation for this existing work.'})
     autonomous = request.autonomous or permission_tier() == 'none'
     purpose = str(request.purpose or 'general').strip().lower()
-    if purpose not in {'general', 'overleaf_solver', 'overleaf_continuation', 'overleaf_stub', 'project_dependency'}:
+    if purpose not in {'general', 'overleaf_solver', 'overleaf_continuation', 'overleaf_stub', 'project_dependency', 'blueprint_draft'}:
         raise HTTPException(status_code=422, detail='Unsupported run purpose')
+    if purpose == 'blueprint_draft' and not project_id:
+        raise HTTPException(status_code=422, detail='Blueprint drafting requires a project')
     if request.lea_status_version is not None and request.lea_status_version != 1:
         raise HTTPException(status_code=422, detail='Unsupported Lea Status contract')
     if purpose in {'overleaf_solver', 'overleaf_continuation', 'overleaf_stub'}:
@@ -400,7 +402,7 @@ def resume_run(run_id: str, request: ResumeRequest) -> dict:
             saved = (recovery.load_checkpoint(run_id) or ({}, {}))[0]
             worker_budget['cost_used'] = worker_budget.get('cost_used', 0) + max(float(old.get('cost_usd') or 0), float(saved.get('cost_usd') or 0))
         worker_budget['max_turns'] = remaining
-    bundle = store.create_run_bundle(message=message, session_id=old['session_id'], project_id=old.get('project_id'), session_origin='ui', session_origin_url=None, model=old.get('model') or load_config().model, provider=old.get('provider'), max_turns=remaining, autonomous=bool(old.get('autonomous')), focus_formalization_id=old.get('focus_formalization_id'), focus_source_hash=old.get('focus_source_hash'), purpose='overleaf_stub' if old.get('purpose') == 'overleaf_stub' else 'project_dependency' if old.get('dependency_id') else 'overleaf_continuation' if old_context else 'general', dependency_id=old.get('dependency_id'), automation_budget=worker_budget, source_bundle=old_context.get('source_bundle') if old_context else None, source_context_ref=source_ref, allow_source_pause=bool(old.get('allow_source_pause')), client_request_id=request.idempotency_key, resumes_run_id=run_id, deadline_at=old.get('deadline_at'))
+    bundle = store.create_run_bundle(message=message, session_id=old['session_id'], project_id=old.get('project_id'), session_origin='ui', session_origin_url=None, model=old.get('model') or load_config().model, provider=old.get('provider'), max_turns=remaining, autonomous=bool(old.get('autonomous')), focus_formalization_id=old.get('focus_formalization_id'), focus_source_hash=old.get('focus_source_hash'), purpose=old['purpose'] if old.get('purpose') in {'overleaf_stub', 'blueprint_draft'} else 'project_dependency' if old.get('dependency_id') else 'overleaf_continuation' if old_context else 'general', dependency_id=old.get('dependency_id'), automation_budget=worker_budget, source_bundle=old_context.get('source_bundle') if old_context else None, source_context_ref=source_ref, allow_source_pause=bool(old.get('allow_source_pause')), client_request_id=request.idempotency_key, resumes_run_id=run_id, deadline_at=old.get('deadline_at'))
     return {'run_id': bundle['run']['id'], 'session_id': bundle['session']['id'], 'resumes_run_id': run_id, 'queue_position': store.queue_position(bundle['run']['id'])}
 
 @router.post('/api/runs/{run_id}/continue')
