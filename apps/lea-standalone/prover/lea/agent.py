@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .status_reporting import TOOL_NAME, validate_payload, LeaStatusUpdateRequested, LeaStatusUpdateAck
 from .project_library_tools import TOOL_NAMES as LIBRARY_TOOLS, ProjectLibraryRequested, ProjectLibraryAck
+from .blueprint_tools import TOOL_NAMES as BLUEPRINT_TOOLS, BlueprintRequested, BlueprintAck
 from .config import LeaConfig
 from . import condenser
 from .stall import StallDetector
@@ -1353,6 +1354,19 @@ def _run_events_inner(
                             config.project_context.setdefault("reserved_paths", []).append(ack.result["path"])
                     except (ValueError, TypeError) as exc:
                         result = f"Error: {exc}"
+                    _record("invocation_result", {"id": invocation_id, "result": result})
+                elif tc["name"] in BLUEPRINT_TOOLS and config.blueprint_tools:
+                    # Host-mediated: the host validates, renders and commits the blueprint;
+                    # the invocation key makes a replayed call return the recorded reply.
+                    invocation_id = uuid.uuid4().hex
+                    _record("invocation_start", {"id": invocation_id, "kind": "tool", "name": tc["name"],
+                        "turn": turn, "call_index": idx, "input": tc["args"]})
+                    ack = yield BlueprintRequested(tc["name"], tc["args"], f"{turn}:{idx}:{tc.get('id') or ''}")
+                    if isinstance(ack, BlueprintAck) and not ack.error and ack.result is not None:
+                        result = json.dumps(ack.result, ensure_ascii=False)
+                    else:
+                        error = ack.error if isinstance(ack, BlueprintAck) else None
+                        result = f"Error: {error or 'Blueprint host did not acknowledge the tool.'}"
                     _record("invocation_result", {"id": invocation_id, "result": result})
                 elif tc["name"] == TOOL_NAME and config.status_reporting:
                     status_invocation_id = uuid.uuid4().hex

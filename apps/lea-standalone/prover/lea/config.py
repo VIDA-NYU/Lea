@@ -36,6 +36,11 @@ class LeaConfig:
     status_reporting: bool = False
     project_library: bool = False
     project_context: dict = field(default_factory=dict)
+    # Host-mediated blueprint tools (docs/PLAN-blueprint-tools.md §2.3): the agent edits the
+    # blueprint through blueprint_* tools, and write_file/edit_file refuse these
+    # working-dir-relative paths, which only the system renders.
+    blueprint_tools: bool = False
+    protected_paths: list[str] = field(default_factory=list)
     # Known target name, even when its statement is still natural-language source.
     target_declaration: str | None = None
     # Explicit checked result identity; updated only by select_result.

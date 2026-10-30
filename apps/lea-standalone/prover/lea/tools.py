@@ -334,6 +334,26 @@ def _broad_import_error(path: Path, content: str) -> str | None:
     )
 
 
+def _protected_path_error(path: Path) -> str | None:
+    """Refusal for a write to a file only the system renders (`LeaConfig.protected_paths`).
+
+    The blueprint is written through blueprint_upsert / blueprint_remove so the host can
+    validate it; a direct write would bypass that. Paths are relative to the run's
+    working dir; with no run context or no protected paths, nothing is refused."""
+    config = current_config()
+    wd = current_working_dir()
+    if not config or not wd or not getattr(config, "protected_paths", None):
+        return None
+    target = Path(path).resolve()
+    root = Path(wd).expanduser().resolve()
+    for rel in config.protected_paths:
+        protected = (root / rel).resolve()
+        # samefile also catches a case-variant spelling on a case-insensitive volume.
+        if target == protected or (target.exists() and protected.exists() and target.samefile(protected)):
+            return f"Error: {rel} is maintained by the system. Use blueprint_upsert / blueprint_remove instead."
+    return None
+
+
 def _mutating(fn):
     @wraps(fn)
     def guarded(*args, **kwargs):
@@ -359,6 +379,8 @@ def write_file(path: str, content: str) -> str:
         p = _sandboxed_write_path(path)
     except _SandboxViolation as exc:
         return f"Error: {exc}"
+    if protected := _protected_path_error(p):
+        return protected
     if policy_error := _broad_import_error(p, content):
         return policy_error
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -373,6 +395,8 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
         p = _sandboxed_write_path(path)
     except _SandboxViolation as exc:
         return f"Error: {exc}"
+    if protected := _protected_path_error(p):
+        return protected
     if not p.exists():
         return f"Error: {p} does not exist."
     text = p.read_text()
@@ -965,3 +989,7 @@ from . import subagents as _subagents  # noqa: E402,F401
 # Host-mediated, opt-in: unavailable to ordinary CLI/LeaChat runs.
 from .status_reporting import TOOL_SCHEMA as _STATUS_SCHEMA, unsupported_handler as _status_handler
 register(Tool(name="update_lea_status", schema=_STATUS_SCHEMA, handler=_status_handler, opt_in=True))
+
+# Host-mediated, opt-in blueprint tools (blueprint_read/upsert/remove). Imported here so
+# they land in the registry with the built-ins; project runs name them explicitly.
+from . import blueprint_tools as _blueprint_tools  # noqa: E402,F401
