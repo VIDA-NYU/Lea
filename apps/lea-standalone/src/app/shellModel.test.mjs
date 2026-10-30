@@ -18,6 +18,8 @@ import {
   sessionNodeMap,
   sessionState,
   sessionStateLabel,
+  settleRestoredView,
+  shownView,
   sidebarTally,
   sortProjectsByActivity,
   unfiledSessions,
@@ -216,4 +218,25 @@ test('countNotes and docExcerpt', () => {
   const long = docExcerpt('word '.repeat(100), 50);
   assert.ok(long.length <= 52 && long.endsWith('…'), long);
   assert.equal(docExcerpt(''), '');
+});
+
+test('shownView: the empty workbench and an empty project home are the launch screen', () => {
+  assert.equal(shownView('main', {}), 'home');
+  assert.equal(shownView('main', { selectedSessionId: 's1' }), 'main');
+  assert.equal(shownView('main', { restoring: true }), 'main', 'the restore notice stays');
+  assert.equal(shownView('main', { restorationFailed: true }), 'main', 'the retry notice stays');
+  assert.equal(shownView('project-home', {}), 'home');
+  assert.equal(shownView('project-home', { projectHomeId: 'p1' }), 'project-home');
+  assert.equal(shownView('project-home', { projectDeleted: true }), 'project-home', 'the deleted notice stays');
+  assert.equal(shownView('settings', {}), 'settings');
+  assert.equal(shownView('home', { selectedSessionId: 's1' }), 'home');
+});
+
+test('settleRestoredView only settles the start views', () => {
+  assert.equal(settleRestoredView('home', { restored: true, projectOpened: false }), 'main');
+  assert.equal(settleRestoredView('main', { restored: false, projectOpened: false }), 'home');
+  assert.equal(settleRestoredView('main', { restored: false, projectOpened: true }), 'main');
+  assert.equal(settleRestoredView('project-home', { restored: false, projectOpened: true }), 'project-home');
+  assert.equal(settleRestoredView('settings', { restored: false, projectOpened: false }), 'settings', 'a click during the restore stands');
+  assert.equal(settleRestoredView('project-home', { restored: true, projectOpened: true }), 'project-home');
 });

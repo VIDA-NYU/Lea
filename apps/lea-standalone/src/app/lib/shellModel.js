@@ -120,6 +120,36 @@ export function relativeTime(iso, now = Date.now()) {
 }
 
 /**
+ * The view App renders for the view it holds. Project first: there are no
+ * loose sessions, so the workbench with nothing selected is the launch screen
+ * (except while a restore runs or after it failed: the workbench shows that
+ * notice), and so is a project home with no project to show.
+ * @param {string} view
+ * @param {{selectedSessionId?: string|null, restoring?: boolean, restorationFailed?: boolean,
+ *   projectHomeId?: string|null, projectDeleted?: boolean}} state
+ * @returns {string}
+ */
+export function shownView(view, state) {
+  if (view === 'main' && !state.selectedSessionId && !state.restoring && !state.restorationFailed) return 'home';
+  if (view === 'project-home' && !state.projectHomeId && !state.projectDeleted) return 'home';
+  return view;
+}
+
+/**
+ * Where the startup restore lands: only the two start views are settled (a
+ * view the user navigated to meanwhile stands); a restored session opens the
+ * workbench, a project deep link keeps its project home, nothing → home.
+ * @param {string} current
+ * @param {{restored: boolean, projectOpened: boolean}} outcome
+ * @returns {string}
+ */
+export function settleRestoredView(current, { restored, projectOpened }) {
+  if (current !== 'home' && current !== 'main') return current;
+  if (restored) return 'main';
+  return projectOpened ? current : 'home';
+}
+
+/**
  * Name a project from the statement typed into "What do you want to prove?":
  * drop a leading "Prove that" / "Show that" / "Theorem:", trailing punctuation,
  * cap the length at a word boundary and title-case the plain words (symbols,

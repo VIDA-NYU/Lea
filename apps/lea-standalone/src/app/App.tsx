@@ -22,7 +22,7 @@ import { BLUEPRINT_PATH, useWorkbench } from './stores/workbench';
 import { sortCodeSteps } from './lib/timeline.mjs';
 import { inferComposerFormalizationScope } from './lib/formalizations.mjs';
 import { createChatSubmission, createCheckpointSubmission } from './lib/overleafHandoff.mjs';
-import { projectTitleFromStatement, proveNodeMessage } from './lib/shellModel.js';
+import { projectTitleFromStatement, proveNodeMessage, settleRestoredView, shownView as resolveShownView } from './lib/shellModel.js';
 import { parseSlashCommand } from './lib/slashCommands.js';
 import { runSlashCommand } from './lib/slashCommandRunner';
 import {
@@ -248,11 +248,7 @@ export default function App() {
       // the raw setter leaves any project load the user started in flight.
       const restored = Boolean(useSessions.getState().selectedSessionId);
       const projectOpened = Boolean(useProjects.getState().selectedProjectId);
-      setLayoutView((current) => {
-        if (current !== 'home' && current !== 'main') return current;
-        if (restored) return 'main';
-        return projectOpened ? current : 'home';
-      });
+      setLayoutView((current) => settleRestoredView(current, { restored, projectOpened }) as View);
     };
     if(restorationStarted.current)return;
     restorationStarted.current=true;
@@ -907,11 +903,13 @@ export default function App() {
   // screen. While restoring, or when it failed, the workbench keeps its notice.
   // A project home with no project to show is the launch screen too.
   const projectHomeId = currentProject?.id ?? selectedProjectId;
-  const shownView: View =
-    (view === 'main' && !selectedSessionId && !restoringContext && !restorationFailed)
-    || (view === 'project-home' && !projectHomeId && !currentProjectDeleted)
-      ? 'home'
-      : view;
+  const shownView = resolveShownView(view, {
+    selectedSessionId,
+    restoring: restoringContext,
+    restorationFailed,
+    projectHomeId,
+    projectDeleted: currentProjectDeleted,
+  }) as View;
   const sidebar = (
     <Sidebar
       runningSessionId={isRunning ? selectedSessionId : undefined}
