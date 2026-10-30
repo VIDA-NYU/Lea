@@ -648,11 +648,14 @@ export function useProofStream() {
     });
 
     listen('approval_resolved', (event) => {
-      const payload = JSON.parse((event as MessageEvent).data) as { approval_id?: string; decision?: string };
+      const payload = JSON.parse((event as MessageEvent).data) as { approval_id?: string; decision?: string; created_at?: string };
+      // resolved_at (as approval_events carry on reload) lets the chat start an
+      // approved call's elapsed counter at the decision, not at the request.
+      const resolvedAt = payload.created_at || new Date().toISOString();
       setApprovals((prev) =>
         prev.map((a) =>
           a.run_id === runId && a.approval_id === payload.approval_id
-            ? { ...a, decision: payload.decision || 'resolved', actionable: false } : a,
+            ? { ...a, decision: payload.decision || 'resolved', actionable: false, resolved_at: resolvedAt } : a,
         ),
       );
       setApprovalBusy(false);
