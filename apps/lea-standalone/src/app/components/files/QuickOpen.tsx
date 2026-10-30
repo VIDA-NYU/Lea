@@ -128,7 +128,7 @@ function Palette({ projectId, onClose }: { projectId: string | null; onClose: ()
   const setFilesRailOpen = useWorkbench((s) => s.setFilesRailOpen);
   const setComposerContext = useFiles((s) => s.setComposerContext);
   const setPendingComposerText = useFiles((s) => s.setPendingComposerText);
-  const setPendingLine = useFiles((s) => s.setPendingLine);
+  const revealLine = useWorkbench((s) => s.revealLine);
   const projects = useProjects((s) => s.projects);
 
   const [query, setQuery] = useState('');
@@ -201,7 +201,7 @@ function Palette({ projectId, onClose }: { projectId: string | null; onClose: ()
           run: () => {
             if (!line) return;
             openFile(openPath);
-            setPendingLine(line);
+            revealLine(line, openPath);
           },
           context: line ? { path: openPath, intent: 'ask', line } : undefined,
         });
@@ -244,7 +244,7 @@ function Palette({ projectId, onClose }: { projectId: string | null; onClose: ()
           right: statusRight(item.path, info),
           run: () => {
             openFile(item.path);
-            setPendingLine(item.line);
+            revealLine(item.line, item.path);
           },
           context: { path: item.path, intent: 'ask', line: item.line, label: item.name },
         });
@@ -273,7 +273,7 @@ function Palette({ projectId, onClose }: { projectId: string | null; onClose: ()
       }
     }
     return out;
-  }, [mode, term, orderedFiles, statuses, declarations, otherProjects, projects, openPath, openFile, setPendingComposerText, setPendingLine, setFilesRailOpen]);
+  }, [mode, term, orderedFiles, statuses, declarations, otherProjects, projects, openPath, openFile, setPendingComposerText, revealLine, setFilesRailOpen]);
 
   useEffect(() => {
     setActive(0);

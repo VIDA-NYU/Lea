@@ -3,8 +3,8 @@ import { create } from 'zustand';
 /**
  * The files package's own store (docs/PLAN-ui-redesign.md §3 "files").
  *
- * Three hand-offs to the composer and the canvas that the files components
- * cannot reach directly; the integrator wires them into ChatThread / Canvas:
+ * Two hand-offs to the composer that the files components cannot reach
+ * directly; ChatThread and App consume them:
  *
  *   composerContext      "Ask Lea about this file", "Prove the sorries here"
  *                        (files rail menu) and ⌘⏎ in the ⌘P palette set it.
@@ -13,12 +13,11 @@ import { create } from 'zustand';
  *                        handleSubmit prepends composerContextHeader() to the
  *                        next message and clears it once the run is admitted.
  *   pendingComposerText  `> command` in the palette: the text to put in the
- *                        composer draft (e.g. "/compact "). ChatThread reads it,
+ *                        composer draft (e.g. "/compact "). App reads it,
  *                        calls setDraft, focuses the composer, then clears it.
- *   pendingLine          `: line` in the palette and a declaration hit: the
- *                        1-based line the canvas should reveal in the file just
- *                        opened through useWorkbench().openFile. The canvas
- *                        scrolls to it and clears it.
+ *
+ * A line to reveal (`: line`, a declaration hit) goes straight to the canvas:
+ * useWorkbench().openFile(path) then revealLine(line, path).
  */
 
 export type ComposerIntent = 'ask' | 'prove-sorries';
@@ -38,8 +37,6 @@ interface FilesState {
   setComposerContext: (context: ComposerContext | null) => void;
   pendingComposerText: string | null;
   setPendingComposerText: (text: string | null) => void;
-  pendingLine: number | null;
-  setPendingLine: (line: number | null) => void;
 }
 
 export const useFiles = create<FilesState>((set) => ({
@@ -47,8 +44,6 @@ export const useFiles = create<FilesState>((set) => ({
   setComposerContext: (composerContext) => set({ composerContext }),
   pendingComposerText: null,
   setPendingComposerText: (pendingComposerText) => set({ pendingComposerText }),
-  pendingLine: null,
-  setPendingLine: (pendingLine) => set({ pendingLine }),
 }));
 
 /**
