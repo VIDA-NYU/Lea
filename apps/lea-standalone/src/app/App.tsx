@@ -32,6 +32,7 @@ import {
 import { useProofSession } from './stores/proofSession';
 import { useSessions } from './stores/sessions';
 import { useProjects } from './stores/projects';
+import { composerContextHeader, useFiles } from './stores/files';
 import { useDesktop } from './stores/desktop';
 import { countRunning, finishedRuns, indexById } from './lib/desktopActivity.js';
 import type { SessionSummary } from './lib/types';
@@ -721,6 +722,11 @@ export default function App() {
       return;
     }
 
+    // Files package: a file in context rides along as a one-line header (see
+    // composerContextHeader); the chip clears once the run is admitted.
+    const fileContext = useFiles.getState().composerContext;
+    const message = fileContext ? `${composerContextHeader(fileContext)}\n\n${content}` : content;
+
     submitting.current = true;
     setSubmissionBusy(true);
     let sourceTarget: { id: string; declaration_name?: string | null; display_title: string } | undefined;
@@ -756,7 +762,7 @@ export default function App() {
           && state.formalizationScope === resolvedScope && state.composerScopeOverride === composerScopeOverride;
       };
       const run = await submitChat.current({
-        message: content, sessionId: selectedSessionId, model: useModel.getState().model,
+        message, sessionId: selectedSessionId, model: useModel.getState().model,
         scope: resolvedScope, formalizations: scopeCandidates, general,
         isCurrent: scopeIsCurrent,
         onPreparing: (item: { id: string; declaration_name?: string | null; display_title: string }) => setSourceConnection({
@@ -790,6 +796,7 @@ export default function App() {
         setFormalizationScope(run.focus_formalization_id);
       }
       setComposerScopeOverride(null);
+      if (fileContext && useFiles.getState().composerContext === fileContext) useFiles.getState().setComposerContext(null);
       setDraft((value) => value.trim() === content ? '' : value);
       window.localStorage.setItem(SELECTED_SESSION_KEY, run.session_id);
       attachStream(run.run_id, run.session_id);

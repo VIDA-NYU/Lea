@@ -31,6 +31,8 @@ import {
 import { useProofSession, type CompactionPayload } from '../stores/proofSession';
 import { useModel } from '../stores/model';
 import { useSessions } from '../stores/sessions';
+import { describeComposerContext, useFiles } from '../stores/files';
+import '../../styles/files.css';
 
 type MergedNode =
   | { kind: 'message'; key: string; runId: string | null; seqKey: number; message: ChatMessage }
@@ -190,6 +192,21 @@ export function ChatThread({
     setGoalSurface(null);
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
+
+  // Files package: a file put in context ("Ask Lea about this file", "Prove the
+  // sorries here", ⌘⏎ in ⌘P) shows as a chip; App prepends it to the next
+  // message and clears it. "Prove the sorries" prefills an empty composer.
+  const composerContext = useFiles((s) => s.composerContext);
+  const setComposerContext = useFiles((s) => s.setComposerContext);
+  const contextView = composerContext ? describeComposerContext(composerContext) : null;
+  useEffect(() => {
+    if (!composerContext) return;
+    const { prefill } = describeComposerContext(composerContext);
+    if (prefill && !draft.trim()) onDraftChange(prefill);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+    // Only a new context prefills; typing must not re-trigger it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [composerContext]);
   const error = useProofSession((s) => s.error);
   const reconnecting = useProofSession((s) => s.reconnecting);
   const activeCodeIndex = useProofSession((s) => s.codeIndex);
@@ -876,6 +893,17 @@ export function ChatThread({
             )}
           </div>
         )}
+        {composerContext && contextView && (
+          <div className="composer-context">
+            <span className="composer-context-chip" title={composerContext.path}>
+              <span className="composer-context-name">{contextView.chip}</span>
+              <span className="composer-context-note">· in context</span>
+              <button type="button" onClick={() => setComposerContext(null)} aria-label={`Remove ${contextView.chip} from context`} title="Remove from context">
+                ×
+              </button>
+            </span>
+          </div>
+        )}
         <div className="composer-inner" aria-busy={submissionBusy}>
           <textarea
             ref={textareaRef}
@@ -885,7 +913,7 @@ export function ChatThread({
             placeholder={
               editedPath
                 ? 'What did you change? A short note helps Lea pick up where you left off.'
-                : 'Ask a follow-up, or state a theorem to prove…'
+                : contextView?.placeholder ?? 'Ask a follow-up, or state a theorem to prove…'
             }
             rows={1}
             disabled={submissionBusy}

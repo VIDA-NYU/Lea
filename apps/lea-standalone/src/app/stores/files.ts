@@ -9,9 +9,9 @@ import { create } from 'zustand';
  *   composerContext      "Ask Lea about this file", "Prove the sorries here"
  *                        (files rail menu) and ⌘⏎ in the ⌘P palette set it.
  *                        ChatThread shows it as the chip above the composer
- *                        ("Parity.lean · in context"), sends the file (and the
- *                        intent) with the next message, and clears it on send
- *                        or when the chip's × is pressed.
+ *                        ("Parity.lean · in context") and clears it on ×; App's
+ *                        handleSubmit prepends composerContextHeader() to the
+ *                        next message and clears it once the run is admitted.
  *   pendingComposerText  `> command` in the palette: the text to put in the
  *                        composer draft (e.g. "/compact "). ChatThread reads it,
  *                        calls setDraft, focuses the composer, then clears it.
@@ -73,4 +73,19 @@ export function describeComposerContext(context: ComposerContext): {
     placeholder: `Ask about ${name}, or let Lea finish…`,
     prefill: null,
   };
+}
+
+/**
+ * The one-line header App prepends to a message sent while a file is in
+ * context, so Lea sees which file (and line) the message is about and what
+ * the user wants done with it.
+ * TODO(backend): send the context as a field on the run request (`file:
+ * { path, line?, intent }`) instead of a text header, so the adapter can attach
+ * the file's current contents and the transcript shows the message as typed.
+ */
+export function composerContextHeader(context: ComposerContext): string {
+  const where = context.line ? `${context.path}:${context.line}` : context.path;
+  const name = context.label ? ` (${context.label})` : '';
+  const intent = context.intent === 'prove-sorries' ? 'prove the sorries here' : 'ask about this file';
+  return `[File in context: ${where}${name} · ${intent}]`;
 }
