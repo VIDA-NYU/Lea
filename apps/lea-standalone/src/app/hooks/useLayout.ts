@@ -22,7 +22,17 @@ export type View =
  * for the shell layout and passes the two collapse flags down where needed.
  */
 export function useLayout() {
-  const [view, setView] = useState<View>('main');
+  // Project first (docs/PLAN-ui-redesign.md): the launch screen is the default.
+  // A saved session id or a ?session= / ?formalization= link means the restore
+  // in App will reopen the workbench, so start there to avoid a Home → workbench
+  // flash on reload; App settles on 'home' when nothing restores. (The key is
+  // App's SELECTED_SESSION_KEY.)
+  const [view, setView] = useState<View>(() => {
+    const link = new URLSearchParams(window.location.search);
+    const restoring = window.localStorage.getItem('lea:selectedSessionId')
+      || link.has('session') || link.has('formalization');
+    return restoring ? 'main' : 'home';
+  });
   const [canvasCollapsed, setCanvasCollapsed] = useState(false);
   // Collapsible sidebar (M27) + draggable canvas width (M26), both remembered.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(

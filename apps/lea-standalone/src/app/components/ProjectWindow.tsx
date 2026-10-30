@@ -79,7 +79,7 @@ export function ProjectWindow({
     <div className="project-window">
       <div className="pw-bar">
         <button className="pw-back" onClick={onBack}>
-          <ChevronLeft size={15} /> Chats
+          <ChevronLeft size={15} /> Overview
         </button>
         <span className="pw-crumb-sep">/</span>
         <span className="pw-crumb">{project.title}</span>
