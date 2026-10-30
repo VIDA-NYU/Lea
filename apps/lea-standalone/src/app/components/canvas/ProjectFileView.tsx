@@ -130,7 +130,9 @@ export const ProjectFileView = forwardRef<
 
   const note = loading
     ? 'Loading…'
-    : binary
+    : error && !editing
+      ? 'Unavailable'
+      : binary
       ? 'Binary · read-only'
       : !editable
         ? 'Read-only'

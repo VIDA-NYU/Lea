@@ -255,6 +255,9 @@ test('editorNote: editor states first, then the user edit pointer, then Editable
   assert.equal(editorNote({ following: true, step: agent, live: 'ready', save: { state: 'saved', detail: 'lean_check: 0 errors' } }), 'Saved · lean_check: 0 errors');
   assert.equal(editorNote({ following: true, step: agent, previous: user, previousIndex: 7, live: 'ready', save: clean }), 'Step 8 was your edit');
   assert.equal(editorNote({ following: true, step: agent, previous: agent, previousIndex: 7, live: 'ready', save: clean }), 'Editable');
+  // without a live editor (historical formalization view) the pointer still shows
+  assert.equal(editorNote({ following: true, step: agent, previous: user, previousIndex: 2, live: 'none' }), 'Step 3 was your edit');
+  assert.equal(editorNote({ following: true, step: agent, previous: agent, previousIndex: 2, live: 'none' }), '');
 });
 
 test('samePath and revealTarget implement the reveal-line contract', () => {

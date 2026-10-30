@@ -25,6 +25,7 @@ export function CanvasDrawer({
   onToggle,
   tab,
   onTab,
+  goal,
   summary,
   meta,
   problems,
@@ -36,6 +37,8 @@ export function CanvasDrawer({
   onToggle: () => void;
   tab: DrawerTab;
   onTab: (tab: DrawerTab) => void;
+  /** The goal headline, set in mono at the start of the collapsed summary. */
+  goal?: string | null;
   summary: string;
   meta?: string | null;
   problems: Problem[];
@@ -77,10 +80,14 @@ export function CanvasDrawer({
           Verify
           {verified && <IconCheck size={13} className="cv-tab-check" aria-label="verified" />}
         </button>
-        {!open && summary ? (
+        {!open && (goal || summary) ? (
           <>
             <span className="cv-vsep" aria-hidden="true" />
-            <span className="cv-drawer-summary mono">{summary}</span>
+            <span className="cv-drawer-summary">
+              {goal ? <span className="goal mono">{goal}</span> : null}
+              {goal && summary ? ' · ' : null}
+              {summary}
+            </span>
           </>
         ) : null}
         <span className="cv-spacer" />

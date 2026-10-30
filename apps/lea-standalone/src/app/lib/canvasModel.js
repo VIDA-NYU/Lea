@@ -271,14 +271,16 @@ export function editorNote({ following, step, previous, previousIndex = -1, live
   if (!following) return step?.author === 'user' ? 'Your edit · read-only' : 'Read-only · older step';
   if (live === 'loading') return 'Opening editor…';
   if (live === 'error') return `Editor unavailable${liveError ? ` · ${liveError}` : ''}`;
-  if (live === 'none') return hasSession ? '' : 'Send a message to start editing';
-  if (running) return 'Read-only while Lea works';
-  if (save?.state === 'dirty') return save.detail ? `Unsaved · ${save.detail}` : 'Editing…';
-  if (save?.state === 'saving') return 'Saving…';
-  if (save?.state === 'saved') return `Saved${save.detail ? ` · ${save.detail}` : ''}`;
-  if (save?.detail) return save.detail;
+  if (live === 'none' && !hasSession) return 'Send a message to start editing';
+  if (live === 'ready') {
+    if (running) return 'Read-only while Lea works';
+    if (save?.state === 'dirty') return save.detail ? `Unsaved · ${save.detail}` : 'Editing…';
+    if (save?.state === 'saving') return 'Saving…';
+    if (save?.state === 'saved') return `Saved${save.detail ? ` · ${save.detail}` : ''}`;
+    if (save?.detail) return save.detail;
+  }
   if (previous?.author === 'user' && step?.author !== 'user' && previousIndex >= 0) return `Step ${previousIndex + 1} was your edit`;
-  return 'Editable';
+  return live === 'ready' ? 'Editable' : '';
 }
 
 // ── Status chip ──────────────────────────────────────────────────────────────

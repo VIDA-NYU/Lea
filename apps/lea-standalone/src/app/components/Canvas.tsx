@@ -514,13 +514,20 @@ export function Canvas({
   );
   const liveGoals = showLive && !isRunning;
   const goalsText = liveGoals ? goals : goalSurface?.rendered ?? null;
-  const summary = drawerSummary({ goal: goalHeadline(goalsText), chip, errors: errLines.length, sorries: sorries.length });
+  const goalLine = goalHeadline(goalsText);
+  const summary = drawerSummary({ chip, errors: errLines.length, sorries: sorries.length });
+  // The editor's analysis state when it is not simply working (the old editor
+  // bar showed it): "worker unavailable", "environment unavailable", …
+  const analysisIssue =
+    showLive && !isRunning && analysis !== 'available' && analysis !== 'pending' ? analysis.replace(/_/g, ' ') : null;
   const meta =
     drawerTab === 'verify' && drawerOpen && shownVerify
       ? `SafeVerify · step ${safeIndex + 1}`
-      : timing
-        ? `lean_check · ${formatSeconds(timing.ms)}${timing.backend === 'cold' ? ' · cold' : ''}`
-        : null;
+      : analysisIssue
+        ? `Analysis: ${analysisIssue}`
+        : timing
+          ? `lean_check · ${formatSeconds(timing.ms)}${timing.backend === 'cold' ? ' · cold' : ''}`
+          : null;
   const jumpToLine = (line: number) => {
     if (showLive) liveRef.current?.jumpToLine(line);
     else stepViewRef.current?.jumpToLine(line);
@@ -535,17 +542,13 @@ export function Canvas({
     const result = await liveRef.current?.askAboutGoal();
     if (result) setGoalNote(result);
   };
-  const goalsHint = liveVisible && !liveReady
-    ? liveFailed
-      ? 'Editor unavailable — goals need the live editor.'
-      : 'Opening editor…'
-    : showLive && isRunning
-      ? 'Goals appear once Lea finishes this run.'
-      : showLive
-        ? 'Click inside a proof to inspect its goals.'
-        : !sessionId
-          ? 'Goals appear once the session has a file.'
-          : 'Go to the latest step to inspect goals live.';
+  const goalsHint = (() => {
+    if (liveVisible && !liveReady) return liveFailed ? 'Editor unavailable — goals need the live editor.' : 'Opening editor…';
+    if (showLive && isRunning) return 'Goals appear once Lea finishes this run.';
+    if (analysisIssue) return `Goal analysis unavailable: ${analysisIssue}.`;
+    if (showLive) return 'Click inside a proof to inspect its goals.';
+    return sessionId ? 'Go to the latest step to inspect goals live.' : 'Goals appear once the session has a file.';
+  })();
 
   // ── header actions ────────────────────────────────────────────────────────
   const canCheck = showLive && !isRunning && !!onCheck;
@@ -888,6 +891,7 @@ export function Canvas({
                     onToggle={() => setDrawerOpen((o) => !o)}
                     tab={drawerTab}
                     onTab={setDrawerTab}
+                    goal={goalLine}
                     summary={summary}
                     meta={meta}
                     problems={problems}
