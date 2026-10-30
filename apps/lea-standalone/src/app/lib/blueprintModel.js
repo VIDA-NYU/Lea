@@ -1,9 +1,12 @@
 // Blueprint view model — the pure, testable half of the "blueprint" work package
-// (docs/PLAN-ui-redesign.md §3). No DOM, no stores, no fetch: status counts, the
-// footer summary, ready/unblocks derivations, session merging, the markdown
-// parser/serialiser used by the proposal state, and the prompts a bound session
-// starts with. The impure side (components, the slash-command handlers) imports
-// from here; the tests next to it (`src/app/blueprintModel.test.mjs`) run it alone.
+// (docs/PLAN-ui-redesign.md §3, docs/PLAN-blueprint-tools.md §2–§3 P4). No DOM, no
+// stores, no fetch: status counts, the footer summary, ready/unblocks derivations,
+// session binding and merging, the markdown parser/serialiser (the UI copy of
+// adapter/app/blueprint.py, checked against fixtures/blueprint), the prompts a
+// bound or drafting run starts with, the stream-event reducer and the
+// `/blueprint auto` state machine. The impure side (components, blueprintActions,
+// the slash-command handlers) imports from here; the tests next to it
+// (`src/app/blueprint*.test.mjs`) run it alone.
 //
 // Status vocabulary mirrors adapter/app/graph.py: planned · stated · ready ·
 // proved · failed, plus the audit-grade `verified` flag on a proved node.

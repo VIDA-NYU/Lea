@@ -106,6 +106,7 @@ export function ProjectHome({
   const refreshToken = useProofSession((s) => s.formalizationRefreshToken);
   const nodeBindings = useWorkbench((s) => s.nodeBindings);
   const blueprintUnlock = useWorkbench((s) => s.blueprintUnlock);
+  const blueprintRefresh = useWorkbench((s) => s.blueprintRefresh);
   const graph = useProjectGraph(projectId);
   const tree = useProjectTree(projectId);
   const loadGraph = useProjectData((s) => s.loadGraph);
@@ -126,6 +127,11 @@ export function ProjectHome({
     void loadGraph(projectId);
     void loadTree(projectId);
   }, [projectId, refreshToken, loadGraph, loadTree]);
+
+  // Up next follows the blueprint stream events (a node proved, nodes unlocked).
+  useEffect(() => {
+    if (blueprintRefresh > 0) void loadGraph(projectId);
+  }, [projectId, blueprintRefresh, loadGraph]);
 
   useEffect(() => {
     let cancelled = false;
