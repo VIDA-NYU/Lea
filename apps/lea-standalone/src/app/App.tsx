@@ -126,6 +126,8 @@ export default function App() {
   // sets it, ChatThread reads it.
   const setError = useProofSession((s) => s.setError);
   const [draft, setDraft] = useState('');
+  // Bumped to focus the composer after App fills the draft from elsewhere.
+  const [composerFocus, setComposerFocus] = useState(0);
   const [submissionBusy, setSubmissionBusy] = useState(false);
   const [restoringContext,setRestoringContext]=useState(true);
   const [restorationFailed, setRestorationFailed] = useState(false);
@@ -317,6 +319,19 @@ export default function App() {
     if (detail) window.localStorage.setItem(SELECTED_SESSION_KEY, detail.id);
     return detail;
   };
+
+  // Files package: `> command` in ⌘P hands the composer its text (e.g.
+  // "/compact "). It replaces the draft and focuses the composer; with a
+  // session open, the workbench comes forward so the composer is visible.
+  const pendingComposerText = useFiles((s) => s.pendingComposerText);
+  useEffect(() => {
+    if (pendingComposerText == null) return;
+    useFiles.getState().setPendingComposerText(null);
+    setDraft(pendingComposerText);
+    setComposerFocus((n) => n + 1);
+    if (useSessions.getState().selectedSessionId && view !== 'main') setView('main');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingComposerText]);
 
   // Redesign (shell): creating a project lands on its home; the legacy project
   // window stays reachable from that page's ⋯ menu (view 'project').
@@ -1172,6 +1187,7 @@ export default function App() {
             canvasCollapsed={canvasCollapsed}
             onToggleCanvas={() => setCanvasCollapsed((v) => !v)}
             onRenameSession={handleRenameSession}
+            composerFocusSignal={composerFocus}
           />
 
           {!canvasCollapsed && (

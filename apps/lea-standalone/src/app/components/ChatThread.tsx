@@ -92,6 +92,7 @@ export function ChatThread({
   canvasCollapsed,
   onToggleCanvas,
   onRenameSession,
+  composerFocusSignal = 0,
 }: {
   title: string;
   sidebarCollapsed?: boolean;
@@ -115,6 +116,8 @@ export function ChatThread({
   canvasCollapsed: boolean;
   onToggleCanvas: () => void;
   onRenameSession?: (title: string) => Promise<void> | void;
+  /** Bumped by App when it puts text in the composer from elsewhere (⌘P `>`, a blueprint draft). */
+  composerFocusSignal?: number;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -199,6 +202,12 @@ export function ChatThread({
   const composerContext = useFiles((s) => s.composerContext);
   const setComposerContext = useFiles((s) => s.setComposerContext);
   const contextView = composerContext ? describeComposerContext(composerContext) : null;
+  const focusSeen = useRef(composerFocusSignal);
+  useEffect(() => {
+    if (composerFocusSignal === focusSeen.current) return;
+    focusSeen.current = composerFocusSignal;
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [composerFocusSignal]);
   useEffect(() => {
     if (!composerContext) return;
     const { prefill } = describeComposerContext(composerContext);
