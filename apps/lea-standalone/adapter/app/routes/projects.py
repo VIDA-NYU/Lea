@@ -29,6 +29,7 @@ from ..config import load_config, github_token
 from ..gitstore import GitStore, GitStoreError
 from .. import blueprint as blueprint_doc
 from .. import blueprint_seed
+from .. import blueprint_store
 from .. import filesystem as fs_service
 from .. import graph as graph_service
 from .. import github_import_service
@@ -98,6 +99,33 @@ class DocUpdate(workspace_commands.EditRequest):
 class FilePut(workspace_commands.EditRequest):
     path: str
     content: str
+
+
+class BlueprintNodeInput(BaseModel):
+    key: str
+    kind: str | None = None
+    statement: str | None = None
+    uses: list[str] | None = None
+    lean: str | None = None
+    file: str | None = None
+
+
+class BlueprintNodesUpsert(BaseModel):
+    idempotency_key: str | None = None
+    nodes: list[BlueprintNodeInput] = Field(min_length=1, max_length=100)
+    draft: bool = False
+
+
+class BlueprintNodesRemove(BaseModel):
+    idempotency_key: str | None = None
+    keys: list[str] = Field(min_length=1)
+    cascade: bool = False
+    draft: bool = False
+
+
+class BlueprintDraftAccept(BaseModel):
+    idempotency_key: str | None = None
+    keys: list[str] | None = None
 
 
 class MirrorFile(BaseModel):
@@ -330,19 +358,44 @@ def put_memory(project_id: str, request: DocUpdate) -> dict:
 
 
 # ── Blueprint: the canonical .lea/blueprint.md decomposition (T1, D28) ────────────
-# Same raw-markdown GET/PUT as the other docs, but each response also carries the
-# parser's advisory `warnings` (duplicate keys, missing/unknown kind, dangling edges)
-# so the authoring view can flag structure problems without blocking the save. The
-# parsed graph (nodes + derived status) is a separate `/graph` endpoint in T2.
+# GET returns the raw markdown, the parsed nodes, the parser's advisory `warnings`
+# (duplicate keys, missing/unknown kind, dangling edges, cycles) and the pending
+# draft (`.lea/blueprint.draft.md`) if a drafting run left one. Every write goes
+# through `blueprint_store` semantics (PLAN-blueprint-tools §2.2/§2.5): the PUTs
+# store the canonical rendering of what the human typed; the node routes upsert /
+# remove nodes with validation and assigned names; accept/discard settle the draft.
+# The parsed graph (nodes + derived status) is a separate `/graph` endpoint (T2).
+
+
+def _doc_revision(project: dict, rel: str, content: str) -> str:
+    revision = workspace_commands.revision_for('p:' + project['id'], rel)
+    return revision if revision != 'missing' else 'untracked:' + hashlib.sha256(content.encode()).hexdigest()
 
 
 def _blueprint_payload(project: dict) -> dict:
-    """Raw blueprint markdown + the parser's advisory warnings — shared by the
-    by-id and by-slug GET routes."""
-    content = project_service.read_doc(project, _proofs_root(), "blueprint.md")
-    revision=workspace_commands.revision_for('p:'+project['id'],'.lea/blueprint.md')
-    return {"content": content, "warnings": blueprint_doc.validate(content),
-        'file_revision':revision if revision!='missing' else 'untracked:'+hashlib.sha256(content.encode()).hexdigest()}
+    """Raw blueprint markdown, parsed nodes, advisory warnings and the pending draft
+    (``None`` when there is none) — shared by the by-id and by-slug GET routes."""
+    root = _proofs_root()
+    content = project_service.read_doc(project, root, "blueprint.md")
+    parsed = blueprint_doc.parse(content)
+    draft = None
+    if blueprint_store.exists_draft(project, root):
+        draft_content = project_service.read_doc(project, root, "blueprint.draft.md")
+        draft_parsed = blueprint_doc.parse(draft_content)
+        draft = {"content": draft_content, "nodes": draft_parsed["nodes"], "warnings": draft_parsed["warnings"],
+                 "file_revision": _doc_revision(project, blueprint_store.DRAFT, draft_content)}
+    return {"content": content, "nodes": parsed["nodes"], "warnings": parsed["warnings"], "draft": draft,
+            "file_revision": _doc_revision(project, blueprint_store.LIVE, content)}
+
+
+def _put_blueprint_doc(project_id: str, name: str, content: str) -> dict:
+    """Store the canonical rendering of a human edit (``store.normalize``)."""
+    project = _require_project(project_id)
+    canonical, warnings = blueprint_store.normalize(content)
+    sha = project_service.write_doc(project, _proofs_root(), name, canonical)
+    store.note_blueprint_change(project_id)
+    return {"content": canonical, "commit_sha": sha, "warnings": warnings,
+            'file_revision': workspace_commands.revision_for('p:' + project_id, '.lea/' + name)}
 
 
 @router.get("/api/projects/{project_id}/blueprint")
@@ -356,10 +409,50 @@ def get_blueprint(project_id: str) -> dict:
 @workspace_commands.register('project.blueprint')
 @_guard_project(by_slug=False, write=True, metadata=False)
 def put_blueprint(project_id: str, request: DocUpdate) -> dict:
+    return _put_blueprint_doc(project_id, "blueprint.md", request.content)
+
+
+@router.put('/api/projects/{project_id}/blueprint/draft', status_code=202)
+@workspace_commands.register('project.blueprint_draft')
+@_guard_project(by_slug=False, write=True, metadata=False)
+def put_blueprint_draft(project_id: str, request: DocUpdate) -> dict:
+    return _put_blueprint_doc(project_id, "blueprint.draft.md", request.content)
+
+
+@router.post('/api/projects/{project_id}/blueprint/nodes', status_code=202)
+@workspace_commands.register('project.blueprint_upsert')
+@_guard_project(by_slug=False, write=True, metadata=False)
+def upsert_blueprint_nodes(project_id: str, request: BlueprintNodesUpsert) -> dict:
     project = _require_project(project_id)
-    sha = project_service.write_doc(project, _proofs_root(), "blueprint.md", request.content)
-    return {"content": request.content, "commit_sha": sha, "warnings": blueprint_doc.validate(request.content),
-        'file_revision':workspace_commands.revision_for('p:'+project_id,'.lea/blueprint.md')}
+    nodes = [node.model_dump(exclude_none=True) for node in request.nodes]
+    return blueprint_store.upsert(project, _proofs_root(), nodes, draft=request.draft, actor="user")
+
+
+@router.post('/api/projects/{project_id}/blueprint/nodes/remove', status_code=202)
+@workspace_commands.register('project.blueprint_remove')
+@_guard_project(by_slug=False, write=True, metadata=False)
+def remove_blueprint_nodes(project_id: str, request: BlueprintNodesRemove) -> dict:
+    project = _require_project(project_id)
+    return blueprint_store.remove(project, _proofs_root(), request.keys, cascade=request.cascade,
+                                  draft=request.draft, actor="user")
+
+
+@router.post('/api/projects/{project_id}/blueprint/draft/accept', status_code=202)
+@workspace_commands.register('project.blueprint_accept_draft')
+@_guard_project(by_slug=False, write=True, metadata=False)
+def accept_blueprint_draft(project_id: str, request: BlueprintDraftAccept) -> dict:
+    project = _require_project(project_id)
+    if not blueprint_store.exists_draft(project, _proofs_root()):
+        raise HTTPException(status_code=404, detail="There is no blueprint draft to accept.")
+    return blueprint_store.accept_draft(project, _proofs_root(), request.keys)
+
+
+@router.post('/api/projects/{project_id}/blueprint/draft/discard', status_code=202)
+@workspace_commands.register('project.blueprint_discard_draft')
+@_guard_project(by_slug=False, write=True, metadata=False)
+def discard_blueprint_draft(project_id: str) -> dict:
+    project = _require_project(project_id)
+    return blueprint_store.discard_draft(project, _proofs_root())
 
 
 @router.get("/api/projects/{project_id}/graph")

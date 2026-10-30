@@ -14,7 +14,9 @@ from . import commands, db, store, workspace_commands as intake
 
 SNAPSHOT_ACTIONS = {'project.identity', 'project.update', 'project.default_name', 'project.retire',
                     'project.restore', 'project.generate_blueprint', 'project.generate_blueprint_slug',
-                    'project.delete_file', 'project.upload'}
+                    'project.delete_file', 'project.upload',
+                    'project.blueprint_upsert', 'project.blueprint_remove',
+                    'project.blueprint_accept_draft', 'project.blueprint_discard_draft'}
 SQL_ACTIONS = {'project.sync_formalizations'}
 
 
