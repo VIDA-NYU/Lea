@@ -19,6 +19,7 @@ import {
   sessionStateLabel,
   sortProjectsByActivity,
 } from '../../lib/shellModel.js';
+import { effectiveNodeBindings } from '../../lib/blueprintModel.js';
 import { useProjectData } from './projectData';
 import { BlueprintBar, ExpandSidebarButton, RunningPill, SectionHead, StatusDot, sessionDotKind } from './bits';
 
@@ -83,8 +84,8 @@ export function Home({
   const nodeBySession = useMemo(() => {
     const merged: Record<string, string> = {};
     for (const graph of Object.values(graphs)) Object.assign(merged, sessionNodeMap(graph, {}));
-    return Object.assign(merged, sessionNodeMap(null, nodeBindings));
-  }, [graphs, nodeBindings]);
+    return Object.assign(merged, sessionNodeMap(null, effectiveNodeBindings(sessions, nodeBindings)));
+  }, [graphs, sessions, nodeBindings]);
 
   const previewTitle = draft.trim() ? projectTitleFromStatement(draft) : null;
 

@@ -147,7 +147,7 @@ def run(context, op):
         if prior is None:
             prior = store.latest_transcript_for_session(sid, exclude_run_id=rid) or []
         prior = [m for m in prior if not projects.is_context_message(m) and not bridge._is_formalization_context_message(m)]
-        ctx = projects.compose_context_message(project, repo)
+        ctx = projects.compose_context_message(project, repo, blueprint_node=(store.get_session(sid) or {}).get('blueprint_node'))
         task = context.task + '\n\nCurrent retry workspace: ' + str(repo) + '\nSelected declaration: ' + declaration['user_name'] + '\nCurrent target file: ' + str(repo / target_path)
         retained = operations.retained_context(op)
         if retained:

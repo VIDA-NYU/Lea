@@ -502,7 +502,7 @@ export default function App() {
     if (!project || submitting.current) return;
     submitting.current = true;
     try {
-      const session = await createSessionInProject(project.id, node.key);
+      const session = await createSessionInProject(project.id, node.key, node.key);
       useWorkbench.getState().bindSessionToNode(session.id, node.key);
       useWorkbench.getState().selectNode(node.key);
       let existingId: string | undefined;

@@ -36,6 +36,7 @@ import {
   sortProjectsByActivity,
   unfiledSessions,
 } from '../lib/shellModel.js';
+import { effectiveNodeBindings } from '../lib/blueprintModel.js';
 import { useProjectData } from './shell/projectData';
 import { StatusDot, nodeDotKind, sessionDotKind } from './shell/bits';
 // The desktop package's update button (mockup frame 15), mounted in the footer.
@@ -390,7 +391,10 @@ function ProjectTree({
   onOpenFiles: (projectId: string) => void;
   renderSessionRow: (session: SessionSummary, indent: number, trailing?: string) => ReactElement;
 }) {
-  const nodeBySession = useMemo(() => sessionNodeMap({ nodes }, nodeBindings), [nodes, nodeBindings]);
+  const nodeBySession = useMemo(
+    () => sessionNodeMap({ nodes }, effectiveNodeBindings(sessions, nodeBindings)),
+    [nodes, sessions, nodeBindings],
+  );
   const sessionsByNode = useMemo(() => {
     const map: Record<string, SessionSummary[]> = {};
     for (const s of sessions) {

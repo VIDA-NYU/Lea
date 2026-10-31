@@ -106,6 +106,11 @@ class FakeBlueprintStore:
 
 @pytest.fixture
 def fake_store(monkeypatch):
+    # Modules that import blueprint_store at top level must bind the REAL module
+    # before the fake goes in; otherwise a first import during this fixture keeps
+    # the fake for the rest of the session (test_blueprint_store's route tests).
+    import app.routes.projects  # noqa: F401
+    import app.api_routes.projects  # noqa: F401
     fake = FakeBlueprintStore()
     module = types.ModuleType("app.blueprint_store")
     for name in ("LIVE", "DRAFT", "assign_names", "upsert"):

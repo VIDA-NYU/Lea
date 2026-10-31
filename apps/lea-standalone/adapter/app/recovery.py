@@ -311,7 +311,8 @@ def prepare_continuation(run: dict, config, repo: Path, status_context: dict, ta
         from . import projects
         project = store.get_project(run["project_id"])
         if project:
-            fresh = projects.compose_context_message(project, repo)
+            bound = (store.get_session(run["session_id"]) or {}).get("blueprint_node") if run.get("session_id") else None
+            fresh = projects.compose_context_message(project, repo, blueprint_node=bound)
             state["messages"] = [m for m in state["messages"] if not projects.is_context_message(m)]
             if fresh:
                 state["messages"].insert(0, fresh)

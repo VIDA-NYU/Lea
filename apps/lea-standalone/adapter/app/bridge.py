@@ -2326,6 +2326,12 @@ def _run_lea(context: RunnerContext) -> None:
                     update = blueprint_host.updated_event(run_id, session_id, ev.tool, result)
                     if update:
                         emit(events, "blueprint_updated", update)
+                except HTTPException as exc:
+                    # The store's project lock (409 busy / renaming, 404 deleted) is a
+                    # tool error for the model to retry later, not a failed run (§2.3).
+                    detail = exc.detail
+                    message = (detail.get("message") or detail.get("error")) if isinstance(detail, dict) else str(detail)
+                    to_send = BlueprintAck(error=f"{message or 'The project is busy.'} Retry once the current project operation finishes.")
                 except (ValueError, OSError, TypeError, KeyError, GitStoreError) as exc:
                     to_send = BlueprintAck(error=str(exc))
                 continue
@@ -2548,6 +2554,8 @@ def _run_lea(context: RunnerContext) -> None:
                     and ev.name in ("write_file", "edit_file")
                     and last_write_path
                     and not str(last_write_path).endswith(".lean")
+                    # A refused write (protected path, sandbox) wrote nothing: no commit, no refresh.
+                    and not str(ev.content).lstrip().startswith("Error:")
                 ):
                     asset_rel = _relativize(last_write_path, repo)
                     # Scoped to the asset this tool call wrote (X2): a concurrent run
