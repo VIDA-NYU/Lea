@@ -39,149 +39,1564 @@
   ],
   "models": [
     {
-      "value": "gpt-6-astra",
-      "label": "GPT-6 Astra",
-      "family": "openai",
-      "mode": "responses",
-      "compatibility": "unverified",
-      "first_seen": "2026-10-16T00:00:00Z"
-    },
-    {
-      "value": "gpt-6.1-sol",
-      "label": "GPT-6.1 Sol",
-      "family": "openai",
-      "released_at": "2026-09-29",
-      "mode": "responses",
-      "compatibility": "unverified",
-      "first_seen": "2026-10-16T00:00:00Z"
-    },
-    {
-      "value": "gpt-6-luna",
-      "label": "GPT-6 Luna",
-      "family": "openai",
-      "mode": "responses",
-      "compatibility": "unverified",
-      "first_seen": "2026-10-16T00:00:00Z"
+      "value": "claude-fable-5",
+      "label": "claude-fable-5",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
     },
     {
       "value": "claude-fable-5-1",
-      "label": "Claude Fable 5.1",
+      "label": "claude-fable-5-1",
       "family": "anthropic",
       "mode": "chat",
-      "compatibility": "unverified",
+      "compatibility": "supported",
+      "preview": false,
       "first_seen": "2026-10-16T00:00:00Z"
     },
     {
-      "value": "claude-opus-5-5",
-      "label": "Claude Opus 5.5",
+      "value": "claude-haiku-4-5",
+      "label": "claude-haiku-4-5",
       "family": "anthropic",
       "mode": "chat",
-      "compatibility": "unverified",
-      "released_at": "2026-09-22",
-      "first_seen": "2026-10-16T00:00:00Z"
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
     },
     {
-      "value": "claude-sonnet-5-5",
-      "label": "Claude Sonnet 5.5",
+      "value": "claude-haiku-4-5-20251001",
+      "label": "claude-haiku-4-5-20251001",
       "family": "anthropic",
       "mode": "chat",
-      "compatibility": "unverified",
-      "released_at": "2026-09-28",
-      "first_seen": "2026-10-16T00:00:00Z"
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
     },
     {
       "value": "claude-haiku-5-5",
-      "label": "Claude Haiku 5.5",
+      "label": "claude-haiku-5-5",
       "family": "anthropic",
       "mode": "chat",
-      "compatibility": "unverified",
+      "compatibility": "supported",
+      "preview": false,
       "released_at": "2026-10-07",
       "first_seen": "2026-10-16T00:00:00Z"
     },
     {
-      "value": "gemini/gemini-4-argon",
-      "label": "Gemini 4 Argon",
-      "family": "google",
-      "released_at": "2026-10-13",
+      "value": "claude-mythos-5",
+      "label": "claude-mythos-5",
+      "family": "anthropic",
       "mode": "chat",
-      "compatibility": "unverified",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-mythos-5-1",
+      "label": "claude-mythos-5-1",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-mythos-preview",
+      "label": "claude-mythos-preview",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "deprecated_at": "2026-06-09",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-opus-4-5",
+      "label": "claude-opus-4-5",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-opus-4-5-20251101",
+      "label": "claude-opus-4-5-20251101",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-opus-4-6",
+      "label": "claude-opus-4-6",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-opus-4-6-20260205",
+      "label": "claude-opus-4-6-20260205",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-opus-4-7",
+      "label": "claude-opus-4-7",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-opus-4-7-20260416",
+      "label": "claude-opus-4-7-20260416",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-opus-4-8",
+      "label": "claude-opus-4-8",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-opus-5",
+      "label": "claude-opus-5",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-opus-5-5",
+      "label": "claude-opus-5-5",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "released_at": "2026-09-22",
       "first_seen": "2026-10-16T00:00:00Z"
     },
     {
-      "value": "gemini/gemini-3.8-flash",
-      "label": "Gemini 3.8 Flash",
-      "family": "google",
-      "released_at": "2026-09-02",
+      "value": "claude-sonnet-4-5",
+      "label": "claude-sonnet-4-5",
+      "family": "anthropic",
       "mode": "chat",
-      "compatibility": "unverified",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-11-30",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-sonnet-4-5-20250929",
+      "label": "claude-sonnet-4-5-20250929",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-11-30",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-sonnet-4-6",
+      "label": "claude-sonnet-4-6",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-sonnet-5",
+      "label": "claude-sonnet-5",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "claude-sonnet-5-5",
+      "label": "claude-sonnet-5-5",
+      "family": "anthropic",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "released_at": "2026-09-28",
       "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
+      "value": "gemini-exp-1206",
+      "label": "gemini-exp-1206",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini-flash-latest",
+      "label": "gemini-flash-latest",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini-flash-lite-latest",
+      "label": "gemini-flash-lite-latest",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini-pro-latest",
+      "label": "gemini-pro-latest",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-2.5-computer-use-preview-10-2025",
+      "label": "gemini/gemini-2.5-computer-use-preview-10-2025",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "deprecated_at": "2026-07-28",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-2.5-flash",
+      "label": "gemini/gemini-2.5-flash",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-2.5-flash-lite",
+      "label": "gemini/gemini-2.5-flash-lite",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-2.5-pro",
+      "label": "gemini/gemini-2.5-pro",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-3-flash-preview",
+      "label": "gemini/gemini-3-flash-preview",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-3.1-flash-lite",
+      "label": "gemini/gemini-3.1-flash-lite",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-05-07",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-3.1-flash-lite-preview",
+      "label": "gemini/gemini-3.1-flash-lite-preview",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "deprecated_at": "2026-05-25",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-3.1-pro-preview",
+      "label": "gemini/gemini-3.1-pro-preview",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-3.1-pro-preview-customtools",
+      "label": "gemini/gemini-3.1-pro-preview-customtools",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-3.5-flash",
+      "label": "gemini/gemini-3.5-flash",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-3.5-flash-lite",
+      "label": "gemini/gemini-3.5-flash-lite",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-3.6-flash",
+      "label": "gemini/gemini-3.6-flash",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-3.7-flash",
+      "label": "gemini/gemini-3.7-flash",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-3.8-flash",
+      "label": "gemini/gemini-3.8-flash",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "released_at": "2026-09-02",
+      "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
+      "value": "gemini/gemini-4-argon",
+      "label": "gemini/gemini-4-argon",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "released_at": "2026-10-13",
+      "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
+      "value": "gemini/gemini-exp-1114",
+      "label": "gemini/gemini-exp-1114",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-exp-1206",
+      "label": "gemini/gemini-exp-1206",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-flash-latest",
+      "label": "gemini/gemini-flash-latest",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-flash-lite-latest",
+      "label": "gemini/gemini-flash-lite-latest",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-gemma-2-27b-it",
+      "label": "gemini/gemini-gemma-2-27b-it",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-gemma-2-9b-it",
+      "label": "gemini/gemini-gemma-2-9b-it",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-pro-latest",
+      "label": "gemini/gemini-pro-latest",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-robotics-er-2-preview",
+      "label": "gemini/gemini-robotics-er-2-preview",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemini-robotics-er-2-streaming-preview",
+      "label": "gemini/gemini-robotics-er-2-streaming-preview",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemma-3-27b-it",
+      "label": "gemini/gemma-3-27b-it",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemma-4-26b-a4b-it",
+      "label": "gemini/gemma-4-26b-a4b-it",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/gemma-4-31b-it",
+      "label": "gemini/gemma-4-31b-it",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gemini/learnlm-1.5-pro-experimental",
+      "label": "gemini/learnlm-1.5-pro-experimental",
+      "family": "google",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "chat-latest",
+      "label": "chat-latest",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "computer-use-preview",
+      "label": "computer-use-preview",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "deprecated_at": "2026-07-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "computer-use-preview-2025-03-11",
+      "label": "computer-use-preview-2025-03-11",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "deprecated_at": "2026-07-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "daybreak-blue-latest",
+      "label": "daybreak-blue-latest",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "daybreak-red-latest",
+      "label": "daybreak-red-latest",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "ft:gpt-4-0613",
+      "label": "ft:gpt-4-0613",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "ft:gpt-4.1-2025-04-14",
+      "label": "ft:gpt-4.1-2025-04-14",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-01-14",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "ft:gpt-4.1-mini-2025-04-14",
+      "label": "ft:gpt-4.1-mini-2025-04-14",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-01-14",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "ft:gpt-4.1-nano-2025-04-14",
+      "label": "ft:gpt-4.1-nano-2025-04-14",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "ft:gpt-4o-2024-08-06",
+      "label": "ft:gpt-4o-2024-08-06",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-01-14",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "ft:gpt-4o-2024-11-20",
+      "label": "ft:gpt-4o-2024-11-20",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-01-14",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "ft:gpt-4o-mini-2024-07-18",
+      "label": "ft:gpt-4o-mini-2024-07-18",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-01-14",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "ft:o4-mini-2025-04-16",
+      "label": "ft:o4-mini-2025-04-16",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-3.5-turbo",
+      "label": "gpt-3.5-turbo",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-3.5-turbo-0125",
+      "label": "gpt-3.5-turbo-0125",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-3.5-turbo-1106",
+      "label": "gpt-3.5-turbo-1106",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-09-28",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4",
+      "label": "gpt-4",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4-0613",
+      "label": "gpt-4-0613",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4-1106-preview",
+      "label": "gpt-4-1106-preview",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4-turbo",
+      "label": "gpt-4-turbo",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4-turbo-2024-04-09",
+      "label": "gpt-4-turbo-2024-04-09",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4.1",
+      "label": "gpt-4.1",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4.1-2025-04-14",
+      "label": "gpt-4.1-2025-04-14",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-01-14",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4.1-mini",
+      "label": "gpt-4.1-mini",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4.1-mini-2025-04-14",
+      "label": "gpt-4.1-mini-2025-04-14",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-01-14",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4.1-nano",
+      "label": "gpt-4.1-nano",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4.1-nano-2025-04-14",
+      "label": "gpt-4.1-nano-2025-04-14",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4o",
+      "label": "gpt-4o",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4o-2024-05-13",
+      "label": "gpt-4o-2024-05-13",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4o-2024-08-06",
+      "label": "gpt-4o-2024-08-06",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-01-14",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4o-2024-11-20",
+      "label": "gpt-4o-2024-11-20",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-01-14",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4o-audio-preview-2024-12-17",
+      "label": "gpt-4o-audio-preview-2024-12-17",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "deprecated_at": "2027-01-20",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4o-audio-preview-2025-06-03",
+      "label": "gpt-4o-audio-preview-2025-06-03",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "deprecated_at": "2027-01-20",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4o-mini",
+      "label": "gpt-4o-mini",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4o-mini-2024-07-18",
+      "label": "gpt-4o-mini-2024-07-18",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-01-14",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4o-mini-audio-preview-2024-12-17",
+      "label": "gpt-4o-mini-audio-preview-2024-12-17",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "deprecated_at": "2027-01-20",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4o-mini-search-preview",
+      "label": "gpt-4o-mini-search-preview",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4o-mini-search-preview-2025-03-11",
+      "label": "gpt-4o-mini-search-preview-2025-03-11",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "deprecated_at": "2026-07-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4o-search-preview",
+      "label": "gpt-4o-search-preview",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-4o-search-preview-2025-03-11",
+      "label": "gpt-4o-search-preview-2025-03-11",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": true,
+      "deprecated_at": "2026-07-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5",
+      "label": "gpt-5",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-12-11",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5-2025-08-07",
+      "label": "gpt-5-2025-08-07",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-12-11",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5-chat-latest",
+      "label": "gpt-5-chat-latest",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-07-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5-codex",
+      "label": "gpt-5-codex",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-07-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5-mini",
+      "label": "gpt-5-mini",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-12-11",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5-mini-2025-08-07",
+      "label": "gpt-5-mini-2025-08-07",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-12-11",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5-nano",
+      "label": "gpt-5-nano",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-12-11",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5-nano-2025-08-07",
+      "label": "gpt-5-nano-2025-08-07",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-12-11",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5-pro",
+      "label": "gpt-5-pro",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-12-11",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5-pro-2025-10-06",
+      "label": "gpt-5-pro-2025-10-06",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-12-11",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5-search-api",
+      "label": "gpt-5-search-api",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5-search-api-2025-10-14",
+      "label": "gpt-5-search-api-2025-10-14",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.1",
+      "label": "gpt-5.1",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-04-01",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.1-2025-11-13",
+      "label": "gpt-5.1-2025-11-13",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-04-01",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.1-chat-latest",
+      "label": "gpt-5.1-chat-latest",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-07-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.1-codex",
+      "label": "gpt-5.1-codex",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-07-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.1-codex-max",
+      "label": "gpt-5.1-codex-max",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-07-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.1-codex-mini",
+      "label": "gpt-5.1-codex-mini",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-07-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.2",
+      "label": "gpt-5.2",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.2-2025-12-11",
+      "label": "gpt-5.2-2025-12-11",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.2-chat-latest",
+      "label": "gpt-5.2-chat-latest",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-08-10",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.2-codex",
+      "label": "gpt-5.2-codex",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-07-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.2-pro",
+      "label": "gpt-5.2-pro",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.2-pro-2025-12-11",
+      "label": "gpt-5.2-pro-2025-12-11",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.3-chat-latest",
+      "label": "gpt-5.3-chat-latest",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-08-10",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.3-codex",
+      "label": "gpt-5.3-codex",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-04-01",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.4",
+      "label": "gpt-5.4",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.4-2026-03-05",
+      "label": "gpt-5.4-2026-03-05",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.4-mini",
+      "label": "gpt-5.4-mini",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.4-mini-2026-03-17",
+      "label": "gpt-5.4-mini-2026-03-17",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.4-nano",
+      "label": "gpt-5.4-nano",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-04-01",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.4-nano-2026-03-17",
+      "label": "gpt-5.4-nano-2026-03-17",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-04-01",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.4-pro",
+      "label": "gpt-5.4-pro",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.4-pro-2026-03-05",
+      "label": "gpt-5.4-pro-2026-03-05",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.5",
+      "label": "gpt-5.5",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.5-2026-04-23",
+      "label": "gpt-5.5-2026-04-23",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.5-pro",
+      "label": "gpt-5.5-pro",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.5-pro-2026-04-23",
+      "label": "gpt-5.5-pro-2026-04-23",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.6",
+      "label": "gpt-5.6",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.6-cyber",
+      "label": "gpt-5.6-cyber",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.6-luna",
+      "label": "gpt-5.6-luna",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.6-sol",
+      "label": "gpt-5.6-sol",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-5.6-terra",
+      "label": "gpt-5.6-terra",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-6-astra",
+      "label": "gpt-6-astra",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
+      "value": "gpt-6-astra-law",
+      "label": "gpt-6-astra-law",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-6-luna",
+      "label": "gpt-6-luna",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
+      "value": "gpt-6-rosalind",
+      "label": "gpt-6-rosalind",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-6-sol",
+      "label": "gpt-6-sol",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-6.1-sol",
+      "label": "gpt-6.1-sol",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "released_at": "2026-09-29",
+      "first_seen": "2026-10-16T00:00:00Z"
+    },
+    {
+      "value": "gpt-6.1-terra",
+      "label": "gpt-6.1-terra",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-audio",
+      "label": "gpt-audio",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-01-20",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-audio-1.5",
+      "label": "gpt-audio-1.5",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-audio-2025-08-28",
+      "label": "gpt-audio-2025-08-28",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-01-20",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-audio-mini",
+      "label": "gpt-audio-mini",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-01-20",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-audio-mini-2025-10-06",
+      "label": "gpt-audio-mini-2025-10-06",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-07-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-audio-mini-2025-12-15",
+      "label": "gpt-audio-mini-2025-12-15",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2027-01-20",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-daybreak-blue-latest",
+      "label": "gpt-daybreak-blue-latest",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "gpt-daybreak-red-latest",
+      "label": "gpt-daybreak-red-latest",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "o1",
+      "label": "o1",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "o1-2024-12-17",
+      "label": "o1-2024-12-17",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "o1-pro",
+      "label": "o1-pro",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "o1-pro-2025-03-19",
+      "label": "o1-pro-2025-03-19",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "o3",
+      "label": "o3",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-12-11",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "o3-2025-04-16",
+      "label": "o3-2025-04-16",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-12-11",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "o3-mini",
+      "label": "o3-mini",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "o3-mini-2025-01-31",
+      "label": "o3-mini-2025-01-31",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "o3-pro",
+      "label": "o3-pro",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-12-11",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
+    },
+    {
+      "value": "o3-pro-2025-06-10",
+      "label": "o3-pro-2025-06-10",
+      "family": "openai",
+      "mode": "responses",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-12-11",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
     },
     {
       "value": "o4-mini",
       "label": "o4-mini",
-      "family": "openai"
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
     },
     {
-      "value": "gpt-5.4-mini",
-      "label": "GPT-5.4 Mini",
-      "family": "openai"
-    },
-    {
-      "value": "gpt-5.4",
-      "label": "GPT-5.4",
-      "family": "openai"
-    },
-    {
-      "value": "gpt-5.5",
-      "label": "GPT-5.5",
-      "family": "openai"
-    },
-    {
-      "value": "gpt-5.6-sol",
-      "label": "GPT-5.6 Sol",
-      "family": "openai"
-    },
-    {
-      "value": "gpt-5.6-terra",
-      "label": "GPT-5.6 Terra",
-      "family": "openai"
-    },
-    {
-      "value": "gpt-5.6-luna",
-      "label": "GPT-5.6 Luna",
-      "family": "openai"
-    },
-    {
-      "value": "gpt-4o",
-      "label": "GPT-4o",
-      "family": "openai"
-    },
-    {
-      "value": "gemini/gemini-3.1-pro-preview",
-      "label": "Gemini 3.1 Pro Preview",
-      "family": "google"
-    },
-    {
-      "value": "gemini/gemini-2.5-pro",
-      "label": "Gemini 2.5 Pro",
-      "family": "google"
-    },
-    {
-      "value": "gemini/gemini-2.5-flash",
-      "label": "Gemini 2.5 Flash",
-      "family": "google"
-    },
-    {
-      "value": "anthropic/claude-opus-4-8",
-      "label": "Claude Opus 4.8",
-      "family": "anthropic"
-    },
-    {
-      "value": "anthropic/claude-sonnet-4-6",
-      "label": "Claude Sonnet 4.6",
-      "family": "anthropic"
+      "value": "o4-mini-2025-04-16",
+      "label": "o4-mini-2025-04-16",
+      "family": "openai",
+      "mode": "chat",
+      "compatibility": "supported",
+      "preview": false,
+      "deprecated_at": "2026-10-23",
+      "first_seen": "2026-11-02T09:24:29.046698+00:00"
     }
   ],
   "schema_version": 1,
-  "generated_at": "2026-10-16T00:00:00Z"
+  "generated_at": "2026-11-02T09:24:29.046814+00:00"
 }
